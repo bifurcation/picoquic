@@ -267,6 +267,8 @@ int picoquic_print_connection_id_hexa(char* buf, size_t buf_len, const picoquic_
     return 0;
 }
 
+/* When FQ_USE_RUST is defined, these functions are provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
 int picoquic_parse_hexa_digit(char x) {
     int ret = -1;
 
@@ -305,6 +307,7 @@ size_t picoquic_parse_hexa(char const * hex_input, size_t input_length, uint8_t 
 
     return ret;
 }
+#endif /* !FQ_USE_RUST */
 
 uint8_t picoquic_parse_connection_id_hexa(char const * hex_input, size_t input_length, picoquic_connection_id_t * cnx_id)
 {
@@ -785,6 +788,8 @@ int picoquic_file_delete(char const * file_name, int * last_err)
   * These functions return NULL in case of a failure (insufficient buffer).
   */
 
+/* When FQ_USE_RUST is defined, frame skip/decode/encode functions are provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_frames_fixed_skip(const uint8_t* bytes, const uint8_t* bytes_max, uint64_t size)
 {
     /* Write this test so as to avoid integer overflows, especially on 32 bit arch. */
@@ -890,7 +895,9 @@ const uint8_t* picoquic_frames_length_data_skip(const uint8_t* bytes, const uint
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST (frame skip/decode functions) */
 
+/* CID functions use picoquic types and remain in C */
 const uint8_t* picoquic_frames_cid_decode(const uint8_t* bytes, const uint8_t* bytes_max, picoquic_connection_id_t* cid)
 {
     bytes = picoquic_frames_uint8_decode(bytes, bytes_max, &cid->id_len);
@@ -909,6 +916,7 @@ const uint8_t* picoquic_frames_cid_decode(const uint8_t* bytes, const uint8_t* b
 }
 
 /* Predict length of a varint encoding */
+#ifndef FQ_USE_RUST
 size_t picoquic_frames_varint_encode_length(uint64_t n64)
 {
     size_t len = 8;
@@ -1070,12 +1078,15 @@ uint8_t* picoquic_frames_length_data_encode(uint8_t* bytes, const uint8_t* bytes
 
     return bytes;
 }
+#endif /* !FQ_USE_RUST (frame encode functions) */
 
+/* CID encode uses picoquic types and remains in C */
 uint8_t* picoquic_frames_cid_encode(uint8_t* bytes, const uint8_t* bytes_max, const picoquic_connection_id_t* cid)
 {
     return picoquic_frames_length_data_encode(bytes, bytes_max, cid->id_len, cid->id);
 }
 
+#ifndef FQ_USE_RUST
 uint8_t* picoquic_frames_charz_encode(uint8_t* bytes, const uint8_t* bytes_max, char const * s)
 {
     if (s == NULL) {
@@ -1087,6 +1098,7 @@ uint8_t* picoquic_frames_charz_encode(uint8_t* bytes, const uint8_t* bytes_max, 
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST (charz encode) */
 
 
 /* Constant time memory comparison. This is only required now for
@@ -1097,6 +1109,7 @@ uint8_t* picoquic_frames_charz_encode(uint8_t* bytes, const uint8_t* bytes_max, 
  * Value is zero if strings match.
  */
 
+#ifndef FQ_USE_RUST
 int picoquic_constant_time_memcmp(const uint8_t* x, const uint8_t* y, size_t l)
 {
     uint64_t ret = 0;
@@ -1108,6 +1121,7 @@ int picoquic_constant_time_memcmp(const uint8_t* x, const uint8_t* y, size_t l)
 
     return (ret == 0)?0:-1;
 }
+#endif /* !FQ_USE_RUST */
 
 /* Minimal support for threads.
  */
@@ -1309,6 +1323,7 @@ int picoquic_wait_for_event(picoquic_event_t* event, uint64_t microsec_wait)
 * Adapted from http://xoroshiro.di.unimi.it/splitmix64.c,
 * Written in 2015 by Sebastiano Vigna (vigna@acm.org)  */
 
+#ifndef FQ_USE_RUST
 uint64_t picoquic_test_random(uint64_t* random_context)
 {
     uint64_t z;
@@ -1402,9 +1417,11 @@ uint64_t picoquic_test_poisson_random(uint64_t* random_context, uint64_t exp_min
 
     return (k - 1);
 }
+#endif /* !FQ_USE_RUST (test random functions) */
 
 /* Convert binary string to test string for logging purposes.
  */
+#ifndef FQ_USE_RUST
 char* picoquic_uint8_to_str(char* text, size_t text_len, const uint8_t* data, size_t data_len)
 {
     size_t render_length = data_len;
@@ -1436,3 +1453,4 @@ char* picoquic_uint8_to_str(char* text, size_t text_len, const uint8_t* data, si
 
     return text;
 }
+#endif /* !FQ_USE_RUST */
