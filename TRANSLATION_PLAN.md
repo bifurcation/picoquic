@@ -100,7 +100,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `performance_log.c` - Performance logging
 
 ### Name/String Tables
-- [ ] `error_names.c` - Error code names
+- [x] `error_names.c` - Error code names (full: transport/tls/error modules, error_name lookup, crypto alert range handling, FFI export)
 - [x] `frame_names.c` - Frame type names (full: frame_type constants module, frame_name lookup, is_stream_frame helper, FFI export)
 - [x] `packet_names.c` - Packet type names (full: PacketType enum, packet_type_name lookup, FFI export)
 - [x] `tp_names.c` - Transport parameter names (full: tp constants module, tp_name lookup function, FFI export)

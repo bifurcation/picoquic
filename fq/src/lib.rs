@@ -11,6 +11,7 @@ pub mod cc_registry;
 pub mod connection;
 pub mod cubic;
 pub mod dualq_aqm;
+pub mod error_names;
 pub mod fastcc;
 pub mod frame_names;
 pub mod intformat;
