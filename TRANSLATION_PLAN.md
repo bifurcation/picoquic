@@ -103,7 +103,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `error_names.c` - Error code names
 - [ ] `frame_names.c` - Frame type names
 - [ ] `packet_names.c` - Packet type names
-- [ ] `tp_names.c` - Transport parameter names
+- [x] `tp_names.c` - Transport parameter names (full: tp constants module, tp_name lookup function, FFI export)
 
 ### Network/Sockets
 - [ ] `picosocks.c` - Socket utilities (platform-specific, lower priority)
