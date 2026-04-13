@@ -2068,8 +2068,21 @@ uint8_t* picoquic_prepare_observed_address_frame(uint8_t* bytes, const uint8_t* 
 void picoquic_update_peer_addr(picoquic_path_t* path_x, const struct sockaddr* peer_addr);
 
 int picoquic_skip_frame(const uint8_t* bytes, size_t bytes_max, size_t* consumed, int* pure_ack);
+const uint8_t* picoquic_skip_new_connection_id_frame(const uint8_t* bytes, const uint8_t* bytes_max, int is_mp);
+const uint8_t* picoquic_skip_retire_connection_id_frame(const uint8_t* bytes, const uint8_t* bytes_max, int is_mp);
+const uint8_t* picoquic_skip_new_token_frame(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_skip_stop_sending_frame(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_skip_datagram_frame(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_skip_ack_frequency_frame(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_skip_immediate_ack_frame(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_skip_time_stamp_frame(const uint8_t* bytes, const uint8_t* bytes_max);
 const uint8_t* picoquic_skip_path_abandon_frame(const uint8_t* bytes, const uint8_t* bytes_max);
 const uint8_t* picoquic_skip_path_available_or_backup_frame(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_skip_max_path_id_frame(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_skip_paths_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_skip_path_cid_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max);
+const uint8_t* picoquic_skip_observed_address_frame(const uint8_t* bytes, const uint8_t* bytes_max, uint64_t ftype);
+const uint8_t* picoquic_skip_bdp_frame(const uint8_t* bytes, const uint8_t* bytes_max);
 int picoquic_is_path_challenging_packet(const uint8_t* bytes, size_t bytes_maxsize);
 int picoquic_queue_path_available_or_backup_frame(
     picoquic_cnx_t* cnx, picoquic_path_t* path_x, picoquic_path_status_enum status);

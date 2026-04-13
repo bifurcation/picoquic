@@ -613,10 +613,11 @@ uint8_t * picoquic_format_new_connection_id_frame(picoquic_cnx_t* cnx, picoquic_
 }
 
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_new_connection_id_frame(const uint8_t* bytes, const uint8_t* bytes_max, int is_mp)
 {
     uint8_t cid_length = 0;
-    
+
 
     if ((bytes = picoquic_frames_varint_skip(bytes, bytes_max)) != NULL &&
         (!is_mp || (bytes = picoquic_frames_varint_skip(bytes, bytes_max)) != NULL) &&
@@ -628,6 +629,7 @@ const uint8_t* picoquic_skip_new_connection_id_frame(const uint8_t* bytes, const
 
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_parse_new_connection_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     int is_mp, uint64_t * path_id,
@@ -855,9 +857,10 @@ int picoquic_queue_retire_connection_id_frame(picoquic_cnx_t * cnx, uint64_t uni
  * Skip retire connection ID frame.
  */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_retire_connection_id_frame(const uint8_t* bytes, const uint8_t* bytes_max, int is_mp)
 {
-    
+
     if (is_mp) {
         for (int i = 0; i < 3 && bytes != NULL; i++) {
             bytes = picoquic_frames_varint_skip(bytes, bytes_max);
@@ -869,6 +872,7 @@ const uint8_t* picoquic_skip_retire_connection_id_frame(const uint8_t* bytes, co
 
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 /*
  * Decode retire connection ID frame.
@@ -1036,10 +1040,12 @@ int picoquic_queue_new_token_frame(picoquic_cnx_t * cnx, uint8_t * token, size_t
     return ret;
 }
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_new_token_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     return picoquic_frames_length_data_skip(bytes+1, bytes_max);
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_new_token_frame(picoquic_cnx_t* cnx, const uint8_t* bytes, const uint8_t* bytes_max,
     struct sockaddr* addr_to)
@@ -1148,6 +1154,7 @@ const uint8_t* picoquic_decode_stop_sending_frame(picoquic_cnx_t* cnx, const uin
     return bytes;
 }
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_stop_sending_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     if ((bytes = picoquic_frames_varint_skip(bytes+1, bytes_max)) != NULL) {
@@ -1155,6 +1162,7 @@ const uint8_t* picoquic_skip_stop_sending_frame(const uint8_t* bytes, const uint
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 
 int picoquic_check_stop_sending_needs_repeat(picoquic_cnx_t* cnx, const uint8_t* bytes, size_t bytes_size, int* no_need_to_repeat)
@@ -5183,6 +5191,7 @@ int picoquic_queue_handshake_done_frame(picoquic_cnx_t* cnx)
  * https://datatracker.ietf.org/doc/html/draft-ietf-quic-datagram
  */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_datagram_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     uint8_t frame_id = *bytes++;
@@ -5207,6 +5216,7 @@ const uint8_t* picoquic_skip_datagram_frame(const uint8_t* bytes, const uint8_t*
 
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 uint8_t* picoquic_decode_datagram_frame_header(uint8_t* bytes, const uint8_t* bytes_max,
     uint8_t* frame_id, uint64_t* length)
@@ -5505,8 +5515,9 @@ uint8_t* picoquic_format_ready_datagram_frame(picoquic_cnx_t* cnx, picoquic_path
     return bytes;
 }
 
-/* ACK Frequency frames 
+/* ACK Frequency frames
  */
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_ack_frequency_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     /* This code assumes that the frame type is already skipped */
@@ -5517,6 +5528,7 @@ const uint8_t* picoquic_skip_ack_frequency_frame(const uint8_t* bytes, const uin
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_parse_ack_frequency_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* seq, uint64_t* packets, uint64_t* microsec, uint8_t * ignore_order, uint64_t *reordering_threshold)
@@ -5623,11 +5635,13 @@ uint8_t* picoquic_format_ack_frequency_frame(picoquic_cnx_t* cnx, uint8_t* bytes
 
 /* Immediate ACK frame
  */
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_immediate_ack_frame(const uint8_t* bytes, const uint8_t* UNUSED(bytes_max))
 {
     /* This code assumes that the frame type is already skipped */
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_immediate_ack_frame(const uint8_t* bytes, const uint8_t* bytes_max, picoquic_cnx_t * cnx,
     picoquic_path_t * path_x, uint64_t current_time)
@@ -5661,12 +5675,14 @@ uint8_t* picoquic_format_immediate_ack_frame(uint8_t* bytes, uint8_t* bytes_max,
 
 /* Time stamp frames
  */
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_time_stamp_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     /* This code assumes that the frame type is already skipped */
     bytes = picoquic_frames_varint_skip(bytes, bytes_max);
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_parse_time_stamp_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* time_stamp)
@@ -5722,6 +5738,7 @@ size_t picoquic_encode_time_stamp_length(picoquic_cnx_t* cnx, uint64_t current_t
 /* Multipath PATH ABANDON frames
  */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_path_abandon_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     /* This code assumes that the frame type is already skipped */
@@ -5730,6 +5747,7 @@ const uint8_t* picoquic_skip_path_abandon_frame(const uint8_t* bytes, const uint
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_parse_path_abandon_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* path_id, uint64_t* reason)
@@ -5891,6 +5909,7 @@ int picoquic_queue_path_available_or_backup_frame(
     return ret;
 }
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_path_available_or_backup_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     /* This code assumes that the frame type is already skipped */
@@ -5899,6 +5918,7 @@ const uint8_t* picoquic_skip_path_available_or_backup_frame(const uint8_t* bytes
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_parse_path_available_or_backup_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* path_id, uint64_t* sequence)
@@ -6007,12 +6027,14 @@ int picoquic_queue_max_path_id_frame(
     return ret;
 }
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_max_path_id_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     /* This code assumes that the frame type is already skipped */
     bytes = picoquic_frames_varint_skip(bytes, bytes_max);
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_parse_max_path_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* max_path_id)
@@ -6123,12 +6145,14 @@ int picoquic_queue_paths_blocked_frame(
     return ret;
 }
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_paths_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     /* This code assumes that the frame type is already skipped */
     bytes = picoquic_frames_varint_skip(bytes, bytes_max);
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_parse_paths_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* max_path_id)
@@ -6257,6 +6281,7 @@ int picoquic_queue_path_cid_blocked_frame(
     return ret;
 }
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_path_cid_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     /* This code assumes that the frame type is already skipped */
@@ -6265,6 +6290,7 @@ const uint8_t* picoquic_skip_path_cid_blocked_frame(const uint8_t* bytes, const 
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_parse_path_cid_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* unique_path_id, uint64_t * next_sequence_number)
@@ -6446,6 +6472,7 @@ uint8_t* picoquic_prepare_observed_address_frame(uint8_t* bytes, const uint8_t* 
     return bytes;
 }
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_observed_address_frame(const uint8_t* bytes, const uint8_t* bytes_max, uint64_t ftype)
 {
     /* This code assumes that the frame type is already skipped */
@@ -6457,6 +6484,7 @@ const uint8_t* picoquic_skip_observed_address_frame(const uint8_t* bytes, const 
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_parse_observed_address_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t ftype, uint64_t* sequence, const uint8_t** addr, uint16_t* port)
@@ -6538,16 +6566,18 @@ int picoquic_process_ack_of_observed_address_frame(picoquic_path_t * path_x, con
 /* BDP frames as defined in https://tools.ietf.org/html/draft-kuhn-quic-0rtt-bdp-09
 */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_skip_bdp_frame(const uint8_t* bytes, const uint8_t* bytes_max)
 {
     /* This code assumes that the frame type is already skipped */
-    if ((bytes = picoquic_frames_varint_skip(bytes, bytes_max)) != NULL && 
+    if ((bytes = picoquic_frames_varint_skip(bytes, bytes_max)) != NULL &&
         (bytes = picoquic_frames_varint_skip(bytes, bytes_max)) != NULL &&
         (bytes = picoquic_frames_varint_skip(bytes, bytes_max)) != NULL){
         bytes = picoquic_frames_length_data_skip(bytes, bytes_max);
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_parse_bdp_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* lifetime, uint64_t* recon_bytes_in_flight, uint64_t* recon_min_rtt, 

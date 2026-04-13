@@ -14,6 +14,7 @@ pub mod dualq_aqm;
 pub mod error_names;
 pub mod fastcc;
 pub mod frame_names;
+pub mod frames;
 pub mod intformat;
 pub mod pacing;
 pub mod packet_names;
