@@ -250,11 +250,13 @@ int picoquic_sprintf(char* buf, size_t buf_len, size_t * nb_chars, const char* f
     return res >= 0 ? ((size_t)res >= buf_len) : res;
 }
 
+/* When FQ_USE_RUST is defined, connection ID functions are provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
 int picoquic_print_connection_id_hexa(char* buf, size_t buf_len, const picoquic_connection_id_t * cnxid)
 {
     static const char hex_to_char[16] = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
     if (buf_len < ((size_t)cnxid->id_len) * 2u + 1u) {
-        return -1;  
+        return -1;
     }
 
     for (unsigned i = 0; i < cnxid->id_len; i++) {
@@ -266,6 +268,7 @@ int picoquic_print_connection_id_hexa(char* buf, size_t buf_len, const picoquic_
 
     return 0;
 }
+#endif /* !FQ_USE_RUST (print_connection_id_hexa) */
 
 /* When FQ_USE_RUST is defined, these functions are provided by the fq Rust crate */
 #ifndef FQ_USE_RUST
@@ -309,6 +312,8 @@ size_t picoquic_parse_hexa(char const * hex_input, size_t input_length, uint8_t 
 }
 #endif /* !FQ_USE_RUST */
 
+/* When FQ_USE_RUST is defined, connection ID functions are provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
 uint8_t picoquic_parse_connection_id_hexa(char const * hex_input, size_t input_length, picoquic_connection_id_t * cnx_id)
 {
     memset(cnx_id, 0, sizeof(picoquic_connection_id_t));
@@ -410,6 +415,7 @@ uint64_t picoquic_val64_connection_id(picoquic_connection_id_t cnx_id)
 
     return val64;
 }
+#endif /* !FQ_USE_RUST (connection ID functions) */
 
 /* Hash function for addresses. */
 

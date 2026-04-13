@@ -3,6 +3,7 @@
 //! This module provides:
 //! - String creation/duplication
 //! - Hex encoding/decoding
+//! - Connection ID handling
 //! - Constant-time memory comparison
 //! - Test random number generation
 //! - Frame skip/decode/encode helpers
@@ -10,6 +11,221 @@
 //! Translated from picoquic/util.c
 
 use crate::intformat::{self, varint};
+use std::cmp::Ordering;
+use std::ffi::c_int;
+
+// =============================================================================
+// Connection ID Constants
+// =============================================================================
+
+/// Minimum connection ID size (0 bytes).
+pub const CONNECTION_ID_MIN_SIZE: usize = 0;
+
+/// Maximum connection ID size (20 bytes).
+pub const CONNECTION_ID_MAX_SIZE: usize = 20;
+
+// =============================================================================
+// Connection ID
+// =============================================================================
+
+/// A QUIC connection ID.
+///
+/// Connection IDs are variable-length identifiers (0-20 bytes) used to
+/// identify QUIC connections at endpoints. They allow connection migration
+/// and load balancing.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(C)]
+pub struct ConnectionId {
+    /// Connection ID bytes (only first `id_len` bytes are valid).
+    pub id: [u8; CONNECTION_ID_MAX_SIZE],
+    /// Length of the connection ID (0-20).
+    pub id_len: u8,
+}
+
+impl Default for ConnectionId {
+    fn default() -> Self {
+        Self::null()
+    }
+}
+
+impl std::fmt::Debug for ConnectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ConnectionId(")?;
+        for i in 0..self.id_len as usize {
+            write!(f, "{:02x}", self.id[i])?;
+        }
+        write!(f, ")")
+    }
+}
+
+impl ConnectionId {
+    /// Create a null (zero-length) connection ID.
+    pub const fn null() -> Self {
+        Self {
+            id: [0; CONNECTION_ID_MAX_SIZE],
+            id_len: 0,
+        }
+    }
+
+    /// Create a connection ID from bytes.
+    ///
+    /// Returns None if `bytes` is longer than `CONNECTION_ID_MAX_SIZE`.
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() > CONNECTION_ID_MAX_SIZE {
+            return None;
+        }
+        let mut cid = Self::null();
+        cid.id[..bytes.len()].copy_from_slice(bytes);
+        cid.id_len = bytes.len() as u8;
+        Some(cid)
+    }
+
+    /// Get the connection ID bytes as a slice.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.id[..self.id_len as usize]
+    }
+
+    /// Check if this is a null (zero-length) connection ID.
+    pub fn is_null(&self) -> bool {
+        self.id_len == 0
+    }
+
+    /// Get the length of the connection ID.
+    pub fn len(&self) -> usize {
+        self.id_len as usize
+    }
+
+    /// Check if the connection ID is empty (same as is_null).
+    pub fn is_empty(&self) -> bool {
+        self.id_len == 0
+    }
+
+    /// Format the connection ID into a byte buffer.
+    ///
+    /// Returns the number of bytes written, or 0 if the buffer is too small
+    /// or the connection ID is empty.
+    pub fn format(&self, bytes: &mut [u8]) -> u8 {
+        if self.id_len == 0 || bytes.len() < self.id_len as usize {
+            return 0;
+        }
+        bytes[..self.id_len as usize].copy_from_slice(&self.id[..self.id_len as usize]);
+        self.id_len
+    }
+
+    /// Parse a connection ID from bytes with known length.
+    ///
+    /// Returns the number of bytes consumed, or 0 on error.
+    pub fn parse(&mut self, bytes: &[u8], len: u8) -> u8 {
+        if len as usize > CONNECTION_ID_MAX_SIZE || bytes.len() < len as usize {
+            self.id_len = 0;
+            return 0;
+        }
+        self.id = [0; CONNECTION_ID_MAX_SIZE];
+        self.id[..len as usize].copy_from_slice(&bytes[..len as usize]);
+        self.id_len = len;
+        len
+    }
+
+    /// Compare two connection IDs.
+    ///
+    /// Returns ordering suitable for sorting.
+    pub fn compare(&self, other: &Self) -> Ordering {
+        match self.id_len.cmp(&other.id_len) {
+            Ordering::Equal => self.as_bytes().cmp(other.as_bytes()),
+            other_ord => other_ord,
+        }
+    }
+
+    /// Compute a simple hash of the connection ID.
+    ///
+    /// This is a fast, non-cryptographic hash suitable for hash tables.
+    /// For security-sensitive hashing, use `hash_siphash`.
+    pub fn hash(&self) -> u64 {
+        let mut val64: u64 = 0;
+        let mut i = 0usize;
+
+        // First 8 bytes: simple shift and add
+        while i < self.id_len as usize && i < 8 {
+            val64 <<= 8;
+            val64 += self.id[i] as u64;
+            i += 1;
+        }
+
+        // Remaining bytes: fold in with multiplication
+        while i < self.id_len as usize {
+            let top = val64 >> 56;
+            val64 <<= 8;
+            val64 += self.id[i] as u64;
+            val64 = val64.wrapping_add(top.wrapping_mul(0x10001));
+            i += 1;
+        }
+
+        val64
+    }
+
+    /// Get a 64-bit value representation of the connection ID.
+    ///
+    /// For IDs shorter than 8 bytes, pads with zeros on the right.
+    /// For IDs longer than 8 bytes, uses only the first 8 bytes.
+    pub fn val64(&self) -> u64 {
+        let mut val64: u64 = 0;
+
+        if self.id_len < 8 {
+            for i in 0..self.id_len as usize {
+                val64 <<= 8;
+                val64 |= self.id[i] as u64;
+            }
+            // Pad remaining with zeros
+            for _ in self.id_len as usize..8 {
+                val64 <<= 8;
+            }
+        } else {
+            for i in 0..8 {
+                val64 <<= 8;
+                val64 |= self.id[i] as u64;
+            }
+        }
+
+        val64
+    }
+
+    /// Format connection ID as a hex string.
+    ///
+    /// Returns the number of hex characters written (excluding null terminator),
+    /// or None if buffer is too small.
+    pub fn format_hexa(&self, buf: &mut [u8]) -> Option<usize> {
+        let required = self.id_len as usize * 2 + 1;
+        if buf.len() < required {
+            return None;
+        }
+
+        for i in 0..self.id_len as usize {
+            buf[i * 2] = HEX_CHARS[self.id[i] as usize >> 4];
+            buf[i * 2 + 1] = HEX_CHARS[self.id[i] as usize & 0x0f];
+        }
+        buf[self.id_len as usize * 2] = 0;
+
+        Some(self.id_len as usize * 2)
+    }
+
+    /// Parse connection ID from a hex string.
+    ///
+    /// Returns the number of bytes parsed, or 0 on error.
+    pub fn parse_hexa(&mut self, hex_input: &[u8]) -> u8 {
+        *self = Self::null();
+        // Use the general hex parser, limiting to 18 bytes (36 hex chars)
+        // which is the limit used in C code (slightly less than max 20)
+        let max_bytes = 18.min(CONNECTION_ID_MAX_SIZE);
+        let id_len = parse_hexa(hex_input, &mut self.id[..max_bytes]);
+        if id_len == 0 {
+            *self = Self::null();
+            0
+        } else {
+            self.id_len = id_len as u8;
+            self.id_len
+        }
+    }
+}
 
 // =============================================================================
 // String utilities
@@ -960,6 +1176,130 @@ pub unsafe extern "C" fn picoquic_uint8_to_str(
     text
 }
 
+// =============================================================================
+// Connection ID FFI exports
+// =============================================================================
+
+/// FFI export: Format a connection ID into a byte buffer.
+///
+/// # Safety
+/// - `bytes` must point to valid writable buffer of `bytes_max` bytes.
+/// - `cnx_id` is passed by value (C struct).
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_format_connection_id(
+    bytes: *mut u8,
+    bytes_max: usize,
+    cnx_id: ConnectionId,
+) -> u8 {
+    let slice = std::slice::from_raw_parts_mut(bytes, bytes_max);
+    cnx_id.format(slice)
+}
+
+/// FFI export: Parse a connection ID from bytes.
+///
+/// # Safety
+/// - `bytes` must point to valid data of at least `len` bytes.
+/// - `cnx_id` must point to a valid ConnectionId struct.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_connection_id(
+    bytes: *const u8,
+    len: u8,
+    cnx_id: *mut ConnectionId,
+) -> u8 {
+    let slice = std::slice::from_raw_parts(bytes, len as usize);
+    (*cnx_id).parse(slice, len)
+}
+
+/// FFI export: Check if a connection ID is null (zero-length).
+///
+/// # Safety
+/// - `cnx_id` must point to a valid ConnectionId struct.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_is_connection_id_null(cnx_id: *const ConnectionId) -> c_int {
+    if (*cnx_id).is_null() {
+        1
+    } else {
+        0
+    }
+}
+
+/// FFI export: Compare two connection IDs.
+///
+/// Returns -1 if cnx_id1 < cnx_id2, 0 if equal, 1 if cnx_id1 > cnx_id2.
+///
+/// # Safety
+/// - Both pointers must point to valid ConnectionId structs.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_compare_connection_id(
+    cnx_id1: *const ConnectionId,
+    cnx_id2: *const ConnectionId,
+) -> c_int {
+    match (*cnx_id1).compare(&*cnx_id2) {
+        Ordering::Less => -1,
+        Ordering::Equal => 0,
+        Ordering::Greater => 1,
+    }
+}
+
+/// FFI export: Compute a hash of a connection ID.
+///
+/// # Safety
+/// - `cid` must point to a valid ConnectionId struct.
+/// - `hash_seed` is unused but kept for API compatibility.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_connection_id_hash(
+    cid: *const ConnectionId,
+    _hash_seed: *const u8,
+) -> u64 {
+    (*cid).hash()
+}
+
+/// FFI export: Get 64-bit value representation of connection ID.
+///
+/// # Safety
+/// - `cnx_id` is passed by value (C struct).
+#[no_mangle]
+pub extern "C" fn picoquic_val64_connection_id(cnx_id: ConnectionId) -> u64 {
+    cnx_id.val64()
+}
+
+/// FFI export: Print connection ID as hex string.
+///
+/// # Safety
+/// - `buf` must point to valid writable buffer of `buf_len` bytes.
+/// - `cnxid` must point to a valid ConnectionId struct.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_print_connection_id_hexa(
+    buf: *mut std::ffi::c_char,
+    buf_len: usize,
+    cnxid: *const ConnectionId,
+) -> c_int {
+    let slice = std::slice::from_raw_parts_mut(buf as *mut u8, buf_len);
+    match (*cnxid).format_hexa(slice) {
+        Some(_) => 0,
+        None => -1,
+    }
+}
+
+/// FFI export: Parse connection ID from hex string.
+///
+/// # Safety
+/// - `hex_input` must point to valid data of `input_length` bytes.
+/// - `cnx_id` must point to a valid ConnectionId struct.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_connection_id_hexa(
+    hex_input: *const std::ffi::c_char,
+    input_length: usize,
+    cnx_id: *mut ConnectionId,
+) -> u8 {
+    let slice = std::slice::from_raw_parts(hex_input as *const u8, input_length);
+    (*cnx_id).parse_hexa(slice)
+}
+
+/// Null connection ID constant (for FFI compatibility).
+#[no_mangle]
+pub static picoquic_null_connection_id: ConnectionId = ConnectionId::null();
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1057,5 +1397,122 @@ mod tests {
         assert_eq!(rest.len(), 0);
         let (val, _) = frames_uint64_decode(&buf).unwrap();
         assert_eq!(val, 0x123456789abcdef0);
+    }
+
+    // =========================================================================
+    // Connection ID Tests
+    // =========================================================================
+
+    #[test]
+    fn test_connection_id_null() {
+        let cid = ConnectionId::null();
+        assert!(cid.is_null());
+        assert_eq!(cid.len(), 0);
+        assert!(cid.is_empty());
+    }
+
+    #[test]
+    fn test_connection_id_from_bytes() {
+        let cid = ConnectionId::from_bytes(&[0x01, 0x02, 0x03, 0x04]).unwrap();
+        assert_eq!(cid.len(), 4);
+        assert_eq!(cid.as_bytes(), &[0x01, 0x02, 0x03, 0x04]);
+        assert!(!cid.is_null());
+    }
+
+    #[test]
+    fn test_connection_id_from_bytes_max() {
+        let bytes = [0xab; CONNECTION_ID_MAX_SIZE];
+        let cid = ConnectionId::from_bytes(&bytes).unwrap();
+        assert_eq!(cid.len(), CONNECTION_ID_MAX_SIZE);
+    }
+
+    #[test]
+    fn test_connection_id_from_bytes_too_long() {
+        let bytes = [0xab; CONNECTION_ID_MAX_SIZE + 1];
+        assert!(ConnectionId::from_bytes(&bytes).is_none());
+    }
+
+    #[test]
+    fn test_connection_id_format_parse() {
+        let cid = ConnectionId::from_bytes(&[0xde, 0xad, 0xbe, 0xef]).unwrap();
+
+        let mut buf = [0u8; 8];
+        let written = cid.format(&mut buf);
+        assert_eq!(written, 4);
+        assert_eq!(&buf[..4], &[0xde, 0xad, 0xbe, 0xef]);
+
+        let mut cid2 = ConnectionId::null();
+        let parsed = cid2.parse(&buf, 4);
+        assert_eq!(parsed, 4);
+        assert_eq!(cid, cid2);
+    }
+
+    #[test]
+    fn test_connection_id_compare() {
+        let cid1 = ConnectionId::from_bytes(&[0x01, 0x02]).unwrap();
+        let cid2 = ConnectionId::from_bytes(&[0x01, 0x02]).unwrap();
+        let cid3 = ConnectionId::from_bytes(&[0x01, 0x03]).unwrap();
+        let cid4 = ConnectionId::from_bytes(&[0x01]).unwrap();
+
+        assert_eq!(cid1.compare(&cid2), Ordering::Equal);
+        assert_eq!(cid1.compare(&cid3), Ordering::Less);
+        assert_eq!(cid3.compare(&cid1), Ordering::Greater);
+        assert_eq!(cid4.compare(&cid1), Ordering::Less); // shorter length
+    }
+
+    #[test]
+    fn test_connection_id_hash() {
+        let cid1 = ConnectionId::from_bytes(&[0x01, 0x02, 0x03, 0x04]).unwrap();
+        let cid2 = ConnectionId::from_bytes(&[0x01, 0x02, 0x03, 0x04]).unwrap();
+        let cid3 = ConnectionId::from_bytes(&[0x01, 0x02, 0x03, 0x05]).unwrap();
+
+        // Same IDs should hash the same
+        assert_eq!(cid1.hash(), cid2.hash());
+
+        // Different IDs should (almost certainly) hash differently
+        assert_ne!(cid1.hash(), cid3.hash());
+    }
+
+    #[test]
+    fn test_connection_id_val64() {
+        // Short ID (< 8 bytes)
+        let cid = ConnectionId::from_bytes(&[0x01, 0x02]).unwrap();
+        // 0x0102 shifted left by 48 bits
+        assert_eq!(cid.val64(), 0x0102_0000_0000_0000);
+
+        // Exact 8 bytes
+        let cid =
+            ConnectionId::from_bytes(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]).unwrap();
+        assert_eq!(cid.val64(), 0x0102_0304_0506_0708);
+
+        // Longer than 8 bytes (only first 8 used)
+        let cid =
+            ConnectionId::from_bytes(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a])
+                .unwrap();
+        assert_eq!(cid.val64(), 0x0102_0304_0506_0708);
+    }
+
+    #[test]
+    fn test_connection_id_format_hexa() {
+        let cid = ConnectionId::from_bytes(&[0xde, 0xad, 0xbe, 0xef]).unwrap();
+        let mut buf = [0u8; 16];
+        let len = cid.format_hexa(&mut buf).unwrap();
+        assert_eq!(len, 8);
+        assert_eq!(&buf[..8], b"deadbeef");
+    }
+
+    #[test]
+    fn test_connection_id_parse_hexa() {
+        let mut cid = ConnectionId::null();
+        let parsed = cid.parse_hexa(b"deadbeef");
+        assert_eq!(parsed, 4);
+        assert_eq!(cid.as_bytes(), &[0xde, 0xad, 0xbe, 0xef]);
+    }
+
+    #[test]
+    fn test_connection_id_debug() {
+        let cid = ConnectionId::from_bytes(&[0xab, 0xcd]).unwrap();
+        let debug_str = format!("{:?}", cid);
+        assert_eq!(debug_str, "ConnectionId(abcd)");
     }
 }
