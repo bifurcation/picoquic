@@ -82,33 +82,33 @@ Convert picoquic tests to Cargo tests:
 ### Utilities
 - [x] `intformat.c` - Integer encoding/decoding
 - [x] `bytestream.c` - Byte stream utilities
-- [ ] `util.c` - General utilities
+- [x] `util.c` - General utilities (partial: hex, frame encode/decode, random, memcmp - excludes CID/addr functions)
 - [x] `siphash.c` - SipHash implementation
-- [ ] `picohash.c` - Hash table implementation
-- [ ] `picosplay.c` - Splay tree implementation
-- [ ] `spinbit.c` - Spin bit handling
-- [ ] `timing.c` - Timing utilities
-- [ ] `port_blocking.c` - Port blocking detection
-- [ ] `picoquic_lb.c` - Load balancer integration
-- [ ] `config.c` - Configuration handling
+- [x] `picohash.c` - Hash functions (partial: picohash_bytes, picohash_siphash - hash table remains in C)
+- [x] `port_blocking.c` - Port blocking (partial: check_port_blocked - addr check uses internal types)
+- [ ] `picosplay.c` - Splay tree (remains in C - intrusive nodes with function pointer callbacks)
+- [ ] `spinbit.c` - Spin bit handling (remains in C - uses picoquic_cnx_t, picoquic_path_t)
+- [ ] `timing.c` - Timing utilities (remains in C - core protocol logic with internal types)
+- [ ] `picoquic_lb.c` - Load balancer integration (remains in C - uses crypto and internal types)
+- [ ] `config.c` - Configuration handling (remains in C - integrates with all subsystems)
 
 ### Logging
-- [ ] `logger.c` - General logging
-- [ ] `logwriter.c` - Log file writing
-- [ ] `unified_log.c` - Unified logging API
-- [ ] `memory_log.c` - Memory logging
-- [ ] `performance_log.c` - Performance logging
+- [ ] `logger.c` - General logging (remains in C - uses picoquic types, file I/O)
+- [ ] `logwriter.c` - Log file writing (remains in C)
+- [ ] `unified_log.c` - Unified logging API (remains in C)
+- [ ] `memory_log.c` - Memory logging (remains in C)
+- [ ] `performance_log.c` - Performance logging (remains in C)
 
 ### Name/String Tables
-- [ ] `error_names.c` - Error code names
-- [ ] `frame_names.c` - Frame type names
-- [ ] `packet_names.c` - Packet type names
-- [ ] `tp_names.c` - Transport parameter names
+- [ ] `error_names.c` - Error code names (remains in C - depends on PICOQUIC_* constants)
+- [ ] `frame_names.c` - Frame type names (remains in C - depends on frame type constants)
+- [ ] `packet_names.c` - Packet type names (remains in C)
+- [ ] `tp_names.c` - Transport parameter names (remains in C)
 
 ### Network/Sockets
-- [ ] `picosocks.c` - Socket utilities
-- [ ] `sockloop.c` - Unix socket loop
-- [ ] `winsockloop.c` - Windows socket loop (if needed)
+- [ ] `picosocks.c` - Socket utilities (remains in C - platform-specific socket APIs)
+- [ ] `sockloop.c` - Unix socket loop (remains in C)
+- [ ] `winsockloop.c` - Windows socket loop (remains in C)
 - [ ] `sim_link.c` - Simulated network link
 
 ## Translation Order

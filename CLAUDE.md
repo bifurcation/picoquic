@@ -237,20 +237,85 @@ Translation approach:
 
 ### FFI Integration Pattern
 
+**NO LOGIC IN FFI.** This is a hard rule. FFI functions contain only:
+1. Pointer dereferences to access the C struct
+2. Calls to safe Rust methods
+3. Return value conversion (Result to c_int, Option to nullable pointer)
+
+All logic - including allocation, validation, conditionals, loops - lives in safe Rust. If you find yourself writing an `if` statement or any computation in an FFI function, move it to a safe Rust method.
+
 For each translated file:
 
 **Rust side** (`fq/src/example.rs`):
 ```rust
-// Safe Rust implementation
-pub fn my_function(data: &[u8]) -> usize { ... }
+// ===================
+// Safe Rust API (ALL logic lives here)
+// ===================
 
-// FFI export matching C signature
-/// # Safety
-/// `data` must point to a valid buffer of `len` bytes.
+pub struct MyType<'a> {
+    data: &'a mut [u8],
+    pos: usize,
+}
+
+impl<'a> MyType<'a> {
+    /// Wrap a C struct, borrowing its buffer.
+    pub unsafe fn from_c(c: &'a mut CMyType) -> Self {
+        let data = std::slice::from_raw_parts_mut(c.data, c.size);
+        Self { data, pos: c.ptr }
+    }
+
+    /// Sync position back to C struct.
+    pub fn sync_to_c(&self, c: &mut CMyType) {
+        c.ptr = self.pos;
+    }
+
+    pub fn write_u16(&mut self, value: u16) -> Result<(), Error> {
+        // All logic here
+    }
+}
+
+// C-compatible struct - put methods here for init/alloc operations
+#[repr(C)]
+pub struct CMyType {
+    pub data: *mut u8,
+    pub size: usize,
+    pub ptr: usize,
+}
+
+impl CMyType {
+    /// Allocate buffer. Logic lives HERE, not in FFI function.
+    pub fn alloc(&mut self, size: usize) -> bool {
+        let layout = match std::alloc::Layout::from_size_align(size, 1) {
+            Ok(l) => l,
+            Err(_) => return false,
+        };
+        let data = unsafe { std::alloc::alloc(layout) };
+        if data.is_null() { return false; }
+        self.data = data;
+        self.size = size;
+        self.ptr = 0;
+        true
+    }
+}
+
+// ===================
+// FFI Layer (THIN WRAPPERS ONLY - no logic)
+// ===================
+
 #[no_mangle]
-pub unsafe extern "C" fn picoquic_my_function(data: *const u8, len: usize) -> usize {
-    let slice = std::slice::from_raw_parts(data, len);
-    my_function(slice)
+pub unsafe extern "C" fn mytype_alloc(s: *mut CMyType, size: usize) -> *mut CMyType {
+    if (*s).alloc(size) { s } else { std::ptr::null_mut() }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn mytype_write_u16(s: *mut CMyType, value: u16) -> c_int {
+    let mut wrapper = MyType::from_c(&mut *s);
+    let result = match wrapper.write_u16(value) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    };
+    wrapper.sync_to_c(&mut *s);
+    result
 }
 ```
 
@@ -259,14 +324,19 @@ pub unsafe extern "C" fn picoquic_my_function(data: *const u8, len: usize) -> us
 /* When FQ_USE_RUST is defined, these functions are provided by the fq Rust crate */
 #ifndef FQ_USE_RUST
 
-size_t picoquic_my_function(const uint8_t* data, size_t len) {
+int mytype_write_u16(mytype* s, uint16_t value) {
     // C implementation
 }
 
 #endif /* !FQ_USE_RUST */
 ```
 
-This allows gradual migration: the Rust code replaces C code at link time when `BUILD_FQ=ON`.
+This pattern ensures:
+1. **NO LOGIC IN FFI** - FFI functions are trivial wrappers; all logic (including allocation, validation, error handling) lives in safe Rust methods
+2. **Single source of truth** - safe Rust implementation, not duplicated between Rust and FFI
+3. **Minimal unsafe** - only pointer derefs at FFI boundary
+4. **Testability** - safe Rust API can be unit tested without FFI
+5. **Gradual migration** - Rust replaces C at link time when `BUILD_FQ=ON`
 
 ### IMPORTANT: Verification After Each Translation
 
