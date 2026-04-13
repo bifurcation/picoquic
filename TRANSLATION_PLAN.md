@@ -51,7 +51,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `frames.c` - Frame encoding/decoding
 - [ ] `sender.c` - Packet sending logic
 - [ ] `paths.c` - Path management
-- [ ] `sacks.c` - SACK list management
+- [x] `sacks.c` - SACK list management (full: SackList with BTreeMap, range merging, ACK horizon, send count tracking - C retains cnx context functions)
 - [ ] `loss_recovery.c` - Loss detection and recovery
 
 ### Congestion Control
