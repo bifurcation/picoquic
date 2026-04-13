@@ -16,6 +16,7 @@ pub mod intformat;
 pub mod pacing;
 pub mod path;
 pub mod picohash;
+pub mod picosplay;
 pub mod port_blocking;
 pub mod prague;
 pub mod siphash;
