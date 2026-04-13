@@ -19,7 +19,11 @@ pub const HYSTART_PP_CSS_GROWTH_DIVISOR: u64 = 4;
 // Target RTT constants (from picoquic_internal.h)
 pub const TARGET_RENO_RTT: u64 = 100_000; // 100ms in microseconds
 pub const TARGET_SATELLITE_RTT: u64 = 600_000; // 600ms in microseconds
-pub const CWIN_INITIAL: u64 = 10 * 1252; // Initial congestion window
+
+// Packet size and congestion window constants (from picoquic_internal.h)
+pub const MAX_PACKET_SIZE: u64 = 1536;
+pub const CWIN_INITIAL: u64 = 10 * MAX_PACKET_SIZE; // 15360
+pub const CWIN_MINIMUM: u64 = 2 * MAX_PACKET_SIZE; // 3072
 
 /// Congestion notification event types.
 #[repr(C)]
