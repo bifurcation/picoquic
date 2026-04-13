@@ -80,7 +80,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `picoquic_mbedtls.c` - mbedTLS backend
 
 ### Utilities
-- [ ] `intformat.c` - Integer encoding/decoding
+- [x] `intformat.c` - Integer encoding/decoding
 - [ ] `bytestream.c` - Byte stream utilities
 - [ ] `util.c` - General utilities
 - [ ] `siphash.c` - SipHash implementation
@@ -114,7 +114,7 @@ Convert picoquic tests to Cargo tests:
 ## Translation Order
 
 ### Phase 1: Foundation
-1. `intformat.c` - Pure functions, no dependencies
+1. `intformat.c` - Pure functions, no dependencies - **DONE** (`fq/src/intformat.rs`)
 2. `bytestream.c` - Simple data structures
 3. `util.c` - Utility functions
 4. `siphash.c` - Pure hash function
