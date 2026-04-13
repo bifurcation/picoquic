@@ -109,7 +109,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `picosocks.c` - Socket utilities (platform-specific, lower priority)
 - [ ] `sockloop.c` - Unix socket loop (platform-specific, lower priority)
 - [ ] `winsockloop.c` - Windows socket loop (platform-specific, lower priority)
-- [ ] `sim_link.c` - Simulated network link
+- [x] `sim_link.c` - Simulated network link (full: SimLink, SimPacket, bandwidth/latency/loss/jitter simulation, queue delay, burst loss)
 
 ## Translation Order
 

@@ -23,6 +23,7 @@ pub mod picohash;
 pub mod picosplay;
 pub mod port_blocking;
 pub mod prague;
+pub mod sim_link;
 pub mod siphash;
 pub mod spinbit;
 pub mod state_names;
