@@ -19,6 +19,9 @@
    hash combines several distinct memory areas.
  */
 
+/* When FQ_USE_RUST is defined, siphash is provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
+
 #include <assert.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -187,3 +190,5 @@ int siphash(const void *in, const size_t inlen, const void *k, uint8_t *out,
 
     return 0;
 }
+
+#endif /* !FQ_USE_RUST */

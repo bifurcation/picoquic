@@ -67,7 +67,7 @@ fn sipround(v0: &mut u64, v1: &mut u64, v2: &mut u64, v3: &mut u64) {
 ///
 /// # Returns
 /// 8-byte hash output
-pub fn siphash(input: &[u8], key: &[u8; 16]) -> [u8; 8] {
+pub fn hash(input: &[u8], key: &[u8; 16]) -> [u8; 8] {
     let mut out = [0u8; 8];
     siphash_into(input, key, &mut out);
     out
@@ -179,9 +179,45 @@ pub fn siphash_into(input: &[u8], key: &[u8; 16], out: &mut [u8]) {
 /// Convenience function returning hash as u64.
 ///
 /// This matches the `picohash_siphash` API from picoquic.
-pub fn siphash_u64(input: &[u8], key: &[u8; 16]) -> u64 {
-    let out = siphash(input, key);
+pub fn hash_u64(input: &[u8], key: &[u8; 16]) -> u64 {
+    let out = hash(input, key);
     u8_to_u64_le(&out)
+}
+
+// =============================================================================
+// FFI exports - these replace the C implementations when FQ_USE_RUST is defined
+// =============================================================================
+
+/// FFI export: Compute SipHash value.
+///
+/// # Safety
+/// - `input` must point to a valid buffer of at least `inlen` bytes (or be null if inlen is 0).
+/// - `key` must point to a valid 16-byte key.
+/// - `out` must point to a valid, writable buffer of `outlen` bytes.
+/// - `outlen` must be 8 or 16.
+#[no_mangle]
+pub unsafe extern "C" fn siphash(
+    input: *const u8,
+    inlen: usize,
+    key: *const u8,
+    out: *mut u8,
+    outlen: usize,
+) -> std::ffi::c_int {
+    debug_assert!(outlen == 8 || outlen == 16);
+
+    let input_slice = if inlen == 0 {
+        &[]
+    } else {
+        std::slice::from_raw_parts(input, inlen)
+    };
+    let key_slice = std::slice::from_raw_parts(key, 16);
+    let out_slice = std::slice::from_raw_parts_mut(out, outlen);
+
+    // Convert key slice to array reference
+    let key_array: &[u8; 16] = key_slice.try_into().unwrap();
+
+    siphash_into(input_slice, key_array, out_slice);
+    0
 }
 
 #[cfg(test)]
@@ -268,20 +304,20 @@ mod tests {
     fn test_siphash_vectors() {
         for i in 0..64 {
             let input: Vec<u8> = (0..i as u8).collect();
-            let result = siphash(&input, &TEST_KEY);
+            let result = hash(&input, &TEST_KEY);
             assert_eq!(result, VECTORS_SIP24[i], "SipHash mismatch at length {}", i);
         }
     }
 
     #[test]
     fn test_siphash_empty() {
-        let result = siphash(&[], &TEST_KEY);
+        let result = hash(&[], &TEST_KEY);
         assert_eq!(result, VECTORS_SIP24[0]);
     }
 
     #[test]
     fn test_siphash_u64() {
-        let result = siphash_u64(&[], &TEST_KEY);
+        let result = hash_u64(&[], &TEST_KEY);
         let expected = u8_to_u64_le(&VECTORS_SIP24[0]);
         assert_eq!(result, expected);
     }
