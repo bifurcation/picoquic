@@ -93,7 +93,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `config.c` - Configuration handling
 
 ### Logging
-- [ ] `logger.c` - General logging
+- [x] `logger.c` - General logging (partial: state_name lookup - remaining logging functions require FILE* and complex formatting)
 - [ ] `logwriter.c` - Log file writing
 - [ ] `unified_log.c` - Unified logging API
 - [ ] `memory_log.c` - Memory logging
