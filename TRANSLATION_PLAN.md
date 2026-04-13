@@ -83,7 +83,7 @@ Convert picoquic tests to Cargo tests:
 - [x] `intformat.c` - Integer encoding/decoding
 - [x] `bytestream.c` - Byte stream utilities
 - [ ] `util.c` - General utilities
-- [ ] `siphash.c` - SipHash implementation
+- [x] `siphash.c` - SipHash implementation
 - [ ] `picohash.c` - Hash table implementation
 - [ ] `picosplay.c` - Splay tree implementation
 - [ ] `spinbit.c` - Spin bit handling
@@ -117,7 +117,7 @@ Convert picoquic tests to Cargo tests:
 1. `intformat.c` - Pure functions, no dependencies - **DONE** (`fq/src/intformat.rs`)
 2. `bytestream.c` - Simple data structures - **DONE** (`fq/src/bytestream.rs`)
 3. `util.c` - Utility functions
-4. `siphash.c` - Pure hash function
+4. `siphash.c` - Pure hash function - **DONE** (`fq/src/siphash.rs`)
 5. `picohash.c` - Direct translation with unsafe, or use `HashMap`
 6. `picosplay.c` - Direct translation with unsafe, or use `BTreeMap`
 

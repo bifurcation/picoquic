@@ -4,3 +4,4 @@
 
 pub mod bytestream;
 pub mod intformat;
+pub mod siphash;
