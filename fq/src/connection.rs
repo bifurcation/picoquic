@@ -36,6 +36,10 @@ pub struct Connection {
     pub maxdata_remote: u64,
     /// Whether we've sent a BLOCKED frame and are waiting for MAX_DATA.
     pub sent_blocked_frame: bool,
+
+    // Multipath fields
+    /// Maximum path ID the peer is willing to use (from MAX_PATH_ID frames).
+    pub max_path_id_remote: u64,
 }
 
 impl Connection {
@@ -50,6 +54,7 @@ impl Connection {
             path0_rtt_min: u64::MAX,
             maxdata_remote: 0,
             sent_blocked_frame: false,
+            max_path_id_remote: 0,
         }
     }
 
@@ -63,6 +68,20 @@ impl Connection {
         if maxdata > self.maxdata_remote {
             self.maxdata_remote = maxdata;
             self.sent_blocked_frame = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Apply a received MAX_PATH_ID frame value.
+    ///
+    /// Updates max_path_id_remote if the new value is larger.
+    ///
+    /// Returns true if the value was updated.
+    pub fn apply_max_path_id(&mut self, max_path_id: u64) -> bool {
+        if max_path_id > self.max_path_id_remote {
+            self.max_path_id_remote = max_path_id;
             true
         } else {
             false
@@ -121,6 +140,7 @@ pub struct CConnectionView {
     pub path0_rtt_min: u64,
     pub maxdata_remote: u64,
     pub sent_blocked_frame: c_int,
+    pub max_path_id_remote: u64,
 }
 
 impl CConnectionView {
@@ -135,6 +155,7 @@ impl CConnectionView {
             path0_rtt_min: self.path0_rtt_min,
             maxdata_remote: self.maxdata_remote,
             sent_blocked_frame: self.sent_blocked_frame != 0,
+            max_path_id_remote: self.max_path_id_remote,
         }
     }
 
@@ -148,6 +169,7 @@ impl CConnectionView {
         self.path0_rtt_min = cnx.path0_rtt_min;
         self.maxdata_remote = cnx.maxdata_remote;
         self.sent_blocked_frame = if cnx.sent_blocked_frame { 1 } else { 0 };
+        self.max_path_id_remote = cnx.max_path_id_remote;
     }
 }
 
@@ -198,6 +220,7 @@ mod tests {
             path0_rtt_min: 5000,
             maxdata_remote: 65536,
             sent_blocked_frame: 1,
+            max_path_id_remote: 10,
         };
 
         let cnx = c_view.to_rust();
@@ -207,6 +230,7 @@ mod tests {
         assert_eq!(cnx.path0_rtt_min, 5000);
         assert_eq!(cnx.maxdata_remote, 65536);
         assert!(cnx.sent_blocked_frame);
+        assert_eq!(cnx.max_path_id_remote, 10);
     }
 
     #[test]
@@ -244,13 +268,36 @@ mod tests {
             path0_rtt_min: 0,
             maxdata_remote: 1000,
             sent_blocked_frame: 1,
+            max_path_id_remote: 5,
         };
 
         let mut cnx = c_view.to_rust();
         cnx.apply_max_data(5000);
+        cnx.apply_max_path_id(10);
         c_view.from_rust(&cnx);
 
         assert_eq!(c_view.maxdata_remote, 5000);
         assert_eq!(c_view.sent_blocked_frame, 0);
+        assert_eq!(c_view.max_path_id_remote, 10);
+    }
+
+    #[test]
+    fn test_apply_max_path_id_increases() {
+        let mut cnx = Connection::default();
+        cnx.max_path_id_remote = 5;
+
+        // Larger value should update
+        assert!(cnx.apply_max_path_id(10));
+        assert_eq!(cnx.max_path_id_remote, 10);
+    }
+
+    #[test]
+    fn test_apply_max_path_id_no_decrease() {
+        let mut cnx = Connection::default();
+        cnx.max_path_id_remote = 10;
+
+        // Smaller or equal value should not update
+        assert!(!cnx.apply_max_path_id(5));
+        assert_eq!(cnx.max_path_id_remote, 10);
     }
 }

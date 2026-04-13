@@ -6081,6 +6081,42 @@ const uint8_t* picoquic_parse_max_path_id_frame(const uint8_t* bytes, const uint
 }
 #endif /* !FQ_USE_RUST */
 
+#ifdef FQ_USE_RUST
+/* Rust FFI result enum */
+typedef enum {
+    FQ_MAX_PATH_ID_SUCCESS = 0,
+    FQ_MAX_PATH_ID_MULTIPATH_NOT_ENABLED = 1,
+    FQ_MAX_PATH_ID_PARSE_ERROR = 2,
+} fq_max_path_id_result_t;
+
+/* Rust FFI declaration */
+extern const uint8_t* picoquic_decode_max_path_id_frame_ffi(
+    const uint8_t* bytes, const uint8_t* bytes_max,
+    fq_connection_view_t* view, fq_max_path_id_result_t* result);
+
+const uint8_t* picoquic_decode_max_path_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    picoquic_cnx_t* cnx)
+{
+    fq_connection_view_t view = FQ_CNX_VIEW_INIT(cnx);
+    fq_max_path_id_result_t result;
+    const uint8_t* ret = picoquic_decode_max_path_id_frame_ffi(bytes, bytes_max, &view, &result);
+
+    switch (result) {
+    case FQ_MAX_PATH_ID_SUCCESS:
+        FQ_CNX_VIEW_WRITEBACK(view, cnx);
+        break;
+    case FQ_MAX_PATH_ID_MULTIPATH_NOT_ENABLED:
+        picoquic_connection_error_ex(cnx, PICOQUIC_TRANSPORT_PROTOCOL_VIOLATION,
+            picoquic_frame_type_max_path_id, "unique path_id not negotiated");
+        break;
+    case FQ_MAX_PATH_ID_PARSE_ERROR:
+        picoquic_connection_error_ex(cnx, PICOQUIC_TRANSPORT_FRAME_FORMAT_ERROR,
+            picoquic_frame_type_max_path_id, "bad max paths frame");
+        break;
+    }
+    return ret;
+}
+#else
 const uint8_t* picoquic_decode_max_path_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     picoquic_cnx_t* cnx)
 {
@@ -6106,6 +6142,7 @@ const uint8_t* picoquic_decode_max_path_id_frame(const uint8_t* bytes, const uin
     }
     return bytes;
 }
+#endif /* FQ_USE_RUST */
 
 int picoquic_max_path_id_frame_needs_repeat(picoquic_cnx_t* cnx, const uint8_t* bytes,
     const uint8_t* bytes_max, int* no_need_to_repeat)

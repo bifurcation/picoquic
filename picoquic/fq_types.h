@@ -25,6 +25,7 @@ typedef struct fq_connection_view_t {
     uint64_t path0_rtt_min;
     uint64_t maxdata_remote;
     int sent_blocked_frame;
+    uint64_t max_path_id_remote;
 } fq_connection_view_t;
 
 /* Helper macro to initialize fq_connection_view_t from picoquic_cnx_t */
@@ -36,13 +37,15 @@ typedef struct fq_connection_view_t {
     .pkt_ctx_app_latest_time_acknowledged = (cnx)->pkt_ctx[picoquic_packet_context_application].latest_time_acknowledged, \
     .path0_rtt_min = (cnx)->path[0] ? (cnx)->path[0]->rtt_min : UINT64_MAX, \
     .maxdata_remote = (cnx)->maxdata_remote, \
-    .sent_blocked_frame = (cnx)->sent_blocked_frame \
+    .sent_blocked_frame = (cnx)->sent_blocked_frame, \
+    .max_path_id_remote = (cnx)->max_path_id_remote \
 }
 
 /* Helper macro to copy changed fields back to picoquic_cnx_t */
 #define FQ_CNX_VIEW_WRITEBACK(view, cnx) do { \
     (cnx)->maxdata_remote = (view).maxdata_remote; \
     (cnx)->sent_blocked_frame = (view).sent_blocked_frame; \
+    (cnx)->max_path_id_remote = (view).max_path_id_remote; \
 } while(0)
 
 #endif /* FQ_TYPES_H */

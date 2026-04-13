@@ -1337,6 +1337,66 @@ pub unsafe extern "C" fn picoquic_decode_max_data_frame_ffi(
     }
 }
 
+/// Decode result for MAX_PATH_ID frame.
+///
+/// Used to communicate the outcome to the C caller so it can call
+/// the appropriate error function if needed.
+#[repr(C)]
+pub enum MaxPathIdResult {
+    /// Success - max_path_id_remote was updated if needed.
+    Success = 0,
+    /// Multipath not enabled - caller should call connection_error_ex.
+    MultipathNotEnabled = 1,
+    /// Parse error - caller should call connection_error_ex.
+    ParseError = 2,
+}
+
+/// FFI export: Decode MAX_PATH_ID frame and apply to connection.
+///
+/// Parses a MAX_PATH_ID frame and updates max_path_id_remote if larger.
+/// The frame type is assumed to be already skipped by the caller.
+///
+/// Returns the result via `result_out` and the new byte pointer.
+/// Returns null on error (check result_out for the error type).
+///
+/// # Safety
+/// - `cnx` must be a valid pointer to a CConnectionView struct.
+/// - `bytes` and `bytes_max` must form a valid memory range.
+/// - `result_out` must be a valid pointer.
+/// - The caller handles error reporting via picoquic_connection_error_ex.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_decode_max_path_id_frame_ffi(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    cnx: *mut CConnectionView,
+    result_out: *mut MaxPathIdResult,
+) -> *const u8 {
+    // Check multipath enabled
+    if (*cnx).is_multipath_enabled == 0 {
+        *result_out = MaxPathIdResult::MultipathNotEnabled;
+        return std::ptr::null();
+    }
+
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        *result_out = MaxPathIdResult::ParseError;
+        return std::ptr::null();
+    };
+
+    match parse_max_path_id_frame(slice) {
+        Some((max_path_id, rest)) => {
+            let mut conn = (*cnx).to_rust();
+            conn.apply_max_path_id(max_path_id);
+            (*cnx).from_rust(&conn);
+            *result_out = MaxPathIdResult::Success;
+            rest.as_ptr()
+        }
+        None => {
+            *result_out = MaxPathIdResult::ParseError;
+            std::ptr::null()
+        }
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
