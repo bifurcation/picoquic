@@ -47,8 +47,8 @@ Convert picoquic tests to Cargo tests:
 ### Core Protocol (High Priority)
 - [ ] `quicctx.c` - QUIC context creation/management
 - [ ] `transport.c` - Transport parameter handling
-- [ ] `packet.c` - Packet formatting and parsing
-- [x] `frames.c` - Frame encoding/decoding (partial: 15 skip functions, 11 parse functions - C retains encode/decode/check_repeat functions)
+- [x] `packet.c` - Packet formatting and parsing (partial: get_packet_number64 - C retains header parsing, protection, incoming packet handling)
+- [x] `frames.c` - Frame encoding/decoding (partial: 15 skip, 12 parse, stream header, ACK header - C retains encode/decode/check_repeat functions)
 - [ ] `sender.c` - Packet sending logic
 - [ ] `paths.c` - Path management
 - [x] `sacks.c` - SACK list management (full: SackList with BTreeMap, range merging, ACK horizon, send count tracking - C retains cnx context functions)
