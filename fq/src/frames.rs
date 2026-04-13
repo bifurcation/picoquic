@@ -290,6 +290,17 @@ pub fn parse_ack_frequency_frame(bytes: &[u8]) -> Option<(u64, u64, u64, u64, &[
     Some((seq, packets, microsec, reordering_threshold, rest))
 }
 
+/// Compute ignore_order from reordering_threshold.
+///
+/// Per RFC 9002, ignore_order is 1 if reordering_threshold is 0, else 0.
+pub fn compute_ignore_order(reordering_threshold: u64) -> u8 {
+    if reordering_threshold == 0 {
+        1
+    } else {
+        0
+    }
+}
+
 /// Parse a TIME_STAMP frame.
 ///
 /// Returns (timestamp, remaining_bytes).
@@ -1427,13 +1438,11 @@ pub unsafe extern "C" fn picoquic_decode_ack_frequency_frame_ffi(
     match parse_ack_frequency_frame(slice) {
         Some((seq, packets, microsec, reordering_threshold, rest)) => {
             let mut conn = (*cnx).to_rust();
-            // ignore_order: 1 if reordering_threshold == 0, else 0
-            let ignore_order = if reordering_threshold == 0 { 1u8 } else { 0u8 };
             let result = conn.apply_ack_frequency(
                 seq,
                 packets,
                 microsec,
-                ignore_order,
+                compute_ignore_order(reordering_threshold),
                 reordering_threshold,
             );
             *result_out = result;
@@ -1468,19 +1477,29 @@ pub enum MultipathFrameResult {
     ParseError = 2,
 }
 
+/// Decode a PATHS_BLOCKED frame with multipath validation.
+///
+/// Returns (result, max_path_id, remaining_bytes).
+pub fn decode_paths_blocked_frame(
+    bytes: Option<&[u8]>,
+    is_multipath_enabled: bool,
+) -> (MultipathFrameResult, u64, Option<&[u8]>) {
+    if !is_multipath_enabled {
+        return (MultipathFrameResult::NotNegotiated, 0, None);
+    }
+    let Some(slice) = bytes else {
+        return (MultipathFrameResult::ParseError, 0, None);
+    };
+    match parse_paths_blocked_frame(slice) {
+        Some((max_path_id, rest)) => (MultipathFrameResult::Success, max_path_id, Some(rest)),
+        None => (MultipathFrameResult::ParseError, 0, None),
+    }
+}
+
 /// FFI export: Decode PATHS_BLOCKED frame.
-///
-/// Parses a PATHS_BLOCKED frame and validates multipath is enabled.
-/// The frame type is assumed to be already skipped by the caller.
-///
-/// Returns:
-/// - On success: non-null pointer to remaining bytes, result_out = Success
-/// - On multipath not enabled: null, result_out = NotNegotiated
-/// - On parse error: null, result_out = ParseError
 ///
 /// # Safety
 /// - `bytes` and `bytes_max` must form a valid memory range.
-/// - `is_multipath_enabled` must be 0 or 1.
 /// - `max_path_id_out` and `result_out` must be valid pointers.
 #[no_mangle]
 pub unsafe extern "C" fn picoquic_decode_paths_blocked_frame_ffi(
@@ -1490,43 +1509,38 @@ pub unsafe extern "C" fn picoquic_decode_paths_blocked_frame_ffi(
     max_path_id_out: *mut u64,
     result_out: *mut MultipathFrameResult,
 ) -> *const u8 {
-    // Check multipath is enabled
-    if is_multipath_enabled == 0 {
-        *result_out = MultipathFrameResult::NotNegotiated;
-        return std::ptr::null();
+    let (result, max_path_id, rest) =
+        decode_paths_blocked_frame(slice_from_ptrs(bytes, bytes_max), is_multipath_enabled != 0);
+    *max_path_id_out = max_path_id;
+    *result_out = result;
+    rest.map_or(std::ptr::null(), |s| s.as_ptr())
+}
+
+/// Decode a PATH_CID_BLOCKED frame with multipath validation.
+///
+/// Returns (result, path_id, next_seq, remaining_bytes).
+pub fn decode_path_cid_blocked_frame(
+    bytes: Option<&[u8]>,
+    is_multipath_enabled: bool,
+) -> (MultipathFrameResult, u64, u64, Option<&[u8]>) {
+    if !is_multipath_enabled {
+        return (MultipathFrameResult::NotNegotiated, 0, 0, None);
     }
-
-    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
-        *result_out = MultipathFrameResult::ParseError;
-        return std::ptr::null();
+    let Some(slice) = bytes else {
+        return (MultipathFrameResult::ParseError, 0, 0, None);
     };
-
-    match parse_paths_blocked_frame(slice) {
-        Some((max_path_id, rest)) => {
-            *max_path_id_out = max_path_id;
-            *result_out = MultipathFrameResult::Success;
-            rest.as_ptr()
+    match parse_path_cid_blocked_frame(slice) {
+        Some((path_id, next_seq, rest)) => {
+            (MultipathFrameResult::Success, path_id, next_seq, Some(rest))
         }
-        None => {
-            *result_out = MultipathFrameResult::ParseError;
-            std::ptr::null()
-        }
+        None => (MultipathFrameResult::ParseError, 0, 0, None),
     }
 }
 
 /// FFI export: Decode PATH_CID_BLOCKED frame.
 ///
-/// Parses a PATH_CID_BLOCKED frame and validates multipath is enabled.
-/// The frame type is assumed to be already skipped by the caller.
-///
-/// Returns:
-/// - On success: non-null pointer to remaining bytes, result_out = Success
-/// - On multipath not enabled: null, result_out = NotNegotiated
-/// - On parse error: null, result_out = ParseError
-///
 /// # Safety
 /// - `bytes` and `bytes_max` must form a valid memory range.
-/// - `is_multipath_enabled` must be 0 or 1.
 /// - `path_id_out`, `next_seq_out`, and `result_out` must be valid pointers.
 #[no_mangle]
 pub unsafe extern "C" fn picoquic_decode_path_cid_blocked_frame_ffi(
@@ -1537,29 +1551,12 @@ pub unsafe extern "C" fn picoquic_decode_path_cid_blocked_frame_ffi(
     next_seq_out: *mut u64,
     result_out: *mut MultipathFrameResult,
 ) -> *const u8 {
-    // Check multipath is enabled
-    if is_multipath_enabled == 0 {
-        *result_out = MultipathFrameResult::NotNegotiated;
-        return std::ptr::null();
-    }
-
-    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
-        *result_out = MultipathFrameResult::ParseError;
-        return std::ptr::null();
-    };
-
-    match parse_path_cid_blocked_frame(slice) {
-        Some((path_id, next_seq, rest)) => {
-            *path_id_out = path_id;
-            *next_seq_out = next_seq;
-            *result_out = MultipathFrameResult::Success;
-            rest.as_ptr()
-        }
-        None => {
-            *result_out = MultipathFrameResult::ParseError;
-            std::ptr::null()
-        }
-    }
+    let (result, path_id, next_seq, rest) =
+        decode_path_cid_blocked_frame(slice_from_ptrs(bytes, bytes_max), is_multipath_enabled != 0);
+    *path_id_out = path_id;
+    *next_seq_out = next_seq;
+    *result_out = result;
+    rest.map_or(std::ptr::null(), |s| s.as_ptr())
 }
 
 /// Result enum for immediate ACK frame validation.
@@ -1572,15 +1569,18 @@ pub enum ImmediateAckResult {
     NotNegotiated = 1,
 }
 
+/// Validate IMMEDIATE_ACK frame precondition.
+///
+/// Returns Success if ACK frequency is negotiated, NotNegotiated otherwise.
+pub fn validate_immediate_ack(is_ack_frequency_negotiated: bool) -> ImmediateAckResult {
+    if is_ack_frequency_negotiated {
+        ImmediateAckResult::Success
+    } else {
+        ImmediateAckResult::NotNegotiated
+    }
+}
+
 /// FFI export: Validate IMMEDIATE_ACK frame.
-///
-/// Validates that ACK frequency extension is negotiated.
-/// The frame has no payload, so this just validates the precondition.
-/// The frame type is assumed to be already skipped by the caller.
-///
-/// Returns:
-/// - On success: Success result (caller sets flag and calls set_ack_needed)
-/// - On not negotiated: NotNegotiated result (caller reports error)
 ///
 /// # Safety
 /// - `result_out` must be a valid pointer.
@@ -1589,11 +1589,7 @@ pub unsafe extern "C" fn picoquic_decode_immediate_ack_frame_ffi(
     is_ack_frequency_negotiated: c_int,
     result_out: *mut ImmediateAckResult,
 ) {
-    if is_ack_frequency_negotiated == 0 {
-        *result_out = ImmediateAckResult::NotNegotiated;
-    } else {
-        *result_out = ImmediateAckResult::Success;
-    }
+    *result_out = validate_immediate_ack(is_ack_frequency_negotiated != 0);
 }
 
 /// Result enum for time stamp frame validation.
@@ -1608,16 +1604,31 @@ pub enum TimeStampResult {
     ParseError = 2,
 }
 
+/// Decode a TIME_STAMP frame with validation.
+///
+/// Validates extension is enabled, parses varint, applies exponent shift.
+/// Returns (result, time_stamp, remaining_bytes).
+pub fn decode_time_stamp_frame(
+    bytes: Option<&[u8]>,
+    is_time_stamp_enabled: bool,
+    ack_delay_exponent: u8,
+) -> (TimeStampResult, u64, Option<&[u8]>) {
+    if !is_time_stamp_enabled {
+        return (TimeStampResult::NotEnabled, 0, None);
+    }
+    let Some(slice) = bytes else {
+        return (TimeStampResult::ParseError, 0, None);
+    };
+    match frames_varint_decode(slice) {
+        Some((time_stamp, rest)) => {
+            let shifted = time_stamp << ack_delay_exponent;
+            (TimeStampResult::Success, shifted, Some(rest))
+        }
+        None => (TimeStampResult::ParseError, 0, None),
+    }
+}
+
 /// FFI export: Decode TIME_STAMP frame.
-///
-/// Parses a TIME_STAMP frame, validates extension is enabled,
-/// and applies the ack_delay_exponent shift.
-/// The frame type is assumed to be already skipped by the caller.
-///
-/// Returns:
-/// - On success: non-null pointer, time_stamp_out contains the shifted value
-/// - On not enabled: null, result_out = NotEnabled
-/// - On parse error: null, result_out = ParseError
 ///
 /// # Safety
 /// - `bytes` and `bytes_max` must form a valid memory range.
@@ -1631,30 +1642,152 @@ pub unsafe extern "C" fn picoquic_decode_time_stamp_frame_ffi(
     time_stamp_out: *mut u64,
     result_out: *mut TimeStampResult,
 ) -> *const u8 {
-    // Check extension is enabled
-    if is_time_stamp_enabled == 0 {
-        *result_out = TimeStampResult::NotEnabled;
-        return std::ptr::null();
-    }
+    let (result, time_stamp, rest) = decode_time_stamp_frame(
+        slice_from_ptrs(bytes, bytes_max),
+        is_time_stamp_enabled != 0,
+        ack_delay_exponent,
+    );
+    *time_stamp_out = time_stamp;
+    *result_out = result;
+    rest.map_or(std::ptr::null(), |s| s.as_ptr())
+}
 
-    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
-        *result_out = TimeStampResult::ParseError;
-        return std::ptr::null();
+/// Result enum for blocked frame parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub enum BlockedFrameResult {
+    /// Successfully parsed.
+    Success = 0,
+    /// Frame parsing error.
+    ParseError = 1,
+}
+
+/// Decode a DATA_BLOCKED frame.
+///
+/// Skips frame type (1 byte) + offset varint.
+/// Returns (result, remaining_bytes).
+pub fn decode_blocked_frame(bytes: Option<&[u8]>) -> (BlockedFrameResult, Option<&[u8]>) {
+    let Some(slice) = bytes else {
+        return (BlockedFrameResult::ParseError, None);
     };
-
-    // parse_time_stamp_frame just decodes a varint
-    match frames_varint_decode(slice) {
-        Some((time_stamp, rest)) => {
-            // Apply the ack_delay_exponent shift
-            *time_stamp_out = time_stamp << ack_delay_exponent;
-            *result_out = TimeStampResult::Success;
-            rest.as_ptr()
-        }
-        None => {
-            *result_out = TimeStampResult::ParseError;
-            std::ptr::null()
-        }
+    if slice.is_empty() {
+        return (BlockedFrameResult::ParseError, None);
     }
+    match frames_varint_skip(&slice[1..]) {
+        Some(rest) => (BlockedFrameResult::Success, Some(rest)),
+        None => (BlockedFrameResult::ParseError, None),
+    }
+}
+
+/// FFI export: Decode DATA_BLOCKED frame.
+///
+/// # Safety
+/// - `bytes` and `bytes_max` must form a valid memory range.
+/// - `result_out` must be a valid pointer.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_decode_blocked_frame_ffi(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    result_out: *mut BlockedFrameResult,
+) -> *const u8 {
+    let (result, rest) = decode_blocked_frame(slice_from_ptrs(bytes, bytes_max));
+    *result_out = result;
+    rest.map_or(std::ptr::null(), |s| s.as_ptr())
+}
+
+/// Decode a STREAM_DATA_BLOCKED frame.
+///
+/// Skips frame type (1 byte) + stream_id varint + offset varint.
+/// Returns (result, remaining_bytes).
+pub fn decode_stream_blocked_frame(bytes: Option<&[u8]>) -> (BlockedFrameResult, Option<&[u8]>) {
+    let Some(slice) = bytes else {
+        return (BlockedFrameResult::ParseError, None);
+    };
+    if slice.is_empty() {
+        return (BlockedFrameResult::ParseError, None);
+    }
+    let Some(rest) = frames_varint_skip(&slice[1..]) else {
+        return (BlockedFrameResult::ParseError, None);
+    };
+    match frames_varint_skip(rest) {
+        Some(rest) => (BlockedFrameResult::Success, Some(rest)),
+        None => (BlockedFrameResult::ParseError, None),
+    }
+}
+
+/// FFI export: Decode STREAM_DATA_BLOCKED frame.
+///
+/// # Safety
+/// - `bytes` and `bytes_max` must form a valid memory range.
+/// - `result_out` must be a valid pointer.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_decode_stream_blocked_frame_ffi(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    result_out: *mut BlockedFrameResult,
+) -> *const u8 {
+    let (result, rest) = decode_stream_blocked_frame(slice_from_ptrs(bytes, bytes_max));
+    *result_out = result;
+    rest.map_or(std::ptr::null(), |s| s.as_ptr())
+}
+
+/// Result enum for STREAMS_BLOCKED frame parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub enum StreamsBlockedResult {
+    /// Successfully parsed and validated.
+    Success = 0,
+    /// Frame parsing error.
+    ParseError = 1,
+    /// Stream limit exceeds local limit.
+    LimitExceeded = 2,
+}
+
+/// Decode a STREAMS_BLOCKED frame.
+///
+/// Skips frame type (1 byte), decodes stream_limit varint, validates against local_limit.
+/// Returns (result, stream_limit, remaining_bytes).
+pub fn decode_streams_blocked_frame(
+    bytes: Option<&[u8]>,
+    local_limit: u64,
+) -> (StreamsBlockedResult, u64, Option<&[u8]>) {
+    let Some(slice) = bytes else {
+        return (StreamsBlockedResult::ParseError, 0, None);
+    };
+    if slice.is_empty() {
+        return (StreamsBlockedResult::ParseError, 0, None);
+    }
+    match frames_varint_decode(&slice[1..]) {
+        Some((stream_limit, rest)) => {
+            let result = if stream_limit > local_limit {
+                StreamsBlockedResult::LimitExceeded
+            } else {
+                StreamsBlockedResult::Success
+            };
+            (result, stream_limit, Some(rest))
+        }
+        None => (StreamsBlockedResult::ParseError, 0, None),
+    }
+}
+
+/// FFI export: Decode STREAMS_BLOCKED frame.
+///
+/// # Safety
+/// - `bytes` and `bytes_max` must form a valid memory range.
+/// - `stream_limit_out` and `result_out` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_decode_streams_blocked_frame_ffi(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    local_limit: u64,
+    stream_limit_out: *mut u64,
+    result_out: *mut StreamsBlockedResult,
+) -> *const u8 {
+    let (result, stream_limit, rest) =
+        decode_streams_blocked_frame(slice_from_ptrs(bytes, bytes_max), local_limit);
+    *stream_limit_out = stream_limit;
+    *result_out = result;
+    rest.map_or(std::ptr::null(), |s| s.as_ptr())
 }
 
 // =============================================================================
@@ -2149,5 +2282,143 @@ mod tests {
             assert!(ret.is_null());
             assert_eq!(result, TimeStampResult::NotEnabled);
         }
+    }
+
+    // Tests for safe decode functions
+
+    #[test]
+    fn test_compute_ignore_order() {
+        assert_eq!(compute_ignore_order(0), 1);
+        assert_eq!(compute_ignore_order(1), 0);
+        assert_eq!(compute_ignore_order(100), 0);
+    }
+
+    #[test]
+    fn test_decode_blocked_frame_success() {
+        // Frame type (1 byte) + offset varint (1 byte)
+        let data = [0x14, 0x10, 0xAB];
+        let (result, rest) = decode_blocked_frame(Some(&data));
+        assert_eq!(result, BlockedFrameResult::Success);
+        assert_eq!(rest.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_decode_blocked_frame_empty() {
+        let (result, rest) = decode_blocked_frame(Some(&[]));
+        assert_eq!(result, BlockedFrameResult::ParseError);
+        assert!(rest.is_none());
+    }
+
+    #[test]
+    fn test_decode_blocked_frame_none() {
+        let (result, rest) = decode_blocked_frame(None);
+        assert_eq!(result, BlockedFrameResult::ParseError);
+        assert!(rest.is_none());
+    }
+
+    #[test]
+    fn test_decode_stream_blocked_frame_success() {
+        // Frame type (1 byte) + stream_id varint (1 byte) + offset varint (1 byte)
+        let data = [0x15, 0x04, 0x10, 0xAB];
+        let (result, rest) = decode_stream_blocked_frame(Some(&data));
+        assert_eq!(result, BlockedFrameResult::Success);
+        assert_eq!(rest.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_decode_stream_blocked_frame_truncated() {
+        // Only frame type + stream_id, no offset
+        let data = [0x15, 0x04];
+        let (result, rest) = decode_stream_blocked_frame(Some(&data));
+        assert_eq!(result, BlockedFrameResult::ParseError);
+        assert!(rest.is_none());
+    }
+
+    #[test]
+    fn test_decode_streams_blocked_frame_success() {
+        // Frame type (1 byte) + stream_limit varint (1 byte = 10)
+        let data = [0x16, 0x0a, 0xAB];
+        let (result, stream_limit, rest) = decode_streams_blocked_frame(Some(&data), 100);
+        assert_eq!(result, StreamsBlockedResult::Success);
+        assert_eq!(stream_limit, 10);
+        assert_eq!(rest.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_decode_streams_blocked_frame_exceeds_limit() {
+        // Stream limit = 200, local limit = 100
+        let data = [0x16, 0x40, 0xc8, 0xAB]; // 2-byte varint for 200
+        let (result, stream_limit, rest) = decode_streams_blocked_frame(Some(&data), 100);
+        assert_eq!(result, StreamsBlockedResult::LimitExceeded);
+        assert_eq!(stream_limit, 200);
+        assert!(rest.is_some());
+    }
+
+    #[test]
+    fn test_decode_paths_blocked_frame_success() {
+        // max_path_id = 5
+        let data = [0x05, 0xAB];
+        let (result, max_path_id, rest) = decode_paths_blocked_frame(Some(&data), true);
+        assert_eq!(result, MultipathFrameResult::Success);
+        assert_eq!(max_path_id, 5);
+        assert_eq!(rest.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_decode_paths_blocked_frame_not_negotiated() {
+        let data = [0x05];
+        let (result, _, rest) = decode_paths_blocked_frame(Some(&data), false);
+        assert_eq!(result, MultipathFrameResult::NotNegotiated);
+        assert!(rest.is_none());
+    }
+
+    #[test]
+    fn test_decode_path_cid_blocked_frame_success() {
+        // path_id = 5, next_seq = 10
+        let data = [0x05, 0x0a, 0xAB];
+        let (result, path_id, next_seq, rest) = decode_path_cid_blocked_frame(Some(&data), true);
+        assert_eq!(result, MultipathFrameResult::Success);
+        assert_eq!(path_id, 5);
+        assert_eq!(next_seq, 10);
+        assert_eq!(rest.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_decode_path_cid_blocked_frame_not_negotiated() {
+        let data = [0x05, 0x0a];
+        let (result, _, _, rest) = decode_path_cid_blocked_frame(Some(&data), false);
+        assert_eq!(result, MultipathFrameResult::NotNegotiated);
+        assert!(rest.is_none());
+    }
+
+    #[test]
+    fn test_validate_immediate_ack_success() {
+        assert_eq!(validate_immediate_ack(true), ImmediateAckResult::Success);
+    }
+
+    #[test]
+    fn test_validate_immediate_ack_not_negotiated() {
+        assert_eq!(
+            validate_immediate_ack(false),
+            ImmediateAckResult::NotNegotiated
+        );
+    }
+
+    #[test]
+    fn test_decode_time_stamp_frame_success() {
+        // varint 50 with exponent 3 = 50 << 3 = 400
+        let data = [0x32, 0xAB];
+        let (result, time_stamp, rest) = decode_time_stamp_frame(Some(&data), true, 3);
+        assert_eq!(result, TimeStampResult::Success);
+        assert_eq!(time_stamp, 400);
+        assert_eq!(rest.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_decode_time_stamp_frame_not_enabled() {
+        let data = [0x32];
+        let (result, _, rest) = decode_time_stamp_frame(Some(&data), false, 3);
+        assert_eq!(result, TimeStampResult::NotEnabled);
+        assert!(rest.is_none());
     }
 }
