@@ -26,5 +26,6 @@ pub mod prague;
 pub mod siphash;
 pub mod spinbit;
 pub mod state_names;
+pub mod timing;
 pub mod tp_names;
 pub mod util;

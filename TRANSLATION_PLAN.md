@@ -88,7 +88,7 @@ Convert picoquic tests to Cargo tests:
 - [x] `port_blocking.c` - Port blocking (partial: check_port_blocked - addr check uses internal types)
 - [x] `picosplay.c` - Splay tree (full: PicosplayNode, PicosplayTree with callback function pointers, splay/zig/zigzig/zigzag operations, insert/find/delete/iteration)
 - [x] `spinbit.c` - Spin bit handling (full: SpinBitVariant enum, SpinBitState with basic/null/random variants, standalone functions)
-- [ ] `timing.c` - Timing utilities
+- [x] `timing.c` - Timing utilities (full: RttState, ConnectionTiming structs, current_retransmit_timer, update_rtt, update_one_way_delay)
 - [ ] `picoquic_lb.c` - Load balancer integration
 - [ ] `config.c` - Configuration handling
 
