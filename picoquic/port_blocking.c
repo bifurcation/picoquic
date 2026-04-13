@@ -106,6 +106,8 @@
  * 
  */
 
+/* When FQ_USE_RUST is defined, picoquic_check_port_blocked is provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
 const uint16_t picoquic_blocked_port_list[] = {
         27015,  /* SRCDS */
         20800,  /* Call Of Duty */
@@ -142,6 +144,7 @@ int picoquic_check_port_blocked(uint16_t port)
 
     return ret;
 }
+#endif /* !FQ_USE_RUST */
 
 int picoquic_check_addr_blocked(const struct sockaddr* addr_from)
 {
