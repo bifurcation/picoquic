@@ -231,6 +231,19 @@ Translation approach:
 3. Minimize unsafe code; use safe Rust idioms (Vec, HashMap, BTreeMap) for collections
 4. Port tests from `picoquictest/` to `fq/tests/`
 
+### IMPORTANT: Verification After Each Translation
+
+**Every translation step MUST be followed by full verification.** Do not commit until all checks pass:
+
+```bash
+# From repository root - run ALL of these after each translation:
+(cd fq && cargo fmt --check && cargo clippy -- -D warnings && cargo test)
+cmake --build build
+(cd build && ./picoquic_ct -S .. -n -r && ./picohttp_ct -S .. -n -r)
+```
+
+This ensures the Rust code compiles, passes its own tests, links correctly with picoquic, and doesn't break any existing functionality.
+
 ### Key Design Patterns
 
 **Single-threaded**: The library is not thread-safe. Use separate QUIC contexts for parallelism.
@@ -245,3 +258,7 @@ Translation approach:
 - Timestamps are `uint64_t` in microseconds
 - Error codes: `PICOQUIC_ERROR_*` constants in `picoquic.h`
 - Public API prefix: `picoquic_`
+
+## Workflow Notes
+
+- **Git commands**: Always run git commands from the repository root (`/Users/richbarn/Projects/link/picoquic`). Never use compound commands like `cd foo && git commit`. Use separate commands instead.
