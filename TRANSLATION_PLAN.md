@@ -63,7 +63,7 @@ Convert picoquic tests to Cargo tests:
 - [x] `fastcc.c` - Fast CC algorithm (partial: FastCcState with reset/seed_cwin/notify_congestion/check_exit_freeze/on_ack/on_rtt_measurement - C retains notify wrapper)
 - [x] `prague.c` - Prague (L4S) algorithm (partial: PragueState with alpha EWMA, enter_recovery, process_ack, update_alpha - C retains notify wrapper)
 - [ ] `dualq_aqm.c` - DualQ AQM support
-- [ ] `c4.c` - C4 algorithm
+- [x] `c4.c` - C4 algorithm (partial: C4State with state machine, sensitivity functions, ECN/loss tracking, probe levels - C retains notify wrapper)
 - [x] `pacing.c` - Pacing implementation (partial: standalone functions - path functions remain in C)
 - [ ] `register_all_cc_algorithms.c` - CC registration
 

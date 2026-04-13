@@ -4,6 +4,7 @@
 
 pub mod bbr1;
 pub mod bytestream;
+pub mod c4;
 pub mod cc_common;
 pub mod connection;
 pub mod cubic;
