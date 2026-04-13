@@ -4509,6 +4509,25 @@ uint8_t * picoquic_format_max_data_frame(picoquic_cnx_t* cnx, uint8_t * bytes, u
     return bytes;
 }
 
+#ifdef FQ_USE_RUST
+#include "fq_types.h"
+
+/* Rust FFI declaration */
+extern const uint8_t* picoquic_decode_max_data_frame_ffi(
+    fq_connection_view_t* view, const uint8_t* bytes, const uint8_t* bytes_max);
+
+const uint8_t* picoquic_decode_max_data_frame(picoquic_cnx_t* cnx, const uint8_t* bytes, const uint8_t* bytes_max)
+{
+    fq_connection_view_t view = FQ_CNX_VIEW_INIT(cnx);
+    const uint8_t* result = picoquic_decode_max_data_frame_ffi(&view, bytes, bytes_max);
+    if (result == NULL) {
+        picoquic_connection_error(cnx, PICOQUIC_TRANSPORT_FRAME_FORMAT_ERROR, picoquic_frame_type_max_data);
+    } else {
+        FQ_CNX_VIEW_WRITEBACK(view, cnx);
+    }
+    return result;
+}
+#else
 const uint8_t* picoquic_decode_max_data_frame(picoquic_cnx_t* cnx, const uint8_t* bytes, const uint8_t* bytes_max)
 {
     uint64_t maxdata;
@@ -4522,6 +4541,7 @@ const uint8_t* picoquic_decode_max_data_frame(picoquic_cnx_t* cnx, const uint8_t
 
     return bytes;
 }
+#endif /* FQ_USE_RUST */
 
 int picoquic_process_ack_of_max_data_frame(picoquic_cnx_t* cnx, const uint8_t* bytes,
     size_t bytes_max, size_t* consumed)

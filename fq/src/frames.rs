@@ -8,6 +8,7 @@
 //!
 //! Translated from picoquic/frames.c
 
+use crate::connection::CConnectionView;
 use crate::util::{
     frames_fixed_skip, frames_length_data_skip, frames_uint16_decode, frames_uint8_decode,
     frames_varint_decode, frames_varint_skip,
@@ -335,6 +336,18 @@ pub fn parse_path_cid_blocked_frame(bytes: &[u8]) -> Option<(u64, u64, &[u8])> {
     let (path_id, rest) = frames_varint_decode(bytes)?;
     let (next_seq, rest) = frames_varint_decode(rest)?;
     Some((path_id, next_seq, rest))
+}
+
+/// Parse a MAX_DATA frame.
+///
+/// Expects bytes to start with the frame type (0x10).
+/// Returns (maxdata_value, remaining_bytes) or None on error.
+pub fn parse_max_data_frame(bytes: &[u8]) -> Option<(u64, &[u8])> {
+    if bytes.is_empty() {
+        return None;
+    }
+    // Skip the 1-byte frame type (0x10 = MAX_DATA)
+    frames_varint_decode(&bytes[1..])
 }
 
 /// Parse an OBSERVED_ADDRESS frame.
@@ -1292,6 +1305,38 @@ pub unsafe extern "C" fn picoquic_parse_ack_header(
     }
 }
 
+/// FFI export: Decode MAX_DATA frame and apply to connection.
+///
+/// Parses a MAX_DATA frame starting at `bytes` and updates the connection's
+/// maxdata_remote and sent_blocked_frame fields if the new value is larger.
+///
+/// # Safety
+/// - `cnx` must be a valid pointer to a CConnectionView struct.
+/// - `bytes` and `bytes_max` must form a valid memory range.
+/// - The caller is responsible for calling `picoquic_connection_error` on
+///   parse failure (when this function returns null).
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_decode_max_data_frame_ffi(
+    cnx: *mut CConnectionView,
+    bytes: *const u8,
+    bytes_max: *const u8,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_max_data_frame(slice) {
+        Some((maxdata, rest)) => {
+            // Convert to Rust, apply, convert back
+            let mut conn = (*cnx).to_rust();
+            conn.apply_max_data(maxdata);
+            (*cnx).from_rust(&conn);
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1463,6 +1508,25 @@ mod tests {
         assert_eq!(packets, 2);
         assert_eq!(microsec, 3);
         assert_eq!(reorder, 4);
+        assert_eq!(rest.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_max_data_frame() {
+        // MAX_DATA frame: type (0x10) + maxdata varint (1000 = 0x43, 0xE8)
+        let data = [0x10, 0x43, 0xE8, 0xAB];
+        let (maxdata, rest) = parse_max_data_frame(&data).unwrap();
+        assert_eq!(maxdata, 1000);
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0], 0xAB);
+    }
+
+    #[test]
+    fn test_parse_max_data_frame_large_value() {
+        // MAX_DATA with 4-byte varint: 0x80000064 = 100 with 4-byte prefix
+        let data = [0x10, 0x80, 0x00, 0x00, 0x64, 0xAB];
+        let (maxdata, rest) = parse_max_data_frame(&data).unwrap();
+        assert_eq!(maxdata, 100);
         assert_eq!(rest.len(), 1);
     }
 

@@ -30,6 +30,12 @@ pub struct Connection {
 
     // Primary path fields (path[0])
     pub path0_rtt_min: u64,
+
+    // Flow control fields
+    /// Maximum data the peer is willing to receive (from MAX_DATA frames).
+    pub maxdata_remote: u64,
+    /// Whether we've sent a BLOCKED frame and are waiting for MAX_DATA.
+    pub sent_blocked_frame: bool,
 }
 
 impl Connection {
@@ -42,6 +48,24 @@ impl Connection {
             pkt_ctx_app_highest_acknowledged: 0,
             pkt_ctx_app_latest_time_acknowledged: 0,
             path0_rtt_min: u64::MAX,
+            maxdata_remote: 0,
+            sent_blocked_frame: false,
+        }
+    }
+
+    /// Apply a received MAX_DATA frame value.
+    ///
+    /// Updates maxdata_remote if the new value is larger, and clears
+    /// the sent_blocked_frame flag since we can now send more data.
+    ///
+    /// Returns true if the value was updated.
+    pub fn apply_max_data(&mut self, maxdata: u64) -> bool {
+        if maxdata > self.maxdata_remote {
+            self.maxdata_remote = maxdata;
+            self.sent_blocked_frame = false;
+            true
+        } else {
+            false
         }
     }
 
@@ -95,6 +119,8 @@ pub struct CConnectionView {
     pub pkt_ctx_app_highest_acknowledged: u64,
     pub pkt_ctx_app_latest_time_acknowledged: u64,
     pub path0_rtt_min: u64,
+    pub maxdata_remote: u64,
+    pub sent_blocked_frame: c_int,
 }
 
 impl CConnectionView {
@@ -107,7 +133,21 @@ impl CConnectionView {
             pkt_ctx_app_highest_acknowledged: self.pkt_ctx_app_highest_acknowledged,
             pkt_ctx_app_latest_time_acknowledged: self.pkt_ctx_app_latest_time_acknowledged,
             path0_rtt_min: self.path0_rtt_min,
+            maxdata_remote: self.maxdata_remote,
+            sent_blocked_frame: self.sent_blocked_frame != 0,
         }
+    }
+
+    /// Update C struct from Rust Connection.
+    pub fn from_rust(&mut self, cnx: &Connection) {
+        self.is_multipath_enabled = if cnx.is_multipath_enabled { 1 } else { 0 };
+        self.cwin_blocked = if cnx.cwin_blocked { 1 } else { 0 };
+        self.pkt_ctx_app_send_sequence = cnx.pkt_ctx_app_send_sequence;
+        self.pkt_ctx_app_highest_acknowledged = cnx.pkt_ctx_app_highest_acknowledged;
+        self.pkt_ctx_app_latest_time_acknowledged = cnx.pkt_ctx_app_latest_time_acknowledged;
+        self.path0_rtt_min = cnx.path0_rtt_min;
+        self.maxdata_remote = cnx.maxdata_remote;
+        self.sent_blocked_frame = if cnx.sent_blocked_frame { 1 } else { 0 };
     }
 }
 
@@ -156,6 +196,8 @@ mod tests {
             pkt_ctx_app_highest_acknowledged: 150,
             pkt_ctx_app_latest_time_acknowledged: 12345,
             path0_rtt_min: 5000,
+            maxdata_remote: 65536,
+            sent_blocked_frame: 1,
         };
 
         let cnx = c_view.to_rust();
@@ -163,5 +205,52 @@ mod tests {
         assert!(cnx.cwin_blocked);
         assert_eq!(cnx.pkt_ctx_app_send_sequence, 200);
         assert_eq!(cnx.path0_rtt_min, 5000);
+        assert_eq!(cnx.maxdata_remote, 65536);
+        assert!(cnx.sent_blocked_frame);
+    }
+
+    #[test]
+    fn test_apply_max_data_increases() {
+        let mut cnx = Connection::default();
+        cnx.maxdata_remote = 1000;
+        cnx.sent_blocked_frame = true;
+
+        // Larger value should update and clear blocked flag
+        assert!(cnx.apply_max_data(2000));
+        assert_eq!(cnx.maxdata_remote, 2000);
+        assert!(!cnx.sent_blocked_frame);
+    }
+
+    #[test]
+    fn test_apply_max_data_no_decrease() {
+        let mut cnx = Connection::default();
+        cnx.maxdata_remote = 2000;
+        cnx.sent_blocked_frame = true;
+
+        // Smaller or equal value should not update
+        assert!(!cnx.apply_max_data(1000));
+        assert_eq!(cnx.maxdata_remote, 2000);
+        assert!(cnx.sent_blocked_frame); // Flag unchanged
+    }
+
+    #[test]
+    fn test_c_connection_view_roundtrip() {
+        let mut c_view = CConnectionView {
+            is_multipath_enabled: 0,
+            cwin_blocked: 0,
+            pkt_ctx_app_send_sequence: 0,
+            pkt_ctx_app_highest_acknowledged: 0,
+            pkt_ctx_app_latest_time_acknowledged: 0,
+            path0_rtt_min: 0,
+            maxdata_remote: 1000,
+            sent_blocked_frame: 1,
+        };
+
+        let mut cnx = c_view.to_rust();
+        cnx.apply_max_data(5000);
+        c_view.from_rust(&cnx);
+
+        assert_eq!(c_view.maxdata_remote, 5000);
+        assert_eq!(c_view.sent_blocked_frame, 0);
     }
 }
