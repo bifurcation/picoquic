@@ -56,7 +56,7 @@ Convert picoquic tests to Cargo tests:
 
 ### Congestion Control
 - [x] `cc_common.c` - Common CC utilities (partial: MinMaxRtt functions - cnx/path functions remain in C)
-- [ ] `newreno.c` - NewReno algorithm
+- [x] `newreno.c` - NewReno algorithm (partial: sim_reset - notify/enter_recovery use cnx/path)
 - [ ] `cubic.c` - CUBIC algorithm
 - [ ] `bbr.c` - BBRv3 algorithm
 - [ ] `bbr1.c` - BBRv1 algorithm
