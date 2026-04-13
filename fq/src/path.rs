@@ -24,6 +24,9 @@ pub struct Path {
     pub cwin: u64,
     pub peak_bandwidth_estimate: u64,
 
+    // MTU
+    pub send_mtu: u64,
+
     // Packet context fields (flattened from pkt_ctx for multipath)
     pub pkt_ctx_send_sequence: u64,
     pub pkt_ctx_highest_acknowledged: u64,
@@ -44,6 +47,7 @@ impl Path {
             rtt_min: u64::MAX,
             cwin: 0,
             peak_bandwidth_estimate: 0,
+            send_mtu: 1252, // Default MTU
             pkt_ctx_send_sequence: 0,
             pkt_ctx_highest_acknowledged: 0,
             pkt_ctx_latest_time_acknowledged: 0,
@@ -83,6 +87,7 @@ pub struct CPathView {
     pub rtt_min: u64,
     pub cwin: u64,
     pub peak_bandwidth_estimate: u64,
+    pub send_mtu: u64,
     pub pkt_ctx_send_sequence: u64,
     pub pkt_ctx_highest_acknowledged: u64,
     pub pkt_ctx_latest_time_acknowledged: u64,
@@ -102,6 +107,7 @@ impl CPathView {
             rtt_min: self.rtt_min,
             cwin: self.cwin,
             peak_bandwidth_estimate: self.peak_bandwidth_estimate,
+            send_mtu: self.send_mtu,
             pkt_ctx_send_sequence: self.pkt_ctx_send_sequence,
             pkt_ctx_highest_acknowledged: self.pkt_ctx_highest_acknowledged,
             pkt_ctx_latest_time_acknowledged: self.pkt_ctx_latest_time_acknowledged,
@@ -158,6 +164,7 @@ mod tests {
             rtt_min: 10000,
             cwin: 65536,
             peak_bandwidth_estimate: 1000000,
+            send_mtu: 1280,
             pkt_ctx_send_sequence: 200,
             pkt_ctx_highest_acknowledged: 150,
             pkt_ctx_latest_time_acknowledged: 12345,
@@ -170,6 +177,7 @@ mod tests {
         let path = c_view.to_rust();
         assert_eq!(path.smoothed_rtt, 50000);
         assert_eq!(path.rtt_min, 10000);
+        assert_eq!(path.send_mtu, 1280);
         assert_eq!(path.pkt_ctx_pending_first_sequence, Some(100));
         assert!(path.cnx_is_multipath_enabled);
         assert!(!path.cnx_cwin_blocked);

@@ -55,8 +55,8 @@ Convert picoquic tests to Cargo tests:
 - [ ] `loss_recovery.c` - Loss detection and recovery
 
 ### Congestion Control
-- [x] `cc_common.c` - Common CC utilities (partial: MinMaxRtt FFI, NewRenoSimState, safe Rust slow_start/cwin functions - C FFI for path/cnx functions pending struct work)
-- [x] `newreno.c` - NewReno algorithm (partial: sim_reset - notify/enter_recovery use cnx/path)
+- [x] `cc_common.c` - Common CC utilities (full safe Rust: MinMaxRtt, NewRenoSimState with enter_recovery/notify, slow_start/cwin functions, PerAckState)
+- [x] `newreno.c` - NewReno algorithm (partial: sim_reset FFI - full sim_notify/enter_recovery in safe Rust, C retains path/cnx wrapper)
 - [ ] `cubic.c` - CUBIC algorithm
 - [ ] `bbr.c` - BBRv3 algorithm
 - [ ] `bbr1.c` - BBRv1 algorithm

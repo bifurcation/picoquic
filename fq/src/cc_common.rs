@@ -26,17 +26,20 @@ pub const CWIN_INITIAL: u64 = 10 * MAX_PACKET_SIZE; // 15360
 pub const CWIN_MINIMUM: u64 = 2 * MAX_PACKET_SIZE; // 3072
 
 /// Congestion notification event types.
+/// Matches picoquic_congestion_notification_t from picoquic.h.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CongestionNotification {
     Acknowledgement = 0,
     Repeat = 1,
     Timeout = 2,
-    Spurious = 3,
-    CwinBlocked = 4,
-    Reset = 5,
-    SeedCwin = 6,
-    // ... other variants exist in C but aren't used by translated functions
+    SpuriousRepeat = 3,
+    RttMeasurement = 4,
+    EcnEc = 5,
+    CwinBlocked = 6,
+    SeedCwin = 7,
+    Reset = 8,
+    LostFeedback = 9,
 }
 
 // =============================================================================
@@ -284,6 +287,22 @@ impl CMinMaxRtt {
 }
 
 // =============================================================================
+// PerAckState - Safe Rust equivalent of picoquic_per_ack_state_t
+// =============================================================================
+
+/// Per-ACK state passed to congestion control notify functions.
+///
+/// Contains fields from picoquic_per_ack_state_t that are used by CC algorithms.
+#[derive(Debug, Clone, Default)]
+pub struct PerAckState {
+    pub rtt_measurement: u64,
+    pub one_way_delay: u64,
+    pub nb_bytes_acknowledged: u64,
+    pub nb_bytes_newly_lost: u64,
+    pub lost_packet_number: u64,
+}
+
+// =============================================================================
 // NewRenoSimState - Safe Rust equivalent of picoquic_newreno_sim_state_t
 // =============================================================================
 
@@ -329,6 +348,128 @@ impl NewRenoSimState {
             self.cwin = seed_cwin;
             self.ssthresh = seed_cwin;
             self.alg_state = NewRenoAlgState::CongestionAvoidance;
+        }
+    }
+
+    /// Enter recovery state after congestion event.
+    ///
+    /// Parameters:
+    /// - notification: The type of congestion event
+    /// - current_time: Current timestamp
+    /// - sequence_number: Current send sequence number from connection/path
+    pub fn enter_recovery(
+        &mut self,
+        notification: CongestionNotification,
+        current_time: u64,
+        sequence_number: u64,
+    ) {
+        // Set ssthresh to half of current cwin
+        self.ssthresh = self.cwin / 2;
+        if self.ssthresh < CWIN_MINIMUM {
+            self.ssthresh = CWIN_MINIMUM;
+        }
+
+        if notification == CongestionNotification::Timeout {
+            // Timeout: reset to minimum cwin and slow start
+            self.cwin = CWIN_MINIMUM;
+            self.alg_state = NewRenoAlgState::SlowStart;
+        } else {
+            // Other loss events: reduce cwin to ssthresh and enter CA
+            self.cwin = self.ssthresh;
+            self.alg_state = NewRenoAlgState::CongestionAvoidance;
+        }
+
+        self.recovery_start = current_time;
+        self.recovery_sequence = sequence_number;
+        self.residual_ack = 0;
+    }
+
+    /// Process a congestion notification event.
+    ///
+    /// This is the main entry point for NewReno simulation state updates.
+    ///
+    /// Parameters:
+    /// - notification: The type of congestion event
+    /// - ack_state: ACK-related state (bytes acked, lost packet info)
+    /// - current_time: Current timestamp
+    /// - is_multipath_enabled: Whether multipath is enabled
+    /// - smoothed_rtt: Path's smoothed RTT
+    /// - send_mtu: Path's send MTU
+    /// - sequence_number: Current send sequence number
+    /// - ack_number: Highest acknowledged packet number
+    /// - ack_sent_time: Time the highest acked packet was sent
+    #[allow(clippy::too_many_arguments)]
+    pub fn notify(
+        &mut self,
+        notification: CongestionNotification,
+        ack_state: &PerAckState,
+        current_time: u64,
+        is_multipath_enabled: bool,
+        smoothed_rtt: u64,
+        send_mtu: u64,
+        sequence_number: u64,
+        ack_number: u64,
+        ack_sent_time: u64,
+    ) {
+        match notification {
+            CongestionNotification::Acknowledgement => {
+                match self.alg_state {
+                    NewRenoAlgState::SlowStart => {
+                        // Increase cwin by bytes acknowledged
+                        self.cwin += ack_state.nb_bytes_acknowledged;
+
+                        // Exit slow start if cwin reaches ssthresh
+                        if self.cwin >= self.ssthresh {
+                            self.alg_state = NewRenoAlgState::CongestionAvoidance;
+                        }
+                    }
+                    NewRenoAlgState::CongestionAvoidance => {
+                        // AIMD: increase by ~1 MSS per RTT
+                        let complete_delta =
+                            ack_state.nb_bytes_acknowledged * send_mtu + self.residual_ack;
+                        self.residual_ack = complete_delta % self.cwin;
+                        self.cwin += complete_delta / self.cwin;
+                    }
+                }
+            }
+
+            CongestionNotification::EcnEc
+            | CongestionNotification::Repeat
+            | CongestionNotification::Timeout => {
+                // Enter recovery if loss happened after last recovery
+                if self.recovery_sequence <= ack_state.lost_packet_number {
+                    self.enter_recovery(notification, current_time, sequence_number);
+                }
+            }
+
+            CongestionNotification::SpuriousRepeat => {
+                // Handle spurious loss detection differently for multipath
+                let should_undo = if !is_multipath_enabled {
+                    current_time - self.recovery_start < smoothed_rtt
+                        && self.recovery_sequence > ack_number
+                } else {
+                    current_time - self.recovery_start < smoothed_rtt
+                        && self.recovery_start > ack_sent_time
+                };
+
+                if should_undo && self.ssthresh != u64::MAX && self.cwin < 2 * self.ssthresh {
+                    // Undo the recovery: restore cwin to pre-recovery value
+                    self.cwin = 2 * self.ssthresh;
+                    self.alg_state = NewRenoAlgState::CongestionAvoidance;
+                }
+            }
+
+            CongestionNotification::Reset => {
+                self.reset();
+            }
+
+            CongestionNotification::SeedCwin => {
+                self.seed_cwin(ack_state.nb_bytes_acknowledged);
+            }
+
+            _ => {
+                // Ignore other notifications
+            }
         }
     }
 }
@@ -419,10 +560,13 @@ pub unsafe extern "C" fn picoquic_cc_hystart_loss_test(
         0 => CongestionNotification::Acknowledgement,
         1 => CongestionNotification::Repeat,
         2 => CongestionNotification::Timeout,
-        3 => CongestionNotification::Spurious,
-        4 => CongestionNotification::CwinBlocked,
-        5 => CongestionNotification::Reset,
-        6 => CongestionNotification::SeedCwin,
+        3 => CongestionNotification::SpuriousRepeat,
+        4 => CongestionNotification::RttMeasurement,
+        5 => CongestionNotification::EcnEc,
+        6 => CongestionNotification::CwinBlocked,
+        7 => CongestionNotification::SeedCwin,
+        8 => CongestionNotification::Reset,
+        9 => CongestionNotification::LostFeedback,
         _ => CongestionNotification::Acknowledgement,
     };
 
@@ -454,10 +598,13 @@ pub unsafe extern "C" fn picoquic_cc_hystart_loss_volume_test(
         0 => CongestionNotification::Acknowledgement,
         1 => CongestionNotification::Repeat,
         2 => CongestionNotification::Timeout,
-        3 => CongestionNotification::Spurious,
-        4 => CongestionNotification::CwinBlocked,
-        5 => CongestionNotification::Reset,
-        6 => CongestionNotification::SeedCwin,
+        3 => CongestionNotification::SpuriousRepeat,
+        4 => CongestionNotification::RttMeasurement,
+        5 => CongestionNotification::EcnEc,
+        6 => CongestionNotification::CwinBlocked,
+        7 => CongestionNotification::SeedCwin,
+        8 => CongestionNotification::Reset,
+        9 => CongestionNotification::LostFeedback,
         _ => CongestionNotification::Acknowledgement,
     };
 
@@ -701,7 +848,8 @@ mod tests {
         }
 
         // Should eventually trigger due to high loss
-        let _result = rtt.hystart_loss_volume_test(CongestionNotification::Acknowledgement, 100, 50);
+        let _result =
+            rtt.hystart_loss_volume_test(CongestionNotification::Acknowledgement, 100, 50);
         // After enough iterations with 33% loss, should exceed threshold
         assert!(rtt.smoothed_drop_rate > 0.0);
     }
@@ -952,5 +1100,270 @@ mod tests {
         // 10000 / 100000 * 600000 = 60000
         let result = increased_window(800_000, 10000);
         assert_eq!(result, 60000);
+    }
+
+    // =========================================================================
+    // Tests for NewReno enter_recovery and notify
+    // =========================================================================
+
+    #[test]
+    fn test_newreno_enter_recovery_timeout() {
+        let mut state = NewRenoSimState::default();
+        state.cwin = 100_000;
+
+        state.enter_recovery(CongestionNotification::Timeout, 1000, 50);
+
+        // Timeout resets to minimum cwin and slow start
+        assert_eq!(state.cwin, CWIN_MINIMUM);
+        assert_eq!(state.alg_state, NewRenoAlgState::SlowStart);
+        assert_eq!(state.ssthresh, 50_000); // half of 100_000
+        assert_eq!(state.recovery_start, 1000);
+        assert_eq!(state.recovery_sequence, 50);
+    }
+
+    #[test]
+    fn test_newreno_enter_recovery_repeat() {
+        let mut state = NewRenoSimState::default();
+        state.cwin = 100_000;
+
+        state.enter_recovery(CongestionNotification::Repeat, 1000, 50);
+
+        // Repeat reduces to ssthresh and enters CA
+        assert_eq!(state.cwin, 50_000);
+        assert_eq!(state.alg_state, NewRenoAlgState::CongestionAvoidance);
+        assert_eq!(state.ssthresh, 50_000);
+    }
+
+    #[test]
+    fn test_newreno_enter_recovery_min_ssthresh() {
+        let mut state = NewRenoSimState::default();
+        state.cwin = CWIN_MINIMUM; // 3072
+
+        state.enter_recovery(CongestionNotification::Repeat, 1000, 50);
+
+        // ssthresh can't go below minimum
+        assert_eq!(state.ssthresh, CWIN_MINIMUM);
+        assert_eq!(state.cwin, CWIN_MINIMUM);
+    }
+
+    #[test]
+    fn test_newreno_notify_ack_slow_start() {
+        let mut state = NewRenoSimState::default();
+        let ack_state = PerAckState {
+            nb_bytes_acknowledged: 1000,
+            ..Default::default()
+        };
+
+        state.notify(
+            CongestionNotification::Acknowledgement,
+            &ack_state,
+            0,
+            false,
+            0,
+            1252,
+            0,
+            0,
+            0,
+        );
+
+        // In slow start, cwin increases by bytes acked
+        assert_eq!(state.cwin, CWIN_INITIAL + 1000);
+        assert_eq!(state.alg_state, NewRenoAlgState::SlowStart);
+    }
+
+    #[test]
+    fn test_newreno_notify_ack_exit_slow_start() {
+        let mut state = NewRenoSimState::default();
+        state.ssthresh = CWIN_INITIAL + 500;
+
+        let ack_state = PerAckState {
+            nb_bytes_acknowledged: 1000,
+            ..Default::default()
+        };
+
+        state.notify(
+            CongestionNotification::Acknowledgement,
+            &ack_state,
+            0,
+            false,
+            0,
+            1252,
+            0,
+            0,
+            0,
+        );
+
+        // Should exit slow start when cwin >= ssthresh
+        assert_eq!(state.alg_state, NewRenoAlgState::CongestionAvoidance);
+    }
+
+    #[test]
+    fn test_newreno_notify_ack_congestion_avoidance() {
+        let mut state = NewRenoSimState::default();
+        state.alg_state = NewRenoAlgState::CongestionAvoidance;
+        state.cwin = 10_000;
+        let send_mtu = 1252;
+
+        let ack_state = PerAckState {
+            nb_bytes_acknowledged: 1000,
+            ..Default::default()
+        };
+
+        state.notify(
+            CongestionNotification::Acknowledgement,
+            &ack_state,
+            0,
+            false,
+            0,
+            send_mtu,
+            0,
+            0,
+            0,
+        );
+
+        // In CA: cwin += (acked * mtu) / cwin
+        // complete_delta = 1000 * 1252 + 0 = 1,252,000
+        // cwin += 1,252,000 / 10,000 = 125
+        assert_eq!(state.cwin, 10_125);
+        assert_eq!(state.residual_ack, 1_252_000 % 10_000);
+    }
+
+    #[test]
+    fn test_newreno_notify_repeat_enters_recovery() {
+        let mut state = NewRenoSimState::default();
+        state.cwin = 50_000;
+        state.recovery_sequence = 0;
+
+        let ack_state = PerAckState {
+            lost_packet_number: 10,
+            ..Default::default()
+        };
+
+        state.notify(
+            CongestionNotification::Repeat,
+            &ack_state,
+            1000,
+            false,
+            0,
+            1252,
+            100,
+            0,
+            0,
+        );
+
+        // Should enter recovery since lost_packet_number > recovery_sequence
+        assert_eq!(state.alg_state, NewRenoAlgState::CongestionAvoidance);
+        assert_eq!(state.cwin, 25_000);
+        assert_eq!(state.recovery_sequence, 100);
+    }
+
+    #[test]
+    fn test_newreno_notify_repeat_no_recovery_if_already_recovering() {
+        let mut state = NewRenoSimState::default();
+        state.cwin = 50_000;
+        state.recovery_sequence = 20; // Already recovering from packet 20
+
+        let ack_state = PerAckState {
+            lost_packet_number: 10, // Lost packet is before recovery sequence
+            ..Default::default()
+        };
+
+        state.notify(
+            CongestionNotification::Repeat,
+            &ack_state,
+            1000,
+            false,
+            0,
+            1252,
+            100,
+            0,
+            0,
+        );
+
+        // Should NOT enter recovery since lost_packet < recovery_sequence
+        assert_eq!(state.cwin, 50_000); // Unchanged
+    }
+
+    #[test]
+    fn test_newreno_notify_spurious_repeat_undo() {
+        let mut state = NewRenoSimState::default();
+        state.alg_state = NewRenoAlgState::CongestionAvoidance;
+        state.cwin = 25_000;
+        state.ssthresh = 25_000;
+        state.recovery_start = 900;
+        state.recovery_sequence = 50;
+
+        let ack_state = PerAckState::default();
+
+        // Current time is 950 (within RTT of recovery_start)
+        // recovery_sequence (50) > ack_number (40)
+        state.notify(
+            CongestionNotification::SpuriousRepeat,
+            &ack_state,
+            950,
+            false,
+            100,
+            1252,
+            0,
+            40,
+            0,
+        );
+
+        // Should undo recovery: cwin = 2 * ssthresh
+        assert_eq!(state.cwin, 50_000);
+    }
+
+    #[test]
+    fn test_newreno_notify_reset() {
+        let mut state = NewRenoSimState {
+            alg_state: NewRenoAlgState::CongestionAvoidance,
+            cwin: 100_000,
+            residual_ack: 500,
+            ssthresh: 50_000,
+            recovery_start: 1000,
+            recovery_sequence: 100,
+        };
+
+        state.notify(
+            CongestionNotification::Reset,
+            &PerAckState::default(),
+            0,
+            false,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        assert_eq!(state.alg_state, NewRenoAlgState::SlowStart);
+        assert_eq!(state.cwin, CWIN_INITIAL);
+        assert_eq!(state.ssthresh, u64::MAX);
+    }
+
+    #[test]
+    fn test_newreno_notify_seed_cwin() {
+        let mut state = NewRenoSimState::default();
+
+        let ack_state = PerAckState {
+            nb_bytes_acknowledged: 50_000, // Used as seed value
+            ..Default::default()
+        };
+
+        state.notify(
+            CongestionNotification::SeedCwin,
+            &ack_state,
+            0,
+            false,
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
+
+        assert_eq!(state.cwin, 50_000);
+        assert_eq!(state.ssthresh, 50_000);
+        assert_eq!(state.alg_state, NewRenoAlgState::CongestionAvoidance);
     }
 }
