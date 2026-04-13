@@ -398,6 +398,22 @@ macro(set_picoquic_compile_settings)
     target_link_options(${ARGV0} PRIVATE ${PICOQUIC_LINKER_FLAGS})
 endmacro()
 
+# Build the fq Rust crate using Corrosion
+option(BUILD_FQ "Build fq Rust crate" ON)
+if(BUILD_FQ)
+    include(FetchContent)
+    FetchContent_Declare(
+        Corrosion
+        GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
+        GIT_TAG v0.5
+    )
+    FetchContent_MakeAvailable(Corrosion)
+
+    corrosion_import_crate(MANIFEST_PATH ${CMAKE_CURRENT_SOURCE_DIR}/fq/Cargo.toml)
+
+    message(STATUS "fq Rust crate enabled via Corrosion")
+endif()
+
 add_library(picoquic-core ${PICOQUIC_CORE_HEADERS} ${PICOQUIC_LIBRARY_FILES})
 target_sources(picoquic-core PRIVATE ${PICOQUIC_CORE_HEADERS_PRIVATE})
 add_library(picoquic::picoquic-core ALIAS picoquic-core)
@@ -531,6 +547,9 @@ if(BUILD_TESTING AND picoquic_BUILD_TESTS)
 
     add_library(picoquic-test STATIC ${PICOQUIC_TEST_LIBRARY_FILES})
     target_link_libraries(picoquic-test PUBLIC picoquic-core picoquic-log picohttp-core)
+    if(BUILD_FQ)
+        target_link_libraries(picoquic-test PUBLIC fq)
+    endif()
     target_include_directories(picoquic-test
         PRIVATE
             ${MBEDTLS_INCLUDE_DIRS}
