@@ -19,6 +19,9 @@
 * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+/* When FQ_USE_RUST is defined, these functions are provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
+
 #include <stdint.h>
 #ifndef WIN32
 #include <sys/types.h>
@@ -165,3 +168,5 @@ size_t picoquic_varint_skip(const uint8_t* bytes)
 {
     return picoquic_decode_varint_length(bytes[0]);
 }
+
+#endif /* !FQ_USE_RUST */

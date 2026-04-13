@@ -227,9 +227,46 @@ The `fq` crate will eventually contain a complete Rust implementation of picoqui
 
 Translation approach:
 1. Use `bindgen` for FFI type declarations
-2. Translate each `.c` file to `.rs`, guarding replaced C code with `#ifdef FQ_USE_RUST`
-3. Minimize unsafe code; use safe Rust idioms (Vec, HashMap, BTreeMap) for collections
-4. Port tests from `picoquictest/` to `fq/tests/`
+2. Translate each `.c` file to `.rs` with both:
+   - Safe Rust API for internal use
+   - FFI exports (`#[no_mangle] extern "C"`) matching the C function signatures
+3. Guard the C implementation with `#ifndef FQ_USE_RUST ... #endif`
+4. CMake defines `FQ_USE_RUST` when `BUILD_FQ=ON`, linking the Rust library
+5. Minimize unsafe code; use safe Rust idioms (Vec, HashMap, BTreeMap) for collections
+6. Port tests from `picoquictest/` to `fq/tests/`
+
+### FFI Integration Pattern
+
+For each translated file:
+
+**Rust side** (`fq/src/example.rs`):
+```rust
+// Safe Rust implementation
+pub fn my_function(data: &[u8]) -> usize { ... }
+
+// FFI export matching C signature
+/// # Safety
+/// `data` must point to a valid buffer of `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_my_function(data: *const u8, len: usize) -> usize {
+    let slice = std::slice::from_raw_parts(data, len);
+    my_function(slice)
+}
+```
+
+**C side** (`picoquic/example.c`):
+```c
+/* When FQ_USE_RUST is defined, these functions are provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
+
+size_t picoquic_my_function(const uint8_t* data, size_t len) {
+    // C implementation
+}
+
+#endif /* !FQ_USE_RUST */
+```
+
+This allows gradual migration: the Rust code replaces C code at link time when `BUILD_FQ=ON`.
 
 ### IMPORTANT: Verification After Each Translation
 

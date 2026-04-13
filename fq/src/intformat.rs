@@ -183,6 +183,121 @@ pub mod varint {
     }
 }
 
+// =============================================================================
+// FFI exports - these replace the C implementations when FQ_USE_RUST is defined
+// =============================================================================
+//
+// # Safety
+//
+// All FFI functions below require:
+// - `bytes` must be a valid pointer to a buffer of at least the required size
+// - For write functions: the buffer must be writable
+// - For read functions: the buffer must contain valid data
+//
+// These match the C API contracts from picoquic.
+
+/// FFI export: Write a 16-bit integer in big-endian format.
+///
+/// # Safety
+/// `bytes` must point to a valid, writable buffer of at least 2 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn picoformat_16(bytes: *mut u8, n16: u16) {
+    let slice = std::slice::from_raw_parts_mut(bytes, 2);
+    format_16(slice, n16);
+}
+
+/// FFI export: Write a 24-bit integer in big-endian format.
+///
+/// # Safety
+/// `bytes` must point to a valid, writable buffer of at least 3 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn picoformat_24(bytes: *mut u8, n24: u32) {
+    let slice = std::slice::from_raw_parts_mut(bytes, 3);
+    format_24(slice, n24);
+}
+
+/// FFI export: Write a 32-bit integer in big-endian format.
+///
+/// # Safety
+/// `bytes` must point to a valid, writable buffer of at least 4 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn picoformat_32(bytes: *mut u8, n32: u32) {
+    let slice = std::slice::from_raw_parts_mut(bytes, 4);
+    format_32(slice, n32);
+}
+
+/// FFI export: Write a 64-bit integer in big-endian format.
+///
+/// # Safety
+/// `bytes` must point to a valid, writable buffer of at least 8 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn picoformat_64(bytes: *mut u8, n64: u64) {
+    let slice = std::slice::from_raw_parts_mut(bytes, 8);
+    format_64(slice, n64);
+}
+
+/// FFI export: Return the encoded length for a varint value.
+#[no_mangle]
+pub extern "C" fn picoquic_encode_varint_length(n64: u64) -> usize {
+    varint::encode_length(n64)
+}
+
+/// FFI export: Return the encoded length from the first byte.
+#[no_mangle]
+pub extern "C" fn picoquic_decode_varint_length(byte: u8) -> usize {
+    varint::decode_length(byte)
+}
+
+/// FFI export: Encode a varint into the buffer.
+///
+/// # Safety
+/// `bytes` must point to a valid, writable buffer of at least `max_bytes` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_varint_encode(
+    bytes: *mut u8,
+    max_bytes: usize,
+    n64: u64,
+) -> usize {
+    let slice = std::slice::from_raw_parts_mut(bytes, max_bytes);
+    varint::encode(slice, n64)
+}
+
+/// FFI export: Encode a value using 2-byte format.
+///
+/// # Safety
+/// `bytes` must point to a valid, writable buffer of at least 2 bytes.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_varint_encode_16(bytes: *mut u8, n16: u16) {
+    let slice = std::slice::from_raw_parts_mut(bytes, 2);
+    varint::encode_16(slice, n16);
+}
+
+/// FFI export: Decode a varint from the buffer.
+///
+/// # Safety
+/// - `bytes` must point to a valid buffer of at least `max_bytes` bytes.
+/// - `n64` must point to a valid, writable u64.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_varint_decode(
+    bytes: *const u8,
+    max_bytes: usize,
+    n64: *mut u64,
+) -> usize {
+    let slice = std::slice::from_raw_parts(bytes, max_bytes);
+    let (value, len) = varint::decode(slice);
+    *n64 = value;
+    len
+}
+
+/// FFI export: Return the length of a varint without decoding.
+///
+/// # Safety
+/// `bytes` must point to a valid buffer of at least 1 byte.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_varint_skip(bytes: *const u8) -> usize {
+    varint::decode_length(*bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

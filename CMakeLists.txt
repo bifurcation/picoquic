@@ -441,6 +441,13 @@ target_link_libraries(picoquic-core
         Threads::Threads)
 set_picoquic_compile_settings(picoquic-core)
 
+# When fq is enabled, use Rust implementations instead of C
+if(BUILD_FQ)
+    target_compile_definitions(picoquic-core PRIVATE FQ_USE_RUST)
+    # Use BUILD_INTERFACE to avoid export issues - fq is statically linked
+    target_link_libraries(picoquic-core PRIVATE $<BUILD_INTERFACE:fq>)
+endif()
+
 if (BUILD_DEMO OR BUILD_LOGREADER OR (BUILD_TESTING AND picoquic_BUILD_TESTS))
     if (NOT BUILD_LOGLIB)
         set(BUILD_LOGLIB ON)
