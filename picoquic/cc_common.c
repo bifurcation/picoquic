@@ -75,6 +75,8 @@ uint64_t picoquic_cc_get_ack_sent_time(picoquic_cnx_t* cnx, picoquic_path_t* pat
 }
 
 
+/* When FQ_USE_RUST is defined, these functions are provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
 void picoquic_cc_filter_rtt_min_max(picoquic_min_max_rtt_t * rtt_track, uint64_t rtt)
 {
     int x = rtt_track->sample_current;
@@ -87,7 +89,7 @@ void picoquic_cc_filter_rtt_min_max(picoquic_min_max_rtt_t * rtt_track, uint64_t
         rtt_track->is_init = 1;
         rtt_track->sample_current = 0;
     }
-    
+
     x_max = (rtt_track->is_init) ? PICOQUIC_MIN_MAX_RTT_SCOPE : x + 1;
 
     rtt_track->sample_min = rtt_track->samples[0];
@@ -206,6 +208,7 @@ int picoquic_cc_hystart_test(picoquic_min_max_rtt_t* rtt_track, uint64_t rtt_mea
 
     return ret;
 }
+#endif /* !FQ_USE_RUST */
 
 uint64_t picoquic_cc_slow_start_increase(picoquic_path_t * path_x, uint64_t nb_delivered) {
     /* App limited. */

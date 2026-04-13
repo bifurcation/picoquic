@@ -3,6 +3,7 @@
 //! This crate provides a Rust translation of picoquic.
 
 pub mod bytestream;
+pub mod cc_common;
 pub mod intformat;
 pub mod pacing;
 pub mod picohash;
