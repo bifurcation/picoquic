@@ -8,7 +8,7 @@
 //!
 //! Translated from picoquic/frames.c
 
-use crate::connection::CConnectionView;
+use crate::connection::{AckFrequencyResult, CConnectionView};
 use crate::util::{
     frames_fixed_skip, frames_length_data_skip, frames_uint16_decode, frames_uint8_decode,
     frames_varint_decode, frames_varint_skip,
@@ -1394,6 +1394,65 @@ pub unsafe extern "C" fn picoquic_decode_max_path_id_frame_ffi(
             *result_out = MaxPathIdResult::ParseError;
             std::ptr::null()
         }
+    }
+}
+
+/// FFI export: Decode ACK_FREQUENCY frame and apply to connection.
+///
+/// Parses an ACK_FREQUENCY frame and updates connection ACK parameters.
+/// The frame type is assumed to be already skipped by the caller.
+///
+/// Returns:
+/// - On parse error: null, result_out is undefined
+/// - On validation error: null, result_out indicates the error type
+/// - On old sequence: non-null (but state not updated), result_out = OldSequence
+/// - On success: non-null, state updated, result_out = Success
+///
+/// # Safety
+/// - `cnx` must be a valid pointer to a CConnectionView struct.
+/// - `bytes` and `bytes_max` must form a valid memory range.
+/// - `result_out` must be a valid pointer.
+/// - The caller handles error reporting via picoquic_connection_error.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_decode_ack_frequency_frame_ffi(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    cnx: *mut CConnectionView,
+    result_out: *mut AckFrequencyResult,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_ack_frequency_frame(slice) {
+        Some((seq, packets, microsec, reordering_threshold, rest)) => {
+            let mut conn = (*cnx).to_rust();
+            // ignore_order: 1 if reordering_threshold == 0, else 0
+            let ignore_order = if reordering_threshold == 0 { 1u8 } else { 0u8 };
+            let result = conn.apply_ack_frequency(
+                seq,
+                packets,
+                microsec,
+                ignore_order,
+                reordering_threshold,
+            );
+            *result_out = result;
+            match result {
+                AckFrequencyResult::Success => {
+                    (*cnx).from_rust(&conn);
+                    rest.as_ptr()
+                }
+                AckFrequencyResult::OldSequence => {
+                    // Frame parsed OK but sequence too old - return bytes but don't update state
+                    rest.as_ptr()
+                }
+                _ => {
+                    // Validation error - return null, caller will call connection_error
+                    std::ptr::null()
+                }
+            }
+        }
+        None => std::ptr::null(),
     }
 }
 

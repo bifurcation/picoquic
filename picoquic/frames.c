@@ -5573,6 +5573,41 @@ const uint8_t* picoquic_parse_ack_frequency_frame(const uint8_t* bytes, const ui
 }
 #endif /* !FQ_USE_RUST */
 
+#ifdef FQ_USE_RUST
+/* Rust FFI result enum for ACK frequency */
+typedef enum {
+    FQ_ACK_FREQ_SUCCESS = 0,
+    FQ_ACK_FREQ_NOT_NEGOTIATED = 1,
+    FQ_ACK_FREQ_DELAY_BELOW_MIN = 2,
+    FQ_ACK_FREQ_ZERO_PACKETS = 3,
+    FQ_ACK_FREQ_INVALID_IGNORE_ORDER = 4,
+    FQ_ACK_FREQ_OLD_SEQUENCE = 5,
+} fq_ack_frequency_result_t;
+
+/* Rust FFI declaration */
+extern const uint8_t* picoquic_decode_ack_frequency_frame_ffi(
+    const uint8_t* bytes, const uint8_t* bytes_max,
+    fq_connection_view_t* view, fq_ack_frequency_result_t* result);
+
+const uint8_t* picoquic_decode_ack_frequency_frame(const uint8_t* bytes, const uint8_t* bytes_max, picoquic_cnx_t * cnx)
+{
+    fq_connection_view_t view = FQ_CNX_VIEW_INIT(cnx);
+    fq_ack_frequency_result_t result;
+    const uint8_t* ret = picoquic_decode_ack_frequency_frame_ffi(bytes, bytes_max, &view, &result);
+
+    if (ret == NULL) {
+        /* Parse error or validation error */
+        picoquic_connection_error(cnx, PICOQUIC_TRANSPORT_FRAME_FORMAT_ERROR,
+            picoquic_frame_type_ack_frequency);
+    } else if (result == FQ_ACK_FREQ_SUCCESS) {
+        /* State was updated, copy back */
+        FQ_CNX_VIEW_WRITEBACK(view, cnx);
+    }
+    /* For FQ_ACK_FREQ_OLD_SEQUENCE, ret is valid but state not updated - nothing to do */
+
+    return ret;
+}
+#else
 const uint8_t* picoquic_decode_ack_frequency_frame(const uint8_t* bytes, const uint8_t* bytes_max, picoquic_cnx_t * cnx)
 {
     uint64_t seq = 0;
@@ -5614,6 +5649,7 @@ const uint8_t* picoquic_decode_ack_frequency_frame(const uint8_t* bytes, const u
     }
     return bytes;
 }
+#endif /* FQ_USE_RUST */
 
 uint8_t* picoquic_format_ack_frequency_frame(picoquic_cnx_t* cnx, uint8_t* bytes, uint8_t* bytes_max, int* more_data)
 {

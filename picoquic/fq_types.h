@@ -26,6 +26,17 @@ typedef struct fq_connection_view_t {
     uint64_t maxdata_remote;
     int sent_blocked_frame;
     uint64_t max_path_id_remote;
+    /* ACK frequency fields */
+    int is_ack_frequency_negotiated;
+    uint64_t local_min_ack_delay;
+    uint64_t ack_frequency_sequence_remote;
+    uint64_t ack_gap_remote;
+    uint64_t ack_delay_remote;
+    int ack_ignore_order_remote;
+    uint64_t ack_reordering_threshold_remote;
+    uint64_t max_ack_gap_remote;
+    uint64_t max_ack_delay_remote;
+    uint64_t min_ack_delay_remote;
 } fq_connection_view_t;
 
 /* Helper macro to initialize fq_connection_view_t from picoquic_cnx_t */
@@ -38,7 +49,17 @@ typedef struct fq_connection_view_t {
     .path0_rtt_min = (cnx)->path[0] ? (cnx)->path[0]->rtt_min : UINT64_MAX, \
     .maxdata_remote = (cnx)->maxdata_remote, \
     .sent_blocked_frame = (cnx)->sent_blocked_frame, \
-    .max_path_id_remote = (cnx)->max_path_id_remote \
+    .max_path_id_remote = (cnx)->max_path_id_remote, \
+    .is_ack_frequency_negotiated = (cnx)->is_ack_frequency_negotiated, \
+    .local_min_ack_delay = (cnx)->local_parameters.min_ack_delay, \
+    .ack_frequency_sequence_remote = (cnx)->ack_frequency_sequence_remote, \
+    .ack_gap_remote = (cnx)->ack_gap_remote, \
+    .ack_delay_remote = (cnx)->ack_delay_remote, \
+    .ack_ignore_order_remote = (cnx)->ack_ignore_order_remote, \
+    .ack_reordering_threshold_remote = (cnx)->ack_reordering_threshold_remote, \
+    .max_ack_gap_remote = (cnx)->max_ack_gap_remote, \
+    .max_ack_delay_remote = (cnx)->max_ack_delay_remote, \
+    .min_ack_delay_remote = (cnx)->min_ack_delay_remote \
 }
 
 /* Helper macro to copy changed fields back to picoquic_cnx_t */
@@ -46,6 +67,14 @@ typedef struct fq_connection_view_t {
     (cnx)->maxdata_remote = (view).maxdata_remote; \
     (cnx)->sent_blocked_frame = (view).sent_blocked_frame; \
     (cnx)->max_path_id_remote = (view).max_path_id_remote; \
+    (cnx)->ack_frequency_sequence_remote = (view).ack_frequency_sequence_remote; \
+    (cnx)->ack_gap_remote = (view).ack_gap_remote; \
+    (cnx)->ack_delay_remote = (view).ack_delay_remote; \
+    (cnx)->ack_ignore_order_remote = (view).ack_ignore_order_remote; \
+    (cnx)->ack_reordering_threshold_remote = (view).ack_reordering_threshold_remote; \
+    (cnx)->max_ack_gap_remote = (view).max_ack_gap_remote; \
+    (cnx)->max_ack_delay_remote = (view).max_ack_delay_remote; \
+    (cnx)->min_ack_delay_remote = (view).min_ack_delay_remote; \
 } while(0)
 
 #endif /* FQ_TYPES_H */
