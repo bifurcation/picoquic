@@ -25,6 +25,11 @@
 #include "bytestream.h"
 #include "picoquic_internal.h"
 
+/* When FQ_USE_RUST is defined, basic bytestream functions are provided by the fq Rust crate.
+ * Functions that depend on picoquic types (cid, addr) remain in C.
+ */
+#ifndef FQ_USE_RUST
+
 static int bytestream_error(bytestream * s);
 
 bytestream * bytestream_ref_init(bytestream * s, const void * bytes, size_t nb_bytes)
@@ -312,7 +317,9 @@ int byteread_buffer(bytestream * s, void * buffer, size_t length)
     return 0;
 }
 
-/* supplementary byte stream I/O */
+#endif /* !FQ_USE_RUST */
+
+/* supplementary byte stream I/O - these depend on picoquic types and remain in C */
 
 int bytewrite_cid(bytestream * s, const picoquic_connection_id_t * cid)
 {
@@ -335,6 +342,8 @@ int byteread_cid(bytestream * s, picoquic_connection_id_t * cid)
     return ret;
 }
 
+/* byteskip_cid is provided by Rust when FQ_USE_RUST, but cid read/write stay in C */
+#ifndef FQ_USE_RUST
 int byteskip_cid(bytestream * s)
 {
     uint8_t id_len = 0;
@@ -383,6 +392,13 @@ int byteskip_cstr(bytestream * s)
     return ret;
 }
 
+static int bytestream_error(bytestream* s)
+{
+    s->ptr = s->size;
+    return -1;
+}
+#endif /* !FQ_USE_RUST (cstr functions) */
+
 int bytewrite_addr(bytestream* s, const struct sockaddr* addr)
 {
     int ret = bytewrite_vint(s, addr->sa_family);
@@ -428,10 +444,4 @@ int byteskip_addr(bytestream* s)
         ret |= bytestream_skip(s, 16 + 2);
     }
     return ret;
-}
-
-static int bytestream_error(bytestream* s)
-{
-    s->ptr = s->size;
-    return -1;
 }
