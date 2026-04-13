@@ -503,6 +503,116 @@ pub unsafe extern "C" fn picoquic_cc_hystart_test(
 }
 
 // =============================================================================
+// Slow Start and CWIN Functions (Safe Rust API)
+// =============================================================================
+
+/// Calculate bytes from rate: (microseconds * bps) / 1_000_000
+/// Equivalent to PICOQUIC_BYTES_FROM_RATE macro.
+#[inline]
+pub fn bytes_from_rate(microseconds: u64, bps: u64) -> u64 {
+    (microseconds as u128 * bps as u128 / 1_000_000) as u64
+}
+
+/// Calculate slow start increase based on congestion state.
+///
+/// Returns 0 if not congestion-window blocked (app limited),
+/// otherwise returns the bytes delivered.
+pub fn slow_start_increase(cwin_blocked: bool, nb_delivered: u64) -> u64 {
+    if !cwin_blocked {
+        return 0;
+    }
+    nb_delivered
+}
+
+/// Extended slow start increase with CSS (Consecutive Slow Start) support.
+///
+/// If in CSS mode, divides the increase by the CSS growth divisor.
+pub fn slow_start_increase_ex(cwin_blocked: bool, nb_delivered: u64, in_css: bool) -> u64 {
+    if in_css {
+        slow_start_increase(cwin_blocked, nb_delivered / HYSTART_PP_CSS_GROWTH_DIVISOR)
+    } else {
+        slow_start_increase(cwin_blocked, nb_delivered)
+    }
+}
+
+/// Extended slow start increase with Prague (L4S) ECN support.
+///
+/// Adjusts the increase based on ECN feedback (prague_alpha) and RTT.
+pub fn slow_start_increase_ex2(
+    cwin_blocked: bool,
+    nb_delivered: u64,
+    in_css: bool,
+    prague_alpha: u64,
+    smoothed_rtt: u64,
+) -> u64 {
+    if prague_alpha != 0 {
+        let mut delta = nb_delivered;
+
+        if smoothed_rtt <= TARGET_RENO_RTT {
+            delta = delta * (1024 - prague_alpha) / 1024;
+        } else {
+            delta = delta * smoothed_rtt * (1024 - prague_alpha) / TARGET_RENO_RTT / 1024;
+        }
+
+        slow_start_increase_ex(cwin_blocked, delta, in_css)
+    } else {
+        slow_start_increase_ex(cwin_blocked, nb_delivered, in_css)
+    }
+}
+
+/// Update target congestion window based on bandwidth estimation.
+///
+/// Returns the larger of current cwin or half the BDP (bandwidth-delay product).
+pub fn update_target_cwin_estimation(
+    smoothed_rtt: u64,
+    peak_bandwidth_estimate: u64,
+    cwin: u64,
+) -> u64 {
+    let max_win = bytes_from_rate(smoothed_rtt, peak_bandwidth_estimate);
+    let min_win = max_win / 2;
+
+    if min_win > cwin {
+        min_win
+    } else {
+        cwin
+    }
+}
+
+/// Update congestion window for long RTT paths.
+///
+/// Scales initial cwin based on path RTT relative to target RTT.
+pub fn update_cwin_for_long_rtt(rtt_min: u64, cwin: u64) -> u64 {
+    let min_cwnd = if rtt_min > TARGET_SATELLITE_RTT {
+        (CWIN_INITIAL as f64 * TARGET_SATELLITE_RTT as f64 / TARGET_RENO_RTT as f64) as u64
+    } else {
+        (CWIN_INITIAL as f64 * rtt_min as f64 / TARGET_RENO_RTT as f64) as u64
+    };
+
+    if min_cwnd > cwin {
+        min_cwnd
+    } else {
+        cwin
+    }
+}
+
+/// Calculate increased window for a connection based on RTT.
+///
+/// Doubles the window for short RTT, scales for longer RTT.
+pub fn increased_window(path0_rtt_min: u64, previous_window: u64) -> u64 {
+    if path0_rtt_min <= TARGET_RENO_RTT {
+        previous_window * 2
+    } else {
+        let w = previous_window as f64;
+        let rtt = if path0_rtt_min > TARGET_SATELLITE_RTT {
+            TARGET_SATELLITE_RTT as f64
+        } else {
+            path0_rtt_min as f64
+        };
+        (w / TARGET_RENO_RTT as f64 * rtt) as u64
+    }
+}
+
+// =============================================================================
 // FFI exports for NewRenoSimState functions
 // =============================================================================
 
@@ -517,6 +627,11 @@ pub unsafe extern "C" fn picoquic_newreno_sim_reset(nrss: *mut CNewRenoSimState)
     rust_struct.reset();
     c_struct.from_rust(&rust_struct);
 }
+
+// Note: FFI exports for slow_start and cwin functions are not provided because
+// they require picoquic_path_t* and picoquic_cnx_t* which have complex internal
+// structures. These functions remain in C until full path/connection translation.
+// The safe Rust implementations above are available for use by other Rust code.
 
 // =============================================================================
 // Tests
@@ -586,7 +701,7 @@ mod tests {
         }
 
         // Should eventually trigger due to high loss
-        let result = rtt.hystart_loss_volume_test(CongestionNotification::Acknowledgement, 100, 50);
+        let _result = rtt.hystart_loss_volume_test(CongestionNotification::Acknowledgement, 100, 50);
         // After enough iterations with 33% loss, should exceed threshold
         assert!(rtt.smoothed_drop_rate > 0.0);
     }
@@ -718,5 +833,124 @@ mod tests {
         assert_eq!(back.alg_state, rust.alg_state);
         assert_eq!(back.cwin, rust.cwin);
         assert_eq!(back.ssthresh, rust.ssthresh);
+    }
+
+    // =========================================================================
+    // Tests for slow start and cwin functions
+    // =========================================================================
+
+    #[test]
+    fn test_bytes_from_rate() {
+        // Formula: microseconds * bytes_per_second / 1_000_000
+        // 100ms (100,000 μs) * 1MB/s = 100,000 bytes
+        assert_eq!(bytes_from_rate(100_000, 1_000_000), 100_000);
+        // 100ms * 100MB/s = 10,000,000 bytes
+        assert_eq!(bytes_from_rate(100_000, 100_000_000), 10_000_000);
+        // 1s * 1GB/s = 1,000,000,000 bytes
+        assert_eq!(bytes_from_rate(1_000_000, 1_000_000_000), 1_000_000_000);
+    }
+
+    #[test]
+    fn test_slow_start_increase_cwin_blocked() {
+        // When cwin blocked, should return full delivered
+        assert_eq!(slow_start_increase(true, 1000), 1000);
+    }
+
+    #[test]
+    fn test_slow_start_increase_not_blocked() {
+        // When not cwin blocked (app limited), should return 0
+        assert_eq!(slow_start_increase(false, 1000), 0);
+    }
+
+    #[test]
+    fn test_slow_start_increase_ex_css() {
+        // In CSS mode, should divide by 4
+        assert_eq!(slow_start_increase_ex(true, 1000, true), 250);
+    }
+
+    #[test]
+    fn test_slow_start_increase_ex_no_css() {
+        // Not in CSS mode, full increase
+        assert_eq!(slow_start_increase_ex(true, 1000, false), 1000);
+    }
+
+    #[test]
+    fn test_slow_start_increase_ex2_with_prague() {
+        // With prague_alpha = 512 (50% ECN), short RTT
+        // delta = 1000 * (1024 - 512) / 1024 = 500
+        let result = slow_start_increase_ex2(true, 1000, false, 512, 50_000);
+        assert_eq!(result, 500);
+    }
+
+    #[test]
+    fn test_slow_start_increase_ex2_long_rtt_with_prague() {
+        // With prague_alpha = 512, RTT 200ms (> 100ms target)
+        // delta = 1000 * 200000 * 512 / 100000 / 1024 = 1000
+        let result = slow_start_increase_ex2(true, 1000, false, 512, 200_000);
+        assert_eq!(result, 1000);
+    }
+
+    #[test]
+    fn test_slow_start_increase_ex2_no_prague() {
+        // Without prague (alpha = 0), should fall through
+        let result = slow_start_increase_ex2(true, 1000, false, 0, 50_000);
+        assert_eq!(result, 1000);
+    }
+
+    #[test]
+    fn test_update_target_cwin_estimation() {
+        // 100ms RTT * 10MB/s = 1,000,000 bytes BDP, min_win = 500,000
+        // If cwin < min_win, should return min_win
+        let result = update_target_cwin_estimation(100_000, 10_000_000, 100);
+        assert_eq!(result, 500_000);
+
+        // If cwin > min_win, should return cwin
+        let result = update_target_cwin_estimation(100_000, 10_000_000, 1_000_000);
+        assert_eq!(result, 1_000_000);
+    }
+
+    #[test]
+    fn test_update_cwin_for_long_rtt() {
+        // RTT 200ms > 100ms target
+        // min_cwnd = CWIN_INITIAL * 200000 / 100000 = 30720
+        let result = update_cwin_for_long_rtt(200_000, 10000);
+        assert_eq!(result, 30720);
+
+        // If cwin already larger, return cwin
+        let result = update_cwin_for_long_rtt(200_000, 50000);
+        assert_eq!(result, 50000);
+    }
+
+    #[test]
+    fn test_update_cwin_for_long_rtt_satellite() {
+        // RTT 800ms > 600ms satellite target, caps at satellite
+        // min_cwnd = CWIN_INITIAL * 600000 / 100000 = 92160
+        let result = update_cwin_for_long_rtt(800_000, 10000);
+        assert_eq!(result, 92160);
+    }
+
+    #[test]
+    fn test_increased_window_short_rtt() {
+        // RTT <= 100ms doubles the window
+        let result = increased_window(50_000, 10000);
+        assert_eq!(result, 20000);
+
+        let result = increased_window(100_000, 10000);
+        assert_eq!(result, 20000);
+    }
+
+    #[test]
+    fn test_increased_window_long_rtt() {
+        // RTT 200ms > 100ms, scales: 10000 / 100000 * 200000 = 20000
+        let result = increased_window(200_000, 10000);
+        assert_eq!(result, 20000);
+    }
+
+    #[test]
+    fn test_increased_window_satellite_rtt() {
+        // RTT 800ms > 600ms satellite, caps at 600ms
+        // 10000 / 100000 * 600000 = 60000
+        let result = increased_window(800_000, 10000);
+        assert_eq!(result, 60000);
     }
 }
