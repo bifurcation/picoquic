@@ -97,7 +97,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `logwriter.c` - Log file writing
 - [ ] `unified_log.c` - Unified logging API
 - [ ] `memory_log.c` - Memory logging
-- [ ] `performance_log.c` - Performance logging
+- [x] `performance_log.c` - Performance logging (partial: perflog_param_name lookup - remaining functions require FILE* and quic context)
 
 ### Name/String Tables
 - [x] `error_names.c` - Error code names (full: transport/tls/error modules, error_name lookup, crypto alert range handling, FFI export)

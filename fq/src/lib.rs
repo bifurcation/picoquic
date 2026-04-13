@@ -18,6 +18,7 @@ pub mod intformat;
 pub mod pacing;
 pub mod packet_names;
 pub mod path;
+pub mod perflog_names;
 pub mod picohash;
 pub mod picosplay;
 pub mod port_blocking;
