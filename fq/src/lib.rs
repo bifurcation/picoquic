@@ -2,6 +2,7 @@
 //!
 //! This crate provides a Rust translation of picoquic.
 
+pub mod bbr;
 pub mod bbr1;
 pub mod bytestream;
 pub mod c4;
