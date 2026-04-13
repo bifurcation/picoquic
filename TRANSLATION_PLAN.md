@@ -57,7 +57,7 @@ Convert picoquic tests to Cargo tests:
 ### Congestion Control
 - [x] `cc_common.c` - Common CC utilities (full safe Rust: MinMaxRtt, NewRenoSimState with enter_recovery/notify, slow_start/cwin functions, PerAckState)
 - [x] `newreno.c` - NewReno algorithm (partial: sim_reset FFI - full sim_notify/enter_recovery in safe Rust, C retains path/cnx wrapper)
-- [ ] `cubic.c` - CUBIC algorithm
+- [x] `cubic.c` - CUBIC algorithm (partial: CubicState with reset/enter_recovery/correct_spurious/w_cubic, cubic_root - C retains notify wrapper)
 - [ ] `bbr.c` - BBRv3 algorithm
 - [ ] `bbr1.c` - BBRv1 algorithm
 - [ ] `fastcc.c` - Fast CC algorithm
