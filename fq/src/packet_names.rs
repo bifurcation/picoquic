@@ -5,6 +5,8 @@
 //! This module provides string names for QUIC packet types as defined
 //! in RFC 9000.
 
+use std::ffi::CStr;
+
 // =============================================================================
 // Packet Type Constants (from picoquic_internal.h)
 // =============================================================================
@@ -49,58 +51,26 @@ impl PacketType {
 
     /// Get the string name of this packet type.
     pub fn name(&self) -> &'static str {
-        match self {
-            PacketType::Error => "error",
-            PacketType::VersionNegotiation => "version_negotiation",
-            PacketType::Initial => "initial",
-            PacketType::Retry => "retry",
-            PacketType::Handshake => "handshake",
-            PacketType::ZeroRtt => "0RTT",
-            PacketType::OneRtt => "1RTT",
-            PacketType::Max => "unknown",
-        }
+        packet_type_name((*self) as u64)
     }
 }
 
 // =============================================================================
-// Packet Type Name Lookup
+// Packet Type Name Lookup (Core Logic)
 // =============================================================================
 
-/// Get the name of a packet type.
+/// Get the name of a packet type as a C string.
 ///
+/// This is the core lookup function - all logic lives here.
 /// Returns "unknown" if the packet type is not recognized.
 ///
 /// # Arguments
 /// * `ptype` - The packet type number
 ///
 /// # Returns
-/// A static string with the packet type name
-pub fn packet_type_name(ptype: u64) -> &'static str {
+/// A static CStr with the packet type name
+pub fn packet_type_name_cstr(ptype: u64) -> &'static CStr {
     match ptype {
-        0 => "error",
-        1 => "version_negotiation",
-        2 => "initial",
-        3 => "retry",
-        4 => "handshake",
-        5 => "0RTT",
-        6 => "1RTT",
-        _ => "unknown",
-    }
-}
-
-// =============================================================================
-// FFI Export
-// =============================================================================
-
-/// Get packet type name (FFI export).
-///
-/// Returns a pointer to a null-terminated static string.
-///
-/// # Safety
-/// The returned pointer is always valid and points to a null-terminated string.
-#[no_mangle]
-pub extern "C" fn picoquic_packet_type_name(ptype: u64) -> *const std::ffi::c_char {
-    let name: &std::ffi::CStr = match ptype {
         0 => c"error",
         1 => c"version_negotiation",
         2 => c"initial",
@@ -109,8 +79,35 @@ pub extern "C" fn picoquic_packet_type_name(ptype: u64) -> *const std::ffi::c_ch
         5 => c"0RTT",
         6 => c"1RTT",
         _ => c"unknown",
-    };
-    name.as_ptr()
+    }
+}
+
+/// Get the name of a packet type.
+///
+/// Convenience wrapper that returns `&str` for Rust callers.
+///
+/// # Arguments
+/// * `ptype` - The packet type number
+///
+/// # Returns
+/// A static string with the packet type name
+pub fn packet_type_name(ptype: u64) -> &'static str {
+    // Safe: all our CStr literals are valid UTF-8
+    packet_type_name_cstr(ptype)
+        .to_str()
+        .expect("packet type names are ASCII")
+}
+
+// =============================================================================
+// FFI Export (Thin Wrapper Only)
+// =============================================================================
+
+/// Get packet type name (FFI export).
+///
+/// Returns a pointer to a null-terminated static string.
+#[no_mangle]
+pub extern "C" fn picoquic_packet_type_name(ptype: u64) -> *const std::ffi::c_char {
+    packet_type_name_cstr(ptype).as_ptr()
 }
 
 // =============================================================================
@@ -167,9 +164,14 @@ mod tests {
     }
 
     #[test]
-    fn test_packet_type_name_ffi() {
-        use std::ffi::CStr;
+    fn test_packet_type_name_cstr() {
+        assert_eq!(packet_type_name_cstr(0), c"error");
+        assert_eq!(packet_type_name_cstr(2), c"initial");
+        assert_eq!(packet_type_name_cstr(999), c"unknown");
+    }
 
+    #[test]
+    fn test_packet_type_name_ffi() {
         unsafe {
             let name_ptr = picoquic_packet_type_name(2);
             let name = CStr::from_ptr(name_ptr);

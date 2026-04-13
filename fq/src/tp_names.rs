@@ -79,67 +79,24 @@ pub mod tp {
     pub const RESET_STREAM_AT: u64 = 0x17f7586d2cb571;
 }
 
+use std::ffi::CStr;
+
 // =============================================================================
-// Transport Parameter Name Lookup
+// Transport Parameter Name Lookup (Core Logic)
 // =============================================================================
 
-/// Get the name of a transport parameter.
+/// Get the name of a transport parameter as a C string.
 ///
+/// This is the core lookup function - all logic lives here.
 /// Returns "unknown" if the transport parameter number is not recognized.
 ///
 /// # Arguments
 /// * `tp_number` - The transport parameter number
 ///
 /// # Returns
-/// A static string with the parameter name
-pub fn tp_name(tp_number: u64) -> &'static str {
+/// A static CStr with the parameter name
+pub fn tp_name_cstr(tp_number: u64) -> &'static CStr {
     match tp_number {
-        tp::ORIGINAL_CONNECTION_ID => "original_connection_id",
-        tp::IDLE_TIMEOUT => "idle_timeout",
-        tp::STATELESS_RESET_TOKEN => "stateless_reset_token",
-        tp::MAX_PACKET_SIZE => "max_packet_size",
-        tp::INITIAL_MAX_DATA => "initial_max_data",
-        tp::INITIAL_MAX_STREAM_DATA_BIDI_LOCAL => "initial_max_stream_data_bidi_local",
-        tp::INITIAL_MAX_STREAM_DATA_BIDI_REMOTE => "initial_max_stream_data_bidi_remote",
-        tp::INITIAL_MAX_STREAM_DATA_UNI => "initial_max_stream_data_uni",
-        tp::INITIAL_MAX_STREAMS_BIDI => "initial_max_streams_bidi",
-        tp::INITIAL_MAX_STREAMS_UNI => "initial_max_streams_uni",
-        tp::ACK_DELAY_EXPONENT => "ack_delay_exponent",
-        tp::MAX_ACK_DELAY => "max_ack_delay",
-        tp::DISABLE_MIGRATION => "disable_migration",
-        tp::SERVER_PREFERRED_ADDRESS => "server_preferred_address",
-        tp::ACTIVE_CONNECTION_ID_LIMIT => "active_connection_id_limit",
-        tp::RETRY_CONNECTION_ID => "retry_connection_id",
-        tp::HANDSHAKE_CONNECTION_ID => "handshake_connection_id",
-        tp::MAX_DATAGRAM_FRAME_SIZE => "max_datagram_frame_size",
-        tp::TEST_LARGE_CHELLO => "large_chello",
-        tp::ENABLE_LOSS_BIT => "enable_loss_bit",
-        tp::MIN_ACK_DELAY => "min_ack_delay",
-        tp::ENABLE_TIME_STAMP => "enable_time_stamp",
-        tp::GREASE_QUIC_BIT => "grease_quic_bit",
-        tp::VERSION_NEGOTIATION => "version_negotiation",
-        tp::ENABLE_BDP_FRAME => "enable_bdp_frame",
-        tp::INITIAL_MAX_PATH_ID => "initial_max_path_id",
-        tp::ADDRESS_DISCOVERY => "address_discovery",
-        tp::RESET_STREAM_AT => "reset_stream_at",
-        _ => "unknown",
-    }
-}
-
-// =============================================================================
-// FFI Export
-// =============================================================================
-
-/// Get transport parameter name (FFI export).
-///
-/// Returns a pointer to a null-terminated static string. The returned string
-/// is valid for the lifetime of the program.
-///
-/// # Safety
-/// The returned pointer is always valid and points to a null-terminated string.
-#[no_mangle]
-pub extern "C" fn picoquic_tp_name(tp_number: u64) -> *const std::ffi::c_char {
-    let name: &std::ffi::CStr = match tp_number {
         tp::ORIGINAL_CONNECTION_ID => c"original_connection_id",
         tp::IDLE_TIMEOUT => c"idle_timeout",
         tp::STATELESS_RESET_TOKEN => c"stateless_reset_token",
@@ -169,8 +126,35 @@ pub extern "C" fn picoquic_tp_name(tp_number: u64) -> *const std::ffi::c_char {
         tp::ADDRESS_DISCOVERY => c"address_discovery",
         tp::RESET_STREAM_AT => c"reset_stream_at",
         _ => c"unknown",
-    };
-    name.as_ptr()
+    }
+}
+
+/// Get the name of a transport parameter.
+///
+/// Convenience wrapper that returns `&str` for Rust callers.
+///
+/// # Arguments
+/// * `tp_number` - The transport parameter number
+///
+/// # Returns
+/// A static string with the parameter name
+pub fn tp_name(tp_number: u64) -> &'static str {
+    // Safe: all our CStr literals are valid UTF-8
+    tp_name_cstr(tp_number)
+        .to_str()
+        .expect("transport parameter names are ASCII")
+}
+
+// =============================================================================
+// FFI Export (Thin Wrapper Only)
+// =============================================================================
+
+/// Get transport parameter name (FFI export).
+///
+/// Returns a pointer to a null-terminated static string.
+#[no_mangle]
+pub extern "C" fn picoquic_tp_name(tp_number: u64) -> *const std::ffi::c_char {
+    tp_name_cstr(tp_number).as_ptr()
 }
 
 // =============================================================================
@@ -289,6 +273,13 @@ mod tests {
     fn test_tp_name_unknown() {
         assert_eq!(tp_name(0xFFFFFFFF), "unknown");
         assert_eq!(tp_name(9999), "unknown");
+    }
+
+    #[test]
+    fn test_tp_name_cstr() {
+        assert_eq!(tp_name_cstr(tp::IDLE_TIMEOUT), c"idle_timeout");
+        assert_eq!(tp_name_cstr(tp::MAX_PACKET_SIZE), c"max_packet_size");
+        assert_eq!(tp_name_cstr(0xFFFF), c"unknown");
     }
 
     #[test]

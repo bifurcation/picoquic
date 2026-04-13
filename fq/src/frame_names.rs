@@ -101,8 +101,10 @@ pub mod frame_type {
     pub const OBSERVED_ADDRESS_V6: u64 = 0x9f81a7;
 }
 
+use std::ffi::CStr;
+
 // =============================================================================
-// Frame Name Lookup
+// Frame Name Lookup (Core Logic)
 // =============================================================================
 
 /// Check if a frame type is a stream frame.
@@ -111,81 +113,23 @@ pub fn is_stream_frame(ftype: u64) -> bool {
     (frame_type::STREAM_RANGE_MIN..=frame_type::STREAM_RANGE_MAX).contains(&ftype)
 }
 
-/// Get the name of a frame type.
+/// Get the name of a frame type as a C string.
 ///
+/// This is the core lookup function - all logic lives here.
 /// Returns "unknown" if the frame type is not recognized.
 ///
 /// # Arguments
 /// * `ftype` - The frame type number
 ///
 /// # Returns
-/// A static string with the frame type name
-pub fn frame_name(ftype: u64) -> &'static str {
+/// A static CStr with the frame type name
+pub fn frame_name_cstr(ftype: u64) -> &'static CStr {
     // Check for stream frames first (range 0x08-0x0f)
     if is_stream_frame(ftype) {
-        return "stream";
+        return c"stream";
     }
 
     match ftype {
-        frame_type::PADDING => "padding",
-        frame_type::RESET_STREAM => "reset_stream",
-        frame_type::RESET_STREAM_AT => "reset_stream_at",
-        frame_type::CONNECTION_CLOSE | frame_type::APPLICATION_CLOSE => "connection_close",
-        frame_type::MAX_DATA => "max_data",
-        frame_type::MAX_STREAM_DATA => "max_stream_data",
-        frame_type::MAX_STREAMS_BIDIR | frame_type::MAX_STREAMS_UNIDIR => "max_streams",
-        frame_type::PING => "ping",
-        frame_type::DATA_BLOCKED => "data_blocked",
-        frame_type::STREAM_DATA_BLOCKED => "stream_data_blocked",
-        frame_type::STREAMS_BLOCKED_BIDIR | frame_type::STREAMS_BLOCKED_UNIDIR => "streams_blocked",
-        frame_type::NEW_CONNECTION_ID => "new_connection_id",
-        frame_type::PATH_NEW_CONNECTION_ID => "path_new_connection_id",
-        frame_type::STOP_SENDING => "stop_sending",
-        frame_type::ACK => "ack",
-        frame_type::PATH_CHALLENGE => "path_challenge",
-        frame_type::PATH_RESPONSE => "path_response",
-        frame_type::CRYPTO_HS => "crypto",
-        frame_type::NEW_TOKEN => "new_token",
-        frame_type::ACK_ECN => "ack",
-        frame_type::PATH_ACK | frame_type::PATH_ACK_ECN => "path_ack",
-        frame_type::RETIRE_CONNECTION_ID => "retire_connection_id",
-        frame_type::PATH_RETIRE_CONNECTION_ID => "path_retire_connection_id",
-        frame_type::HANDSHAKE_DONE => "handshake_done",
-        frame_type::DATAGRAM | frame_type::DATAGRAM_L => "datagram",
-        frame_type::ACK_FREQUENCY => "ack_frequency",
-        frame_type::IMMEDIATE_ACK => "immediate_ack",
-        frame_type::TIME_STAMP => "time_stamp",
-        frame_type::PATH_ABANDON => "path_abandon",
-        frame_type::PATH_BACKUP => "path_backup",
-        frame_type::PATH_AVAILABLE => "path_available",
-        frame_type::BDP => "bdp",
-        frame_type::MAX_PATH_ID => "max_path_id",
-        frame_type::PATHS_BLOCKED => "paths_blocked",
-        frame_type::PATH_CID_BLOCKED => "path_cid_blocked",
-        frame_type::OBSERVED_ADDRESS_V4 => "observed_address_v4",
-        frame_type::OBSERVED_ADDRESS_V6 => "observed_address_v6",
-        _ => "unknown",
-    }
-}
-
-// =============================================================================
-// FFI Export
-// =============================================================================
-
-/// Get frame type name (FFI export).
-///
-/// Returns a pointer to a null-terminated static string.
-///
-/// # Safety
-/// The returned pointer is always valid and points to a null-terminated string.
-#[no_mangle]
-pub extern "C" fn picoquic_frame_name(ftype: u64) -> *const std::ffi::c_char {
-    // Check for stream frames first
-    if is_stream_frame(ftype) {
-        return c"stream".as_ptr();
-    }
-
-    let name: &std::ffi::CStr = match ftype {
         frame_type::PADDING => c"padding",
         frame_type::RESET_STREAM => c"reset_stream",
         frame_type::RESET_STREAM_AT => c"reset_stream_at",
@@ -226,8 +170,35 @@ pub extern "C" fn picoquic_frame_name(ftype: u64) -> *const std::ffi::c_char {
         frame_type::OBSERVED_ADDRESS_V4 => c"observed_address_v4",
         frame_type::OBSERVED_ADDRESS_V6 => c"observed_address_v6",
         _ => c"unknown",
-    };
-    name.as_ptr()
+    }
+}
+
+/// Get the name of a frame type.
+///
+/// Convenience wrapper that returns `&str` for Rust callers.
+///
+/// # Arguments
+/// * `ftype` - The frame type number
+///
+/// # Returns
+/// A static string with the frame type name
+pub fn frame_name(ftype: u64) -> &'static str {
+    // Safe: all our CStr literals are valid UTF-8
+    frame_name_cstr(ftype)
+        .to_str()
+        .expect("frame type names are ASCII")
+}
+
+// =============================================================================
+// FFI Export (Thin Wrapper Only)
+// =============================================================================
+
+/// Get frame type name (FFI export).
+///
+/// Returns a pointer to a null-terminated static string.
+#[no_mangle]
+pub extern "C" fn picoquic_frame_name(ftype: u64) -> *const std::ffi::c_char {
+    frame_name_cstr(ftype).as_ptr()
 }
 
 // =============================================================================
@@ -331,6 +302,14 @@ mod tests {
     fn test_frame_name_unknown() {
         assert_eq!(frame_name(0xFFFFFFFF), "unknown");
         assert_eq!(frame_name(9999), "unknown");
+    }
+
+    #[test]
+    fn test_frame_name_cstr() {
+        assert_eq!(frame_name_cstr(frame_type::PADDING), c"padding");
+        assert_eq!(frame_name_cstr(frame_type::ACK), c"ack");
+        assert_eq!(frame_name_cstr(0x0a), c"stream");
+        assert_eq!(frame_name_cstr(0xFFFF), c"unknown");
     }
 
     #[test]
