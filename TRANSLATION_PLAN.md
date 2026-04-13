@@ -61,7 +61,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `bbr.c` - BBRv3 algorithm
 - [x] `bbr1.c` - BBRv1 algorithm (partial: Bbr1State with state machine, bandwidth tracking, pacing, suspension handling - C retains notify/observe wrappers)
 - [x] `fastcc.c` - Fast CC algorithm (partial: FastCcState with reset/seed_cwin/notify_congestion/check_exit_freeze/on_ack/on_rtt_measurement - C retains notify wrapper)
-- [ ] `prague.c` - Prague (L4S) algorithm
+- [x] `prague.c` - Prague (L4S) algorithm (partial: PragueState with alpha EWMA, enter_recovery, process_ack, update_alpha - C retains notify wrapper)
 - [ ] `dualq_aqm.c` - DualQ AQM support
 - [ ] `c4.c` - C4 algorithm
 - [x] `pacing.c` - Pacing implementation (partial: standalone functions - path functions remain in C)
