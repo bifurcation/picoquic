@@ -86,29 +86,29 @@ Convert picoquic tests to Cargo tests:
 - [x] `siphash.c` - SipHash implementation
 - [x] `picohash.c` - Hash functions (partial: picohash_bytes, picohash_siphash - hash table remains in C)
 - [x] `port_blocking.c` - Port blocking (partial: check_port_blocked - addr check uses internal types)
-- [ ] `picosplay.c` - Splay tree (remains in C - intrusive nodes with function pointer callbacks)
-- [ ] `spinbit.c` - Spin bit handling (remains in C - uses picoquic_cnx_t, picoquic_path_t)
-- [ ] `timing.c` - Timing utilities (remains in C - core protocol logic with internal types)
-- [ ] `picoquic_lb.c` - Load balancer integration (remains in C - uses crypto and internal types)
-- [ ] `config.c` - Configuration handling (remains in C - integrates with all subsystems)
+- [ ] `picosplay.c` - Splay tree (use `BTreeMap` or direct translation)
+- [ ] `spinbit.c` - Spin bit handling
+- [ ] `timing.c` - Timing utilities
+- [ ] `picoquic_lb.c` - Load balancer integration
+- [ ] `config.c` - Configuration handling
 
 ### Logging
-- [ ] `logger.c` - General logging (remains in C - uses picoquic types, file I/O)
-- [ ] `logwriter.c` - Log file writing (remains in C)
-- [ ] `unified_log.c` - Unified logging API (remains in C)
-- [ ] `memory_log.c` - Memory logging (remains in C)
-- [ ] `performance_log.c` - Performance logging (remains in C)
+- [ ] `logger.c` - General logging
+- [ ] `logwriter.c` - Log file writing
+- [ ] `unified_log.c` - Unified logging API
+- [ ] `memory_log.c` - Memory logging
+- [ ] `performance_log.c` - Performance logging
 
 ### Name/String Tables
-- [ ] `error_names.c` - Error code names (remains in C - depends on PICOQUIC_* constants)
-- [ ] `frame_names.c` - Frame type names (remains in C - depends on frame type constants)
-- [ ] `packet_names.c` - Packet type names (remains in C)
-- [ ] `tp_names.c` - Transport parameter names (remains in C)
+- [ ] `error_names.c` - Error code names
+- [ ] `frame_names.c` - Frame type names
+- [ ] `packet_names.c` - Packet type names
+- [ ] `tp_names.c` - Transport parameter names
 
 ### Network/Sockets
-- [ ] `picosocks.c` - Socket utilities (remains in C - platform-specific socket APIs)
-- [ ] `sockloop.c` - Unix socket loop (remains in C)
-- [ ] `winsockloop.c` - Windows socket loop (remains in C)
+- [ ] `picosocks.c` - Socket utilities (platform-specific, lower priority)
+- [ ] `sockloop.c` - Unix socket loop (platform-specific, lower priority)
+- [ ] `winsockloop.c` - Windows socket loop (platform-specific, lower priority)
 - [ ] `sim_link.c` - Simulated network link
 
 ## Translation Order
