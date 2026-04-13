@@ -163,8 +163,32 @@ Areas requiring careful unsafe handling:
 
 ## Translation Strategy
 
-### Phase 1: Safe Core
-Translate data structures using safe Rust idioms:
+### Phase 0: Direct Translation
+Translate intrusive data structures directly using `unsafe` with raw pointers:
+- Linked lists remain `*mut Node` with `next`/`prev` pointers
+- Splay trees remain pointer-based with parent/left/right
+- Wrap in safe Rust APIs that encapsulate the unsafety
+
+This preserves structural equivalence with C, making verification easier. The unsafe code is localized to data structure modules (`linked_list.rs`, `splay.rs`) with safe public interfaces.
+
+```rust
+// Example: safe wrapper around unsafe intrusive list
+pub struct IntrusiveList<T> {
+    head: *mut Node<T>,
+    tail: *mut Node<T>,
+}
+
+impl<T> IntrusiveList<T> {
+    pub fn push_back(&mut self, item: Box<T>) { /* unsafe internals */ }
+    pub fn pop_front(&mut self) -> Option<Box<T>> { /* unsafe internals */ }
+    pub fn iter(&self) -> Iter<'_, T> { /* safe iteration */ }
+}
+```
+
+Consider using the `intrusive-collections` crate which provides battle-tested implementations.
+
+### Phase 1: Safe Core (if needed)
+If Phase 0 proves too error-prone, replace data structures with safe Rust idioms:
 - Replace linked lists with `Vec<T>` or indices
 - Replace splay trees with `BTreeMap`
 - Replace hash tables with `HashMap`

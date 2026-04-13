@@ -118,8 +118,11 @@ Convert picoquic tests to Cargo tests:
 2. `bytestream.c` - Simple data structures
 3. `util.c` - Utility functions
 4. `siphash.c` - Pure hash function
-5. `picohash.c` - Replace with `HashMap`
-6. `picosplay.c` - Replace with `BTreeMap`
+5. `picohash.c` - Direct translation with unsafe, or use `HashMap`
+6. `picosplay.c` - Direct translation with unsafe, or use `BTreeMap`
+
+Note: For picohash and picosplay, direct translation preserves structural equivalence
+and makes verification easier. See MEMORY_ARCH.md Phase 0 for the approach.
 
 ### Phase 2: Core Structures
 7. `quicctx.c` - Main context structures
