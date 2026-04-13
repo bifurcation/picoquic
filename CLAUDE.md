@@ -368,4 +368,5 @@ This ensures the Rust code compiles, passes its own tests, links correctly with 
 
 ## Workflow Notes
 
-- **Git commands**: Always run git commands from the repository root (`/Users/richbarn/Projects/link/picoquic`). Never use compound commands like `cd foo && git commit`. Use separate commands instead.
+- **No compound commands**: Never use compound commands like `cd foo && command`. Use separate Bash tool calls instead. Each command should be a separate invocation.
+- **Git commands**: Always run git commands from the repository root (`/Users/richbarn/Projects/link/picoquic`).
