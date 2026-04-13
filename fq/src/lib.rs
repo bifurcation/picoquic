@@ -4,4 +4,7 @@
 
 pub mod bytestream;
 pub mod intformat;
+pub mod picohash;
+pub mod port_blocking;
 pub mod siphash;
+pub mod util;
