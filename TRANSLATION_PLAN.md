@@ -87,7 +87,7 @@ Convert picoquic tests to Cargo tests:
 - [x] `picohash.c` - Hash functions (partial: picohash_bytes, picohash_siphash - hash table remains in C)
 - [x] `port_blocking.c` - Port blocking (partial: check_port_blocked - addr check uses internal types)
 - [ ] `picosplay.c` - Splay tree (use `BTreeMap` or direct translation)
-- [ ] `spinbit.c` - Spin bit handling
+- [x] `spinbit.c` - Spin bit handling (full: SpinBitVariant enum, SpinBitState with basic/null/random variants, standalone functions)
 - [ ] `timing.c` - Timing utilities
 - [ ] `picoquic_lb.c` - Load balancer integration
 - [ ] `config.c` - Configuration handling

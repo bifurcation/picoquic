@@ -19,4 +19,5 @@ pub mod picohash;
 pub mod port_blocking;
 pub mod prague;
 pub mod siphash;
+pub mod spinbit;
 pub mod util;
