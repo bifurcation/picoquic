@@ -33,6 +33,8 @@
  * its entire state in memory.
  */
 
+/* When FQ_USE_RUST is defined, this function is provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
 void picoquic_newreno_sim_reset(picoquic_newreno_sim_state_t * nrss)
 {
     /* Initialize the state of the congestion control algorithm */
@@ -41,6 +43,7 @@ void picoquic_newreno_sim_reset(picoquic_newreno_sim_state_t * nrss)
     nrss->ssthresh = UINT64_MAX;
     nrss->cwin = PICOQUIC_CWIN_INITIAL;
 }
+#endif /* !FQ_USE_RUST */
 
 /* The recovery state last 1 RTT, during which parameters will be frozen
  */

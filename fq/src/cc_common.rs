@@ -280,6 +280,108 @@ impl CMinMaxRtt {
 }
 
 // =============================================================================
+// NewRenoSimState - Safe Rust equivalent of picoquic_newreno_sim_state_t
+// =============================================================================
+
+/// NewReno algorithm state.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewRenoAlgState {
+    SlowStart = 0,
+    CongestionAvoidance = 1,
+}
+
+/// Simulated NewReno state for parallel congestion control.
+///
+/// Many CC algorithms run a parallel NewReno to provide a lower bound estimate.
+/// This struct holds the entire state without references to connection/path.
+#[derive(Debug, Clone)]
+pub struct NewRenoSimState {
+    pub alg_state: NewRenoAlgState,
+    pub cwin: u64,
+    pub residual_ack: u64,
+    pub ssthresh: u64,
+    pub recovery_start: u64,
+    pub recovery_sequence: u64,
+}
+
+impl NewRenoSimState {
+    /// Initialize/reset the NewReno simulation state.
+    pub fn reset(&mut self) {
+        self.alg_state = NewRenoAlgState::SlowStart;
+        self.cwin = CWIN_INITIAL;
+        self.residual_ack = 0;
+        self.ssthresh = u64::MAX;
+        self.recovery_start = 0;
+        self.recovery_sequence = 0;
+    }
+
+    /// Seed the congestion window from a previous connection.
+    pub fn seed_cwin(&mut self, seed_cwin: u64) {
+        if self.alg_state == NewRenoAlgState::SlowStart
+            && self.ssthresh == u64::MAX
+            && seed_cwin > self.cwin
+        {
+            self.cwin = seed_cwin;
+            self.ssthresh = seed_cwin;
+            self.alg_state = NewRenoAlgState::CongestionAvoidance;
+        }
+    }
+}
+
+impl Default for NewRenoSimState {
+    fn default() -> Self {
+        Self {
+            alg_state: NewRenoAlgState::SlowStart,
+            cwin: CWIN_INITIAL,
+            residual_ack: 0,
+            ssthresh: u64::MAX,
+            recovery_start: 0,
+            recovery_sequence: 0,
+        }
+    }
+}
+
+/// C-compatible struct matching `picoquic_newreno_sim_state_t`.
+#[repr(C)]
+pub struct CNewRenoSimState {
+    pub alg_state: c_int,
+    pub cwin: u64,
+    pub residual_ack: u64,
+    pub ssthresh: u64,
+    pub recovery_start: u64,
+    pub recovery_sequence: u64,
+}
+
+impl CNewRenoSimState {
+    /// Convert from C struct to safe Rust struct.
+    pub fn to_rust(&self) -> NewRenoSimState {
+        NewRenoSimState {
+            alg_state: if self.alg_state == 0 {
+                NewRenoAlgState::SlowStart
+            } else {
+                NewRenoAlgState::CongestionAvoidance
+            },
+            cwin: self.cwin,
+            residual_ack: self.residual_ack,
+            ssthresh: self.ssthresh,
+            recovery_start: self.recovery_start,
+            recovery_sequence: self.recovery_sequence,
+        }
+    }
+
+    /// Update C struct from safe Rust struct.
+    pub fn from_rust(&mut self, rust: &NewRenoSimState) {
+        self.alg_state = rust.alg_state as c_int;
+        self.cwin = rust.cwin;
+        self.residual_ack = rust.residual_ack;
+        self.ssthresh = rust.ssthresh;
+        self.recovery_start = rust.recovery_start;
+        self.recovery_sequence = rust.recovery_sequence;
+    }
+}
+
+// =============================================================================
 // FFI exports for MinMaxRtt functions
 // =============================================================================
 
@@ -394,6 +496,22 @@ pub unsafe extern "C" fn picoquic_cc_hystart_test(
     } else {
         0
     }
+}
+
+// =============================================================================
+// FFI exports for NewRenoSimState functions
+// =============================================================================
+
+/// FFI export: Reset NewReno simulation state.
+///
+/// # Safety
+/// `nrss` must point to a valid `picoquic_newreno_sim_state_t` struct.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_newreno_sim_reset(nrss: *mut CNewRenoSimState) {
+    let c_struct = &mut *nrss;
+    let mut rust_struct = c_struct.to_rust();
+    rust_struct.reset();
+    c_struct.from_rust(&rust_struct);
 }
 
 // =============================================================================
@@ -515,5 +633,86 @@ mod tests {
         assert_eq!(back.last_rtt_sample_time, rust.last_rtt_sample_time);
         assert_eq!(back.is_init, rust.is_init);
         assert_eq!(back.samples, rust.samples);
+    }
+
+    #[test]
+    fn test_newreno_sim_default() {
+        let state = NewRenoSimState::default();
+        assert_eq!(state.alg_state, NewRenoAlgState::SlowStart);
+        assert_eq!(state.cwin, CWIN_INITIAL);
+        assert_eq!(state.ssthresh, u64::MAX);
+    }
+
+    #[test]
+    fn test_newreno_sim_reset() {
+        let mut state = NewRenoSimState {
+            alg_state: NewRenoAlgState::CongestionAvoidance,
+            cwin: 100000,
+            residual_ack: 500,
+            ssthresh: 50000,
+            recovery_start: 12345,
+            recovery_sequence: 1000,
+        };
+
+        state.reset();
+
+        assert_eq!(state.alg_state, NewRenoAlgState::SlowStart);
+        assert_eq!(state.cwin, CWIN_INITIAL);
+        assert_eq!(state.residual_ack, 0);
+        assert_eq!(state.ssthresh, u64::MAX);
+        assert_eq!(state.recovery_start, 0);
+        assert_eq!(state.recovery_sequence, 0);
+    }
+
+    #[test]
+    fn test_newreno_sim_seed_cwin() {
+        let mut state = NewRenoSimState::default();
+        let seed = 50000;
+
+        state.seed_cwin(seed);
+
+        assert_eq!(state.alg_state, NewRenoAlgState::CongestionAvoidance);
+        assert_eq!(state.cwin, seed);
+        assert_eq!(state.ssthresh, seed);
+    }
+
+    #[test]
+    fn test_newreno_sim_seed_cwin_no_effect_if_not_slow_start() {
+        let mut state = NewRenoSimState::default();
+        state.alg_state = NewRenoAlgState::CongestionAvoidance;
+
+        let old_cwin = state.cwin;
+        state.seed_cwin(50000);
+
+        // Should not change because not in slow start
+        assert_eq!(state.cwin, old_cwin);
+    }
+
+    #[test]
+    fn test_newreno_sim_c_struct_conversion() {
+        let rust = NewRenoSimState {
+            alg_state: NewRenoAlgState::CongestionAvoidance,
+            cwin: 65536,
+            residual_ack: 1000,
+            ssthresh: 32768,
+            recovery_start: 100,
+            recovery_sequence: 50,
+        };
+
+        let mut c_struct = CNewRenoSimState {
+            alg_state: 0,
+            cwin: 0,
+            residual_ack: 0,
+            ssthresh: 0,
+            recovery_start: 0,
+            recovery_sequence: 0,
+        };
+
+        c_struct.from_rust(&rust);
+        let back = c_struct.to_rust();
+
+        assert_eq!(back.alg_state, rust.alg_state);
+        assert_eq!(back.cwin, rust.cwin);
+        assert_eq!(back.ssthresh, rust.ssthresh);
     }
 }
