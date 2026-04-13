@@ -6274,6 +6274,38 @@ const uint8_t* picoquic_parse_paths_blocked_frame(const uint8_t* bytes, const ui
 }
 #endif /* !FQ_USE_RUST */
 
+#ifdef FQ_USE_RUST
+/* Rust FFI result enum for multipath frame validation */
+typedef enum {
+    FQ_MULTIPATH_SUCCESS = 0,
+    FQ_MULTIPATH_NOT_NEGOTIATED = 1,
+    FQ_MULTIPATH_PARSE_ERROR = 2
+} fq_multipath_frame_result_t;
+
+extern const uint8_t* picoquic_decode_paths_blocked_frame_ffi(
+    const uint8_t* bytes, const uint8_t* bytes_max,
+    int is_multipath_enabled, uint64_t* max_path_id_out,
+    fq_multipath_frame_result_t* result_out);
+
+const uint8_t* picoquic_decode_paths_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    picoquic_cnx_t* cnx)
+{
+    uint64_t max_path_id = 0;
+    fq_multipath_frame_result_t result;
+    const uint8_t* ret = picoquic_decode_paths_blocked_frame_ffi(bytes, bytes_max,
+        cnx->is_multipath_enabled, &max_path_id, &result);
+
+    if (result == FQ_MULTIPATH_NOT_NEGOTIATED) {
+        picoquic_connection_error_ex(cnx, PICOQUIC_TRANSPORT_PROTOCOL_VIOLATION,
+            picoquic_frame_type_paths_blocked, "multipath extension not negotiated");
+    }
+    else if (result == FQ_MULTIPATH_PARSE_ERROR) {
+        picoquic_connection_error_ex(cnx, PICOQUIC_TRANSPORT_FRAME_FORMAT_ERROR,
+            picoquic_frame_type_paths_blocked, "bad path blocked frame");
+    }
+    return ret;
+}
+#else
 const uint8_t* picoquic_decode_paths_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     picoquic_cnx_t* cnx)
 {
@@ -6293,6 +6325,7 @@ const uint8_t* picoquic_decode_paths_blocked_frame(const uint8_t* bytes, const u
     }
     return bytes;
 }
+#endif /* FQ_USE_RUST */
 
 int picoquic_paths_blocked_frame_needs_repeat(picoquic_cnx_t* cnx, const uint8_t* bytes,
     const uint8_t* bytes_max, int* no_need_to_repeat)
@@ -6416,6 +6449,32 @@ const uint8_t* picoquic_parse_path_cid_blocked_frame(const uint8_t* bytes, const
 }
 #endif /* !FQ_USE_RUST */
 
+#ifdef FQ_USE_RUST
+extern const uint8_t* picoquic_decode_path_cid_blocked_frame_ffi(
+    const uint8_t* bytes, const uint8_t* bytes_max,
+    int is_multipath_enabled, uint64_t* path_id_out, uint64_t* next_seq_out,
+    fq_multipath_frame_result_t* result_out);
+
+const uint8_t* picoquic_decode_path_cid_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    picoquic_cnx_t* cnx)
+{
+    uint64_t unique_path_id = 0;
+    uint64_t next_sequence_number = 0;
+    fq_multipath_frame_result_t result;
+    const uint8_t* ret = picoquic_decode_path_cid_blocked_frame_ffi(bytes, bytes_max,
+        cnx->is_multipath_enabled, &unique_path_id, &next_sequence_number, &result);
+
+    if (result == FQ_MULTIPATH_NOT_NEGOTIATED) {
+        picoquic_connection_error_ex(cnx, PICOQUIC_TRANSPORT_PROTOCOL_VIOLATION,
+            picoquic_frame_type_path_cid_blocked, "multipath extension not negotiated");
+    }
+    else if (result == FQ_MULTIPATH_PARSE_ERROR) {
+        picoquic_connection_error_ex(cnx, PICOQUIC_TRANSPORT_FRAME_FORMAT_ERROR,
+            picoquic_frame_type_path_cid_blocked, "bad path blocked frame");
+    }
+    return ret;
+}
+#else
 const uint8_t* picoquic_decode_path_cid_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     picoquic_cnx_t* cnx)
 {
@@ -6436,6 +6495,7 @@ const uint8_t* picoquic_decode_path_cid_blocked_frame(const uint8_t* bytes, cons
     }
     return bytes;
 }
+#endif /* FQ_USE_RUST */
 
 int picoquic_path_cid_blocked_frame_needs_repeat(picoquic_cnx_t* cnx, const uint8_t* bytes,
     const uint8_t* bytes_max, int* no_need_to_repeat)

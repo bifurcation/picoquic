@@ -1456,6 +1456,112 @@ pub unsafe extern "C" fn picoquic_decode_ack_frequency_frame_ffi(
     }
 }
 
+/// Result enum for multipath frame validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub enum MultipathFrameResult {
+    /// Successfully parsed the frame.
+    Success = 0,
+    /// Multipath extension not negotiated.
+    NotNegotiated = 1,
+    /// Frame parsing error.
+    ParseError = 2,
+}
+
+/// FFI export: Decode PATHS_BLOCKED frame.
+///
+/// Parses a PATHS_BLOCKED frame and validates multipath is enabled.
+/// The frame type is assumed to be already skipped by the caller.
+///
+/// Returns:
+/// - On success: non-null pointer to remaining bytes, result_out = Success
+/// - On multipath not enabled: null, result_out = NotNegotiated
+/// - On parse error: null, result_out = ParseError
+///
+/// # Safety
+/// - `bytes` and `bytes_max` must form a valid memory range.
+/// - `is_multipath_enabled` must be 0 or 1.
+/// - `max_path_id_out` and `result_out` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_decode_paths_blocked_frame_ffi(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    is_multipath_enabled: c_int,
+    max_path_id_out: *mut u64,
+    result_out: *mut MultipathFrameResult,
+) -> *const u8 {
+    // Check multipath is enabled
+    if is_multipath_enabled == 0 {
+        *result_out = MultipathFrameResult::NotNegotiated;
+        return std::ptr::null();
+    }
+
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        *result_out = MultipathFrameResult::ParseError;
+        return std::ptr::null();
+    };
+
+    match parse_paths_blocked_frame(slice) {
+        Some((max_path_id, rest)) => {
+            *max_path_id_out = max_path_id;
+            *result_out = MultipathFrameResult::Success;
+            rest.as_ptr()
+        }
+        None => {
+            *result_out = MultipathFrameResult::ParseError;
+            std::ptr::null()
+        }
+    }
+}
+
+/// FFI export: Decode PATH_CID_BLOCKED frame.
+///
+/// Parses a PATH_CID_BLOCKED frame and validates multipath is enabled.
+/// The frame type is assumed to be already skipped by the caller.
+///
+/// Returns:
+/// - On success: non-null pointer to remaining bytes, result_out = Success
+/// - On multipath not enabled: null, result_out = NotNegotiated
+/// - On parse error: null, result_out = ParseError
+///
+/// # Safety
+/// - `bytes` and `bytes_max` must form a valid memory range.
+/// - `is_multipath_enabled` must be 0 or 1.
+/// - `path_id_out`, `next_seq_out`, and `result_out` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_decode_path_cid_blocked_frame_ffi(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    is_multipath_enabled: c_int,
+    path_id_out: *mut u64,
+    next_seq_out: *mut u64,
+    result_out: *mut MultipathFrameResult,
+) -> *const u8 {
+    // Check multipath is enabled
+    if is_multipath_enabled == 0 {
+        *result_out = MultipathFrameResult::NotNegotiated;
+        return std::ptr::null();
+    }
+
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        *result_out = MultipathFrameResult::ParseError;
+        return std::ptr::null();
+    };
+
+    match parse_path_cid_blocked_frame(slice) {
+        Some((path_id, next_seq, rest)) => {
+            *path_id_out = path_id;
+            *next_seq_out = next_seq;
+            *result_out = MultipathFrameResult::Success;
+            rest.as_ptr()
+        }
+        None => {
+            *result_out = MultipathFrameResult::ParseError;
+            std::ptr::null()
+        }
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1799,5 +1905,90 @@ mod tests {
         assert_eq!(header.largest, 10);
         assert_eq!(header.ack_delay, 2);
         assert_eq!(header.num_block, 1);
+    }
+
+    #[test]
+    fn test_decode_paths_blocked_ffi_success() {
+        // PATHS_BLOCKED frame: max_path_id (varint 10)
+        let data = [0x0a, 0xAB];
+        let mut max_path_id: u64 = 0;
+        let mut result = MultipathFrameResult::ParseError;
+
+        unsafe {
+            let ret = picoquic_decode_paths_blocked_frame_ffi(
+                data.as_ptr(),
+                data.as_ptr().add(data.len()),
+                1, // multipath enabled
+                &mut max_path_id,
+                &mut result,
+            );
+            assert!(!ret.is_null());
+            assert_eq!(result, MultipathFrameResult::Success);
+            assert_eq!(max_path_id, 10);
+        }
+    }
+
+    #[test]
+    fn test_decode_paths_blocked_ffi_not_negotiated() {
+        let data = [0x0a];
+        let mut max_path_id: u64 = 0;
+        let mut result = MultipathFrameResult::Success;
+
+        unsafe {
+            let ret = picoquic_decode_paths_blocked_frame_ffi(
+                data.as_ptr(),
+                data.as_ptr().add(data.len()),
+                0, // multipath NOT enabled
+                &mut max_path_id,
+                &mut result,
+            );
+            assert!(ret.is_null());
+            assert_eq!(result, MultipathFrameResult::NotNegotiated);
+        }
+    }
+
+    #[test]
+    fn test_decode_path_cid_blocked_ffi_success() {
+        // PATH_CID_BLOCKED frame: path_id (5) + next_seq (10)
+        let data = [0x05, 0x0a, 0xAB];
+        let mut path_id: u64 = 0;
+        let mut next_seq: u64 = 0;
+        let mut result = MultipathFrameResult::ParseError;
+
+        unsafe {
+            let ret = picoquic_decode_path_cid_blocked_frame_ffi(
+                data.as_ptr(),
+                data.as_ptr().add(data.len()),
+                1, // multipath enabled
+                &mut path_id,
+                &mut next_seq,
+                &mut result,
+            );
+            assert!(!ret.is_null());
+            assert_eq!(result, MultipathFrameResult::Success);
+            assert_eq!(path_id, 5);
+            assert_eq!(next_seq, 10);
+        }
+    }
+
+    #[test]
+    fn test_decode_path_cid_blocked_ffi_not_negotiated() {
+        let data = [0x05, 0x0a];
+        let mut path_id: u64 = 0;
+        let mut next_seq: u64 = 0;
+        let mut result = MultipathFrameResult::Success;
+
+        unsafe {
+            let ret = picoquic_decode_path_cid_blocked_frame_ffi(
+                data.as_ptr(),
+                data.as_ptr().add(data.len()),
+                0, // multipath NOT enabled
+                &mut path_id,
+                &mut next_seq,
+                &mut result,
+            );
+            assert!(ret.is_null());
+            assert_eq!(result, MultipathFrameResult::NotNegotiated);
+        }
     }
 }
