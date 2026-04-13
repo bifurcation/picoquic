@@ -356,6 +356,83 @@ pub fn parse_observed_address_frame(bytes: &[u8], ftype: u64) -> Option<(u64, &[
     Some((sequence, addr, port, rest))
 }
 
+/// Parse a NEW_CONNECTION_ID frame.
+///
+/// Returns (path_id, sequence, retire_before, cid_bytes, secret_bytes, remaining_bytes).
+/// path_id is 0 if not multipath.
+/// cid_bytes and secret_bytes are slices into the original bytes.
+#[allow(clippy::type_complexity)]
+pub fn parse_new_connection_id_frame(
+    bytes: &[u8],
+    is_mp: bool,
+) -> Option<(u64, u64, u64, &[u8], &[u8], &[u8])> {
+    let mut rest = bytes;
+
+    // Skip frame type
+    rest = frames_varint_skip(rest)?;
+
+    // Path ID if multipath
+    let mut path_id = 0u64;
+    if is_mp {
+        let (pid, r) = frames_varint_decode(rest)?;
+        path_id = pid;
+        rest = r;
+    }
+
+    // Sequence and retire_before
+    let (sequence, rest2) = frames_varint_decode(rest)?;
+    let (retire_before, rest3) = frames_varint_decode(rest2)?;
+
+    // CID length
+    let (cid_length, rest4) = frames_uint8_decode(rest3)?;
+    let cid_len = cid_length as usize;
+
+    // Check we have enough bytes for CID + reset secret
+    if rest4.len() < cid_len + RESET_SECRET_SIZE {
+        return None;
+    }
+
+    let cid_bytes = &rest4[..cid_len];
+    let secret_bytes = &rest4[cid_len..cid_len + RESET_SECRET_SIZE];
+    let remaining = &rest4[cid_len + RESET_SECRET_SIZE..];
+
+    Some((
+        path_id,
+        sequence,
+        retire_before,
+        cid_bytes,
+        secret_bytes,
+        remaining,
+    ))
+}
+
+/// Parse a BDP frame.
+///
+/// Returns (lifetime, bytes_in_flight, min_rtt, ip_addr, remaining_bytes).
+/// ip_addr is a slice into the original bytes (4 or 16 bytes).
+#[allow(clippy::type_complexity)]
+pub fn parse_bdp_frame(bytes: &[u8]) -> Option<(u64, u64, u64, &[u8], &[u8])> {
+    let (lifetime, rest) = frames_varint_decode(bytes)?;
+    let (bytes_in_flight, rest) = frames_varint_decode(rest)?;
+    let (min_rtt, rest) = frames_varint_decode(rest)?;
+    let (ip_length, rest) = frames_varint_decode(rest)?;
+
+    // IP address must be 4 (IPv4) or 16 (IPv6) bytes
+    if ip_length != 4 && ip_length != 16 {
+        return None;
+    }
+
+    let ip_len = ip_length as usize;
+    if rest.len() < ip_len {
+        return None;
+    }
+
+    let ip_addr = &rest[..ip_len];
+    let remaining = &rest[ip_len..];
+
+    Some((lifetime, bytes_in_flight, min_rtt, ip_addr, remaining))
+}
+
 // =============================================================================
 // FFI Exports
 // =============================================================================
@@ -605,6 +682,304 @@ pub unsafe extern "C" fn picoquic_skip_bdp_frame(
         return std::ptr::null();
     };
     result_to_ptr(skip_bdp_frame(slice))
+}
+
+// =============================================================================
+// Parse Function FFI Exports
+// =============================================================================
+
+/// FFI export: Parse NEW_CONNECTION_ID frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_new_connection_id_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    is_mp: c_int,
+    path_id: *mut u64,
+    sequence: *mut u64,
+    retire_before: *mut u64,
+    cid_length: *mut u8,
+    cnxid_bytes: *mut *const u8,
+    secret_bytes: *mut *const u8,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_new_connection_id_frame(slice, is_mp != 0) {
+        Some((pid, seq, retire, cid, secret, rest)) => {
+            *path_id = pid;
+            *sequence = seq;
+            *retire_before = retire;
+            *cid_length = cid.len() as u8;
+            *cnxid_bytes = cid.as_ptr();
+            *secret_bytes = secret.as_ptr();
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// FFI export: Parse RETIRE_CONNECTION_ID frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_retire_connection_id_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    unique_path_id: *mut u64,
+    sequence: *mut u64,
+    is_mp: c_int,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_retire_connection_id_frame(slice, is_mp != 0) {
+        Some((pid, seq, rest)) => {
+            *unique_path_id = pid;
+            *sequence = seq;
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// FFI export: Parse ACK_FREQUENCY frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_ack_frequency_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    seq: *mut u64,
+    packets: *mut u64,
+    microsec: *mut u64,
+    ignore_order: *mut u8,
+    reordering_threshold: *mut u64,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_ack_frequency_frame(slice) {
+        Some((s, p, m, r, rest)) => {
+            *seq = s;
+            *packets = p;
+            *microsec = m;
+            *reordering_threshold = r;
+            *ignore_order = if r == 0 { 1 } else { 0 };
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// FFI export: Parse TIME_STAMP frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_time_stamp_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    time_stamp: *mut u64,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_time_stamp_frame(slice) {
+        Some((ts, rest)) => {
+            *time_stamp = ts;
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// FFI export: Parse PATH_ABANDON frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_path_abandon_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    path_id: *mut u64,
+    reason: *mut u64,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_path_abandon_frame(slice) {
+        Some((pid, r, rest)) => {
+            *path_id = pid;
+            *reason = r;
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// FFI export: Parse PATH_AVAILABLE or PATH_BACKUP frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_path_available_or_backup_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    path_id: *mut u64,
+    sequence: *mut u64,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_path_available_or_backup_frame(slice) {
+        Some((pid, seq, rest)) => {
+            *path_id = pid;
+            *sequence = seq;
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// FFI export: Parse MAX_PATH_ID frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_max_path_id_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    max_path_id: *mut u64,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_max_path_id_frame(slice) {
+        Some((mpid, rest)) => {
+            *max_path_id = mpid;
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// FFI export: Parse PATHS_BLOCKED frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_paths_blocked_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    max_path_id: *mut u64,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_paths_blocked_frame(slice) {
+        Some((mpid, rest)) => {
+            *max_path_id = mpid;
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// FFI export: Parse PATH_CID_BLOCKED frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_path_cid_blocked_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    unique_path_id: *mut u64,
+    next_sequence_number: *mut u64,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_path_cid_blocked_frame(slice) {
+        Some((pid, nsn, rest)) => {
+            *unique_path_id = pid;
+            *next_sequence_number = nsn;
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// FFI export: Parse OBSERVED_ADDRESS frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_observed_address_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    ftype: u64,
+    sequence: *mut u64,
+    addr: *mut *const u8,
+    port: *mut u16,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_observed_address_frame(slice, ftype) {
+        Some((seq, a, p, rest)) => {
+            *sequence = seq;
+            *addr = a.as_ptr();
+            *port = p;
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
+}
+
+/// FFI export: Parse BDP frame.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_bdp_frame(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    lifetime: *mut u64,
+    recon_bytes_in_flight: *mut u64,
+    recon_min_rtt: *mut u64,
+    saved_ip_length: *mut u64,
+    saved_ip: *mut *const u8,
+) -> *const u8 {
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        return std::ptr::null();
+    };
+
+    match parse_bdp_frame(slice) {
+        Some((lt, bif, mrtt, ip, rest)) => {
+            *lifetime = lt;
+            *recon_bytes_in_flight = bif;
+            *recon_min_rtt = mrtt;
+            *saved_ip_length = ip.len() as u64;
+            *saved_ip = ip.as_ptr();
+            rest.as_ptr()
+        }
+        None => std::ptr::null(),
+    }
 }
 
 // =============================================================================

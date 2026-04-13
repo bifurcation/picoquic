@@ -631,6 +631,7 @@ const uint8_t* picoquic_skip_new_connection_id_frame(const uint8_t* bytes, const
 }
 #endif /* !FQ_USE_RUST */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_new_connection_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     int is_mp, uint64_t * path_id,
     uint64_t* sequence, uint64_t* retire_before, uint8_t* cid_length, const uint8_t** cnxid_bytes,
@@ -653,6 +654,7 @@ const uint8_t* picoquic_parse_new_connection_id_frame(const uint8_t* bytes, cons
 
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_new_connection_id_frame(picoquic_cnx_t* cnx, const uint8_t* bytes, const uint8_t* bytes_max, uint64_t current_time, int is_mp)
 {
@@ -880,6 +882,7 @@ const uint8_t* picoquic_skip_retire_connection_id_frame(const uint8_t* bytes, co
  * Applications MAY note an error if the connection ID does not exist, but then they
  * MUST be damn sure that this not just a repeat of a previous retire connection ID message...
  */
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_retire_connection_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* unique_path_id, uint64_t* sequence, int is_mp)
 {
@@ -894,6 +897,7 @@ const uint8_t* picoquic_parse_retire_connection_id_frame(const uint8_t* bytes, c
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_retire_connection_id_frame(picoquic_cnx_t* cnx, const uint8_t* bytes, const uint8_t* bytes_max,
     picoquic_path_t* path_x, int is_mp)
@@ -5530,6 +5534,7 @@ const uint8_t* picoquic_skip_ack_frequency_frame(const uint8_t* bytes, const uin
 }
 #endif /* !FQ_USE_RUST */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_ack_frequency_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* seq, uint64_t* packets, uint64_t* microsec, uint8_t * ignore_order, uint64_t *reordering_threshold)
 {
@@ -5542,6 +5547,7 @@ const uint8_t* picoquic_parse_ack_frequency_frame(const uint8_t* bytes, const ui
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_ack_frequency_frame(const uint8_t* bytes, const uint8_t* bytes_max, picoquic_cnx_t * cnx)
 {
@@ -5684,12 +5690,14 @@ const uint8_t* picoquic_skip_time_stamp_frame(const uint8_t* bytes, const uint8_
 }
 #endif /* !FQ_USE_RUST */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_time_stamp_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* time_stamp)
 {
     bytes = picoquic_frames_varint_decode(bytes, bytes_max, time_stamp);
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_time_stamp_frame(const uint8_t* bytes, const uint8_t* bytes_max, picoquic_cnx_t* cnx,
     picoquic_packet_data_t * packet_data)
@@ -5749,6 +5757,7 @@ const uint8_t* picoquic_skip_path_abandon_frame(const uint8_t* bytes, const uint
 }
 #endif /* !FQ_USE_RUST */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_path_abandon_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* path_id, uint64_t* reason)
 {
@@ -5757,6 +5766,7 @@ const uint8_t* picoquic_parse_path_abandon_frame(const uint8_t* bytes, const uin
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_path_abandon_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     picoquic_cnx_t* cnx, uint64_t current_time)
@@ -5920,6 +5930,7 @@ const uint8_t* picoquic_skip_path_available_or_backup_frame(const uint8_t* bytes
 }
 #endif /* !FQ_USE_RUST */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_path_available_or_backup_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* path_id, uint64_t* sequence)
 {
@@ -5928,6 +5939,7 @@ const uint8_t* picoquic_parse_path_available_or_backup_frame(const uint8_t* byte
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_path_available_or_backup_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t frame_id64, picoquic_cnx_t* cnx)
@@ -6036,12 +6048,14 @@ const uint8_t* picoquic_skip_max_path_id_frame(const uint8_t* bytes, const uint8
 }
 #endif /* !FQ_USE_RUST */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_max_path_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* max_path_id)
 {
     bytes = picoquic_frames_varint_decode(bytes, bytes_max, max_path_id);
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_max_path_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     picoquic_cnx_t* cnx)
@@ -6154,12 +6168,14 @@ const uint8_t* picoquic_skip_paths_blocked_frame(const uint8_t* bytes, const uin
 }
 #endif /* !FQ_USE_RUST */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_paths_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* max_path_id)
 {
     bytes = picoquic_frames_varint_decode(bytes, bytes_max, max_path_id);
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_paths_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     picoquic_cnx_t* cnx)
@@ -6292,6 +6308,7 @@ const uint8_t* picoquic_skip_path_cid_blocked_frame(const uint8_t* bytes, const 
 }
 #endif /* !FQ_USE_RUST */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_path_cid_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t* unique_path_id, uint64_t * next_sequence_number)
 {
@@ -6300,6 +6317,7 @@ const uint8_t* picoquic_parse_path_cid_blocked_frame(const uint8_t* bytes, const
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_path_cid_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     picoquic_cnx_t* cnx)
@@ -6486,6 +6504,7 @@ const uint8_t* picoquic_skip_observed_address_frame(const uint8_t* bytes, const 
 }
 #endif /* !FQ_USE_RUST */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_observed_address_frame(const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t ftype, uint64_t* sequence, const uint8_t** addr, uint16_t* port)
 {
@@ -6500,6 +6519,7 @@ const uint8_t* picoquic_parse_observed_address_frame(const uint8_t* bytes, const
 
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_observed_address_frame(picoquic_cnx_t* cnx, const uint8_t* bytes, const uint8_t* bytes_max,
     picoquic_path_t * path_x, uint64_t ftype)
@@ -6579,8 +6599,9 @@ const uint8_t* picoquic_skip_bdp_frame(const uint8_t* bytes, const uint8_t* byte
 }
 #endif /* !FQ_USE_RUST */
 
+#ifndef FQ_USE_RUST
 const uint8_t* picoquic_parse_bdp_frame(const uint8_t* bytes, const uint8_t* bytes_max,
-    uint64_t* lifetime, uint64_t* recon_bytes_in_flight, uint64_t* recon_min_rtt, 
+    uint64_t* lifetime, uint64_t* recon_bytes_in_flight, uint64_t* recon_min_rtt,
     uint64_t* saved_ip_length, const uint8_t** saved_ip)
 {
     if ((bytes = picoquic_frames_varint_decode(bytes, bytes_max, lifetime)) != NULL &&
@@ -6597,6 +6618,7 @@ const uint8_t* picoquic_parse_bdp_frame(const uint8_t* bytes, const uint8_t* byt
     }
     return bytes;
 }
+#endif /* !FQ_USE_RUST */
 
 const uint8_t* picoquic_decode_bdp_frame(picoquic_cnx_t* cnx, const uint8_t* bytes, const uint8_t* bytes_max,
     uint64_t current_time, struct sockaddr* UNUSED(addr_from), picoquic_path_t* path_x)

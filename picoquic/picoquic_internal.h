@@ -2083,6 +2083,28 @@ const uint8_t* picoquic_skip_paths_blocked_frame(const uint8_t* bytes, const uin
 const uint8_t* picoquic_skip_path_cid_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max);
 const uint8_t* picoquic_skip_observed_address_frame(const uint8_t* bytes, const uint8_t* bytes_max, uint64_t ftype);
 const uint8_t* picoquic_skip_bdp_frame(const uint8_t* bytes, const uint8_t* bytes_max);
+
+const uint8_t* picoquic_parse_new_connection_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    int is_mp, uint64_t* path_id, uint64_t* sequence, uint64_t* retire_before,
+    uint8_t* cid_length, const uint8_t** cnxid_bytes, const uint8_t** secret_bytes);
+const uint8_t* picoquic_parse_retire_connection_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    uint64_t* unique_path_id, uint64_t* sequence, int is_mp);
+const uint8_t* picoquic_parse_time_stamp_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    uint64_t* time_stamp);
+const uint8_t* picoquic_parse_path_abandon_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    uint64_t* path_id, uint64_t* reason);
+const uint8_t* picoquic_parse_path_available_or_backup_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    uint64_t* path_id, uint64_t* sequence);
+const uint8_t* picoquic_parse_max_path_id_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    uint64_t* max_path_id);
+const uint8_t* picoquic_parse_paths_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    uint64_t* max_path_id);
+const uint8_t* picoquic_parse_path_cid_blocked_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    uint64_t* unique_path_id, uint64_t* next_sequence_number);
+const uint8_t* picoquic_parse_bdp_frame(const uint8_t* bytes, const uint8_t* bytes_max,
+    uint64_t* lifetime, uint64_t* recon_bytes_in_flight, uint64_t* recon_min_rtt,
+    uint64_t* saved_ip_length, const uint8_t** saved_ip);
+
 int picoquic_is_path_challenging_packet(const uint8_t* bytes, size_t bytes_maxsize);
 int picoquic_queue_path_available_or_backup_frame(
     picoquic_cnx_t* cnx, picoquic_path_t* path_x, picoquic_path_status_enum status);
