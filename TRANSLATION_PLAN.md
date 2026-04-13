@@ -48,7 +48,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `quicctx.c` - QUIC context creation/management
 - [ ] `transport.c` - Transport parameter handling
 - [x] `packet.c` - Packet formatting and parsing (partial: get_packet_number64 - C retains header parsing, protection, incoming packet handling)
-- [x] `frames.c` - Frame encoding/decoding (partial: 15 skip, 12 parse, stream header, ACK header, decode_max_data/max_path_id/ack_frequency/paths_blocked/path_cid_blocked/immediate_ack - C retains encode/check_repeat functions)
+- [x] `frames.c` - Frame encoding/decoding (partial: 15 skip, 12 parse, stream header, ACK header, decode_max_data/max_path_id/ack_frequency/paths_blocked/path_cid_blocked/immediate_ack/time_stamp - C retains encode/check_repeat functions)
 - [ ] `sender.c` - Packet sending logic
 - [ ] `paths.c` - Path management
 - [x] `sacks.c` - SACK list management (full: SackList with BTreeMap, range merging, ACK horizon, send count tracking - C retains cnx context functions)

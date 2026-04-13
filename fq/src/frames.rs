@@ -1596,6 +1596,67 @@ pub unsafe extern "C" fn picoquic_decode_immediate_ack_frame_ffi(
     }
 }
 
+/// Result enum for time stamp frame validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub enum TimeStampResult {
+    /// Successfully parsed and validated.
+    Success = 0,
+    /// Time stamp extension not enabled.
+    NotEnabled = 1,
+    /// Frame parsing error.
+    ParseError = 2,
+}
+
+/// FFI export: Decode TIME_STAMP frame.
+///
+/// Parses a TIME_STAMP frame, validates extension is enabled,
+/// and applies the ack_delay_exponent shift.
+/// The frame type is assumed to be already skipped by the caller.
+///
+/// Returns:
+/// - On success: non-null pointer, time_stamp_out contains the shifted value
+/// - On not enabled: null, result_out = NotEnabled
+/// - On parse error: null, result_out = ParseError
+///
+/// # Safety
+/// - `bytes` and `bytes_max` must form a valid memory range.
+/// - `time_stamp_out` and `result_out` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_decode_time_stamp_frame_ffi(
+    bytes: *const u8,
+    bytes_max: *const u8,
+    is_time_stamp_enabled: c_int,
+    ack_delay_exponent: u8,
+    time_stamp_out: *mut u64,
+    result_out: *mut TimeStampResult,
+) -> *const u8 {
+    // Check extension is enabled
+    if is_time_stamp_enabled == 0 {
+        *result_out = TimeStampResult::NotEnabled;
+        return std::ptr::null();
+    }
+
+    let Some(slice) = slice_from_ptrs(bytes, bytes_max) else {
+        *result_out = TimeStampResult::ParseError;
+        return std::ptr::null();
+    };
+
+    // parse_time_stamp_frame just decodes a varint
+    match frames_varint_decode(slice) {
+        Some((time_stamp, rest)) => {
+            // Apply the ack_delay_exponent shift
+            *time_stamp_out = time_stamp << ack_delay_exponent;
+            *result_out = TimeStampResult::Success;
+            rest.as_ptr()
+        }
+        None => {
+            *result_out = TimeStampResult::ParseError;
+            std::ptr::null()
+        }
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -2043,6 +2104,50 @@ mod tests {
         unsafe {
             picoquic_decode_immediate_ack_frame_ffi(0, &mut result);
             assert_eq!(result, ImmediateAckResult::NotNegotiated);
+        }
+    }
+
+    #[test]
+    fn test_decode_time_stamp_ffi_success() {
+        // Time stamp value: 50 (varint 0x32 - 1-byte QUIC varint)
+        // QUIC varint: top 2 bits = 00 (1-byte), value = 50
+        let data = [0x32, 0xAB];
+        let mut time_stamp: u64 = 0;
+        let mut result = TimeStampResult::ParseError;
+
+        unsafe {
+            let ret = picoquic_decode_time_stamp_frame_ffi(
+                data.as_ptr(),
+                data.as_ptr().add(data.len()),
+                1, // enabled
+                3, // exponent
+                &mut time_stamp,
+                &mut result,
+            );
+            assert!(!ret.is_null());
+            assert_eq!(result, TimeStampResult::Success);
+            // 50 << 3 = 400
+            assert_eq!(time_stamp, 400);
+        }
+    }
+
+    #[test]
+    fn test_decode_time_stamp_ffi_not_enabled() {
+        let data = [0x32];
+        let mut time_stamp: u64 = 0;
+        let mut result = TimeStampResult::Success;
+
+        unsafe {
+            let ret = picoquic_decode_time_stamp_frame_ffi(
+                data.as_ptr(),
+                data.as_ptr().add(data.len()),
+                0, // NOT enabled
+                3,
+                &mut time_stamp,
+                &mut result,
+            );
+            assert!(ret.is_null());
+            assert_eq!(result, TimeStampResult::NotEnabled);
         }
     }
 }

@@ -62,6 +62,12 @@ pub struct Connection {
     pub max_ack_delay_remote: u64,
     /// Minimum ACK delay seen (statistics).
     pub min_ack_delay_remote: u64,
+
+    // Time stamp fields
+    /// Whether the time stamp extension is enabled.
+    pub is_time_stamp_enabled: bool,
+    /// Remote peer's ACK delay exponent (used to decode time stamps).
+    pub remote_ack_delay_exponent: u8,
 }
 
 /// ACK frequency validation result.
@@ -105,6 +111,8 @@ impl Connection {
             max_ack_gap_remote: 0,
             max_ack_delay_remote: 0,
             min_ack_delay_remote: u64::MAX,
+            is_time_stamp_enabled: false,
+            remote_ack_delay_exponent: 0,
         }
     }
 
@@ -256,6 +264,9 @@ pub struct CConnectionView {
     pub max_ack_gap_remote: u64,
     pub max_ack_delay_remote: u64,
     pub min_ack_delay_remote: u64,
+    // Time stamp fields
+    pub is_time_stamp_enabled: c_int,
+    pub remote_ack_delay_exponent: u8,
 }
 
 impl CConnectionView {
@@ -281,6 +292,8 @@ impl CConnectionView {
             max_ack_gap_remote: self.max_ack_gap_remote,
             max_ack_delay_remote: self.max_ack_delay_remote,
             min_ack_delay_remote: self.min_ack_delay_remote,
+            is_time_stamp_enabled: self.is_time_stamp_enabled != 0,
+            remote_ack_delay_exponent: self.remote_ack_delay_exponent,
         }
     }
 
@@ -309,6 +322,8 @@ impl CConnectionView {
         self.max_ack_gap_remote = cnx.max_ack_gap_remote;
         self.max_ack_delay_remote = cnx.max_ack_delay_remote;
         self.min_ack_delay_remote = cnx.min_ack_delay_remote;
+        self.is_time_stamp_enabled = if cnx.is_time_stamp_enabled { 1 } else { 0 };
+        self.remote_ack_delay_exponent = cnx.remote_ack_delay_exponent;
     }
 }
 
@@ -370,6 +385,8 @@ mod tests {
             max_ack_gap_remote: 2,
             max_ack_delay_remote: 25000,
             min_ack_delay_remote: 25000,
+            is_time_stamp_enabled: 1,
+            remote_ack_delay_exponent: 3,
         };
 
         let cnx = c_view.to_rust();
@@ -382,6 +399,8 @@ mod tests {
         assert_eq!(cnx.max_path_id_remote, 10);
         assert!(cnx.is_ack_frequency_negotiated);
         assert_eq!(cnx.ack_frequency_sequence_remote, 5);
+        assert!(cnx.is_time_stamp_enabled);
+        assert_eq!(cnx.remote_ack_delay_exponent, 3);
     }
 
     #[test]
@@ -430,6 +449,8 @@ mod tests {
             max_ack_gap_remote: 2,
             max_ack_delay_remote: 25000,
             min_ack_delay_remote: u64::MAX,
+            is_time_stamp_enabled: 0,
+            remote_ack_delay_exponent: 0,
         };
 
         let mut cnx = c_view.to_rust();

@@ -37,6 +37,9 @@ typedef struct fq_connection_view_t {
     uint64_t max_ack_gap_remote;
     uint64_t max_ack_delay_remote;
     uint64_t min_ack_delay_remote;
+    /* Time stamp fields */
+    int is_time_stamp_enabled;
+    uint8_t remote_ack_delay_exponent;
 } fq_connection_view_t;
 
 /* Helper macro to initialize fq_connection_view_t from picoquic_cnx_t */
@@ -59,7 +62,9 @@ typedef struct fq_connection_view_t {
     .ack_reordering_threshold_remote = (cnx)->ack_reordering_threshold_remote, \
     .max_ack_gap_remote = (cnx)->max_ack_gap_remote, \
     .max_ack_delay_remote = (cnx)->max_ack_delay_remote, \
-    .min_ack_delay_remote = (cnx)->min_ack_delay_remote \
+    .min_ack_delay_remote = (cnx)->min_ack_delay_remote, \
+    .is_time_stamp_enabled = (cnx)->is_time_stamp_enabled, \
+    .remote_ack_delay_exponent = (cnx)->remote_parameters.ack_delay_exponent \
 }
 
 /* Helper macro to copy changed fields back to picoquic_cnx_t */

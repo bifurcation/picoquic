@@ -5792,6 +5792,42 @@ const uint8_t* picoquic_parse_time_stamp_frame(const uint8_t* bytes, const uint8
 }
 #endif /* !FQ_USE_RUST */
 
+#ifdef FQ_USE_RUST
+/* Rust FFI result enum for time stamp frame validation */
+typedef enum {
+    FQ_TIME_STAMP_SUCCESS = 0,
+    FQ_TIME_STAMP_NOT_ENABLED = 1,
+    FQ_TIME_STAMP_PARSE_ERROR = 2
+} fq_time_stamp_result_t;
+
+extern const uint8_t* picoquic_decode_time_stamp_frame_ffi(
+    const uint8_t* bytes, const uint8_t* bytes_max,
+    int is_time_stamp_enabled, uint8_t ack_delay_exponent,
+    uint64_t* time_stamp_out, fq_time_stamp_result_t* result_out);
+
+const uint8_t* picoquic_decode_time_stamp_frame(const uint8_t* bytes, const uint8_t* bytes_max, picoquic_cnx_t* cnx,
+    picoquic_packet_data_t * packet_data)
+{
+    uint64_t time_stamp = 0;
+    fq_time_stamp_result_t result;
+
+    const uint8_t* ret = picoquic_decode_time_stamp_frame_ffi(bytes, bytes_max,
+        cnx->is_time_stamp_enabled, cnx->remote_parameters.ack_delay_exponent,
+        &time_stamp, &result);
+
+    if (result == FQ_TIME_STAMP_NOT_ENABLED) {
+        picoquic_connection_error(cnx, PICOQUIC_TRANSPORT_PROTOCOL_VIOLATION,
+            picoquic_frame_type_time_stamp);
+        return NULL;
+    }
+    else if (result == FQ_TIME_STAMP_SUCCESS) {
+        if (time_stamp > packet_data->last_time_stamp_received) {
+            packet_data->last_time_stamp_received = time_stamp;
+        }
+    }
+    return ret;
+}
+#else
 const uint8_t* picoquic_decode_time_stamp_frame(const uint8_t* bytes, const uint8_t* bytes_max, picoquic_cnx_t* cnx,
     picoquic_packet_data_t * packet_data)
 {
@@ -5814,6 +5850,7 @@ const uint8_t* picoquic_decode_time_stamp_frame(const uint8_t* bytes, const uint
     }
     return bytes;
 }
+#endif /* FQ_USE_RUST */
 
 uint8_t* picoquic_format_time_stamp_frame(picoquic_cnx_t* cnx, uint8_t* bytes, uint8_t* bytes_max, int* more_data, uint64_t current_time)
 {
