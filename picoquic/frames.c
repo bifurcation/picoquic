@@ -5709,6 +5709,38 @@ const uint8_t* picoquic_skip_immediate_ack_frame(const uint8_t* bytes, const uin
 }
 #endif /* !FQ_USE_RUST */
 
+#ifdef FQ_USE_RUST
+/* Rust FFI result enum for immediate ACK frame validation */
+typedef enum {
+    FQ_IMMEDIATE_ACK_SUCCESS = 0,
+    FQ_IMMEDIATE_ACK_NOT_NEGOTIATED = 1
+} fq_immediate_ack_result_t;
+
+extern void picoquic_decode_immediate_ack_frame_ffi(
+    int is_ack_frequency_negotiated, fq_immediate_ack_result_t* result_out);
+
+const uint8_t* picoquic_decode_immediate_ack_frame(const uint8_t* bytes, const uint8_t* bytes_max, picoquic_cnx_t * cnx,
+    picoquic_path_t * path_x, uint64_t current_time)
+{
+    /* This code assumes that the frame type is already skipped */
+    if (bytes != NULL && bytes < bytes_max) {
+        fq_immediate_ack_result_t result;
+        picoquic_decode_immediate_ack_frame_ffi(cnx->is_ack_frequency_negotiated, &result);
+
+        if (result == FQ_IMMEDIATE_ACK_NOT_NEGOTIATED) {
+            picoquic_connection_error(cnx, PICOQUIC_TRANSPORT_PROTOCOL_VIOLATION,
+                picoquic_frame_type_immediate_ack);
+            bytes = NULL;
+        }
+        else {
+            /* set the immediate ACK requested flag */
+            cnx->is_immediate_ack_required = 1;
+            picoquic_set_ack_needed(cnx, current_time, picoquic_packet_context_application, path_x, 1);
+        }
+    }
+    return bytes;
+}
+#else
 const uint8_t* picoquic_decode_immediate_ack_frame(const uint8_t* bytes, const uint8_t* bytes_max, picoquic_cnx_t * cnx,
     picoquic_path_t * path_x, uint64_t current_time)
 {
@@ -5727,6 +5759,7 @@ const uint8_t* picoquic_decode_immediate_ack_frame(const uint8_t* bytes, const u
     }
     return bytes;
 }
+#endif /* FQ_USE_RUST */
 
 uint8_t* picoquic_format_immediate_ack_frame(uint8_t* bytes, uint8_t* bytes_max, int * more_data)
 {

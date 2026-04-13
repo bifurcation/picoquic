@@ -1562,6 +1562,40 @@ pub unsafe extern "C" fn picoquic_decode_path_cid_blocked_frame_ffi(
     }
 }
 
+/// Result enum for immediate ACK frame validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub enum ImmediateAckResult {
+    /// Successfully validated - caller should set flag and trigger ACK.
+    Success = 0,
+    /// ACK frequency extension not negotiated.
+    NotNegotiated = 1,
+}
+
+/// FFI export: Validate IMMEDIATE_ACK frame.
+///
+/// Validates that ACK frequency extension is negotiated.
+/// The frame has no payload, so this just validates the precondition.
+/// The frame type is assumed to be already skipped by the caller.
+///
+/// Returns:
+/// - On success: Success result (caller sets flag and calls set_ack_needed)
+/// - On not negotiated: NotNegotiated result (caller reports error)
+///
+/// # Safety
+/// - `result_out` must be a valid pointer.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_decode_immediate_ack_frame_ffi(
+    is_ack_frequency_negotiated: c_int,
+    result_out: *mut ImmediateAckResult,
+) {
+    if is_ack_frequency_negotiated == 0 {
+        *result_out = ImmediateAckResult::NotNegotiated;
+    } else {
+        *result_out = ImmediateAckResult::Success;
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1989,6 +2023,26 @@ mod tests {
             );
             assert!(ret.is_null());
             assert_eq!(result, MultipathFrameResult::NotNegotiated);
+        }
+    }
+
+    #[test]
+    fn test_decode_immediate_ack_ffi_success() {
+        let mut result = ImmediateAckResult::NotNegotiated;
+
+        unsafe {
+            picoquic_decode_immediate_ack_frame_ffi(1, &mut result);
+            assert_eq!(result, ImmediateAckResult::Success);
+        }
+    }
+
+    #[test]
+    fn test_decode_immediate_ack_ffi_not_negotiated() {
+        let mut result = ImmediateAckResult::Success;
+
+        unsafe {
+            picoquic_decode_immediate_ack_frame_ffi(0, &mut result);
+            assert_eq!(result, ImmediateAckResult::NotNegotiated);
         }
     }
 }
