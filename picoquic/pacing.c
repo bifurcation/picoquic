@@ -24,6 +24,8 @@
 #include <string.h>
 
 
+/* When FQ_USE_RUST is defined, standalone pacing functions are provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
 /* Initialize pacing state to high speed default */
 void picoquic_pacing_init(picoquic_pacing_t* pacing, uint64_t current_time)
 {
@@ -33,6 +35,7 @@ void picoquic_pacing_init(picoquic_pacing_t* pacing, uint64_t current_time)
     pacing->packet_time_nanosec = 1;
     pacing->packet_time_microsec = 1;
 }
+#endif /* !FQ_USE_RUST */
 
 /* Update the leaky bucket used for pacing.
 */
@@ -51,13 +54,15 @@ static void picoquic_update_pacing_bucket(picoquic_pacing_t* pacing, uint64_t cu
     }
 }
 
-/* Check whether pacing authorizes immediate transmission, 
+#ifndef FQ_USE_RUST
+/* Check whether pacing authorizes immediate transmission,
 * no not send any state
  */
 int picoquic_is_pacing_blocked(picoquic_pacing_t* pacing)
 {
     return (pacing->bucket_nanosec < pacing->packet_time_nanosec);
 }
+#endif /* !FQ_USE_RUST */
 
 /*
 * Check pacing to see whether the next transmission is authorized.
@@ -232,7 +237,8 @@ void picoquic_update_pacing_window(picoquic_pacing_t * pacing, int slow_start, u
     }
 }
 
-/* 
+#ifndef FQ_USE_RUST
+/*
 * Update the pacing data after sending a packet.
 */
 void picoquic_update_pacing_data_after_send(picoquic_pacing_t * pacing, size_t length, size_t send_mtu, uint64_t current_time)
@@ -243,6 +249,7 @@ void picoquic_update_pacing_data_after_send(picoquic_pacing_t * pacing, size_t l
     packet_time_nanosec = ((pacing->packet_time_nanosec * (uint64_t)length) + (send_mtu - 1)) / send_mtu;
     pacing->bucket_nanosec -= packet_time_nanosec;
 }
+#endif /* !FQ_USE_RUST */
 
 /* Interface functions for compatibility with old implementation */
 void picoquic_update_pacing_after_send(picoquic_path_t* path_x, size_t length, uint64_t current_time)
