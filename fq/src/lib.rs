@@ -6,6 +6,7 @@ pub mod bytestream;
 pub mod cc_common;
 pub mod connection;
 pub mod cubic;
+pub mod fastcc;
 pub mod intformat;
 pub mod pacing;
 pub mod path;

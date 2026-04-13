@@ -60,7 +60,7 @@ Convert picoquic tests to Cargo tests:
 - [x] `cubic.c` - CUBIC algorithm (partial: CubicState with reset/enter_recovery/correct_spurious/w_cubic, cubic_root - C retains notify wrapper)
 - [ ] `bbr.c` - BBRv3 algorithm
 - [ ] `bbr1.c` - BBRv1 algorithm
-- [ ] `fastcc.c` - Fast CC algorithm
+- [x] `fastcc.c` - Fast CC algorithm (partial: FastCcState with reset/seed_cwin/notify_congestion/check_exit_freeze/on_ack/on_rtt_measurement - C retains notify wrapper)
 - [ ] `prague.c` - Prague (L4S) algorithm
 - [ ] `dualq_aqm.c` - DualQ AQM support
 - [ ] `c4.c` - C4 algorithm
