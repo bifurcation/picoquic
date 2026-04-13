@@ -101,8 +101,8 @@ Convert picoquic tests to Cargo tests:
 
 ### Name/String Tables
 - [ ] `error_names.c` - Error code names
-- [ ] `frame_names.c` - Frame type names
-- [ ] `packet_names.c` - Packet type names
+- [x] `frame_names.c` - Frame type names (full: frame_type constants module, frame_name lookup, is_stream_frame helper, FFI export)
+- [x] `packet_names.c` - Packet type names (full: PacketType enum, packet_type_name lookup, FFI export)
 - [x] `tp_names.c` - Transport parameter names (full: tp constants module, tp_name lookup function, FFI export)
 
 ### Network/Sockets
