@@ -564,6 +564,92 @@ pub fn get_packet_number64(highest: u64, mask: u64, pn: u32) -> u64 {
 }
 
 // =============================================================================
+// ACK Frame Functions
+// =============================================================================
+
+/// Result of parsing an ACK frame header.
+#[derive(Debug, Clone, Copy)]
+pub struct AckHeader {
+    /// Number of additional ACK blocks after the first range.
+    pub num_block: u64,
+    /// Path ID (for multipath ACK frames).
+    pub path_id: Option<u64>,
+    /// Largest acknowledged packet number.
+    pub largest: u64,
+    /// ACK delay (already scaled by exponent, in microseconds).
+    pub ack_delay: u64,
+    /// Number of bytes consumed from input.
+    pub consumed: usize,
+}
+
+/// Parse an ACK frame header.
+///
+/// This parses the fixed header portion of an ACK frame:
+/// - Frame type (already skipped by caller, or handled here)
+/// - [Path ID] (if is_multipath is true)
+/// - Largest Acknowledged
+/// - ACK Delay (scaled by ack_delay_exponent)
+/// - ACK Range Count
+///
+/// Returns None on parse error.
+///
+/// # Arguments
+/// * `bytes` - The frame bytes starting at the frame type
+/// * `is_multipath` - Whether this is a multipath ACK frame (has path_id)
+/// * `ack_delay_exponent` - Exponent to scale the ack delay value
+pub fn parse_ack_header(
+    bytes: &[u8],
+    is_multipath: bool,
+    ack_delay_exponent: u8,
+) -> Option<AckHeader> {
+    if bytes.is_empty() {
+        return None;
+    }
+
+    // Skip frame type - use varint_decode_length to determine frame type size
+    let frame_type_len = varint_decode_length(bytes[0]);
+    let mut rest = &bytes[frame_type_len..];
+
+    // Parse path_id if multipath
+    let path_id = if is_multipath {
+        let (pid, remaining) = frames_varint_decode(rest)?;
+        rest = remaining;
+        Some(pid)
+    } else {
+        None
+    };
+
+    // Parse largest
+    let (largest, remaining) = frames_varint_decode(rest)?;
+    rest = remaining;
+
+    // Parse ack_delay and scale by exponent
+    let (raw_delay, remaining) = frames_varint_decode(rest)?;
+    let ack_delay = raw_delay << ack_delay_exponent;
+    rest = remaining;
+
+    // Parse num_block
+    let (num_block, remaining) = frames_varint_decode(rest)?;
+    rest = remaining;
+
+    let consumed = bytes.len() - rest.len();
+
+    Some(AckHeader {
+        num_block,
+        path_id,
+        largest,
+        ack_delay,
+        consumed,
+    })
+}
+
+/// Get the length of a varint based on its first byte.
+#[inline]
+fn varint_decode_length(first_byte: u8) -> usize {
+    1 << (first_byte >> 6)
+}
+
+// =============================================================================
 // FFI Exports
 // =============================================================================
 
@@ -1169,6 +1255,43 @@ pub extern "C" fn picoquic_get_packet_number64(highest: u64, mask: u64, pn: u32)
     get_packet_number64(highest, mask, pn)
 }
 
+/// FFI export: Parse ACK frame header.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+/// `path_id` can be null if this is not a multipath ACK frame.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_ack_header(
+    bytes: *const u8,
+    bytes_max: usize,
+    num_block: *mut u64,
+    path_id: *mut u64,
+    largest: *mut u64,
+    ack_delay: *mut u64,
+    consumed: *mut usize,
+    ack_delay_exponent: u8,
+) -> c_int {
+    if bytes.is_null() || bytes_max == 0 {
+        return -1;
+    }
+    let slice = std::slice::from_raw_parts(bytes, bytes_max);
+    let is_multipath = !path_id.is_null();
+
+    match parse_ack_header(slice, is_multipath, ack_delay_exponent) {
+        Some(header) => {
+            *num_block = header.num_block;
+            if !path_id.is_null() {
+                *path_id = header.path_id.unwrap_or(0);
+            }
+            *largest = header.largest;
+            *ack_delay = header.ack_delay;
+            *consumed = header.consumed;
+            0
+        }
+        None => -1,
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1458,5 +1581,40 @@ mod tests {
         assert!(is_stream_frame_type(0x0F));
         assert!(!is_stream_frame_type(0x07));
         assert!(!is_stream_frame_type(0x10));
+    }
+
+    #[test]
+    fn test_parse_ack_header_basic() {
+        // ACK frame: type (0x02) + largest (100) + ack_delay (5) + num_blocks (0)
+        // With ack_delay_exponent=0, ack_delay stays as 5
+        let data = [0x02, 0x40, 0x64, 0x05, 0x00, 0xAB];
+        let header = parse_ack_header(&data, false, 0).unwrap();
+        assert_eq!(header.largest, 100);
+        assert_eq!(header.ack_delay, 5);
+        assert_eq!(header.num_block, 0);
+        assert!(header.path_id.is_none());
+        assert_eq!(header.consumed, 5);
+    }
+
+    #[test]
+    fn test_parse_ack_header_with_exponent() {
+        // ACK frame with ack_delay_exponent=3 (multiply by 8)
+        let data = [0x02, 0x0A, 0x04, 0x00, 0xAB]; // largest=10, delay=4*8=32, blocks=0
+        let header = parse_ack_header(&data, false, 3).unwrap();
+        assert_eq!(header.largest, 10);
+        assert_eq!(header.ack_delay, 32); // 4 << 3
+        assert_eq!(header.num_block, 0);
+    }
+
+    #[test]
+    fn test_parse_ack_header_multipath() {
+        // MP ACK frame: type (2-byte) + path_id + largest + delay + blocks
+        let data = [0x40, 0x02, 0x05, 0x0A, 0x02, 0x01, 0xAB];
+        // type=0x02, path_id=5, largest=10, delay=2, blocks=1
+        let header = parse_ack_header(&data, true, 0).unwrap();
+        assert_eq!(header.path_id, Some(5));
+        assert_eq!(header.largest, 10);
+        assert_eq!(header.ack_delay, 2);
+        assert_eq!(header.num_block, 1);
     }
 }

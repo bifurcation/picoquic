@@ -2716,6 +2716,7 @@ uint8_t* picoquic_format_crypto_hs_frame(picoquic_stream_head_t* stream, uint8_t
  * ACK Frames
  */
 
+#ifndef FQ_USE_RUST
 int picoquic_parse_ack_header(uint8_t const* bytes, size_t bytes_max,
     uint64_t* num_block, uint64_t* path_id,
     uint64_t* largest, uint64_t* ack_delay, size_t* consumed,
@@ -2760,6 +2761,7 @@ int picoquic_parse_ack_header(uint8_t const* bytes, size_t bytes_max,
     *consumed = byte_index;
     return ret;
 }
+#endif /* !FQ_USE_RUST */
 
 picoquic_packet_t* picoquic_check_spurious_retransmission(picoquic_cnx_t* cnx,
     picoquic_packet_context_enum pc, picoquic_packet_context_t * pkt_ctx,
