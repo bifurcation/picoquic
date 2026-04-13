@@ -7,6 +7,7 @@
 //! Translated from picoquic/bytestream.c
 
 use crate::intformat::{self, varint};
+use crate::util::{ConnectionId, CONNECTION_ID_MAX_SIZE};
 
 /// Maximum size for stack-allocated bytestream buffers.
 pub const MAX_BUFFER_SIZE: usize = 2560;
@@ -194,6 +195,24 @@ impl<'a> ByteStream<'a> {
     pub fn write_cstr(&mut self, s: &str) -> Result<(), StreamError> {
         self.write_vint(s.len() as u64)?;
         self.write_buffer(s.as_bytes())
+    }
+
+    /// Write a connection ID (length byte + id bytes).
+    pub fn write_cid(&mut self, cid: &ConnectionId) -> Result<(), StreamError> {
+        self.write_u8(cid.id_len)?;
+        self.write_buffer(cid.as_bytes())
+    }
+
+    /// Read a connection ID (length byte + id bytes).
+    pub fn read_cid(&mut self) -> Result<ConnectionId, StreamError> {
+        let id_len = self.read_u8()?;
+        if id_len as usize > CONNECTION_ID_MAX_SIZE {
+            return Err(StreamError);
+        }
+        let mut cid = ConnectionId::null();
+        self.read_buffer(&mut cid.id[..id_len as usize])?;
+        cid.id_len = id_len;
+        Ok(cid)
     }
 
     /// Read a u8.
@@ -468,6 +487,18 @@ impl<'a> ByteReader<'a> {
     pub fn skip_cstr(&mut self) -> Result<(), StreamError> {
         let len = self.read_vint()? as usize;
         self.skip(len)
+    }
+
+    /// Read a connection ID (length byte + id bytes).
+    pub fn read_cid(&mut self) -> Result<ConnectionId, StreamError> {
+        let id_len = self.read_u8()?;
+        if id_len as usize > CONNECTION_ID_MAX_SIZE {
+            return Err(StreamError);
+        }
+        let mut cid = ConnectionId::null();
+        self.read_buffer(&mut cid.id[..id_len as usize])?;
+        cid.id_len = id_len;
+        Ok(cid)
     }
 }
 
@@ -1119,9 +1150,49 @@ pub unsafe extern "C" fn byteskip_cid(s: *mut CBytestream) -> std::ffi::c_int {
     result
 }
 
-// Note: bytewrite_cid, byteread_cid, bytewrite_addr, byteread_addr, byteskip_addr
-// are NOT implemented here because they depend on external types (picoquic_connection_id_t,
-// struct sockaddr, struct sockaddr_storage) that would require bindgen or complex FFI.
+/// FFI export: Write a connection ID (length byte + id bytes).
+///
+/// # Safety
+/// - `s` must point to a valid, writable `bytestream` struct with valid data.
+/// - `cid` must point to a valid ConnectionId struct.
+#[no_mangle]
+pub unsafe extern "C" fn bytewrite_cid(
+    s: *mut CBytestream,
+    cid: *const crate::util::ConnectionId,
+) -> std::ffi::c_int {
+    let mut stream = ByteStream::from_c(&mut *s);
+    let result = match stream.write_cid(&*cid) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    };
+    stream.sync_to_c(&mut *s);
+    result
+}
+
+/// FFI export: Read a connection ID (length byte + id bytes).
+///
+/// # Safety
+/// - `s` must point to a valid, writable `bytestream` struct with valid data.
+/// - `cid` must point to a valid, writable ConnectionId struct.
+#[no_mangle]
+pub unsafe extern "C" fn byteread_cid(
+    s: *mut CBytestream,
+    cid: *mut crate::util::ConnectionId,
+) -> std::ffi::c_int {
+    let mut stream = ByteStream::from_c(&mut *s);
+    let result = match stream.read_cid() {
+        Ok(read_cid) => {
+            *cid = read_cid;
+            0
+        }
+        Err(_) => -1,
+    };
+    stream.sync_to_c(&mut *s);
+    result
+}
+
+// Note: bytewrite_addr, byteread_addr, byteskip_addr are NOT implemented here
+// because they depend on platform-specific types (struct sockaddr, struct sockaddr_storage).
 // These remain in the C implementation.
 
 #[cfg(test)]
@@ -1292,6 +1363,30 @@ mod tests {
         assert_eq!(stream.remain(), 10);
         stream.write_u32(0).unwrap();
         assert_eq!(stream.remain(), 6);
+    }
+
+    #[test]
+    fn test_write_read_cid() {
+        use crate::util::ConnectionId;
+
+        let cid = ConnectionId::from_bytes(&[0xde, 0xad, 0xbe, 0xef]).unwrap();
+
+        let mut buf = [0u8; 20];
+        let mut stream = ByteStream::new(&mut buf);
+        assert!(stream.write_cid(&cid).is_ok());
+        assert_eq!(stream.length(), 5); // 1 byte len + 4 bytes id
+
+        stream.reset();
+        let read_cid = stream.read_cid().unwrap();
+        assert_eq!(read_cid, cid);
+    }
+
+    #[test]
+    fn test_read_cid_invalid_length() {
+        // Length byte > CONNECTION_ID_MAX_SIZE (20)
+        let data = [25u8, 0, 0, 0, 0]; // length 25, invalid
+        let mut reader = ByteReader::new(&data);
+        assert!(reader.read_cid().is_err());
     }
 
     impl ByteStream<'_> {

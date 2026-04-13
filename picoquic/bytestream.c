@@ -319,8 +319,8 @@ int byteread_buffer(bytestream * s, void * buffer, size_t length)
 
 #endif /* !FQ_USE_RUST */
 
-/* supplementary byte stream I/O - these depend on picoquic types and remain in C */
-
+/* When FQ_USE_RUST is defined, CID functions are provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
 int bytewrite_cid(bytestream * s, const picoquic_connection_id_t * cid)
 {
     int ret = bytewrite_int8(s, cid->id_len);
@@ -342,8 +342,6 @@ int byteread_cid(bytestream * s, picoquic_connection_id_t * cid)
     return ret;
 }
 
-/* byteskip_cid is provided by Rust when FQ_USE_RUST, but cid read/write stay in C */
-#ifndef FQ_USE_RUST
 int byteskip_cid(bytestream * s)
 {
     uint8_t id_len = 0;
@@ -351,7 +349,9 @@ int byteskip_cid(bytestream * s)
     ret |= bytestream_skip(s, id_len);
     return ret;
 }
+#endif /* !FQ_USE_RUST (CID functions) */
 
+#ifndef FQ_USE_RUST
 int bytewrite_cstr(bytestream * s, const char * cstr)
 {
     size_t l_cstr = strlen(cstr);

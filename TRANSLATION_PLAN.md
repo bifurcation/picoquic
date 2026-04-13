@@ -81,7 +81,7 @@ Convert picoquic tests to Cargo tests:
 
 ### Utilities
 - [x] `intformat.c` - Integer encoding/decoding
-- [x] `bytestream.c` - Byte stream utilities
+- [x] `bytestream.c` - Byte stream utilities (includes CID read/write/skip - excludes addr functions)
 - [x] `util.c` - General utilities (partial: hex, frame encode/decode, random, memcmp, ConnectionId type with format/parse/compare/hash/val64/hexa - excludes addr functions)
 - [x] `siphash.c` - SipHash implementation
 - [x] `picohash.c` - Hash functions (partial: picohash_bytes, picohash_siphash - hash table remains in C)
