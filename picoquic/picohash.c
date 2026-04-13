@@ -177,6 +177,8 @@ void picohash_delete(picohash_table* hash_table, int delete_key_too)
     free(hash_table);
 }
 
+/* When FQ_USE_RUST is defined, hash functions are provided by the fq Rust crate */
+#ifndef FQ_USE_RUST
 uint64_t picohash_bytes(const uint8_t* bytes, size_t length, const uint8_t* hash_seed)
 {
     uint64_t hash =
@@ -217,3 +219,4 @@ uint64_t picohash_siphash(const uint8_t* bytes, size_t length, const uint8_t* ha
         (((uint64_t)sip_out[7]) << 56);
     return hash;
 }
+#endif /* !FQ_USE_RUST */
