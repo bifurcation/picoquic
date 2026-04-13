@@ -55,7 +55,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `loss_recovery.c` - Loss detection and recovery
 
 ### Congestion Control
-- [ ] `cc_common.c` - Common CC utilities
+- [x] `cc_common.c` - Common CC utilities (partial: MinMaxRtt functions - cnx/path functions remain in C)
 - [ ] `newreno.c` - NewReno algorithm
 - [ ] `cubic.c` - CUBIC algorithm
 - [ ] `bbr.c` - BBRv3 algorithm
@@ -64,7 +64,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `prague.c` - Prague (L4S) algorithm
 - [ ] `dualq_aqm.c` - DualQ AQM support
 - [ ] `c4.c` - C4 algorithm
-- [ ] `pacing.c` - Pacing implementation
+- [x] `pacing.c` - Pacing implementation (partial: standalone functions - path functions remain in C)
 - [ ] `register_all_cc_algorithms.c` - CC registration
 
 ### TLS/Crypto Integration
