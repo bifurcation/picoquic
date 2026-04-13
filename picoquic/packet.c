@@ -498,6 +498,7 @@ int picoquic_parse_packet_header(
 
 
 /* The packet number logic */
+#ifndef FQ_USE_RUST
 uint64_t picoquic_get_packet_number64(uint64_t highest, uint64_t mask, uint32_t pn)
 {
     uint64_t expected = highest + 1;
@@ -522,6 +523,7 @@ uint64_t picoquic_get_packet_number64(uint64_t highest, uint64_t mask, uint32_t 
 
     return pn64;
 }
+#endif /* !FQ_USE_RUST */
 
 /*
  * Remove header protection 

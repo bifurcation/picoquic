@@ -434,6 +434,136 @@ pub fn parse_bdp_frame(bytes: &[u8]) -> Option<(u64, u64, u64, &[u8], &[u8])> {
 }
 
 // =============================================================================
+// Stream Frame Functions
+// =============================================================================
+
+/// Stream frame type range (0x08-0x0f).
+pub const STREAM_FRAME_TYPE_MIN: u8 = 0x08;
+pub const STREAM_FRAME_TYPE_MAX: u8 = 0x0f;
+
+/// Stream frame flag bits.
+pub const STREAM_FLAG_FIN: u8 = 0x01;
+pub const STREAM_FLAG_LEN: u8 = 0x02;
+pub const STREAM_FLAG_OFF: u8 = 0x04;
+
+/// Check if a byte is a stream frame type.
+#[inline]
+pub fn is_stream_frame_type(byte: u8) -> bool {
+    (STREAM_FRAME_TYPE_MIN..=STREAM_FRAME_TYPE_MAX).contains(&byte)
+}
+
+/// Check if a stream frame has no length field (unlimited).
+///
+/// A stream frame is "unlimited" when the LEN bit (0x02) is not set,
+/// meaning the data extends to the end of the packet.
+#[inline]
+pub fn is_stream_frame_unlimited(first_byte: u8) -> bool {
+    (first_byte & STREAM_FLAG_LEN) == 0
+}
+
+/// Parse a stream frame header.
+///
+/// Returns (stream_id, offset, data_length, fin, consumed_bytes) on success.
+/// Returns None on parse error.
+///
+/// Note: For frames without the LEN bit set, data_length will be the remaining
+/// bytes in the input (bytes_max - consumed).
+pub fn parse_stream_header(bytes: &[u8]) -> Option<(u64, u64, usize, bool, usize)> {
+    if bytes.is_empty() {
+        return None;
+    }
+
+    let first_byte = bytes[0];
+    let has_len = (first_byte & STREAM_FLAG_LEN) != 0;
+    let has_off = (first_byte & STREAM_FLAG_OFF) != 0;
+    let fin = (first_byte & STREAM_FLAG_FIN) != 0;
+
+    let mut index = 1usize;
+
+    // Parse stream ID
+    if index >= bytes.len() {
+        return None;
+    }
+    let (stream_id, rest) = frames_varint_decode(&bytes[index..])?;
+    index += bytes.len() - index - rest.len();
+
+    // Parse offset (if present)
+    let offset = if has_off {
+        if index >= bytes.len() {
+            return None;
+        }
+        let (off, rest2) = frames_varint_decode(&bytes[index..])?;
+        index += bytes.len() - index - rest2.len();
+        off
+    } else {
+        0
+    };
+
+    // Parse length (if present)
+    let data_length = if has_len {
+        if index >= bytes.len() {
+            return None;
+        }
+        let (len, rest3) = frames_varint_decode(&bytes[index..])?;
+        let len_size = bytes.len() - index - rest3.len();
+        index += len_size;
+
+        // Validate that data fits
+        if index + len as usize > bytes.len() {
+            return None;
+        }
+        len as usize
+    } else {
+        // No length field - data extends to end of packet
+        bytes.len() - index
+    };
+
+    Some((stream_id, offset, data_length, fin, index))
+}
+
+// =============================================================================
+// Packet Number Functions
+// =============================================================================
+
+/// Reconstruct the full 64-bit packet number from a truncated packet number.
+///
+/// QUIC packet numbers are transmitted with a variable number of least-significant
+/// bits. This function reconstructs the full packet number using the highest
+/// packet number seen so far.
+///
+/// # Arguments
+/// * `highest` - The highest packet number seen so far in this space
+/// * `mask` - The mask for the truncated packet number (e.g., 0xFF for 1 byte,
+///   0xFFFF for 2 bytes, 0xFFFFFF for 3 bytes, 0xFFFFFFFF for 4 bytes)
+/// * `pn` - The truncated packet number from the packet
+///
+/// # Returns
+/// The reconstructed full 64-bit packet number.
+pub fn get_packet_number64(highest: u64, mask: u64, pn: u32) -> u64 {
+    let expected = highest.wrapping_add(1);
+    let not_mask_plus_one = (!mask).wrapping_add(1);
+    let mut pn64 = (expected & mask) | u64::from(pn);
+
+    if pn64 < expected {
+        let delta1 = expected - pn64;
+        let delta2 = not_mask_plus_one.wrapping_sub(delta1);
+        if delta2 < delta1 {
+            pn64 = pn64.wrapping_add(not_mask_plus_one);
+        }
+    } else {
+        let delta1 = pn64 - expected;
+        let delta2 = not_mask_plus_one.wrapping_sub(delta1);
+
+        if delta2 <= delta1 && (pn64 & mask) > 0 {
+            // Out of sequence packet from previous roll
+            pn64 = pn64.wrapping_sub(not_mask_plus_one);
+        }
+    }
+
+    pn64
+}
+
+// =============================================================================
 // FFI Exports
 // =============================================================================
 
@@ -982,6 +1112,63 @@ pub unsafe extern "C" fn picoquic_parse_bdp_frame(
     }
 }
 
+/// FFI export: Check if stream frame has no length field.
+///
+/// # Safety
+/// `bytes` must point to a valid stream frame first byte.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_is_stream_frame_unlimited(bytes: *const u8) -> c_int {
+    if bytes.is_null() {
+        return 0;
+    }
+    if is_stream_frame_unlimited(*bytes) {
+        1
+    } else {
+        0
+    }
+}
+
+/// FFI export: Parse stream frame header.
+///
+/// # Safety
+/// All pointers must be valid. Output pointers must be non-null.
+#[no_mangle]
+pub unsafe extern "C" fn picoquic_parse_stream_header(
+    bytes: *const u8,
+    bytes_max: usize,
+    stream_id: *mut u64,
+    offset: *mut u64,
+    data_length: *mut usize,
+    fin: *mut c_int,
+    consumed: *mut usize,
+) -> c_int {
+    if bytes.is_null() || bytes_max == 0 {
+        return -1;
+    }
+    let slice = std::slice::from_raw_parts(bytes, bytes_max);
+
+    match parse_stream_header(slice) {
+        Some((sid, off, len, f, cons)) => {
+            *stream_id = sid;
+            *offset = off;
+            *data_length = len;
+            *fin = if f { 1 } else { 0 };
+            *consumed = cons;
+            0
+        }
+        None => -1,
+    }
+}
+
+/// FFI export: Reconstruct full 64-bit packet number.
+///
+/// # Safety
+/// This function is always safe to call.
+#[no_mangle]
+pub extern "C" fn picoquic_get_packet_number64(highest: u64, mask: u64, pn: u32) -> u64 {
+    get_packet_number64(highest, mask, pn)
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -1175,5 +1362,101 @@ mod tests {
         let rest = skip_new_connection_id_frame(&data, false).unwrap();
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0], 0xAB);
+    }
+
+    #[test]
+    fn test_is_stream_frame_unlimited() {
+        // Stream frame 0x08 (no FIN, no LEN, no OFF)
+        assert!(is_stream_frame_unlimited(0x08));
+        // Stream frame 0x09 (FIN, no LEN, no OFF)
+        assert!(is_stream_frame_unlimited(0x09));
+        // Stream frame 0x0A (no FIN, LEN, no OFF)
+        assert!(!is_stream_frame_unlimited(0x0A));
+        // Stream frame 0x0F (FIN, LEN, OFF)
+        assert!(!is_stream_frame_unlimited(0x0F));
+    }
+
+    #[test]
+    fn test_parse_stream_header_basic() {
+        // Stream frame type 0x08 (no offset, no length, no fin)
+        // Frame type (0x08) + Stream ID (varint 5) + data to end
+        let data = [0x08, 0x05, 0x01, 0x02, 0x03];
+        let (stream_id, offset, data_length, fin, consumed) = parse_stream_header(&data).unwrap();
+        assert_eq!(stream_id, 5);
+        assert_eq!(offset, 0);
+        assert_eq!(data_length, 3); // Remaining bytes
+        assert!(!fin);
+        assert_eq!(consumed, 2);
+    }
+
+    #[test]
+    fn test_parse_stream_header_with_offset_and_length() {
+        // Stream frame type 0x0E (no fin, LEN, OFF)
+        // Frame type + Stream ID (5) + Offset (100) + Length (3) + data
+        let data = [0x0E, 0x05, 0x40, 0x64, 0x03, 0x01, 0x02, 0x03, 0xAB];
+        let (stream_id, offset, data_length, fin, consumed) = parse_stream_header(&data).unwrap();
+        assert_eq!(stream_id, 5);
+        assert_eq!(offset, 100);
+        assert_eq!(data_length, 3);
+        assert!(!fin);
+        assert_eq!(consumed, 5);
+    }
+
+    #[test]
+    fn test_parse_stream_header_with_fin() {
+        // Stream frame type 0x0F (FIN, LEN, OFF)
+        let data = [0x0F, 0x05, 0x00, 0x02, 0xAA, 0xBB];
+        let (stream_id, offset, data_length, fin, consumed) = parse_stream_header(&data).unwrap();
+        assert_eq!(stream_id, 5);
+        assert_eq!(offset, 0);
+        assert_eq!(data_length, 2);
+        assert!(fin);
+        assert_eq!(consumed, 4);
+    }
+
+    #[test]
+    fn test_get_packet_number64_one_byte() {
+        // 1-byte PN: mask = 0xFFFFFFFFFFFFFF00 (high bits preserved)
+        // highest=0xDEADBEEF, pn=0xF0 -> expected=0xDEADBEF0
+        let pn64 = get_packet_number64(0xDEADBEEF, 0xFFFFFFFFFFFFFF00, 0xF0);
+        assert_eq!(pn64, 0xDEADBEF0);
+    }
+
+    #[test]
+    fn test_get_packet_number64_one_byte_same() {
+        // 1-byte PN: exact match
+        let pn64 = get_packet_number64(0xDEADBEEF, 0xFFFFFFFFFFFFFF00, 0xEF);
+        assert_eq!(pn64, 0xDEADBEEF);
+    }
+
+    #[test]
+    fn test_get_packet_number64_two_byte() {
+        // 2-byte PN: mask = 0xFFFFFFFFFFFF0000
+        // highest=0x10000, pn=0x8000 -> expected=0x18000
+        let pn64 = get_packet_number64(0x10000, 0xFFFFFFFFFFFF0000, 0x8000);
+        assert_eq!(pn64, 0x18000);
+    }
+
+    #[test]
+    fn test_get_packet_number64_four_byte() {
+        // 4-byte PN: mask = 0xFFFFFFFF00000000
+        // highest=0xDEADBEEF, pn=0xDEADBEF0 -> expected=0xDEADBEF0
+        let pn64 = get_packet_number64(0xDEADBEEF, 0xFFFFFFFF00000000, 0xDEADBEF0);
+        assert_eq!(pn64, 0xDEADBEF0);
+    }
+
+    #[test]
+    fn test_get_packet_number64_rollover() {
+        // 4-byte PN with rollover: highest=0xDEADBEEF, pn=0 -> expected=0x100000000
+        let pn64 = get_packet_number64(0xDEADBEEF, 0xFFFFFFFF00000000, 0);
+        assert_eq!(pn64, 0x100000000);
+    }
+
+    #[test]
+    fn test_stream_frame_type_checks() {
+        assert!(is_stream_frame_type(0x08));
+        assert!(is_stream_frame_type(0x0F));
+        assert!(!is_stream_frame_type(0x07));
+        assert!(!is_stream_frame_type(0x10));
     }
 }

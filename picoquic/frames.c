@@ -1202,6 +1202,7 @@ int picoquic_check_stop_sending_needs_repeat(picoquic_cnx_t* cnx, const uint8_t*
  * STREAM frames implicitly create a stream and carry stream data.
  */
 
+#ifndef FQ_USE_RUST
 int picoquic_is_stream_frame_unlimited(const uint8_t* bytes)
 {
     return PICOQUIC_BITS_CLEAR_IN_RANGE(bytes[0], picoquic_frame_type_stream_range_min, picoquic_frame_type_stream_range_max, 0x02);
@@ -1264,6 +1265,7 @@ int picoquic_parse_stream_header(const uint8_t* bytes, size_t bytes_max,
     *consumed = byte_index;
     return ret;
 }
+#endif /* !FQ_USE_RUST */
 
 static void picoquic_stream_data_chunk_callback(picoquic_cnx_t* cnx, picoquic_stream_head_t* stream,
     const uint8_t * bytes, size_t data_length)

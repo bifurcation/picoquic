@@ -48,7 +48,7 @@ Convert picoquic tests to Cargo tests:
 - [ ] `quicctx.c` - QUIC context creation/management
 - [ ] `transport.c` - Transport parameter handling
 - [ ] `packet.c` - Packet formatting and parsing
-- [x] `frames.c` - Frame encoding/decoding (partial: 15 skip functions, 9 parse functions - C retains encode/decode/check_repeat functions)
+- [x] `frames.c` - Frame encoding/decoding (partial: 15 skip functions, 11 parse functions - C retains encode/decode/check_repeat functions)
 - [ ] `sender.c` - Packet sending logic
 - [ ] `paths.c` - Path management
 - [x] `sacks.c` - SACK list management (full: SackList with BTreeMap, range merging, ACK horizon, send count tracking - C retains cnx context functions)
