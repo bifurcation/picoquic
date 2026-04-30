@@ -1,0 +1,95 @@
+# Shell commands run during Phase 0 execution.
+# Format: one block per command, with timestamp + description + the literal command.
+
+[2026-04-30] Configure cmake (with picotls fetch, export compile_commands.json) — running in background:
+  mkdir -p /Users/richbarn/Projects/picoquic/build && cd /Users/richbarn/Projects/picoquic/build && cmake -DPICOQUIC_FETCH_PTLS=Y -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
+
+[2026-04-30] Inspect cmake output and compile_commands.json:
+  tail -20 <bg-task-output>
+  ls -la build/compile_commands.json
+  python3 -c "import json; d = json.load(open('build/compile_commands.json')); print(len(d), 'entries')"
+
+[2026-04-30] Bucket compile_commands.json by source directory:
+  python3 scripts/cc_bucket.py
+
+[2026-04-30] Re-run bucketer (now distinguishes build/_deps fetched sources):
+  python3 scripts/cc_bucket.py
+
+[2026-04-30] Smoke-test inventory.py on a single TU:
+  python3 scripts/inventory.py --file picoquic/intformat.c --out /tmp/inv_smoke.json
+
+[2026-04-30] Re-run smoke test after _clang_setup fix:
+  python3 scripts/inventory.py --file picoquic/intformat.c --out /tmp/inv_smoke.json
+
+[2026-04-30] Dump parsed compile flags for intformat.c:
+  python3 scripts/_dump_flags.py picoquic/intformat.c
+
+[2026-04-30] Verify SDK path / theory that libclang lacks system header search:
+  xcrun --show-sdk-path
+  ls $(xcrun --show-sdk-path)/usr/include/stdint.h
+
+[2026-04-30] Re-run smoke test after adding -isysroot:
+  python3 scripts/inventory.py --file picoquic/intformat.c --out /tmp/inv_smoke.json
+
+[2026-04-30] Smoke test on a larger TU (quicctx.c):
+  python3 scripts/inventory.py --file picoquic/quicctx.c --out /tmp/inv_quicctx.json
+
+[2026-04-30] Find Homebrew libclang builtin-include path:
+  find /opt/homebrew/opt/llvm/lib/clang -maxdepth 3 -name stdarg.h 2>/dev/null
+
+[2026-04-30] Validate callee walk on quicctx.c:
+  python3 scripts/_callee_check.py picoquic/quicctx.c
+
+[2026-04-30] Re-run smoke test on quicctx.c with stdarg.h path added:
+  python3 scripts/inventory.py --file picoquic/quicctx.c --out /tmp/inv_quicctx.json
+  python3 scripts/_callee_check.py picoquic/quicctx.c
+
+[2026-04-30] Sanity check raw size of quicctx.c:
+  wc -l picoquic/quicctx.c
+  grep -c '^[a-zA-Z_].*(' picoquic/quicctx.c
+
+[2026-04-30] Inspect callee-count distribution and top callers in quicctx.c:
+  python3 scripts/inv_query.py /tmp/inv_quicctx.json callee-hist
+  python3 scripts/inv_query.py /tmp/inv_quicctx.json top-callers 3
+
+[2026-04-30] Full inventory run on all in-scope TUs (~136):
+  python3 scripts/inventory.py
+
+[2026-04-30] Inventory summary:
+  python3 scripts/inv_query.py build/inventory.json summary
+  ls -la build/inventory.json
+
+[2026-04-30] Inspect inventory for malformed entries:
+  python3 scripts/_inv_inspect.py build/inventory.json
+
+[2026-04-30] Re-run inventory with non-C-source skip; summarize:
+  python3 scripts/inventory.py
+  python3 scripts/inv_query.py build/inventory.json summary
+
+[2026-04-30] Re-run inventory with file-keyed dedup and global call graph:
+  python3 scripts/inventory.py
+  python3 scripts/inv_query.py build/inventory.json summary
+
+[2026-04-30] Derive call graph (heights, SCCs, mutually-recursive groups):
+  python3 scripts/call_graph.py
+
+[2026-04-30] Scan in-scope C/H for #ifdef symbols, classify against -D flags:
+  python3 scripts/ifdef_scan.py
+
+[2026-04-30] Re-run ifdef scanner after include-guard filter:
+  python3 scripts/ifdef_scan.py
+
+[2026-04-30] Final ifdef scan:
+  python3 scripts/ifdef_scan.py
+
+[2026-04-30] Render progress dashboard:
+  python3 scripts/dashboard.py
+
+[2026-04-30] End-to-end Phase 0 dry-run via the driver:
+  python3 scripts/phase0.py
+
+[2026-04-30] Verify all Phase 0 artifacts exist:
+  ls -la build/{inventory,call_graph,ifdef_manifest}.json build/dashboard.html build/compile_commands.json
+
+[2026-04-30] Re-run Phase 0 with artifacts now writing to xlate/:
+  python3 scripts/phase0.py

@@ -1,0 +1,363 @@
+<!doctype html><html><head><meta charset='utf-8'>
+<title>picoquic → fq translation dashboard</title>
+<style>
+body { font: 14px/1.4 -apple-system, BlinkMacSystemFont, sans-serif;
+       max-width: 1100px; margin: 2em auto; padding: 0 1em; color: #222; }
+h1, h2, h3 { font-weight: 600; }
+h1 { border-bottom: 2px solid #444; padding-bottom: .25em; }
+h2 { margin-top: 2em; border-bottom: 1px solid #ccc; padding-bottom: .15em; }
+table { border-collapse: collapse; margin-top: .5em; }
+th, td { border: 1px solid #ddd; padding: .25em .5em; text-align: left;
+         vertical-align: top; }
+th { background: #f4f4f4; }
+.right { text-align: right; }
+.mono { font-family: "Menlo", monospace; font-size: 0.92em; }
+.badge { display: inline-block; padding: 1px 6px; border-radius: 3px;
+         font-size: .82em; font-weight: 600; }
+.b-c-only           { background: #f8d7da; color: #842029; }
+.b-stubbed          { background: #fff3cd; color: #664d03; }
+.b-translated       { background: #d1e7dd; color: #0f5132; }
+.b-translated-tested{ background: #198754; color: white; }
+.muted { color: #888; }
+.small { font-size: .9em; }
+.section-summary { background: #f9f9f9; padding: .5em 1em; border-radius: 4px;
+                   margin: .5em 0; }
+</style></head><body>
+<h1>picoquic → fq translation dashboard</h1>
+<p class='muted small'>Generated 2026-04-30T15:53:53 from inventory.json + call_graph.json + ifdef_manifest.json + a scan of rs/fq/src.</p>
+<h2>Overall progress</h2><div class='section-summary'>
+<table>
+<tr><th>C functions in scope</th><td class='right mono'>3210</td></tr>
+<tr><th>Rust fns under rs/fq/src/</th><td class='right mono'>2</td></tr>
+<tr><th>Remaining <code>todo!()</code> in Rust</th><td class='right mono'>0</td></tr>
+<tr><th>Translated <code>#[test]</code></th><td class='right mono'>1</td></tr>
+<tr><th>Files in scope (C)</th><td class='right mono'>179</td></tr>
+<tr><th>Translation units parsed</th><td class='right mono'>136</td></tr>
+</table></div>
+<h2>Per-module rollup</h2>
+<table><tr><th>module</th><th>files</th><th>fn defs</th><th>structs</th><th>C-only</th><th>stubbed</th><th>translated</th><th>tested</th></tr>
+<tr><td class='mono'>loglib</td><td class='right'>18</td><td class='right'>144</td><td class='right'>10</td><td class='right'>18</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td></tr>
+<tr><td class='mono'>picohttp</td><td class='right'>24</td><td class='right'>289</td><td class='right'>32</td><td class='right'>24</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td></tr>
+<tr><td class='mono'>picoquic</td><td class='right'>70</td><td class='right'>1607</td><td class='right'>87</td><td class='right'>70</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td></tr>
+<tr><td class='mono'>picoquictest</td><td class='right'>67</td><td class='right'>1170</td><td class='right'>107</td><td class='right'>67</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td></tr>
+</table>
+<h2>Files (in scope)</h2>
+<table><tr><th>file</th><th>module</th><th>kind</th><th>fn defs</th><th>structs</th><th>typedefs</th><th>status</th></tr>
+<tr><td class='mono'>loglib/auto_memlog.h</td><td class='mono'>loglib</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/autoqlog.c</td><td class='mono'>loglib</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/autoqlog.h</td><td class='mono'>loglib</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/cidset.c</td><td class='mono'>loglib</td><td class='small'>source</td><td class='right'>9</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/cidset.h</td><td class='mono'>loglib</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/csv.c</td><td class='mono'>loglib</td><td class='small'>source</td><td class='right'>3</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/csv.h</td><td class='mono'>loglib</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/logconvert.c</td><td class='mono'>loglib</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/logconvert.h</td><td class='mono'>loglib</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/logreader.c</td><td class='mono'>loglib</td><td class='small'>source</td><td class='right'>8</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/logreader.h</td><td class='mono'>loglib</td><td class='small'>header</td><td class='right'>0</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/memory_log.c</td><td class='mono'>loglib</td><td class='small'>source</td><td class='right'>5</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/qlog.c</td><td class='mono'>loglib</td><td class='small'>source</td><td class='right'>53</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/qlog.h</td><td class='mono'>loglib</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/qlog_fns.c</td><td class='mono'>loglib</td><td class='small'>source</td><td class='right'>29</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/qlog_frames.c</td><td class='mono'>loglib</td><td class='small'>source</td><td class='right'>21</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/svg.c</td><td class='mono'>loglib</td><td class='small'>source</td><td class='right'>14</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>loglib/svg.h</td><td class='mono'>loglib</td><td class='small'>header</td><td class='right'>0</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/democlient.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>25</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/democlient.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>3</td><td class='right'>4</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/demoserver.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>10</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/demoserver.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/h3zero.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>32</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/h3zero.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>4</td><td class='right'>9</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/h3zero_client.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>2</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/h3zero_common.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>59</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/h3zero_common.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>7</td><td class='right'>10</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/h3zero_server.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>5</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/h3zero_uri.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>9</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/h3zero_uri.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/h3zero_url_template.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>8</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/h3zero_url_template.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/pico_webtransport.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/picomask.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>24</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/picomask.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>3</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/picoquic_ns.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>22</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/picoquic_ns.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>2</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/quicperf.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>55</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/quicperf.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>4</td><td class='right'>5</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/webtransport.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>18</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/wt_baton.c</td><td class='mono'>picohttp</td><td class='small'>source</td><td class='right'>20</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picohttp/wt_baton.h</td><td class='mono'>picohttp</td><td class='small'>header</td><td class='right'>0</td><td class='right'>4</td><td class='right'>5</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/bbr.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>112</td><td class='right'>3</td><td class='right'>5</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/bbr1.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>53</td><td class='right'>1</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/bytestream.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>39</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/bytestream.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/c4.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>33</td><td class='right'>1</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/cc_common.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>14</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/cc_common.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>2</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/cidset.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/config.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>20</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/cubic.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>12</td><td class='right'>1</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/dualq_aqm.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>16</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/ech.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>24</td><td class='right'>1</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/error_names.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/fastcc.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>8</td><td class='right'>1</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/frame_names.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/frames.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>214</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/intformat.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>10</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/logger.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>66</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/logwriter.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>60</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/loss_recovery.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>13</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/newreno.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>9</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/pacing.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>12</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/packet.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>32</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/packet_names.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/paths.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>10</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/performance_log.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>9</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/performance_log.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picohash.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>9</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picohash.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>9</td><td class='right'>38</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_binlog.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_config.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>1</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_crypto_provider_api.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>2</td><td class='right'>16</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_internal.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>32</td><td class='right'>41</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_lb.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>13</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_lb.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>2</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_logger.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_mbedtls.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_packet_loop.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>6</td><td class='right'>11</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_ptls_fusion.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_ptls_minicrypto.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>4</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_ptls_openssl.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>17</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_qlog.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_unified_log.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>1</td><td class='right'>17</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquic_utils.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>4</td><td class='right'>8</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picoquictest_dualq.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picosocks.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>21</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picosocks.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picosplay.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>20</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/picosplay.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>2</td><td class='right'>6</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/port_blocking.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>3</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/prague.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>13</td><td class='right'>1</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/quicctx.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>301</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/register_all_cc_algorithms.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/sacks.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>34</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/sender.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>80</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/sim_link.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>19</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/siphash.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/siphash.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/sockloop.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>21</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/spinbit.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>6</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/ticket_store.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>15</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/timing.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>4</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/tls_api.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>132</td><td class='right'>2</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/tls_api.h</td><td class='mono'>picoquic</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/token_store.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>8</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/tp_names.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/transport.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>14</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/unified_log.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>17</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquic/util.c</td><td class='mono'>picoquic</td><td class='small'>source</td><td class='right'>82</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/ack_frequency_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>3</td><td class='right'>1</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/ack_of_ack_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>5</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/app_limited.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>14</td><td class='right'>4</td><td class='right'>4</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/bytestream_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>26</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/cc_compete_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>16</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/cert_verify_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>7</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/cleartext_aead_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>14</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/cnx_creation_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>2</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/cnxstress.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>20</td><td class='right'>3</td><td class='right'>4</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/code_version_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>3</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/config_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>17</td><td class='right'>3</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/congestion_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>41</td><td class='right'>0</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/cpu_limited.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>8</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/datagram_tests.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>18</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/delay_tolerant_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>6</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/dualq_aqm_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>13</td><td class='right'>1</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/ech_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>11</td><td class='right'>1</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/edge_cases.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>45</td><td class='right'>2</td><td class='right'>4</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/flow_control_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>7</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/getter_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/h3zero_stream_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>23</td><td class='right'>3</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/h3zero_uri_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>9</td><td class='right'>3</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/h3zerotest.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>78</td><td class='right'>13</td><td class='right'>14</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/hashtest.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>10</td><td class='right'>1</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/high_latency_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>5</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/intformattest.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>5</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/l4s_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>7</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/mbedtls_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/mediatest.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>35</td><td class='right'>6</td><td class='right'>8</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/memlog_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>2</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/minicrypto_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>2</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/multipath_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>63</td><td class='right'>0</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/netperf_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>14</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/openssl_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>2</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/p2p_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/pacing_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>8</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/parseheadertest.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>9</td><td class='right'>2</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/picolog_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>2</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/picomask_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>20</td><td class='right'>2</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/picoquic_lb_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>3</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/picoquictest.h</td><td class='mono'>picoquictest</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/picoquictest_internal.h</td><td class='mono'>picoquictest</td><td class='small'>header</td><td class='right'>0</td><td class='right'>10</td><td class='right'>15</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/picoquictest_rctl.h</td><td class='mono'>picoquictest</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/picoquictest_red.h</td><td class='mono'>picoquictest</td><td class='small'>header</td><td class='right'>0</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/pn2pn64test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>1</td><td class='right'>1</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/qlog_frame_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>1</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/qlog_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>10</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/quic_tester.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>8</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/quicperf_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>9</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/rctl_aqm.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>4</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/red_aqm.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>6</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/sacktest.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>16</td><td class='right'>3</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/satellite_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>18</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/skip_frame_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>45</td><td class='right'>4</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/socket_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>6</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/sockloop_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>19</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/spinbit_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>6</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/splay_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>7</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/stream0_frame_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>16</td><td class='right'>2</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/stresstest.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>28</td><td class='right'>7</td><td class='right'>7</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/ticket_store_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>10</td><td class='right'>2</td><td class='right'>2</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/tls_api_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>297</td><td class='right'>3</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/transport_param_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>14</td><td class='right'>3</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/util_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>8</td><td class='right'>1</td><td class='right'>1</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/warptest.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>33</td><td class='right'>7</td><td class='right'>8</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/webtransport_test.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>16</td><td class='right'>0</td><td class='right'>0</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+<tr><td class='mono'>picoquictest/wifitest.c</td><td class='mono'>picoquictest</td><td class='small'>source</td><td class='right'>16</td><td class='right'>2</td><td class='right'>3</td><td><span class='badge b-C-only'>C-only</span></td></tr>
+</table>
+<h2>Mutually recursive function groups (1)</h2>
+<p class='muted small'>These groups must be translated as a unit (per TRANSLATE_PLAN.md, Phase 3).</p>
+<ul class='mono small'>
+<li>picoquic_handle_send_timers</li>
+<li>picoquic_incoming_client_initial</li>
+<li>picoquic_incoming_segment</li>
+<li>picoquic_prepare_packet_ex</li>
+<li>picoquic_process_sooner_packets</li>
+<li>picoquic_queue_immediate_close</li>
+</ul>
+<h2>Top 20 functions by direct callee count</h2>
+<p class='muted small'>Useful for identifying orchestrator functions — high callee count = a good late-Phase-3 target.</p>
+<table><tr><th>function</th><th>direct callees</th></tr>
+<tr><td class='mono'>getter_test</td><td class='right'>50</td></tr>
+<tr><td class='mono'>multipath_test_one</td><td class='right'>41</td></tr>
+<tr><td class='mono'>picoquic_decode_frames</td><td class='right'>38</td></tr>
+<tr><td class='mono'>qlog_packet_frame</td><td class='right'>34</td></tr>
+<tr><td class='mono'>picoquic_incoming_segment</td><td class='right'>33</td></tr>
+<tr><td class='mono'>picoquic_prepare_packet_ready</td><td class='right'>33</td></tr>
+<tr><td class='mono'>picoquic_binlog_frames</td><td class='right'>32</td></tr>
+<tr><td class='mono'>picoquic_textlog_frames</td><td class='right'>31</td></tr>
+<tr><td class='mono'>picoquic_create_and_configure</td><td class='right'>30</td></tr>
+<tr><td class='mono'>picoquic_skip_frame</td><td class='right'>30</td></tr>
+<tr><td class='mono'>frames_format_test</td><td class='right'>29</td></tr>
+<tr><td class='mono'>picoquic_create_cnx_internal</td><td class='right'>27</td></tr>
+<tr><td class='mono'>multipath_trace_test_one</td><td class='right'>25</td></tr>
+<tr><td class='mono'>picoquic_prepare_packet_almost_ready</td><td class='right'>25</td></tr>
+<tr><td class='mono'>demo_server_test_specced</td><td class='right'>23</td></tr>
+<tr><td class='mono'>http_stress_test_one</td><td class='right'>23</td></tr>
+<tr><td class='mono'>sockloop_test_one</td><td class='right'>22</td></tr>
+<tr><td class='mono'>picoquic_prepare_packet_client_init</td><td class='right'>20</td></tr>
+<tr><td class='mono'>warptest_configure</td><td class='right'>20</td></tr>
+<tr><td class='mono'>app_limited_test_one</td><td class='right'>19</td></tr>
+</table>
+<h2>Top 20 functions by incoming-call count (most called)</h2>
+<p class='muted small'>High in-degree = these are foundational leaves; if they're translated wrong, lots of downstream work breaks. Also good Phase 3 starting points.</p>
+<table><tr><th>function</th><th>incoming</th><th>height</th></tr>
+<tr><td class='mono'>debug_printf</td><td class='right'>432</td><td class='right'>0</td></tr>
+<tr><td class='mono'>tls_api_delete_ctx</td><td class='right'>154</td><td class='right'>1</td></tr>
+<tr><td class='mono'>tls_api_connection_loop</td><td class='right'>95</td><td class='right'>1</td></tr>
+<tr><td class='mono'>picoquic_frames_varint_decode</td><td class='right'>78</td><td class='right'>0</td></tr>
+<tr><td class='mono'>picoquic_log_app_message</td><td class='right'>71</td><td class='right'>0</td></tr>
+<tr><td class='mono'>tls_api_init_ctx</td><td class='right'>71</td><td class='right'>3</td></tr>
+<tr><td class='mono'>picoquic_start_client_cnx</td><td class='right'>70</td><td class='right'>1</td></tr>
+<tr><td class='mono'>picoquic_set_qlog</td><td class='right'>63</td><td class='right'>1</td></tr>
+<tr><td class='mono'>picoquic_free</td><td class='right'>62</td><td class='right'>1</td></tr>
+<tr><td class='mono'>picoquic_create_cnx</td><td class='right'>61</td><td class='right'>2</td></tr>
+<tr><td class='mono'>picoquic_frames_varint_encode</td><td class='right'>60</td><td class='right'>0</td></tr>
+<tr><td class='mono'>picoquic_create</td><td class='right'>58</td><td class='right'>1</td></tr>
+<tr><td class='mono'>picoquic_delete_cnx</td><td class='right'>56</td><td class='right'>1</td></tr>
+<tr><td class='mono'>tls_api_one_sim_round</td><td class='right'>55</td><td class='right'>1</td></tr>
+<tr><td class='mono'>picoquic_file_close</td><td class='right'>52</td><td class='right'>0</td></tr>
+<tr><td class='mono'>picoquic_set_callback</td><td class='right'>51</td><td class='right'>0</td></tr>
+<tr><td class='mono'>test_api_init_send_recv_scenario</td><td class='right'>50</td><td class='right'>2</td></tr>
+<tr><td class='mono'>picoquic_connection_error</td><td class='right'>50</td><td class='right'>2</td></tr>
+<tr><td class='mono'>picoquic_get_input_path</td><td class='right'>49</td><td class='right'>1</td></tr>
+<tr><td class='mono'>picoquic_store_addr</td><td class='right'>48</td><td class='right'>1</td></tr>
+</table>
+<h2>External call targets (top 30)</h2>
+<p class='muted small'>Functions called from in-scope code but defined elsewhere (libc, picotls, system). The translator needs Rust equivalents (stdlib, crates, or sys bindings) for each.</p>
+<table><tr><th>name</th><th>callers</th></tr>
+<tr><td class='mono'>__builtin_object_size</td><td class='right'>406</td></tr>
+<tr><td class='mono'>__builtin___memset_chk</td><td class='right'>283</td></tr>
+<tr><td class='mono'>fprintf</td><td class='right'>206</td></tr>
+<tr><td class='mono'>free</td><td class='right'>186</td></tr>
+<tr><td class='mono'>__builtin___memcpy_chk</td><td class='right'>163</td></tr>
+<tr><td class='mono'>malloc</td><td class='right'>129</td></tr>
+<tr><td class='mono'>memcmp</td><td class='right'>76</td></tr>
+<tr><td class='mono'>strlen</td><td class='right'>64</td></tr>
+<tr><td class='mono'>strcmp</td><td class='right'>29</td></tr>
+<tr><td class='mono'>fwrite</td><td class='right'>23</td></tr>
+<tr><td class='mono'>__builtin_constant_p</td><td class='right'>18</td></tr>
+<tr><td class='mono'>_OSSwapInt16</td><td class='right'>16</td></tr>
+<tr><td class='mono'>ptls_iovec_init</td><td class='right'>12</td></tr>
+<tr><td class='mono'>__builtin___memmove_chk</td><td class='right'>11</td></tr>
+<tr><td class='mono'>__error</td><td class='right'>10</td></tr>
+<tr><td class='mono'>fread</td><td class='right'>9</td></tr>
+<tr><td class='mono'>ptls_buffer_dispose</td><td class='right'>9</td></tr>
+<tr><td class='mono'>ptls_buffer_init</td><td class='right'>9</td></tr>
+<tr><td class='mono'>ftell</td><td class='right'>8</td></tr>
+<tr><td class='mono'>fflush</td><td class='right'>7</td></tr>
+<tr><td class='mono'>fgets</td><td class='right'>7</td></tr>
+<tr><td class='mono'>fseek</td><td class='right'>6</td></tr>
+<tr><td class='mono'>__builtin_va_start</td><td class='right'>5</td></tr>
+<tr><td class='mono'>__builtin_va_end</td><td class='right'>5</td></tr>
+<tr><td class='mono'>ptls_cipher_free</td><td class='right'>5</td></tr>
+<tr><td class='mono'>close</td><td class='right'>5</td></tr>
+<tr><td class='mono'>ptls_hkdf_expand_label</td><td class='right'>4</td></tr>
+<tr><td class='mono'>BIO_new_file</td><td class='right'>4</td></tr>
+<tr><td class='mono'>BIO_free</td><td class='right'>4</td></tr>
+<tr><td class='mono'>ptls_aead_free</td><td class='right'>4</td></tr>
+</table>
+<h2>#ifdef symbols requiring review (68)</h2>
+<p class='muted small'>These appeared in <code>#if</code> / <code>#ifdef</code> directives but aren't covered by a <code>-D</code> flag, a known-off platform pattern, or an include guard. Review what they do and whether their branches should be translated.</p>
+<table><tr><th>symbol</th><th>occurrences</th><th>files (sample)</th></tr>
+<tr><td class='mono'>_WINDOWS</td><td class='right'>221</td><td class='small mono'>loglib/qlog_fns.c, loglib/svg.c, picohttp/democlient.c, … (+69)</td></tr>
+<tr><td class='mono'>__cplusplus</td><td class='right'>106</td><td class='small mono'>loglib/auto_memlog.h, loglib/autoqlog.h, loglib/csv.h, … (+50)</td></tr>
+<tr><td class='mono'>_WINDOWS64</td><td class='right'>23</td><td class='small mono'>picoquic/picoquic_ptls_fusion.c, picoquic/picoquic_utils.h, picoquic/tls_api.c, … (+6)</td></tr>
+<tr><td class='mono'>PICOQUIC_WITH_IO_URING</td><td class='right'>21</td><td class='small mono'>picoquic/picoquic_packet_loop.h, picoquic/sockloop.c</td></tr>
+<tr><td class='mono'>PICOQUIC_WITH_POLL</td><td class='right'>16</td><td class='small mono'>picoquic/sockloop.c</td></tr>
+<tr><td class='mono'>PICOQUIC_WITHOUT_SSLKEYLOG</td><td class='right'>14</td><td class='small mono'>picoquic/config.c, picoquic/picoquic.h, picoquic/picoquic_config.h, … (+3)</td></tr>
+<tr><td class='mono'>PICOQUIC_WITH_MBEDTLS</td><td class='right'>14</td><td class='small mono'>picoquic/picoquic_crypto_provider_api.h, picoquic/picoquic_mbedtls.c, picoquic/tls_api.c, … (+3)</td></tr>
+<tr><td class='mono'>LIBRESSL_VERSION_NUMBER</td><td class='right'>12</td><td class='small mono'>picoquic/picoquic_ptls_openssl.c</td></tr>
+<tr><td class='mono'>PTLS_WITHOUT_OPENSSL</td><td class='right'>12</td><td class='small mono'>picoquic/picoquic_ptls_openssl.c, picoquic/tls_api.c, picoquictest/minicrypto_test.c, … (+1)</td></tr>
+<tr><td class='mono'>_DEBUG</td><td class='right'>9</td><td class='small mono'>picoquic/picoquic_utils.h, picoquic/tls_api.c, picoquic/util.c</td></tr>
+<tr><td class='mono'>OPENSSL_VERSION_NUMBER</td><td class='right'>8</td><td class='small mono'>picoquic/picoquic_ptls_openssl.c</td></tr>
+<tr><td class='mono'>BBRExperiment</td><td class='right'>7</td><td class='small mono'>picoquic/bbr.c, picoquic/picoquic_internal.h, picoquic/quicctx.c</td></tr>
+<tr><td class='mono'>ESP_PLATFORM</td><td class='right'>6</td><td class='small mono'>picoquic/picoquic_mbedtls.c, picoquic/sockloop.c</td></tr>
+<tr><td class='mono'>OPENSSL_NO_ENGINE</td><td class='right'>6</td><td class='small mono'>picoquic/picoquic_ptls_openssl.c</td></tr>
+<tr><td class='mono'>RTTJitterBuffer</td><td class='right'>6</td><td class='small mono'>picoquic/bbr.c</td></tr>
+<tr><td class='mono'>UDP_SEGMENT</td><td class='right'>6</td><td class='small mono'>picoquic/picosocks.c, picoquic/sockloop.c</td></tr>
+<tr><td class='mono'>PICOQUIC_WITH_THREAD_CHECK</td><td class='right'>5</td><td class='small mono'>picoquic/picoquic_internal.h, picoquic/quicctx.c</td></tr>
+<tr><td class='mono'>__APPLE__</td><td class='right'>5</td><td class='small mono'>picoquic/picoquic_utils.h, picoquic/sockloop.c</td></tr>
+<tr><td class='mono'>IP_ECN</td><td class='right'>4</td><td class='small mono'>picoquic/picosocks.c</td></tr>
+<tr><td class='mono'>__FreeBSD__</td><td class='right'>4</td><td class='small mono'>picoquic/sockloop.c</td></tr>
+<tr><td class='mono'>DISABLE_DEBUG_PRINTF</td><td class='right'>3</td><td class='small mono'>picoquic/picoquic_utils.h, picoquic/picosocks.c</td></tr>
+<tr><td class='mono'>IPV6_ECN</td><td class='right'>3</td><td class='small mono'>picoquic/picosocks.c</td></tr>
+<tr><td class='mono'>IP_PKTINFO</td><td class='right'>3</td><td class='small mono'>picoquic/picosocks.c</td></tr>
+<tr><td class='mono'>MBEDTLS_VERSION_NUMBER</td><td class='right'>3</td><td class='small mono'>picoquic/picoquic_mbedtls.c</td></tr>
+<tr><td class='mono'>RTTJitterBufferAdapt</td><td class='right'>3</td><td class='small mono'>picoquic/bbr.c</td></tr>
+<tr><td class='mono'>RTTJitterBufferProbe</td><td class='right'>3</td><td class='small mono'>picoquic/bbr.c</td></tr>
+<tr><td class='mono'>TOO_CAUTIOUS</td><td class='right'>3</td><td class='small mono'>picoquic/quicctx.c</td></tr>
+<tr><td class='mono'>CLOCK_MONOTONIC</td><td class='right'>2</td><td class='small mono'>picoquic/quicctx.c</td></tr>
+<tr><td class='mono'>HUNTING_FOR_BUFFER_OVERFLOW</td><td class='right'>2</td><td class='small mono'>picoquic/sender.c</td></tr>
+<tr><td class='mono'>IPV6_MTU_DISCOVER</td><td class='right'>2</td><td class='small mono'>picoquic/picosocks.c</td></tr>
+<tr><td class='mono'>IPV6_TCLASS</td><td class='right'>2</td><td class='small mono'>picoquic/picosocks.c</td></tr>
+<tr><td class='mono'>IP_MTU_DISCOVER</td><td class='right'>2</td><td class='small mono'>picoquic/picosocks.c</td></tr>
+<tr><td class='mono'>IP_PMTUDISC_PROBE</td><td class='right'>2</td><td class='small mono'>picoquic/picosocks.c</td></tr>
+<tr><td class='mono'>IP_RECVTOS</td><td class='right'>2</td><td class='small mono'>picoquic/picosocks.c</td></tr>
+<tr><td class='mono'>IP_TOS</td><td class='right'>2</td><td class='small mono'>picoquic/picosocks.c</td></tr>
+<tr><td class='mono'>MBEDTLS_SHA384_C</td><td class='right'>2</td><td class='small mono'>picoquictest/mbedtls_test.c</td></tr>
+<tr><td class='mono'>PTLS_OPENSSL_HAVE_CHACHA20_POLY1305</td><td class='right'>2</td><td class='small mono'>picoquic/picoquic_ptls_openssl.c</td></tr>
+<tr><td class='mono'>SO_REUSEPORT</td><td class='right'>2</td><td class='small mono'>picoquic/sockloop.c</td></tr>
+<tr><td class='mono'>__GNUC__</td><td class='right'>2</td><td class='small mono'>picoquic/picoquic.h</td></tr>
+<tr><td class='mono'>__clang__</td><td class='right'>2</td><td class='small mono'>picoquic/picoquic.h</td></tr>
+</table>
+<p class='muted small'>... and 28 more in <code>build/ifdef_manifest.json</code>.</p>
+</body></html>

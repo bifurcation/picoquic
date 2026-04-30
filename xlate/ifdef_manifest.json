@@ -1,0 +1,2772 @@
+{
+  "metadata": {
+    "in_scope_dirs": [
+      "loglib",
+      "picohttp",
+      "picoquic",
+      "picoquictest"
+    ],
+    "files_scanned": 195,
+    "symbols_seen": 150,
+    "minus_d_macros_in_compile_commands": [
+      "PICOTLS_USE_BROTLI",
+      "PICOTLS_USE_DTRACE",
+      "PTLS_MEMORY_DEBUG",
+      "PTLS_WITHOUT_FUSION"
+    ]
+  },
+  "classified": {
+    "always_on": [
+      {
+        "symbol": "PTLS_WITHOUT_FUSION",
+        "occurrences": 12,
+        "files": [
+          "picoquic/picoquic_ptls_fusion.c",
+          "picoquic/tls_api.c",
+          "picoquictest/minicrypto_test.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_ptls_fusion.c",
+            "line": 36,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picoquic_ptls_fusion.c",
+            "line": 42,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic_ptls_fusion.c",
+            "line": 42,
+            "directive": "if"
+          }
+        ]
+      }
+    ],
+    "known_off": [
+      {
+        "symbol": "WIN32",
+        "occurrences": 2,
+        "files": [
+          "picoquic/intformat.c",
+          "picoquic/picoquic_utils.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/intformat.c",
+            "line": 23,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 33,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "_MSC_VER",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_internal.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_internal.h",
+            "line": 25,
+            "directive": "ifdef"
+          }
+        ]
+      }
+    ],
+    "include_guard": [
+      {
+        "symbol": "AUTOQLOG_H",
+        "occurrences": 1,
+        "files": [
+          "loglib/autoqlog.h"
+        ],
+        "sample": [
+          {
+            "file": "loglib/autoqlog.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "AUTO_MEMLOG_H",
+        "occurrences": 1,
+        "files": [
+          "loglib/auto_memlog.h"
+        ],
+        "sample": [
+          {
+            "file": "loglib/auto_memlog.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "C4_H",
+        "occurrences": 2,
+        "files": [
+          "picoquic/c4.h",
+          "picoquic/picoquic_c4.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/c4.h",
+            "line": 5,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picoquic_c4.h",
+            "line": 5,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "CC_COMMON_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/cc_common.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/cc_common.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "DEMO_CLIENT_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/democlient.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/democlient.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "DEMO_SERVER_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/demoserver.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/demoserver.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "H3ZERO_COMMON_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/h3zero_common.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/h3zero_common.h",
+            "line": 21,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "H3ZERO_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/h3zero.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/h3zero.h",
+            "line": 21,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "H3ZERO_URI_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/h3zero_uri.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/h3zero_uri.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "H3ZERO_URL_TEMPLATE_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/h3zero_url_template.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/h3zero_url_template.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "INVALID_SOCKET",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.h",
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 98,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 108,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "IPV6_RECVPKTINFO",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 107,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "LOGCONVERT_H",
+        "occurrences": 1,
+        "files": [
+          "loglib/logconvert.h"
+        ],
+        "sample": [
+          {
+            "file": "loglib/logconvert.h",
+            "line": 21,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "LOGREADER_H",
+        "occurrences": 1,
+        "files": [
+          "loglib/logreader.h"
+        ],
+        "sample": [
+          {
+            "file": "loglib/logreader.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "MAX",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_utils.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 127,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOHASH_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picohash.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picohash.h",
+            "line": 27,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOMASK_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/picomask.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/picomask.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUICTEST_DUALQ_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquictest_dualq.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquictest_dualq.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUICTEST_H",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/picoquictest.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/picoquictest.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUICTEST_INTERNAL_H",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/picoquictest_internal.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/picoquictest_internal.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUICTEST_RCTL_H",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/picoquictest_rctl.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/picoquictest_rctl.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUICTEST_RED_H",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/picoquictest_red.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/picoquictest_red.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_BBR1_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_bbr1.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_bbr1.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_BBR_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_bbr.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_bbr.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_BYTESTREAM_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/bytestream.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/bytestream.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_CIDSET_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/cidset.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/cidset.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_CONFIG_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_config.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_config.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_CRYPTO_PROVIDER_API_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_crypto_provider_api.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_crypto_provider_api.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_CUBIC_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_cubic.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_cubic.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_FASTCC_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_fastcc.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_fastcc.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_INTERNAL_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_internal.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_internal.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_LB_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_lb.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_lb.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_LOGGER_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_logger.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_logger.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_LOG_WRITER_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_binlog.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_binlog.h",
+            "line": 21,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_MAX_PACKET_SIZE",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_internal.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_internal.h",
+            "line": 38,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_NEWRENO_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_newreno.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_newreno.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_NS_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/picoquic_ns.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/picoquic_ns.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_PACKET_LOOP_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_packet_loop.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_packet_loop.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_PERFORMANCE_LOG_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/performance_log.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/performance_log.h",
+            "line": 21,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_PRAGUE_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_prague.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_prague.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_QLOG_FNS_H",
+        "occurrences": 2,
+        "files": [
+          "loglib/picoquic_qlog_fns.h",
+          "picoquic/picoquic_qlog.h"
+        ],
+        "sample": [
+          {
+            "file": "loglib/picoquic_qlog_fns.h",
+            "line": 22,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picoquic_qlog.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_QLOG_H",
+        "occurrences": 1,
+        "files": [
+          "loglib/qlog.h"
+        ],
+        "sample": [
+          {
+            "file": "loglib/qlog.h",
+            "line": 21,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_SET_BINLOG_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_set_binlog.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_set_binlog.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_SET_TEXTLOG_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_set_textlog.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_set_textlog.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_UNIFIED_LOG_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_unified_log.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_unified_log.h",
+            "line": 21,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_USE_CONSTANT_TIME_MEMCMP",
+        "occurrences": 3,
+        "files": [
+          "picoquic/picoquic_utils.h",
+          "picoquic/quicctx.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 47,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 54,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/quicctx.c",
+            "line": 366,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_UTILS_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_utils.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOSOCKS_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOSPLAY_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosplay.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosplay.h",
+            "line": 25,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PRIu64",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_utils.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 35,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PRIx64",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_utils.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 38,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "QUICPERF_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/quicperf.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/quicperf.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "SIPHASH_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/siphash.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/siphash.h",
+            "line": 18,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "SLEEP",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/sockloop_test.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/sockloop_test.c",
+            "line": 34,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "SOCKET_CLOSE",
+        "occurrences": 5,
+        "files": [
+          "picoquic/picosocks.h",
+          "picoquic/sockloop.c",
+          "picoquic/winsockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 43,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 101,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 50,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "SOCKET_TYPE",
+        "occurrences": 5,
+        "files": [
+          "picoquic/picosocks.h",
+          "picoquic/sockloop.c",
+          "picoquic/winsockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 40,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 95,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 47,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "SOL_IPV6",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 71,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "TLS_API_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/tls_api.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/tls_api.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "UDP_COALESCED_INFO",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.c",
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 405,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 154,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "UDP_RECV_MAX_COALESCED_SIZE",
+        "occurrences": 4,
+        "files": [
+          "picoquic/picosocks.c",
+          "picoquic/picosocks.h",
+          "picoquic/sockloop.c",
+          "picoquic/winsockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 815,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 151,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 173,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "UDP_SEND_MSG_SIZE",
+        "occurrences": 4,
+        "files": [
+          "picoquic/picosocks.h",
+          "picoquic/sockloop.c",
+          "picoquic/winsockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 148,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 131,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 159,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "UNREFERENCED_PARAMETER",
+        "occurrences": 3,
+        "files": [
+          "picoquic/picosocks.c",
+          "picoquic/spinbit.c",
+          "picoquic/tls_api.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 242,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/spinbit.c",
+            "line": 25,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/tls_api.c",
+            "line": 74,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "UNUSED",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic.h",
+            "line": 172,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "WINCOMPAT_H",
+        "occurrences": 1,
+        "files": [
+          "picoquic/wincompat.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/wincompat.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "WSA_LAST_ERROR",
+        "occurrences": 5,
+        "files": [
+          "picoquic/picosocks.h",
+          "picoquic/sockloop.c",
+          "picoquic/winsockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 52,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 104,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 53,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "WSA_START",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 49,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "WSA_START_DATA",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 46,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "WT_BATON_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/wt_baton.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/wt_baton.h",
+            "line": 30,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "__APPLE_USE_RFC_3542",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 84,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "__USE_GNU",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 81,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "__USE_POSIX",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.h",
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 78,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 73,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "__USE_XOPEN2K",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.h",
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 75,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 70,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "__attribute__",
+        "occurrences": 1,
+        "files": [
+          "picoquic/wincompat.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/wincompat.h",
+            "line": 32,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "cROUNDS",
+        "occurrences": 1,
+        "files": [
+          "picoquic/siphash.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/siphash.c",
+            "line": 28,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "dROUNDS",
+        "occurrences": 1,
+        "files": [
+          "picoquic/siphash.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/siphash.c",
+            "line": 31,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "gettimeofday",
+        "occurrences": 1,
+        "files": [
+          "picoquic/wincompat.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/wincompat.h",
+            "line": 29,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "pico_webtransport_H",
+        "occurrences": 1,
+        "files": [
+          "picohttp/pico_webtransport.h"
+        ],
+        "sample": [
+          {
+            "file": "picohttp/pico_webtransport.h",
+            "line": 22,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "socklen_t",
+        "occurrences": 3,
+        "files": [
+          "picoquic/picosocks.h",
+          "picoquic/sockloop.c",
+          "picoquic/winsockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 55,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 56,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/winsockloop.c",
+            "line": 70,
+            "directive": "ifndef"
+          }
+        ]
+      }
+    ],
+    "depends": [
+      {
+        "symbol": "ANDROID",
+        "occurrences": 1,
+        "files": [
+          "picoquic/util.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/util.c",
+            "line": 1167,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "BBRExperiment",
+        "occurrences": 7,
+        "files": [
+          "picoquic/bbr.c",
+          "picoquic/picoquic_internal.h",
+          "picoquic/quicctx.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/bbr.c",
+            "line": 28,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/bbr.c",
+            "line": 149,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/bbr.c",
+            "line": 282,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "C4_WITH_LOGGING",
+        "occurrences": 1,
+        "files": [
+          "picoquic/c4.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/c4.c",
+            "line": 199,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "CLOCK_MONOTONIC",
+        "occurrences": 2,
+        "files": [
+          "picoquic/quicctx.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/quicctx.c",
+            "line": 4599,
+            "directive": "elif"
+          },
+          {
+            "file": "picoquic/quicctx.c",
+            "line": 4599,
+            "directive": "elif"
+          }
+        ]
+      },
+      {
+        "symbol": "CMSG_ALIGN",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 524,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "COMPARING_TIMES",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/hashtest.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/hashtest.c",
+            "line": 299,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "COMPUTING_RANDOM_TABLE",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/stresstest.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/stresstest.c",
+            "line": 1272,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "COMPUTING_REFERENCE_BASIC_VALUE",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/hashtest.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/hashtest.c",
+            "line": 250,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "COMPUTING_REFERENCE_SIPASH_VALUE",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/hashtest.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/hashtest.c",
+            "line": 291,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "CRYPTO_PROVIDERS_API_REGION",
+        "occurrences": 1,
+        "files": [
+          "picoquic/tls_api.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/tls_api.c",
+            "line": 588,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "CRYPTO_PROVIDERS_GENERIC_REGION",
+        "occurrences": 1,
+        "files": [
+          "picoquic/tls_api.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/tls_api.c",
+            "line": 705,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "CRYPTO_PROVIDERS_REGION",
+        "occurrences": 1,
+        "files": [
+          "picoquic/tls_api.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/tls_api.c",
+            "line": 93,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "DEBUG_SIPHASH",
+        "occurrences": 1,
+        "files": [
+          "picoquic/siphash.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/siphash.c",
+            "line": 71,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "DISABLE_DEBUG_PRINTF",
+        "occurrences": 3,
+        "files": [
+          "picoquic/picoquic_utils.h",
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 143,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 1113,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 1155,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "ESP_PLATFORM",
+        "occurrences": 6,
+        "files": [
+          "picoquic/picoquic_mbedtls.c",
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_mbedtls.c",
+            "line": 57,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/picoquic_mbedtls.c",
+            "line": 103,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 396,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "FreeBSD",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 71,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "HUNTING_FOR_BUFFER_OVERFLOW",
+        "occurrences": 2,
+        "files": [
+          "picoquic/sender.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/sender.c",
+            "line": 925,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/sender.c",
+            "line": 4110,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "IPV6_DONTFRAG",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 705,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "IPV6_ECN",
+        "occurrences": 3,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 100,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 393,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 614,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "IPV6_MTU_DISCOVER",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 233,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 233,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "IPV6_RECVTCLASS",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 161,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "IPV6_TCLASS",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 146,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 146,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "IP_ECN",
+        "occurrences": 4,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 123,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 123,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 365,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "IP_MTU_DISCOVER",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 233,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 233,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "IP_PKTINFO",
+        "occurrences": 3,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 81,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 437,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 666,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "IP_PMTUDISC_PROBE",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 233,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 233,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "IP_RECVTOS",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 200,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 466,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "IP_SENDSRCADDR",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 681,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "IP_TOS",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 183,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 183,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "LIBRESSL_VERSION_NUMBER",
+        "occurrences": 12,
+        "files": [
+          "picoquic/picoquic_ptls_openssl.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 53,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 53,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 67,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "MBEDTLS_SHA384_C",
+        "occurrences": 2,
+        "files": [
+          "picoquictest/mbedtls_test.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/mbedtls_test.c",
+            "line": 129,
+            "directive": "if"
+          },
+          {
+            "file": "picoquictest/mbedtls_test.c",
+            "line": 129,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "MBEDTLS_VERSION_NUMBER",
+        "occurrences": 3,
+        "files": [
+          "picoquic/picoquic_mbedtls.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_mbedtls.c",
+            "line": 63,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picoquic_mbedtls.c",
+            "line": 96,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picoquic_mbedtls.c",
+            "line": 134,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "OPENSSL_NO_ENGINE",
+        "occurrences": 6,
+        "files": [
+          "picoquic/picoquic_ptls_openssl.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 47,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 47,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 80,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "OPENSSL_VERSION_NUMBER",
+        "occurrences": 8,
+        "files": [
+          "picoquic/picoquic_ptls_openssl.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 53,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 67,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 76,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_USES_SELECT",
+        "occurrences": 1,
+        "files": [
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 85,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_WITHOUT_SSLKEYLOG",
+        "occurrences": 14,
+        "files": [
+          "picoquic/config.c",
+          "picoquic/picoquic.h",
+          "picoquic/picoquic_config.h",
+          "picoquic/picosocks.c",
+          "picoquic/quicctx.c",
+          "picoquictest/config_test.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/config.c",
+            "line": 101,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/config.c",
+            "line": 340,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/config.c",
+            "line": 972,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_WITH_IO_URING",
+        "occurrences": 21,
+        "files": [
+          "picoquic/picoquic_packet_loop.h",
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_packet_loop.h",
+            "line": 73,
+            "directive": "elif"
+          },
+          {
+            "file": "picoquic/picoquic_packet_loop.h",
+            "line": 73,
+            "directive": "elif"
+          },
+          {
+            "file": "picoquic/picoquic_packet_loop.h",
+            "line": 204,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_WITH_MBEDTLS",
+        "occurrences": 14,
+        "files": [
+          "picoquic/picoquic_crypto_provider_api.h",
+          "picoquic/picoquic_mbedtls.c",
+          "picoquic/tls_api.c",
+          "picoquictest/mbedtls_test.c",
+          "picoquictest/minicrypto_test.c",
+          "picoquictest/picoquictest.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_crypto_provider_api.h",
+            "line": 105,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picoquic_mbedtls.c",
+            "line": 35,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/tls_api.c",
+            "line": 122,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_WITH_POLL",
+        "occurrences": 16,
+        "files": [
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 86,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 86,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 884,
+            "directive": "elif"
+          }
+        ]
+      },
+      {
+        "symbol": "PICOQUIC_WITH_THREAD_CHECK",
+        "occurrences": 5,
+        "files": [
+          "picoquic/picoquic_internal.h",
+          "picoquic/quicctx.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_internal.h",
+            "line": 710,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picoquic_internal.h",
+            "line": 2138,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/quicctx.c",
+            "line": 37,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "PTLS_OPENSSL_HAVE_CHACHA20_POLY1305",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picoquic_ptls_openssl.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 392,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 434,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "PTLS_OPENSSL_VERIFY_CERTIFICATE_ENABLE_OVERRIDE",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_ptls_openssl.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 252,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "PTLS_WITHOUT_OPENSSL",
+        "occurrences": 12,
+        "files": [
+          "picoquic/picoquic_ptls_openssl.c",
+          "picoquic/tls_api.c",
+          "picoquictest/minicrypto_test.c",
+          "picoquictest/openssl_test.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_ptls_openssl.c",
+            "line": 38,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/tls_api.c",
+            "line": 63,
+            "directive": "ifndef"
+          },
+          {
+            "file": "picoquic/tls_api.c",
+            "line": 130,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "RTTJitterBuffer",
+        "occurrences": 6,
+        "files": [
+          "picoquic/bbr.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/bbr.c",
+            "line": 187,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/bbr.c",
+            "line": 243,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/bbr.c",
+            "line": 368,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "RTTJitterBufferAdapt",
+        "occurrences": 3,
+        "files": [
+          "picoquic/bbr.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/bbr.c",
+            "line": 1056,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/bbr.c",
+            "line": 1073,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/bbr.c",
+            "line": 1083,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "RTTJitterBufferProbe",
+        "occurrences": 3,
+        "files": [
+          "picoquic/bbr.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/bbr.c",
+            "line": 1698,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/bbr.c",
+            "line": 1862,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/bbr.c",
+            "line": 1888,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "RTTJitterBufferStartup",
+        "occurrences": 1,
+        "files": [
+          "picoquic/bbr.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/bbr.c",
+            "line": 2048,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "RTTJitterBuffer_maybe",
+        "occurrences": 1,
+        "files": [
+          "picoquic/bbr.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/bbr.c",
+            "line": 2119,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "SO_REUSEPORT",
+        "occurrences": 2,
+        "files": [
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 402,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 402,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "TODO",
+        "occurrences": 1,
+        "files": [
+          "picoquic/sender.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/sender.c",
+            "line": 4017,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "TODO_CHECK_IF_PACING_ALSO_NEEDED_IN_ALL_CASES",
+        "occurrences": 1,
+        "files": [
+          "picoquic/loss_recovery.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/loss_recovery.c",
+            "line": 504,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "TOO_CAUTIOUS",
+        "occurrences": 3,
+        "files": [
+          "picoquic/quicctx.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/quicctx.c",
+            "line": 3461,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/quicctx.c",
+            "line": 3470,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/quicctx.c",
+            "line": 3479,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "UDP_SEGMENT",
+        "occurrences": 6,
+        "files": [
+          "picoquic/picosocks.c",
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 643,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 643,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 719,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "_DEBUG",
+        "occurrences": 9,
+        "files": [
+          "picoquic/picoquic_utils.h",
+          "picoquic/tls_api.c",
+          "picoquic/util.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 86,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/tls_api.c",
+            "line": 1632,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/tls_api.c",
+            "line": 1649,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "_WINDOWS",
+        "occurrences": 221,
+        "files": [
+          "loglib/qlog_fns.c",
+          "loglib/svg.c",
+          "picohttp/democlient.c",
+          "picohttp/demoserver.c",
+          "picohttp/h3zero.c",
+          "picohttp/h3zero_common.c",
+          "picohttp/h3zero_server.c",
+          "picohttp/picoquic_ns.c",
+          "picohttp/quicperf.c",
+          "picoquic/cubic.c",
+          "picoquic/ech.c",
+          "picoquic/fastcc.c",
+          "picoquic/logger.c",
+          "picoquic/logwriter.c",
+          "picoquic/newreno.c",
+          "picoquic/packet.c",
+          "picoquic/picoquic.h",
+          "picoquic/picoquic_lb.c",
+          "picoquic/picoquic_mbedtls.c",
+          "picoquic/picoquic_packet_loop.h",
+          "picoquic/picoquic_ptls_fusion.c",
+          "picoquic/picoquic_ptls_minicrypto.c",
+          "picoquic/picoquic_ptls_openssl.c",
+          "picoquic/picoquic_utils.h",
+          "picoquic/picosocks.c",
+          "picoquic/picosocks.h",
+          "picoquic/prague.c",
+          "picoquic/quicctx.c",
+          "picoquic/sacks.c",
+          "picoquic/sim_link.c",
+          "picoquic/sockloop.c",
+          "picoquic/tls_api.c",
+          "picoquic/unified_log.c",
+          "picoquic/util.c",
+          "picoquic/winsockloop.c",
+          "picoquictest/bytestream_test.c",
+          "picoquictest/cert_verify_test.c",
+          "picoquictest/cleartext_aead_test.c",
+          "picoquictest/cnx_creation_test.c",
+          "picoquictest/cnxstress.c",
+          "picoquictest/congestion_test.c",
+          "picoquictest/datagram_tests.c",
+          "picoquictest/delay_tolerant_test.c",
+          "picoquictest/ech_test.c",
+          "picoquictest/h3zero_stream_test.c",
+          "picoquictest/h3zerotest.c",
+          "picoquictest/hashtest.c",
+          "picoquictest/high_latency_test.c",
+          "picoquictest/l4s_test.c",
+          "picoquictest/mbedtls_test.c",
+          "picoquictest/memlog_test.c",
+          "picoquictest/minicrypto_test.c",
+          "picoquictest/multipath_test.c",
+          "picoquictest/netperf_test.c",
+          "picoquictest/openssl_test.c",
+          "picoquictest/parseheadertest.c",
+          "picoquictest/picolog_test.c",
+          "picoquictest/picomask_test.c",
+          "picoquictest/picoquic_lb_test.c",
+          "picoquictest/picoquic_ns.c",
+          "picoquictest/rctl_aqm.c",
+          "picoquictest/red_aqm.c",
+          "picoquictest/satellite_test.c",
+          "picoquictest/socket_test.c",
+          "picoquictest/sockloop_test.c",
+          "picoquictest/splay_test.c",
+          "picoquictest/stream0_frame_test.c",
+          "picoquictest/stresstest.c",
+          "picoquictest/tls_api_test.c",
+          "picoquictest/transport_param_test.c",
+          "picoquictest/util_test.c",
+          "picoquictest/webtransport_test.c"
+        ],
+        "sample": [
+          {
+            "file": "loglib/qlog_fns.c",
+            "line": 30,
+            "directive": "ifdef"
+          },
+          {
+            "file": "loglib/qlog_fns.c",
+            "line": 250,
+            "directive": "ifdef"
+          },
+          {
+            "file": "loglib/qlog_fns.c",
+            "line": 768,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "_WINDOWS64",
+        "occurrences": 23,
+        "files": [
+          "picoquic/picoquic_ptls_fusion.c",
+          "picoquic/picoquic_utils.h",
+          "picoquic/tls_api.c",
+          "picoquictest/congestion_test.c",
+          "picoquictest/high_latency_test.c",
+          "picoquictest/l4s_test.c",
+          "picoquictest/mbedtls_test.c",
+          "picoquictest/multipath_test.c",
+          "picoquictest/tls_api_test.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_ptls_fusion.c",
+            "line": 42,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic_ptls_fusion.c",
+            "line": 42,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 46,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "_WINDOWS_BUT_MAYBE_NOT",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/sockloop_test.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/sockloop_test.c",
+            "line": 506,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "_WINDOWS_TRY_AGAIN",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picoquic_ptls_fusion.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_ptls_fusion.c",
+            "line": 35,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "__APPLE__",
+        "occurrences": 5,
+        "files": [
+          "picoquic/picoquic_utils.h",
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic_utils.h",
+            "line": 53,
+            "directive": "ifdef"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 95,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 95,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "__FreeBSD__",
+        "occurrences": 4,
+        "files": [
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 95,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 95,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 1752,
+            "directive": "elif"
+          }
+        ]
+      },
+      {
+        "symbol": "__GNUC__",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picoquic.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic.h",
+            "line": 173,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic.h",
+            "line": 173,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "__LINUX__",
+        "occurrences": 1,
+        "files": [
+          "picoquic/sockloop.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/sockloop.c",
+            "line": 96,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "__clang__",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picoquic.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picoquic.h",
+            "line": 173,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picoquic.h",
+            "line": 173,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "__cplusplus",
+        "occurrences": 106,
+        "files": [
+          "loglib/auto_memlog.h",
+          "loglib/autoqlog.h",
+          "loglib/csv.h",
+          "loglib/logconvert.h",
+          "loglib/logreader.h",
+          "loglib/picoquic_qlog_fns.h",
+          "loglib/qlog.h",
+          "loglib/svg.h",
+          "picohttp/democlient.h",
+          "picohttp/demoserver.h",
+          "picohttp/h3zero.h",
+          "picohttp/h3zero_common.h",
+          "picohttp/h3zero_uri.h",
+          "picohttp/h3zero_url_template.h",
+          "picohttp/pico_webtransport.h",
+          "picohttp/picomask.h",
+          "picohttp/picoquic_ns.h",
+          "picohttp/quicperf.h",
+          "picohttp/wt_baton.h",
+          "picoquic/bytestream.h",
+          "picoquic/c4.h",
+          "picoquic/cc_common.h",
+          "picoquic/cidset.h",
+          "picoquic/performance_log.h",
+          "picoquic/picohash.h",
+          "picoquic/picoquic.h",
+          "picoquic/picoquic_bbr.h",
+          "picoquic/picoquic_binlog.h",
+          "picoquic/picoquic_c4.h",
+          "picoquic/picoquic_config.h",
+          "picoquic/picoquic_crypto_provider_api.h",
+          "picoquic/picoquic_cubic.h",
+          "picoquic/picoquic_internal.h",
+          "picoquic/picoquic_lb.h",
+          "picoquic/picoquic_logger.h",
+          "picoquic/picoquic_newreno.h",
+          "picoquic/picoquic_packet_loop.h",
+          "picoquic/picoquic_prague.h",
+          "picoquic/picoquic_qlog.h",
+          "picoquic/picoquic_set_binlog.h",
+          "picoquic/picoquic_set_textlog.h",
+          "picoquic/picoquic_unified_log.h",
+          "picoquic/picoquic_utils.h",
+          "picoquic/picoquictest_dualq.h",
+          "picoquic/picosocks.h",
+          "picoquic/picosplay.h",
+          "picoquic/siphash.h",
+          "picoquic/tls_api.h",
+          "picoquic/wincompat.h",
+          "picoquictest/picoquictest.h",
+          "picoquictest/picoquictest_internal.h",
+          "picoquictest/picoquictest_rctl.h",
+          "picoquictest/picoquictest_red.h"
+        ],
+        "sample": [
+          {
+            "file": "loglib/auto_memlog.h",
+            "line": 25,
+            "directive": "ifdef"
+          },
+          {
+            "file": "loglib/auto_memlog.h",
+            "line": 30,
+            "directive": "ifdef"
+          },
+          {
+            "file": "loglib/autoqlog.h",
+            "line": 24,
+            "directive": "ifdef"
+          }
+        ]
+      },
+      {
+        "symbol": "__linux",
+        "occurrences": 2,
+        "files": [
+          "picoquic/picosocks.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 233,
+            "directive": "if"
+          },
+          {
+            "file": "picoquic/picosocks.c",
+            "line": 233,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "def",
+        "occurrences": 1,
+        "files": [
+          "picoquictest/hashtest.c"
+        ],
+        "sample": [
+          {
+            "file": "picoquictest/hashtest.c",
+            "line": 250,
+            "directive": "if"
+          }
+        ]
+      },
+      {
+        "symbol": "on",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 71,
+            "directive": "ifndef"
+          }
+        ]
+      },
+      {
+        "symbol": "required",
+        "occurrences": 1,
+        "files": [
+          "picoquic/picosocks.h"
+        ],
+        "sample": [
+          {
+            "file": "picoquic/picosocks.h",
+            "line": 71,
+            "directive": "ifndef"
+          }
+        ]
+      }
+    ]
+  }
+}

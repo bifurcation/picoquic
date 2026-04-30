@@ -1,0 +1,64 @@
+# scripts/
+
+Tooling for the picoquic → fq Rust translation.  Mostly Python.
+
+## Phase 0: inventory & dashboard
+
+One-shot pipeline that produces a snapshot of the C codebase in
+`xlate/*.json` plus a status dashboard at `xlate/dashboard.html`.
+
+```sh
+# First-time setup (only when the C source has changed substantively):
+mkdir -p build && cd build && \
+  cmake -DPICOQUIC_FETCH_PTLS=Y -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
+cd ..
+
+# Run the whole pipeline:
+python3 scripts/phase0.py
+open xlate/dashboard.html
+```
+
+Individual steps (in order; later scripts depend on earlier outputs):
+
+| Script              | Produces                       | Notes |
+|---------------------|--------------------------------|-------|
+| `inventory.py`      | `xlate/inventory.json`         | parses every in-scope C TU with libclang; ~110s for picoquic. |
+| `call_graph.py`     | `xlate/call_graph.json`        | SCCs, heights (BFS from leaves), mutually-recursive groups. |
+| `ifdef_scan.py`     | `xlate/ifdef_manifest.json`    | classifies every `#if`/`#ifdef` symbol against `-D` flags + include guards. |
+| `dashboard.py`      | `xlate/dashboard.html`         | static HTML page consuming all of the above. |
+| `phase0.py`         | (driver)                       | runs all four in sequence. |
+
+In-scope directories: `picoquic/`, `picohttp/`, `loglib/`,
+`picoquictest/`.  Out of scope: executables (`picoquicfirst/`,
+`pqbench_app/`, `picoquic_t/`, etc.) and fetched dependencies under
+`build/_deps/` (picotls).
+
+## Helpers / diagnostics
+
+| Script              | Purpose |
+|---------------------|---------|
+| `_clang_setup.py`   | imported by other scripts; configures libclang.dylib path. |
+| `cc_bucket.py`      | one-shot summary of `compile_commands.json` by source dir. |
+| `inv_query.py`      | ad-hoc queries against `inventory.json` (callee histogram, top-callers, summary). |
+| `_dump_flags.py`    | print the libclang flag list for one TU (for debugging parse failures). |
+| `_callee_check.py`  | sanity-check the callee walk against raw CALL_EXPR cursor counts. |
+| `_inv_inspect.py`   | find malformed entries in an inventory.json. |
+
+The leading underscore marks scripts that are diagnostics / one-shot;
+they were useful to build, are kept around for debugging, but aren't
+part of the routine pipeline.
+
+## Library-finding
+
+libclang (Homebrew LLVM) lives at `/opt/homebrew/opt/llvm/lib/libclang.dylib`.
+`_clang_setup.py` resolves this and ignores `LIBCLANG_PATH` if it points
+to anything other than a libclang.dylib file.
+
+The macOS SDK path (for `<stdint.h>` etc.) and clang's own builtin
+include directory (for `<stdarg.h>`) are added automatically by
+`inventory.py:args_for()`.
+
+## Pre-existing scripts (not part of the translation work)
+
+`coverage.sh` and `getlog.pl` were here before the translation effort.
+Leave them alone.
