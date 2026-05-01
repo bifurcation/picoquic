@@ -52,10 +52,6 @@
 //!   parity (Phase 3 may drop it once the wrapper is implemented).
 
 #![allow(non_camel_case_types)]
-// Many setters take small primitives by value mirroring the C ABI;
-// `clippy::too_many_arguments` flags several of the trait methods,
-// but trimming them would diverge from the C signatures.
-#![allow(clippy::too_many_arguments)]
 
 use core::net::SocketAddr;
 

@@ -100,7 +100,6 @@
 // Several writers preserve the C parameter list verbatim so the
 // translation reads as a one-for-one mirror; clippy complains about
 // the resulting argument counts.
-#![allow(clippy::too_many_arguments)]
 // `picoquic_set_binlog` returns a placeholder unit error until the
 // crate-level `Error` enum lands.
 #![allow(clippy::result_unit_err)]

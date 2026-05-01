@@ -99,7 +99,6 @@
 // Stand-in for the not-yet-defined crate-level `Error` enum.
 #![allow(clippy::result_unit_err)]
 // Mirroring C parameter lists for the threaded entry points.
-#![allow(clippy::too_many_arguments)]
 // `Box<T>` parameters look local-only to clippy because the Phase
 // 1 bodies are `todo!()`; the owning shape is real once Phase 3
 // fills the bodies (`Box` lands inside the thread ctx, the loop

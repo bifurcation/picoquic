@@ -58,6 +58,9 @@
 // Phase 1 stubs return `Result<T, ()>` until the crate-level `Error`
 // type lands; clippy's `result_unit_err` is silenced module-wide.
 #![allow(clippy::result_unit_err)]
+// Many translated functions mirror C signatures with >7 parameters.
+// Builder patterns or shape changes are out of scope for Phase 1.
+#![allow(clippy::too_many_arguments)]
 
 pub mod binlog;
 pub mod bytestream;
@@ -1145,7 +1148,6 @@ pub fn picoquic_disable_port_blocking(
 ///
 /// Returns `None` when context creation fails (the C side returned
 /// `NULL`).
-#[allow(clippy::too_many_arguments)]
 pub fn picoquic_create(
     _max_nb_connections: u32,
     _cert_file_name: Option<&str>,
@@ -1473,7 +1475,6 @@ pub fn picoquic_get_max_simultaneous_logs(_quic: &picoquic_quic_t) -> u32 {
 /// The returned `&mut picoquic_cnx_t` borrows from `quic` because
 /// the C side stores the new connection in the context's hash
 /// tables and the application accesses it through the same context.
-#[allow(clippy::too_many_arguments)]
 pub fn picoquic_create_cnx<'a>(
     _quic: &'a mut picoquic_quic_t,
     _initial_cnx_id: picoquic_connection_id_t,

@@ -72,7 +72,6 @@
 //!   `picoquic_crypto_provider_api.rs`); not translated.
 
 #![allow(clippy::result_unit_err)]
-#![allow(clippy::too_many_arguments)]
 
 extern crate alloc;
 

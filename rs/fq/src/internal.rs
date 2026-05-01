@@ -60,7 +60,6 @@
 // `mutable_key_type` lint fires on `picohash_table` lookups but
 // the keys are Phase-3 opaque pointers and not actually keyed
 // on interior mutability.
-#![allow(clippy::too_many_arguments)]
 
 use core::ffi::c_void;
 use core::net::SocketAddr;
