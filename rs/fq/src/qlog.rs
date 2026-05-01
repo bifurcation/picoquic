@@ -6,7 +6,7 @@
 //! v1, since `loglib/` is a separate target — this header is the
 //! picoquic-core stub that links against it on demand).
 
-use crate::picoquic::picoquic::picoquic_quic_t;
+use crate::picoquic_quic_t;
 
 /// Set the qlog directory and start streaming qlog traces for
 /// each connection.  C: `int picoquic_set_qlog(picoquic_quic_t*

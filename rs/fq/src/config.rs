@@ -47,7 +47,7 @@
 // parity required by the translation plan.
 #![allow(clippy::enum_variant_names)]
 
-use crate::picoquic::picoquic::{
+use crate::{
     picoquic_lossbit_version_enum, picoquic_quic_t, picoquic_spinbit_version_enum,
     picoquic_stream_data_cb_fn,
 };

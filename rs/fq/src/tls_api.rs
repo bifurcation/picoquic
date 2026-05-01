@@ -16,8 +16,8 @@
 //! * picotls types this header references but does not define
 //!   (`ptls_cipher_suite_t`, `ptls_verify_certificate_t`, …) are
 //!   already forward-declared in
-//!   [`crate::picoquic::picoquic_crypto_provider_api`] and
-//!   [`crate::picoquic::picoquic`]; this module re-uses those
+//!   [`crate::crypto_provider_api`] and
+//!   [`crate`]; this module re-uses those
 //!   declarations rather than duplicating them.
 //! * The `void*` AEAD / PN-encryption / cipher / hash contexts on the
 //!   C side are picotls handles whose Rust binding doesn't exist yet
@@ -81,11 +81,11 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
-use crate::picoquic::picoquic::{
+use crate::internal::picoquic_crypto_context_t;
+use crate::{
     PICOQUIC_RESET_SECRET_SIZE, picoquic_cnx_t, picoquic_connection_id_t,
     picoquic_free_verify_certificate_ctx, picoquic_quic_t, ptls_iovec_t, ptls_verify_certificate_t,
 };
-use crate::picoquic::picoquic_internal::picoquic_crypto_context_t;
 
 // ---------------------------------------------------------------------------
 // Label constants (C `#define` → `&str`).
@@ -153,7 +153,7 @@ pub const PICOQUIC_LABEL_QUIC_V2_KEY_BASE: &str = "tls13 quicv2 ";
 // identical placeholder.  Re-using that declaration keeps the
 // per-file translation self-contained without needing to touch the
 // other module.
-pub use crate::picoquic::picoquic_crypto_provider_api::ptls_cipher_suite_t;
+pub use crate::crypto_provider_api::ptls_cipher_suite_t;
 
 // ---------------------------------------------------------------------------
 // Master TLS context.

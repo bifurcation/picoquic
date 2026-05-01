@@ -60,7 +60,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::picoquic::picoquic::{picoquic_cnx_t, ptls_iovec_t, ptls_verify_certificate_t};
+use crate::{picoquic_cnx_t, ptls_iovec_t, ptls_verify_certificate_t};
 
 // ---------------------------------------------------------------------------
 // `picoquic_tls_api_init` flag bits.

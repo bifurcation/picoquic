@@ -33,7 +33,7 @@
 //!   to mean "address not yet set" become `Option<SocketAddr>`.
 //! * `picoquic_quic_t`, `picoquic_cnx_t`, `picoquic_path_t` were
 //!   forward-declared as opaque stubs in
-//!   [`crate::picoquic::picoquic`] (the public header).  Their
+//!   [`crate`] (the public header).  Their
 //!   real bodies live here; the public module re-exports the
 //!   names so existing `use` paths in other modules keep
 //!   working.
@@ -65,8 +65,10 @@
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
-use crate::picoquic::picohash::{picohash_item, picohash_table};
-use crate::picoquic::picoquic::{
+use crate::hash::{picohash_item, picohash_table};
+use crate::splay::{picosplay_node_t, picosplay_tree_t};
+use crate::unified_log::picoquic_unified_logging_t;
+use crate::{
     PICOQUIC_RESET_SECRET_SIZE, picoquic_alpn_select_fn, picoquic_alpn_select_fn_v2,
     picoquic_congestion_algorithm_t, picoquic_connection_id_cb_fn, picoquic_connection_id_t,
     picoquic_free_verify_certificate_ctx, picoquic_fuzz_fn, picoquic_lossbit_version_enum,
@@ -74,8 +76,6 @@ use crate::picoquic::picoquic::{
     picoquic_spinbit_version_enum, picoquic_state_enum, picoquic_stream_data_cb_fn,
     picoquic_stream_direct_receive_fn, picoquic_tp_t, ptls_verify_certificate_t,
 };
-use crate::picoquic::picoquic_unified_log::picoquic_unified_logging_t;
-use crate::picoquic::picosplay::{picosplay_node_t, picosplay_tree_t};
 
 // ---------------------------------------------------------------------------
 // Tunable constants (the `#define`s at the top of the C header).

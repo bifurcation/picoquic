@@ -19,6 +19,8 @@ the API contract; that argues for snake_case for callback
 traits whose typedef name appears in C source the user
 can read.  A mix is fine — but the mix should be principled.
 
+// REVIEW: Always follow the Rust convention here. 
+
 ### snake_case (25)
 
 | Trait | File | Line |
@@ -87,6 +89,14 @@ Either the lint is appropriate for those modules and not
 the others (fine — but worth a line of comment), or the
 application is inconsistent.
 
+// REVIEW:
+// clippy::boxed_local - These should be fixed.  Don't use unnecessary Box.
+// clippy::enum_variant_names - These should be fixed.  Follow the Rust convention.
+// clippy::result_unit_err - These should be fixed.  Errors should always be semantic.  Define new error types as required.
+// clippy::too_many_arguments - This can be ignored.  `allow` it at the crate level
+// non_camel_case_types - This should be fixed.  Follow the Rust convention.
+// non_upper_case_globals - This should be fixed.  Follow the Rust convention.
+
 ## Type definitions across modules
 
 No name is defined in more than one module.  Good.
@@ -95,6 +105,10 @@ No name is defined in more than one module.  Good.
 
 Single definitions are shown collapsed by source file.
 Use this to see at a glance which module owns each type.
+
+// REVIEW: We should remove all of the `pico` and `picoquic` from all names here,
+// struct names, method names, variable names, etc.  Rust namespacing provides
+// the separation; we don't need special tags on the names.
 
 | Type | Kind | Source |
 |---|---|---|
@@ -238,6 +252,10 @@ two different source paths is a smell.
 | `picoquic_utils::picoquic_file_t` | `*` | 1: picoquic_binlog.rs |
 | `picosplay::` | `*` | 1: picoquic_internal.rs |
 
+// REVIEW: Rather than `*` imports, it would be better to be precise about what
+// is imported.  We should not have any re-exports (`pub use`), which should
+// prevent the same import via different paths.
+
 ## Per-file summary
 
 | File | LOC | Traits | Structs | Enums | Type aliases | Fns | Inner #![allow] |
@@ -263,3 +281,10 @@ two different source paths is a smell.
 | `rs/fq/src/picoquic/siphash.rs` | 40 | 0 | 0 | 0 | 0 | 1 | 0 |
 | `rs/fq/src/picoquic/tls_api.rs` | 1037 | 0 | 3 | 0 | 0 | 53 | 2 |
 
+// REVIEW: There's no reason to have the files be in `src/picoquic` instead of
+// `src`.  Move them up a level.
+
+// REVIEW: There should be no type aliases.  And it looks like the type aliases
+// that do exist are failures to convert to Rust concepts -- preserving C-style
+// enums.  These should be either newtype (e.g., `pub struct FrameType(u64)`) or 
+// actual Rust enums.  I would probably prefer the latter.

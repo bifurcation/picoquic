@@ -31,7 +31,7 @@
 //! `todo!()` and the empty `#[cfg(test)] mod test {}` lands at the
 //! bottom for Phase 2 to fill.
 //!
-//! [`picosocks`]: crate::picoquic::picosocks
+//! [`picosocks`]: crate::socks
 //!
 //! ## Pointer-shape decisions
 //!
@@ -109,11 +109,9 @@
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
-use crate::picoquic::picoquic::{
-    picoquic_alpn_select_fn_v2, picoquic_quic_t, picoquic_stream_data_cb_fn,
-};
-use crate::picoquic::picoquic_config::picoquic_quic_config_t;
-use crate::picoquic::picoquic_utils::{PicoquicThreadFn, picoquic_thread_t};
+use crate::config::picoquic_quic_config_t;
+use crate::utils::{PicoquicThreadFn, picoquic_thread_t};
+use crate::{picoquic_alpn_select_fn_v2, picoquic_quic_t, picoquic_stream_data_cb_fn};
 
 // ---------------------------------------------------------------------------
 // Compile-time limits.
@@ -148,7 +146,7 @@ pub const PICOQUIC_PACKET_LOOP_SEND_DELAY_MAX: u64 = 2500;
 /// `bool` flags.
 pub struct picoquic_socket_ctx_t {
     /// OS file descriptor.  C: `SOCKET_TYPE fd`.
-    pub fd: crate::picoquic::picosocks::picoquic_socket_t,
+    pub fd: crate::socks::picoquic_socket_t,
     /// Address family the socket was opened in (`AF_INET`,
     /// `AF_INET6`).  Stays `i32` to match call sites that pass the
     /// libc `AF_*` constants directly.
@@ -211,7 +209,7 @@ pub struct picoquic_socket_ctx_t {
 impl Default for picoquic_socket_ctx_t {
     fn default() -> Self {
         picoquic_socket_ctx_t {
-            fd: crate::picoquic::picosocks::INVALID_SOCKET,
+            fd: crate::socks::INVALID_SOCKET,
             af: 0,
             port: 0,
             n_port: 0,
@@ -405,7 +403,7 @@ pub struct picoquic_packet_loop_param_t {
 ///
 /// In C, `(thread_fn, arg)` is the trampoline + state pair the new
 /// thread will run.  In Rust, the existing
-/// [`PicoquicThreadFn`](crate::picoquic::picoquic_utils::PicoquicThreadFn)
+/// [`PicoquicThreadFn`](crate::utils::PicoquicThreadFn)
 /// trait already bundles both into a single trait object, so the
 /// hook reduces to "produce a thread handle from a `Box<dyn …>`".
 pub trait PicoquicCustomThreadCreateFn {
@@ -739,7 +737,7 @@ pub fn picoquic_start_server_threads(
 /// (picoquic_socket_ctx_t*)`.  Exposed so the unit tests in
 /// `sockloop_test.c` can reach it directly.
 ///
-/// [inv]: crate::picoquic::picosocks::INVALID_SOCKET
+/// [inv]: crate::socks::INVALID_SOCKET
 pub fn picoquic_packet_loop_close_socket(_s_ctx: &mut picoquic_socket_ctx_t) {
     todo!()
 }

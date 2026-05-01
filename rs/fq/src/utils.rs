@@ -18,8 +18,8 @@
 //!
 //! * `FILE *` → `&mut dyn core::fmt::Write` for *write* sinks
 //!   (mirrors the convention introduced in
-//!   [`crate::picoquic::picoquic_logger`] and
-//!   [`crate::picoquic::picoquic_config`]).  The persistent
+//!   [`crate::logger`] and
+//!   [`crate::config`]).  The persistent
 //!   debug-output stream installed by [`debug_set_stream`]
 //!   transfers ownership instead, so the global slot can keep the
 //!   writer alive between calls.
@@ -30,7 +30,7 @@
 //!   `std` Cargo feature.
 //! * `struct sockaddr*` parameters and fields use
 //!   [`core::net::SocketAddr`] — same convention as
-//!   [`crate::picoquic::picoquic`].  `struct sockaddr_storage*`
+//!   [`crate`].  `struct sockaddr_storage*`
 //!   output parameters fold into `Option<SocketAddr>` (the C
 //!   `AF_UNSPEC` sentinel becomes `None`).
 //! * `int`-valued comparators (`picoquic_compare_addr`,
@@ -66,9 +66,7 @@
 use core::cmp::Ordering;
 use core::net::SocketAddr;
 
-use crate::picoquic::picoquic::{
-    PICOQUIC_MAX_PACKET_SIZE, picoquic_connection_id_t, picoquic_tp_preferred_address_t,
-};
+use crate::{PICOQUIC_MAX_PACKET_SIZE, picoquic_connection_id_t, picoquic_tp_preferred_address_t};
 
 // ---------------------------------------------------------------------------
 // Tracing / file-id constants.
@@ -291,7 +289,7 @@ pub fn picoquic_compare_connection_id(
 /// picoquic_connection_id_hash(const picoquic_connection_id_t* cid,
 /// const uint8_t* hash_seed)`.  The seed parameter is a fixed-size
 /// 16-byte buffer everywhere it is called — same as
-/// [`crate::picoquic::picoquic::picoquic_iovec_t`]'s neighbour
+/// [`crate::picoquic_iovec_t`]'s neighbour
 /// `picohash_bytes`.
 pub fn picoquic_connection_id_hash(_cid: &picoquic_connection_id_t, _hash_seed: &[u8; 16]) -> u64 {
     todo!()
@@ -864,7 +862,7 @@ pub fn picoquic_uint8_to_str<'a>(_text: &'a mut [u8], _data: &[u8]) -> &'a [u8] 
 ///
 /// * `next_packet` stays a raw pointer — same intrusive-list
 ///   pattern as `picohash_item.next_in_bin` in
-///   [`crate::picoquic::picohash`].  Phase 3 dereferences in
+///   [`crate::hash`].  Phase 3 dereferences in
 ///   `unsafe` blocks; refactoring to `VecDeque<Box<...>>` on the
 ///   link side is a candidate follow-up.
 /// * The two `sockaddr_storage` fields fold into

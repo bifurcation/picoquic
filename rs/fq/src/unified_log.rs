@@ -36,9 +36,9 @@
 //!   read-only.  `Option<&picoquic_connection_id_t>` and
 //!   `&picoquic_connection_id_t` respectively.
 //! * `struct sockaddr*` → `&core::net::SocketAddr`, matching the
-//!   convention established in [`crate::picoquic::picoquic`].
+//!   convention established in [`crate`].
 //! * `va_list` / variadic — collapsed to `core::fmt::Arguments<'_>`,
-//!   matching the existing [`crate::picoquic::picoquic::picoquic_log_app_message`]
+//!   matching the existing [`crate::picoquic_log_app_message`]
 //!   stub.  The C `_v` variants disappear (in Rust the `format_args!`
 //!   macro produces `Arguments` at the call site, so the variadic
 //!   and `va_list` flavours are redundant).
@@ -59,10 +59,10 @@
 
 use core::net::SocketAddr;
 
-use crate::picoquic::picoquic::{
+use crate::internal::{picoquic_packet_header, picoquic_packet_type_enum};
+use crate::{
     picoquic_cnx_t, picoquic_connection_id_t, picoquic_path_t, picoquic_quic_t, ptls_iovec_t,
 };
-use crate::picoquic::picoquic_internal::{picoquic_packet_header, picoquic_packet_type_enum};
 
 // ---------------------------------------------------------------------------
 // Unified-logger vtable.
@@ -278,7 +278,7 @@ pub fn picoquic_log_close_logs(_quic: &mut picoquic_quic_t) {
 /// Log an event relating to a specific connection.  C:
 /// `picoquic_log_app_message` (the `_v` variadic twin collapses
 /// into the same Rust function — see also the forward-declaration
-/// stub at [`crate::picoquic::picoquic::picoquic_log_app_message`],
+/// stub at [`crate::picoquic_log_app_message`],
 /// which exists because `picoquic.h` re-declares the same symbol.
 /// The translation of unified_log is the canonical home).
 pub fn picoquic_log_app_message(_cnx: &mut picoquic_cnx_t, _args: core::fmt::Arguments<'_>) {

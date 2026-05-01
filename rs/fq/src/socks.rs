@@ -22,7 +22,7 @@
 //!   [`INVALID_SOCKET`] mirrors the C `-1`.
 //! * `struct sockaddr*` and `struct sockaddr_storage*` →
 //!   [`core::net::SocketAddr`], same convention as
-//!   [`crate::picoquic::picoquic_utils`].  Output sockaddr_storage
+//!   [`crate::utils`].  Output sockaddr_storage
 //!   slots fold into `Option<SocketAddr>` (`AF_UNSPEC` ↔ `None`).
 //! * `void* vmsg` is the platform `struct msghdr*`; kept as an
 //!   opaque [`picoquic_msghdr_t`] for now.  Phase 3 will replace
@@ -45,7 +45,7 @@
 
 use core::net::SocketAddr;
 
-use crate::picoquic::picoquic::picoquic_quic_t;
+use crate::picoquic_quic_t;
 
 // ---------------------------------------------------------------------------
 // Socket constants and types.

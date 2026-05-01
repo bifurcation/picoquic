@@ -6,7 +6,7 @@
 //! without ever touching the unified-log vtable directly.  Once a
 //! text log file is installed, the QUIC context's
 //! `text_log_fns` slot points at the textlog implementation of
-//! [`crate::picoquic::picoquic_unified_log::picoquic_unified_logging_t`],
+//! [`crate::unified_log::picoquic_unified_logging_t`],
 //! and every per-event log call fans out through that vtable.
 //!
 //! Phase 1 contract: signatures only — every body is `todo!()`.
@@ -27,7 +27,7 @@
 //!   becomes a crate-level `Error` variant once that enum lands.
 //! * `FILE* F` → `&mut dyn core::fmt::Write`.  Matches the
 //!   convention introduced in
-//!   [`crate::picoquic::picoquic_config::picoquic_config_usage_file`]
+//!   [`crate::config::picoquic_config_usage_file`]
 //!   and keeps the helper `no_std`-friendly.
 //! * `picoquic_connection_id_t cnx_id` is `Copy` and only read by
 //!   the body (it is folded into a 64-bit value via
@@ -42,9 +42,7 @@
 //!   str`; Phase 3 either supplies the lookup table or removes the
 //!   orphan declaration.
 
-use crate::picoquic::picoquic::{
-    picoquic_call_back_event_t, picoquic_connection_id_t, picoquic_quic_t,
-};
+use crate::{picoquic_call_back_event_t, picoquic_connection_id_t, picoquic_quic_t};
 
 /// Set the text log file and start tracing into it.
 ///

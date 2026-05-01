@@ -7,7 +7,7 @@
 //!
 //! Phase 1: signatures only — every function body is `todo!()`.
 
-use crate::picoquic::picoquic::{
+use crate::{
     picoquic_cnx_t, picoquic_congestion_notification_t, picoquic_path_t, picoquic_per_ack_state_t,
 };
 

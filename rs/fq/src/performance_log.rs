@@ -13,7 +13,7 @@
 //! defined in `performance_log.c` are private to that translation
 //! unit and will land alongside their bodies in Phase 3.
 
-use crate::picoquic::picoquic::picoquic_quic_t;
+use crate::picoquic_quic_t;
 
 // ---------------------------------------------------------------------------
 // Tunable constants (`#define`s in the header).

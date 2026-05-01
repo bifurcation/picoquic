@@ -15,8 +15,8 @@
 //! Translation policy notes for this module:
 //!
 //! * The C vtable struct `picoquictest_aqm_t` is already a Rust
-//!   trait ([`PicoquictestAqmT`](crate::picoquic::picoquic_utils::PicoquictestAqmT))
-//!   in [`crate::picoquic::picoquic_utils`].  The C "embed
+//!   trait ([`PicoquictestAqmT`](crate::utils::PicoquictestAqmT))
+//!   in [`crate::utils`].  The C "embed
 //!   `super` and cast pointer" inheritance pattern collapses to
 //!   `impl PicoquictestAqmT for dualq_state_t`; the C `super`
 //!   field is dropped.
@@ -45,9 +45,7 @@
 // enum — see module docstring.
 #![allow(clippy::result_unit_err)]
 
-use crate::picoquic::picoquic_utils::{
-    PicoquictestAqmT, picoquictest_sim_link_t, picoquictest_sim_packet_t,
-};
+use crate::utils::{PicoquictestAqmT, picoquictest_sim_link_t, picoquictest_sim_packet_t};
 
 // ---------------------------------------------------------------------------
 // Tunables.
@@ -66,7 +64,7 @@ pub const DUALQ_MAX_LINK_RATE: u64 = 125_000_000;
 ///
 /// * `queue_first` / `queue_last` stay raw pointers — same intrusive
 ///   list pattern as
-///   [`crate::picoquic::picoquic_utils::picoquictest_sim_link_t`].
+///   [`crate::utils::picoquictest_sim_link_t`].
 ///   The queue does not own the node allocations on its own; the
 ///   parent [`dualq_state_t`] reaches them through these raw heads
 ///   and hands ownership back to callers via

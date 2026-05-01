@@ -37,7 +37,7 @@
 //!   bits) so it stays `&mut`, not a return value.  The C
 //!   `cnx_id_local` / `cnx_id_remote` parameters are unused by
 //!   the body but kept on the signature to match the
-//!   [`picoquic_connection_id_cb_fn`](crate::picoquic::picoquic::picoquic_connection_id_cb_fn)
+//!   [`picoquic_connection_id_cb_fn`](crate::picoquic_connection_id_cb_fn)
 //!   shape; a future Phase 3 refactor can hook the trait up to
 //!   the context.
 //!
@@ -74,7 +74,7 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 
-use crate::picoquic::picoquic::{picoquic_connection_id_t, picoquic_quic_t};
+use crate::{picoquic_connection_id_t, picoquic_quic_t};
 
 // ---------------------------------------------------------------------------
 // CID-encoding methods.
@@ -191,7 +191,7 @@ impl picoquic_load_balancer_cid_context_t {
     /// use" bytes — the parameter is read AND written, so it
     /// stays `&mut` rather than collapsing to a return value.
     /// `cnx_id_local` and `cnx_id_remote` are accepted to match
-    /// the [`picoquic_connection_id_cb_fn`](crate::picoquic::picoquic::picoquic_connection_id_cb_fn)
+    /// the [`picoquic_connection_id_cb_fn`](crate::picoquic_connection_id_cb_fn)
     /// shape even though the body discards them.
     pub fn generate(
         &mut self,

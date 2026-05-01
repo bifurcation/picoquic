@@ -23,12 +23,12 @@
 //!
 //! * `FILE*` (the three low-level writers) → `&mut picoquic_file_t`,
 //!   re-using the opaque file handle introduced in
-//!   [`crate::picoquic::picoquic_utils`].  These calls borrow the
+//!   [`crate::utils`].  These calls borrow the
 //!   handle for the duration of one record write — ownership stays
 //!   with the connection (`cnx->f_binlog`) or the caller.  Note that
 //!   the binlog stream is *binary*, so the text-side
 //!   `&mut dyn core::fmt::Write` convention used by
-//!   [`crate::picoquic::picoquic_logger::picoquic_textlog_picotls_ticket`]
+//!   [`crate::logger::picoquic_textlog_picotls_ticket`]
 //!   does not apply here.
 //! * `picoquic_quic_t*` / `picoquic_cnx_t*` — every observed caller
 //!   passes a non-NULL handle and the body mutates internal state
@@ -63,7 +63,7 @@
 //! * `const struct sockaddr*` pairs (`addr_peer`, `addr_local` in
 //!   `binlog_pdu`) → `&core::net::SocketAddr`, matching the
 //!   convention established in
-//!   [`crate::picoquic::picoquic_unified_log`].
+//!   [`crate::unified_log`].
 //! * `const uint8_t* + size_t` argument pairs collapse to `&[u8]`
 //!   (`bytes`/`bytes_max` in `binlog_packet`,
 //!   `params`/`param_length` in `binlog_transport_extension`,
@@ -107,11 +107,11 @@
 
 use core::net::SocketAddr;
 
-use crate::picoquic::picoquic::{picoquic_connection_id_t, picoquic_quic_t, ptls_iovec_t};
-use crate::picoquic::picoquic_internal::{
+use crate::internal::{
     picoquic_cnx_t, picoquic_packet_header, picoquic_packet_type_enum, picoquic_path_t,
 };
-use crate::picoquic::picoquic_utils::picoquic_file_t;
+use crate::utils::picoquic_file_t;
+use crate::{picoquic_connection_id_t, picoquic_quic_t, ptls_iovec_t};
 
 // ---------------------------------------------------------------------------
 // Event-tag enum.

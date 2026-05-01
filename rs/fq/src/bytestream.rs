@@ -47,7 +47,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::net::SocketAddr;
 
-use crate::picoquic::picoquic::picoquic_connection_id_t;
+use crate::picoquic_connection_id_t;
 
 // ---------------------------------------------------------------------------
 // Tunable constant.
