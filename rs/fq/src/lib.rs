@@ -446,10 +446,10 @@ pub struct picoquic_iovec_t {
 // callers from constructing one accidentally, and the `Debug` impl
 // gives the structs a printable shape for log lines.
 
-// The full bodies live in `picoquic_internal`; re-exported here so
-// existing `crate::picoquic_quic_t` paths in
-// callers keep resolving.
-pub use crate::internal::{picoquic_cnx_t, picoquic_path_t, picoquic_quic_t};
+// Full bodies live in `crate::internal`; pull them in for use within
+// this module's signatures (no re-export — callers reach them as
+// `crate::internal::*`).
+use crate::internal::{picoquic_cnx_t, picoquic_path_t, picoquic_quic_t};
 
 // ---------------------------------------------------------------------------
 // Application callback events.

@@ -148,11 +148,10 @@ pub const PICOQUIC_LABEL_QUIC_V2_KEY_BASE: &str = "tls13 quicv2 ";
 // stand-in keeps signatures compiling.  Phase 3 will swap in the
 // real picotls binding once it exists.
 //
-// Note: `picoquic_crypto_provider_api.rs` already declares an
-// identical placeholder.  Re-using that declaration keeps the
-// per-file translation self-contained without needing to touch the
-// other module.
-pub use crate::crypto_provider_api::ptls_cipher_suite_t;
+// Note: `crypto_provider_api` already declares an identical
+// placeholder.  Pull it in for use within this module's signatures
+// (no re-export).
+use crate::crypto_provider_api::ptls_cipher_suite_t;
 
 // ---------------------------------------------------------------------------
 // Master TLS context.
