@@ -302,13 +302,65 @@ editing — that's a valid outcome.
 * Resumable; continues on failure by default.
 * Per-header transcripts at `xlate/claude_logs/phase1a/<path>.log`.
 
-## Phase 1B — Human review with AI execution
+## Phase 1B — Cross-module consistency report
 
-After 1A, the human reviewer reads each module and annotates the
-code with `// REVIEW: <instruction>` comments wherever they want
-changes.  Comments can name a target type, a desired pattern, a
-question to investigate — anything actionable.  Running
-`scripts/phase1b.py` then asks the AI to address them.
+1A is per-header by design — claude sees one module deeply but
+isn't well-suited to spot patterns that vary *between* modules
+(trait naming conventions, lint allowances, type definitions
+that drift, the same C type translated differently in different
+places).  A whole-crate AI pass would burn context and turns
+without a clear consistency oracle to compare against.
+
+Phase 1B is **pure inspection — no AI, no edits**.  A script
+scans `rs/fq/src/` and emits a markdown report cataloging the
+patterns that vary across modules.  The human reviewer reads
+the report, decides on consistency policies, and then sprinkles
+`// REVIEW: <instruction>` markers in the source for Phase 1C
+to address.
+
+### What the report contains
+
+* **Trait names by case style** — snake_case (mirroring C
+  typedefs) vs. PascalCase (Rust idiom), with module locations
+  for each.
+* **Module-level lint allowances still present** — which `#![allow]`
+  attributes survive in which modules.  Diversity here suggests
+  inconsistent reasoning during translation.
+* **Type definitions across modules** — every `pub struct`,
+  `pub enum`, `pub type` declaration, with duplicates flagged
+  (same name defined in multiple modules: usually means an
+  opaque stub somewhere needs to be replaced by the real
+  definition's import).
+* **Cross-module imports** — `use crate::picoquic::…` lines
+  with the imported items grouped by source module.
+
+### Scripting
+
+`scripts/phase1b.py` is a single-shot inspection — no claude,
+no state machine.  It writes `xlate/consistency_report.md` and
+exits.
+
+```sh
+python3 scripts/phase1b.py             # write the report
+python3 scripts/phase1b.py --json      # also dump raw data
+```
+
+### Output goes back into 1C
+
+The human reviewer reads `xlate/consistency_report.md`, decides
+the policy ("all traits PascalCase except those whose typedef
+name is part of a callback ABI" or whatever), and adds
+`// REVIEW: <instruction>` markers where the source disagrees
+with the policy.  Phase 1C then implements the changes.
+
+## Phase 1C — Human review with AI execution
+
+After 1A and 1B, the human reviewer reads each module and the
+consistency report, then annotates the code with
+`// REVIEW: <instruction>` comments wherever they want changes.
+Comments can name a target type, a desired pattern, a question
+to investigate — anything actionable.  Running
+`scripts/phase1c.py` then asks the AI to address them.
 
 ### How `// REVIEW` comments work
 
@@ -336,24 +388,25 @@ For each file containing `// REVIEW: ` markers:
 
 ### Scripting
 
-`scripts/phase1b.py` drives the pass:
+`scripts/phase1c.py` drives the pass:
 
 * Scans `rs/fq/src/` for files containing `// REVIEW: ` (the
   open form is excluded).
 * For each, invokes `claude -p` with the same tool allowlist as
   1A and a prompt naming the file plus the extracted REVIEW
   comments (line numbers + text).
-* Tracks state in `xlate/phase1b_state.json`, keyed by Rust
+* Tracks state in `xlate/phase1c_state.json`, keyed by Rust
   file path.
 * Supports `--file`, `--list`, `--limit`, `--dry-run`,
   `--stop-on-failure`, `--force`.
 
 ### Iteration
 
-1A and 1B can interleave: the human reviews 1A's output, adds
-REVIEW comments, runs 1B, reviews again, and so on.  Each
-iteration is cheap because `phase1b.py` only touches files with
-fresh REVIEW markers — already-resolved files are skipped.
+1B and 1C can interleave: the human reads the report, adds
+`// REVIEW:` markers, runs 1C, regenerates the report, repeats.
+Each 1C iteration is cheap because `phase1c.py` only touches
+files with fresh REVIEW markers — already-resolved files are
+skipped.
 
 ### Phase 1 acceptance gate (revised)
 
@@ -363,7 +416,9 @@ Phase 1 is complete when:
 2. `cargo fmt` + `cargo clippy -- -D warnings` + `cargo check`
    all pass.
 3. Phase 1A self-review has run on every module.
-4. No plain `// REVIEW: ` comments remain (only `// REVIEW(open):`,
+4. The Phase 1B consistency report has been generated and
+   reviewed; any policy decisions have been applied via 1C.
+5. No plain `// REVIEW: ` comments remain (only `// REVIEW(open):`,
    each with a human-actionable reason recorded).
 
 ## Phase 2 — Translate tests

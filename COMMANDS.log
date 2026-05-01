@@ -191,3 +191,4 @@
 2026-05-01 Phase 1A self-review: picoquic_packet_loop.rs — renamed traits (picoquic_packet_loop_cb_fn → PicoquicPacketLoopCbFn, etc.) and enum variants to PascalCase; removed redundant #![allow(non_snake_case)]
   cd /Users/richbarn/Projects/picoquic/rs/fq && cargo check
   cd /Users/richbarn/Projects/picoquic/rs/fq && cargo clippy -- -D warnings
+2026-05-01T14:41:37-04:00 python3 scripts/phase1b.py (consistency report)

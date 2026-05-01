@@ -1,0 +1,5911 @@
+{
+  "files": [
+    {
+      "path": "rs/fq/src/picoquic/bytestream.rs",
+      "lines": 406,
+      "decls": {
+        "traits": [],
+        "structs": [
+          {
+            "name": "bytestream",
+            "line": 87
+          },
+          {
+            "name": "bytestream_buf",
+            "line": 106
+          }
+        ],
+        "enums": [
+          {
+            "name": "bytestream_data",
+            "line": 69
+          }
+        ],
+        "types": [],
+        "fns": [
+          {
+            "name": "bytestream_ref_init",
+            "line": 130
+          },
+          {
+            "name": "bytestream_buf_init",
+            "line": 138
+          },
+          {
+            "name": "bytestream_alloc",
+            "line": 150
+          },
+          {
+            "name": "bytestream_delete",
+            "line": 162
+          },
+          {
+            "name": "bytestream_data",
+            "line": 171
+          },
+          {
+            "name": "bytestream_ptr",
+            "line": 177
+          },
+          {
+            "name": "bytestream_size",
+            "line": 183
+          },
+          {
+            "name": "bytestream_length",
+            "line": 189
+          },
+          {
+            "name": "bytestream_remain",
+            "line": 195
+          },
+          {
+            "name": "bytestream_reset",
+            "line": 201
+          },
+          {
+            "name": "bytestream_clear",
+            "line": 207
+          },
+          {
+            "name": "bytestream_finished",
+            "line": 213
+          },
+          {
+            "name": "bytestream_skip",
+            "line": 224
+          },
+          {
+            "name": "bytewrite_int8",
+            "line": 232
+          },
+          {
+            "name": "byteread_int8",
+            "line": 237
+          },
+          {
+            "name": "byteshow_int8",
+            "line": 245
+          },
+          {
+            "name": "bytewrite_int16",
+            "line": 250
+          },
+          {
+            "name": "byteread_int16",
+            "line": 255
+          },
+          {
+            "name": "bytewrite_int32",
+            "line": 260
+          },
+          {
+            "name": "byteread_int32",
+            "line": 265
+          },
+          {
+            "name": "bytewrite_int64",
+            "line": 270
+          },
+          {
+            "name": "byteread_int64",
+            "line": 275
+          },
+          {
+            "name": "bytewrite_vint",
+            "line": 283
+          },
+          {
+            "name": "byteread_vint",
+            "line": 288
+          },
+          {
+            "name": "byteread_skip_vint",
+            "line": 294
+          },
+          {
+            "name": "bytestream_vint_len",
+            "line": 300
+          },
+          {
+            "name": "byteread_vlen",
+            "line": 307
+          },
+          {
+            "name": "bytewrite_buffer",
+            "line": 317
+          },
+          {
+            "name": "byteread_buffer",
+            "line": 323
+          },
+          {
+            "name": "bytewrite_cid",
+            "line": 336
+          },
+          {
+            "name": "byteread_cid",
+            "line": 344
+          },
+          {
+            "name": "byteskip_cid",
+            "line": 349
+          },
+          {
+            "name": "bytewrite_cstr",
+            "line": 360
+          },
+          {
+            "name": "byteread_cstr",
+            "line": 371
+          },
+          {
+            "name": "byteskip_cstr",
+            "line": 376
+          },
+          {
+            "name": "bytewrite_addr",
+            "line": 389
+          },
+          {
+            "name": "byteread_addr",
+            "line": 396
+          },
+          {
+            "name": "byteskip_addr",
+            "line": 401
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "non_camel_case_types",
+          "line": 42
+        },
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 43
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic::picoquic_connection_id_t",
+          "item": "*",
+          "line": 50
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/cc_common.rs",
+      "lines": 256,
+      "decls": {
+        "traits": [],
+        "structs": [
+          {
+            "name": "picoquic_min_max_rtt_t",
+            "line": 56
+          },
+          {
+            "name": "picoquic_newreno_sim_state_t",
+            "line": 225
+          }
+        ],
+        "enums": [
+          {
+            "name": "picoquic_newreno_alg_state_t",
+            "line": 216
+          }
+        ],
+        "types": [],
+        "fns": [
+          {
+            "name": "filter_rtt_min_max",
+            "line": 74
+          },
+          {
+            "name": "hystart_loss_test",
+            "line": 82
+          },
+          {
+            "name": "hystart_loss_volume_test",
+            "line": 94
+          },
+          {
+            "name": "hystart_test",
+            "line": 107
+          },
+          {
+            "name": "picoquic_cc_get_sequence_number",
+            "line": 131
+          },
+          {
+            "name": "picoquic_cc_get_ack_number",
+            "line": 140
+          },
+          {
+            "name": "picoquic_cc_get_lowest_not_ack",
+            "line": 147
+          },
+          {
+            "name": "picoquic_cc_get_ack_sent_time",
+            "line": 152
+          },
+          {
+            "name": "picoquic_cc_slow_start_increase",
+            "line": 165
+          },
+          {
+            "name": "picoquic_cc_slow_start_increase_ex",
+            "line": 171
+          },
+          {
+            "name": "picoquic_cc_slow_start_increase_ex2",
+            "line": 181
+          },
+          {
+            "name": "picoquic_cc_update_target_cwin_estimation",
+            "line": 193
+          },
+          {
+            "name": "picoquic_cc_update_cwin_for_long_rtt",
+            "line": 200
+          },
+          {
+            "name": "reset",
+            "line": 236
+          },
+          {
+            "name": "notify",
+            "line": 243
+          }
+        ]
+      },
+      "inner_attrs": [],
+      "imports": [
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 10
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/performance_log.rs",
+      "lines": 114,
+      "decls": {
+        "traits": [],
+        "structs": [],
+        "enums": [
+          {
+            "name": "picoquic_perflog_column_enum",
+            "line": 46
+          }
+        ],
+        "types": [],
+        "fns": [
+          {
+            "name": "picoquic_perflog_param_name",
+            "line": 84
+          },
+          {
+            "name": "picoquic_perflog_setup",
+            "line": 106
+          }
+        ]
+      },
+      "inner_attrs": [],
+      "imports": [
+        {
+          "from": "picoquic::picoquic_quic_t",
+          "item": "*",
+          "line": 16
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picohash.rs",
+      "lines": 275,
+      "decls": {
+        "traits": [
+          {
+            "name": "PicoHashOps",
+            "line": 56
+          }
+        ],
+        "structs": [
+          {
+            "name": "picohash_item",
+            "line": 90
+          },
+          {
+            "name": "picohash_table",
+            "line": 125
+          }
+        ],
+        "enums": [],
+        "types": [],
+        "fns": [
+          {
+            "name": "picohash_create",
+            "line": 153
+          },
+          {
+            "name": "picohash_create_ex",
+            "line": 163
+          },
+          {
+            "name": "picohash_retrieve",
+            "line": 180
+          },
+          {
+            "name": "picohash_insert",
+            "line": 198
+          },
+          {
+            "name": "picohash_delete_item",
+            "line": 217
+          },
+          {
+            "name": "picohash_delete_key",
+            "line": 232
+          },
+          {
+            "name": "picohash_delete",
+            "line": 252
+          },
+          {
+            "name": "picohash_bytes",
+            "line": 263
+          },
+          {
+            "name": "picohash_siphash",
+            "line": 270
+          }
+        ]
+      },
+      "inner_attrs": [],
+      "imports": []
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic.rs",
+      "lines": 2437,
+      "decls": {
+        "traits": [
+          {
+            "name": "picoquic_stream_data_cb_fn",
+            "line": 616
+          },
+          {
+            "name": "picoquic_alpn_select_fn",
+            "line": 630
+          },
+          {
+            "name": "picoquic_alpn_select_fn_v2",
+            "line": 636
+          },
+          {
+            "name": "picoquic_connection_id_cb_fn",
+            "line": 643
+          },
+          {
+            "name": "picoquic_fuzz_fn",
+            "line": 655
+          },
+          {
+            "name": "picoquic_verify_sign_cb_fn",
+            "line": 673
+          },
+          {
+            "name": "picoquic_verify_certificate_cb_fn",
+            "line": 681
+          },
+          {
+            "name": "picoquic_free_verify_certificate_ctx",
+            "line": 694
+          },
+          {
+            "name": "picoquic_stream_direct_receive_fn",
+            "line": 702
+          },
+          {
+            "name": "CongestionAlgorithm",
+            "line": 827
+          }
+        ],
+        "structs": [
+          {
+            "name": "picoquic_connection_id_t",
+            "line": 377
+          },
+          {
+            "name": "ptls_iovec_t",
+            "line": 396
+          },
+          {
+            "name": "picoquic_iovec_t",
+            "line": 411
+          },
+          {
+            "name": "picoquic_tp_preferred_address_t",
+            "line": 476
+          },
+          {
+            "name": "picoquic_tp_version_negotiation_t",
+            "line": 492
+          },
+          {
+            "name": "picoquic_tp_t",
+            "line": 513
+          },
+          {
+            "name": "ptls_verify_certificate_t",
+            "line": 666
+          },
+          {
+            "name": "picoquic_path_quality_t",
+            "line": 719
+          },
+          {
+            "name": "picoquic_per_ack_state_t",
+            "line": 801
+          },
+          {
+            "name": "picoquic_congestion_algorithm_t",
+            "line": 861
+          },
+          {
+            "name": "picoquic_alpn_list_t",
+            "line": 914
+          },
+          {
+            "name": "PreparedPacket",
+            "line": 1934
+          },
+          {
+            "name": "PreparedCnxPacket",
+            "line": 1977
+          }
+        ],
+        "enums": [
+          {
+            "name": "picoquic_state_enum",
+            "line": 228
+          },
+          {
+            "name": "picoquic_packet_context_enum",
+            "line": 305
+          },
+          {
+            "name": "picoquic_pmtud_policy_enum",
+            "line": 317
+          },
+          {
+            "name": "picoquic_spinbit_version_enum",
+            "line": 332
+          },
+          {
+            "name": "picoquic_lossbit_version_enum",
+            "line": 348
+          },
+          {
+            "name": "picoquic_path_status_enum",
+            "line": 358
+          },
+          {
+            "name": "picoquic_call_back_event_t",
+            "line": 437
+          },
+          {
+            "name": "picoquic_datagram_active_enum",
+            "line": 756
+          },
+          {
+            "name": "picoquic_congestion_notification_t",
+            "line": 779
+          },
+          {
+            "name": "picoquic_alpn_enum",
+            "line": 901
+          }
+        ],
+        "types": [
+          {
+            "name": "picoquic_tp_enum",
+            "line": 260
+          }
+        ],
+        "fns": [
+          {
+            "name": "picoquic_current_time",
+            "line": 589
+          },
+          {
+            "name": "picoquic_get_quic_time",
+            "line": 596
+          },
+          {
+            "name": "picoquic_congestion_control_algorithms",
+            "line": 889
+          },
+          {
+            "name": "picoquic_is_handshake_error",
+            "line": 938
+          },
+          {
+            "name": "picoquic_error_name",
+            "line": 944
+          },
+          {
+            "name": "picoquic_tp_name",
+            "line": 950
+          },
+          {
+            "name": "picoquic_frame_name",
+            "line": 956
+          },
+          {
+            "name": "picoquic_add_proposed_alpn",
+            "line": 963
+          },
+          {
+            "name": "picoquic_tls_get_negotiated_alpn",
+            "line": 970
+          },
+          {
+            "name": "picoquic_tls_get_sni",
+            "line": 976
+          },
+          {
+            "name": "picoquic_set_fuzz",
+            "line": 982
+          },
+          {
+            "name": "picoquic_log_app_message",
+            "line": 994
+          },
+          {
+            "name": "picoquic_set_log_level",
+            "line": 1000
+          },
+          {
+            "name": "picoquic_use_unique_log_names",
+            "line": 1007
+          },
+          {
+            "name": "picoquic_enable_sslkeylog",
+            "line": 1016
+          },
+          {
+            "name": "picoquic_is_sslkeylog_enabled",
+            "line": 1021
+          },
+          {
+            "name": "picoquic_set_random_initial",
+            "line": 1027
+          },
+          {
+            "name": "picoquic_set_packet_train_mode",
+            "line": 1032
+          },
+          {
+            "name": "picoquic_set_padding_policy",
+            "line": 1037
+          },
+          {
+            "name": "picoquic_set_key_log_file",
+            "line": 1046
+          },
+          {
+            "name": "picoquic_adjust_max_connections",
+            "line": 1055
+          },
+          {
+            "name": "picoquic_current_number_connections",
+            "line": 1062
+          },
+          {
+            "name": "picoquic_set_max_half_open_retry_threshold",
+            "line": 1066
+          },
+          {
+            "name": "picoquic_get_max_half_open_retry_threshold",
+            "line": 1073
+          },
+          {
+            "name": "picoquic_get_close_reasons",
+            "line": 1082
+          },
+          {
+            "name": "picoquic_check_port_blocked",
+            "line": 1089
+          },
+          {
+            "name": "picoquic_check_addr_blocked",
+            "line": 1093
+          },
+          {
+            "name": "picoquic_disable_port_blocking",
+            "line": 1097
+          },
+          {
+            "name": "picoquic_create",
+            "line": 1129
+          },
+          {
+            "name": "picoquic_free",
+            "line": 1150
+          },
+          {
+            "name": "picoquic_set_low_memory_mode",
+            "line": 1154
+          },
+          {
+            "name": "picoquic_set_cookie_mode",
+            "line": 1161
+          },
+          {
+            "name": "picoquic_set_cipher_suite",
+            "line": 1165
+          },
+          {
+            "name": "picoquic_set_key_exchange",
+            "line": 1172
+          },
+          {
+            "name": "picoquic_set_default_tp",
+            "line": 1182
+          },
+          {
+            "name": "picoquic_get_default_tp",
+            "line": 1186
+          },
+          {
+            "name": "picoquic_set_default_tp_value",
+            "line": 1190
+          },
+          {
+            "name": "picoquic_set_transport_parameters",
+            "line": 1198
+          },
+          {
+            "name": "picoquic_get_transport_parameters",
+            "line": 1202
+          },
+          {
+            "name": "picoquic_set_tls_certificate_chain",
+            "line": 1215
+          },
+          {
+            "name": "picoquic_set_tls_root_certificates",
+            "line": 1223
+          },
+          {
+            "name": "picoquic_set_null_verifier",
+            "line": 1230
+          },
+          {
+            "name": "picoquic_set_tls_key",
+            "line": 1236
+          },
+          {
+            "name": "picoquic_set_verify_certificate_callback",
+            "line": 1247
+          },
+          {
+            "name": "picoquic_set_client_authentication",
+            "line": 1255
+          },
+          {
+            "name": "picoquic_set_use_exporter",
+            "line": 1262
+          },
+          {
+            "name": "picoquic_export_secret",
+            "line": 1268
+          },
+          {
+            "name": "picoquic_enforce_client_only",
+            "line": 1276
+          },
+          {
+            "name": "picoquic_set_default_padding",
+            "line": 1283
+          },
+          {
+            "name": "picoquic_set_default_spinbit_policy",
+            "line": 1291
+          },
+          {
+            "name": "picoquic_set_spinbit_policy",
+            "line": 1298
+          },
+          {
+            "name": "picoquic_set_default_lossbit_policy",
+            "line": 1305
+          },
+          {
+            "name": "picoquic_set_default_multipath_option",
+            "line": 1312
+          },
+          {
+            "name": "picoquic_set_default_address_discovery_mode",
+            "line": 1316
+          },
+          {
+            "name": "picoquic_set_cwin_max",
+            "line": 1320
+          },
+          {
+            "name": "picoquic_set_max_data_control",
+            "line": 1324
+          },
+          {
+            "name": "picoquic_set_default_idle_timeout",
+            "line": 1328
+          },
+          {
+            "name": "picoquic_set_default_handshake_timeout",
+            "line": 1332
+          },
+          {
+            "name": "picoquic_set_default_crypto_epoch_length",
+            "line": 1339
+          },
+          {
+            "name": "picoquic_get_default_crypto_epoch_length",
+            "line": 1346
+          },
+          {
+            "name": "picoquic_get_local_cid_length",
+            "line": 1350
+          },
+          {
+            "name": "picoquic_is_local_cid",
+            "line": 1354
+          },
+          {
+            "name": "picoquic_load_retry_tokens",
+            "line": 1360
+          },
+          {
+            "name": "picoquic_save_session_tickets",
+            "line": 1367
+          },
+          {
+            "name": "picoquic_save_retry_tokens",
+            "line": 1374
+          },
+          {
+            "name": "picoquic_set_default_bdp_frame_option",
+            "line": 1381
+          },
+          {
+            "name": "picoquic_set_default_connection_id_length",
+            "line": 1385
+          },
+          {
+            "name": "picoquic_set_default_connection_id_ttl",
+            "line": 1392
+          },
+          {
+            "name": "picoquic_get_default_connection_id_ttl",
+            "line": 1396
+          },
+          {
+            "name": "picoquic_set_mtu_max",
+            "line": 1400
+          },
+          {
+            "name": "picoquic_set_alpn_select_fn",
+            "line": 1405
+          },
+          {
+            "name": "picoquic_set_alpn_select_fn_v2",
+            "line": 1413
+          },
+          {
+            "name": "picoquic_set_default_callback",
+            "line": 1422
+          },
+          {
+            "name": "picoquic_set_default_stateless_reset_min_interval",
+            "line": 1429
+          },
+          {
+            "name": "picoquic_set_max_simultaneous_logs",
+            "line": 1436
+          },
+          {
+            "name": "picoquic_get_max_simultaneous_logs",
+            "line": 1443
+          },
+          {
+            "name": "picoquic_create_cnx",
+            "line": 1457
+          },
+          {
+            "name": "picoquic_create_client_cnx",
+            "line": 1473
+          },
+          {
+            "name": "picoquic_start_client_cnx",
+            "line": 1485
+          },
+          {
+            "name": "picoquic_close",
+            "line": 1490
+          },
+          {
+            "name": "picoquic_close_ex",
+            "line": 1496
+          },
+          {
+            "name": "picoquic_close_immediate",
+            "line": 1504
+          },
+          {
+            "name": "picoquic_delete_cnx",
+            "line": 1510
+          },
+          {
+            "name": "picoquic_set_app_wake_time",
+            "line": 1514
+          },
+          {
+            "name": "picoquic_set_desired_version",
+            "line": 1518
+          },
+          {
+            "name": "picoquic_set_rejected_version",
+            "line": 1522
+          },
+          {
+            "name": "picoquic_probe_new_path",
+            "line": 1529
+          },
+          {
+            "name": "picoquic_probe_new_path_ex",
+            "line": 1538
+          },
+          {
+            "name": "picoquic_probe_new_tuple",
+            "line": 1549
+          },
+          {
+            "name": "picoquic_enable_path_callbacks",
+            "line": 1561
+          },
+          {
+            "name": "picoquic_enable_path_callbacks_default",
+            "line": 1565
+          },
+          {
+            "name": "picoquic_set_app_path_ctx",
+            "line": 1571
+          },
+          {
+            "name": "picoquic_abandon_path",
+            "line": 1579
+          },
+          {
+            "name": "picoquic_refresh_path_connection_id",
+            "line": 1588
+          },
+          {
+            "name": "picoquic_set_stream_path_affinity",
+            "line": 1595
+          },
+          {
+            "name": "picoquic_set_path_status",
+            "line": 1603
+          },
+          {
+            "name": "picoquic_subscribe_new_path_allowed",
+            "line": 1617
+          },
+          {
+            "name": "picoquic_set_first_if_index",
+            "line": 1621
+          },
+          {
+            "name": "picoquic_get_path_addr",
+            "line": 1629
+          },
+          {
+            "name": "picoquic_get_path_quality",
+            "line": 1637
+          },
+          {
+            "name": "picoquic_get_default_path_quality",
+            "line": 1644
+          },
+          {
+            "name": "picoquic_subscribe_to_quality_update_per_path",
+            "line": 1648
+          },
+          {
+            "name": "picoquic_subscribe_to_quality_update",
+            "line": 1657
+          },
+          {
+            "name": "picoquic_default_quality_update",
+            "line": 1665
+          },
+          {
+            "name": "picoquic_start_key_rotation",
+            "line": 1676
+          },
+          {
+            "name": "picoquic_get_quic_ctx",
+            "line": 1680
+          },
+          {
+            "name": "picoquic_get_first_cnx",
+            "line": 1684
+          },
+          {
+            "name": "picoquic_get_next_cnx",
+            "line": 1688
+          },
+          {
+            "name": "picoquic_get_next_wake_delay",
+            "line": 1692
+          },
+          {
+            "name": "picoquic_get_wake_delay",
+            "line": 1700
+          },
+          {
+            "name": "picoquic_get_earliest_cnx_to_wake",
+            "line": 1704
+          },
+          {
+            "name": "picoquic_get_next_wake_time",
+            "line": 1711
+          },
+          {
+            "name": "picoquic_get_cnx_state",
+            "line": 1715
+          },
+          {
+            "name": "picoquic_get_cnx_in_progress",
+            "line": 1719
+          },
+          {
+            "name": "picoquic_cnx_set_padding_policy",
+            "line": 1723
+          },
+          {
+            "name": "picoquic_cnx_get_padding_policy",
+            "line": 1734
+          },
+          {
+            "name": "picoquic_cnx_set_spinbit_policy",
+            "line": 1738
+          },
+          {
+            "name": "picoquic_set_crypto_epoch_length",
+            "line": 1745
+          },
+          {
+            "name": "picoquic_get_crypto_epoch_length",
+            "line": 1749
+          },
+          {
+            "name": "picoquic_set_default_pmtud_policy",
+            "line": 1753
+          },
+          {
+            "name": "picoquic_cnx_set_pmtud_policy",
+            "line": 1760
+          },
+          {
+            "name": "picoquic_cnx_set_pmtud_required",
+            "line": 1769
+          },
+          {
+            "name": "picoquic_tls_is_psk_handshake",
+            "line": 1773
+          },
+          {
+            "name": "picoquic_get_peer_addr",
+            "line": 1783
+          },
+          {
+            "name": "picoquic_get_local_addr",
+            "line": 1789
+          },
+          {
+            "name": "picoquic_get_local_if_index",
+            "line": 1793
+          },
+          {
+            "name": "picoquic_set_local_addr",
+            "line": 1797
+          },
+          {
+            "name": "picoquic_get_local_cnxid",
+            "line": 1804
+          },
+          {
+            "name": "picoquic_get_remote_cnxid",
+            "line": 1808
+          },
+          {
+            "name": "picoquic_get_initial_cnxid",
+            "line": 1812
+          },
+          {
+            "name": "picoquic_get_client_cnxid",
+            "line": 1816
+          },
+          {
+            "name": "picoquic_get_server_cnxid",
+            "line": 1820
+          },
+          {
+            "name": "picoquic_get_logging_cnxid",
+            "line": 1824
+          },
+          {
+            "name": "picoquic_get_cnx_start_time",
+            "line": 1831
+          },
+          {
+            "name": "picoquic_is_0rtt_available",
+            "line": 1835
+          },
+          {
+            "name": "picoquic_is_cnx_backlog_empty",
+            "line": 1839
+          },
+          {
+            "name": "picoquic_set_callback",
+            "line": 1845
+          },
+          {
+            "name": "picoquic_get_default_callback_function",
+            "line": 1852
+          },
+          {
+            "name": "picoquic_get_default_callback_context",
+            "line": 1863
+          },
+          {
+            "name": "picoquic_get_callback_function",
+            "line": 1869
+          },
+          {
+            "name": "picoquic_get_callback_context",
+            "line": 1875
+          },
+          {
+            "name": "picoquic_queue_misc_frame",
+            "line": 1884
+          },
+          {
+            "name": "picoquic_queue_datagram_frame",
+            "line": 1893
+          },
+          {
+            "name": "picoquic_incoming_packet",
+            "line": 1903
+          },
+          {
+            "name": "picoquic_incoming_packet_ex",
+            "line": 1918
+          },
+          {
+            "name": "picoquic_prepare_next_packet_ex",
+            "line": 1955
+          },
+          {
+            "name": "picoquic_prepare_next_packet",
+            "line": 1966
+          },
+          {
+            "name": "picoquic_prepare_packet_ex",
+            "line": 1985
+          },
+          {
+            "name": "picoquic_prepare_packet",
+            "line": 1993
+          },
+          {
+            "name": "picoquic_notify_destination_unreachable",
+            "line": 2001
+          },
+          {
+            "name": "picoquic_notify_destination_unreachable_by_cnxid",
+            "line": 2012
+          },
+          {
+            "name": "picoquic_mark_direct_receive_stream",
+            "line": 2027
+          },
+          {
+            "name": "picoquic_set_app_stream_ctx",
+            "line": 2037
+          },
+          {
+            "name": "picoquic_unlink_app_stream_ctx",
+            "line": 2045
+          },
+          {
+            "name": "picoquic_mark_active_stream",
+            "line": 2051
+          },
+          {
+            "name": "picoquic_set_stream_not_coalesced",
+            "line": 2060
+          },
+          {
+            "name": "picoquic_set_default_priority",
+            "line": 2068
+          },
+          {
+            "name": "picoquic_set_stream_priority",
+            "line": 2072
+          },
+          {
+            "name": "picoquic_mark_high_priority_stream",
+            "line": 2080
+          },
+          {
+            "name": "picoquic_set_default_datagram_priority",
+            "line": 2088
+          },
+          {
+            "name": "picoquic_set_datagram_priority",
+            "line": 2095
+          },
+          {
+            "name": "picoquic_provide_stream_data_buffer",
+            "line": 2107
+          },
+          {
+            "name": "picoquic_add_to_stream",
+            "line": 2116
+          },
+          {
+            "name": "picoquic_reset_stream_ctx",
+            "line": 2125
+          },
+          {
+            "name": "picoquic_add_to_stream_with_ctx",
+            "line": 2129
+          },
+          {
+            "name": "picoquic_reset_stream",
+            "line": 2139
+          },
+          {
+            "name": "picoquic_reset_stream_at",
+            "line": 2147
+          },
+          {
+            "name": "picoquic_open_flow_control",
+            "line": 2156
+          },
+          {
+            "name": "picoquic_set_app_flow_control",
+            "line": 2164
+          },
+          {
+            "name": "picoquic_get_next_local_stream_id",
+            "line": 2172
+          },
+          {
+            "name": "picoquic_stop_sending",
+            "line": 2176
+          },
+          {
+            "name": "picoquic_discard_stream",
+            "line": 2184
+          },
+          {
+            "name": "picoquic_mark_datagram_ready",
+            "line": 2195
+          },
+          {
+            "name": "picoquic_mark_datagram_ready_path",
+            "line": 2199
+          },
+          {
+            "name": "picoquic_provide_datagram_buffer",
+            "line": 2209
+          },
+          {
+            "name": "picoquic_provide_datagram_buffer_ex",
+            "line": 2216
+          },
+          {
+            "name": "picoquic_set_optimistic_ack_policy",
+            "line": 2227
+          },
+          {
+            "name": "picoquic_set_preemptive_repeat_policy",
+            "line": 2234
+          },
+          {
+            "name": "picoquic_set_preemptive_repeat_per_cnx",
+            "line": 2238
+          },
+          {
+            "name": "picoquic_enable_keep_alive",
+            "line": 2242
+          },
+          {
+            "name": "picoquic_disable_keep_alive",
+            "line": 2246
+          },
+          {
+            "name": "picoquic_is_client",
+            "line": 2250
+          },
+          {
+            "name": "picoquic_get_local_error",
+            "line": 2254
+          },
+          {
+            "name": "picoquic_get_remote_error",
+            "line": 2258
+          },
+          {
+            "name": "picoquic_get_application_error",
+            "line": 2262
+          },
+          {
+            "name": "picoquic_get_remote_stream_error",
+            "line": 2266
+          },
+          {
+            "name": "picoquic_get_data_sent",
+            "line": 2270
+          },
+          {
+            "name": "picoquic_get_data_received",
+            "line": 2274
+          },
+          {
+            "name": "picoquic_cnx_is_still_logging",
+            "line": 2278
+          },
+          {
+            "name": "picoquic_register_congestion_control_algorithms",
+            "line": 2291
+          },
+          {
+            "name": "picoquic_register_all_congestion_control_algorithms",
+            "line": 2297
+          },
+          {
+            "name": "picoquic_get_congestion_algorithm",
+            "line": 2301
+          },
+          {
+            "name": "picoquic_set_default_congestion_algorithm",
+            "line": 2307
+          },
+          {
+            "name": "picoquic_set_default_congestion_algorithm_ex",
+            "line": 2314
+          },
+          {
+            "name": "picoquic_set_default_congestion_algorithm_by_name",
+            "line": 2322
+          },
+          {
+            "name": "picoquic_set_congestion_algorithm",
+            "line": 2329
+          },
+          {
+            "name": "picoquic_set_congestion_algorithm_ex",
+            "line": 2336
+          },
+          {
+            "name": "picoquic_set_priority_limit_for_bypass",
+            "line": 2344
+          },
+          {
+            "name": "picoquic_set_feedback_loss_notification",
+            "line": 2348
+          },
+          {
+            "name": "picoquic_request_forced_probe_up",
+            "line": 2352
+          },
+          {
+            "name": "picoquic_subscribe_pacing_rate_updates",
+            "line": 2356
+          },
+          {
+            "name": "picoquic_get_pacing_rate",
+            "line": 2364
+          },
+          {
+            "name": "picoquic_get_cwin",
+            "line": 2368
+          },
+          {
+            "name": "picoquic_get_rtt",
+            "line": 2372
+          },
+          {
+            "name": "picoquic_ech_configure_quic_ctx",
+            "line": 2379
+          },
+          {
+            "name": "picoquic_release_quic_ech_ctx",
+            "line": 2387
+          },
+          {
+            "name": "picoquic_ech_configure_client",
+            "line": 2391
+          },
+          {
+            "name": "picoquic_is_ech_handshake",
+            "line": 2398
+          },
+          {
+            "name": "picoquic_ech_get_retry_config",
+            "line": 2406
+          },
+          {
+            "name": "picoquic_ech_create_config_file",
+            "line": 2410
+          },
+          {
+            "name": "picoquic_base64_decode",
+            "line": 2424
+          },
+          {
+            "name": "picoquic_base64_encode",
+            "line": 2432
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "non_camel_case_types",
+          "line": 48
+        },
+        {
+          "lint": "non_upper_case_globals",
+          "line": 52
+        },
+        {
+          "lint": "clippy::enum_variant_names",
+          "line": 57
+        },
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 60
+        }
+      ],
+      "imports": []
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic_binlog.rs",
+      "lines": 367,
+      "decls": {
+        "traits": [],
+        "structs": [],
+        "enums": [
+          {
+            "name": "picoquic_log_event_type",
+            "line": 132
+          }
+        ],
+        "types": [],
+        "fns": [
+          {
+            "name": "binlog_pdu",
+            "line": 168
+          },
+          {
+            "name": "binlog_packet",
+            "line": 187
+          },
+          {
+            "name": "binlog_dropped_packet",
+            "line": 203
+          },
+          {
+            "name": "binlog_buffered_packet",
+            "line": 218
+          },
+          {
+            "name": "binlog_outgoing_packet",
+            "line": 235
+          },
+          {
+            "name": "binlog_packet_lost",
+            "line": 254
+          },
+          {
+            "name": "binlog_negotiated_alpn",
+            "line": 273
+          },
+          {
+            "name": "binlog_transport_extension",
+            "line": 287
+          },
+          {
+            "name": "binlog_picotls_ticket",
+            "line": 297
+          },
+          {
+            "name": "binlog_new_connection",
+            "line": 311
+          },
+          {
+            "name": "binlog_close_connection",
+            "line": 320
+          },
+          {
+            "name": "binlog_cc_dump",
+            "line": 330
+          },
+          {
+            "name": "picoquic_set_binlog",
+            "line": 350
+          },
+          {
+            "name": "picoquic_enable_binlog",
+            "line": 362
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "clippy::too_many_arguments",
+          "line": 103
+        },
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 106
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 110
+        },
+        {
+          "from": "picoquic_internal::",
+          "item": "*",
+          "line": 111
+        },
+        {
+          "from": "picoquic_utils::picoquic_file_t",
+          "item": "*",
+          "line": 114
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic_config.rs",
+      "lines": 384,
+      "decls": {
+        "traits": [],
+        "structs": [
+          {
+            "name": "picoquic_quic_config_t",
+            "line": 143
+          }
+        ],
+        "enums": [
+          {
+            "name": "picoquic_option_enum_t",
+            "line": 69
+          }
+        ],
+        "types": [],
+        "fns": [
+          {
+            "name": "init",
+            "line": 240
+          },
+          {
+            "name": "clear",
+            "line": 251
+          },
+          {
+            "name": "set_option",
+            "line": 267
+          },
+          {
+            "name": "command_line",
+            "line": 288
+          },
+          {
+            "name": "command_line_ex",
+            "line": 304
+          },
+          {
+            "name": "picoquic_config_option_letters",
+            "line": 331
+          },
+          {
+            "name": "picoquic_config_usage_file",
+            "line": 340
+          },
+          {
+            "name": "picoquic_config_usage",
+            "line": 347
+          },
+          {
+            "name": "picoquic_create_and_configure",
+            "line": 374
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "non_camel_case_types",
+          "line": 44
+        },
+        {
+          "lint": "clippy::enum_variant_names",
+          "line": 48
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 50
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+      "lines": 598,
+      "decls": {
+        "traits": [
+          {
+            "name": "picoquic_set_tls_key_provider_t",
+            "line": 213
+          },
+          {
+            "name": "picoquic_get_private_key_from_file_t",
+            "line": 223
+          },
+          {
+            "name": "picoquic_set_private_key_from_file_t",
+            "line": 229
+          },
+          {
+            "name": "picoquic_get_public_key_from_private_t",
+            "line": 237
+          },
+          {
+            "name": "picoquic_dispose_sign_certificate_t",
+            "line": 244
+          },
+          {
+            "name": "picoquic_get_certs_from_file_t",
+            "line": 252
+          },
+          {
+            "name": "picoquic_dispose_certificate_verifier_t",
+            "line": 258
+          },
+          {
+            "name": "picoquic_get_certificate_verifier_t",
+            "line": 281
+          },
+          {
+            "name": "picoquic_set_tls_root_certificates_t",
+            "line": 288
+          },
+          {
+            "name": "picoquic_explain_crypto_error_t",
+            "line": 298
+          },
+          {
+            "name": "picoquic_clear_crypto_errors_t",
+            "line": 304
+          },
+          {
+            "name": "picoquic_set_random_provider_in_ctx_t",
+            "line": 311
+          },
+          {
+            "name": "picoquic_crypto_random_provider_t",
+            "line": 318
+          },
+          {
+            "name": "picoquic_keyex_from_key_file_t",
+            "line": 326
+          },
+          {
+            "name": "picoquic_keyex_dispose_t",
+            "line": 332
+          }
+        ],
+        "structs": [
+          {
+            "name": "ptls_cipher_suite_t",
+            "line": 96
+          },
+          {
+            "name": "ptls_key_exchange_algorithm_t",
+            "line": 102
+          },
+          {
+            "name": "ptls_hpke_cipher_suite_t",
+            "line": 108
+          },
+          {
+            "name": "ptls_hpke_kem_t",
+            "line": 114
+          },
+          {
+            "name": "ptls_context_t",
+            "line": 121
+          },
+          {
+            "name": "ptls_sign_certificate_t",
+            "line": 127
+          },
+          {
+            "name": "ptls_t",
+            "line": 134
+          },
+          {
+            "name": "ptls_raw_extension_t",
+            "line": 142
+          },
+          {
+            "name": "ptls_handshake_properties_t",
+            "line": 148
+          },
+          {
+            "name": "ptls_key_exchange_context_t",
+            "line": 154
+          },
+          {
+            "name": "PicoquicCertificateVerifier",
+            "line": 266
+          },
+          {
+            "name": "picoquic_cipher_suites_t",
+            "line": 415
+          },
+          {
+            "name": "picoquic_tls_ctx_t",
+            "line": 557
+          }
+        ],
+        "enums": [],
+        "types": [],
+        "fns": [
+          {
+            "name": "picoquic_register_ciphersuite",
+            "line": 176
+          },
+          {
+            "name": "picoquic_register_key_exchange_algorithm",
+            "line": 182
+          },
+          {
+            "name": "picoquic_register_hpke_cipher_suite",
+            "line": 190
+          },
+          {
+            "name": "picoquic_register_hpke_kem",
+            "line": 196
+          },
+          {
+            "name": "picoquic_register_tls_key_provider_fn",
+            "line": 347
+          },
+          {
+            "name": "picoquic_register_verify_certificate_fn",
+            "line": 358
+          },
+          {
+            "name": "picoquic_register_explain_crypto_error_fn",
+            "line": 368
+          },
+          {
+            "name": "picoquic_register_crypto_random_provider_fn",
+            "line": 377
+          },
+          {
+            "name": "picoquic_register_keyex_from_key_file_fn",
+            "line": 385
+          },
+          {
+            "name": "picoquic_cipher_suites",
+            "line": 430
+          },
+          {
+            "name": "picoquic_key_exchanges",
+            "line": 435
+          },
+          {
+            "name": "picoquic_key_exchange_secp256r1",
+            "line": 443
+          },
+          {
+            "name": "picoquic_hpke_cipher_suites",
+            "line": 448
+          },
+          {
+            "name": "picoquic_hpke_kems",
+            "line": 453
+          },
+          {
+            "name": "picoquic_set_private_key_from_file_fn",
+            "line": 459
+          },
+          {
+            "name": "picoquic_dispose_sign_certificate_fn",
+            "line": 466
+          },
+          {
+            "name": "picoquic_get_certs_from_file_fn",
+            "line": 473
+          },
+          {
+            "name": "picoquic_get_public_key_from_private_fn",
+            "line": 480
+          },
+          {
+            "name": "picoquic_get_certificate_verifier_fn",
+            "line": 487
+          },
+          {
+            "name": "picoquic_dispose_certificate_verifier_fn",
+            "line": 494
+          },
+          {
+            "name": "picoquic_set_tls_root_certificates_fn",
+            "line": 501
+          },
+          {
+            "name": "picoquic_explain_crypto_error_fn",
+            "line": 508
+          },
+          {
+            "name": "picoquic_clear_crypto_errors_fn",
+            "line": 515
+          },
+          {
+            "name": "picoquic_crypto_random_provider_fn",
+            "line": 522
+          },
+          {
+            "name": "picoquic_keyex_from_key_file_fn",
+            "line": 529
+          },
+          {
+            "name": "picoquic_keyex_dispose_fn",
+            "line": 535
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "non_camel_case_types",
+          "line": 55
+        },
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 56
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 63
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic_internal.rs",
+      "lines": 3679,
+      "decls": {
+        "traits": [
+          {
+            "name": "SpinBitPolicy",
+            "line": 378
+          },
+          {
+            "name": "AutoQlog",
+            "line": 747
+          },
+          {
+            "name": "PerformanceLog",
+            "line": 754
+          },
+          {
+            "name": "MemLogHook",
+            "line": 769
+          },
+          {
+            "name": "PicomaskOps",
+            "line": 3652
+          }
+        ],
+        "structs": [
+          {
+            "name": "picoquic_version_parameters_t",
+            "line": 287
+          },
+          {
+            "name": "picoquic_packet_header",
+            "line": 340
+          },
+          {
+            "name": "picoquic_spinbit_def_t",
+            "line": 393
+          },
+          {
+            "name": "picoquic_stateless_packet_t",
+            "line": 407
+          },
+          {
+            "name": "picoquic_stream_data_node_t",
+            "line": 447
+          },
+          {
+            "name": "picoquic_stream_queue_node_t",
+            "line": 457
+          },
+          {
+            "name": "picoquic_packet_t",
+            "line": 468
+          },
+          {
+            "name": "picoquic_registered_token_t",
+            "line": 531
+          },
+          {
+            "name": "picoquic_stored_ticket_t",
+            "line": 556
+          },
+          {
+            "name": "picoquic_stored_token_t",
+            "line": 659
+          },
+          {
+            "name": "picoquic_issued_ticket_t",
+            "line": 711
+          },
+          {
+            "name": "picoquic_quic_t",
+            "line": 784
+          },
+          {
+            "name": "picoquic_sack_item_t",
+            "line": 940
+          },
+          {
+            "name": "picoquic_sack_range_count_t",
+            "line": 948
+          },
+          {
+            "name": "picoquic_sack_list_t",
+            "line": 952
+          },
+          {
+            "name": "picoquic_stream_head_t",
+            "line": 962
+          },
+          {
+            "name": "picoquic_misc_frame_header_t",
+            "line": 1057
+          },
+          {
+            "name": "picoquic_packet_context_t",
+            "line": 1068
+          },
+          {
+            "name": "picoquic_ack_context_track_t",
+            "line": 1087
+          },
+          {
+            "name": "picoquic_ack_context_t",
+            "line": 1098
+          },
+          {
+            "name": "picoquic_local_cnxid_t",
+            "line": 1113
+          },
+          {
+            "name": "picoquic_local_cnxid_list_t",
+            "line": 1124
+          },
+          {
+            "name": "picoquic_remote_cnxid_t",
+            "line": 1137
+          },
+          {
+            "name": "picoquic_remote_cnxid_stash_t",
+            "line": 1149
+          },
+          {
+            "name": "picoquic_pacing_t",
+            "line": 1160
+          },
+          {
+            "name": "picoquic_tuple_t",
+            "line": 1172
+          },
+          {
+            "name": "picoquic_path_t",
+            "line": 1198
+          },
+          {
+            "name": "picoquic_crypto_context_t",
+            "line": 1333
+          },
+          {
+            "name": "picoquic_cnx_t",
+            "line": 1346
+          },
+          {
+            "name": "picoquic_packet_data_path_ack_t",
+            "line": 1624
+          },
+          {
+            "name": "picoquic_packet_data_t",
+            "line": 1638
+          },
+          {
+            "name": "picoquic_stream_data_buffer_argument_t",
+            "line": 2998
+          }
+        ],
+        "enums": [
+          {
+            "name": "picoquic_pmtu_discovery_status_enum",
+            "line": 252
+          },
+          {
+            "name": "picoquic_epoch_enum",
+            "line": 313
+          },
+          {
+            "name": "picoquic_packet_type_enum",
+            "line": 322
+          },
+          {
+            "name": "picoquic_tp_0rtt_enum",
+            "line": 543
+          }
+        ],
+        "types": [
+          {
+            "name": "picoquic_frame_type_enum_t",
+            "line": 201
+          }
+        ],
+        "fns": [
+          {
+            "name": "picoquic_supported_versions",
+            "line": 300
+          },
+          {
+            "name": "picoquic_get_version_index",
+            "line": 304
+          },
+          {
+            "name": "picoquic_spin_function_table",
+            "line": 400
+          },
+          {
+            "name": "picoquic_create_stateless_packet",
+            "line": 421
+          },
+          {
+            "name": "picoquic_queue_stateless_packet",
+            "line": 427
+          },
+          {
+            "name": "picoquic_dequeue_stateless_packet",
+            "line": 434
+          },
+          {
+            "name": "picoquic_delete_stateless_packet",
+            "line": 440
+          },
+          {
+            "name": "picoquic_create_packet",
+            "line": 511
+          },
+          {
+            "name": "picoquic_recycle_packet",
+            "line": 515
+          },
+          {
+            "name": "picoquic_pad_to_policy",
+            "line": 519
+          },
+          {
+            "name": "picoquic_store_ticket",
+            "line": 574
+          },
+          {
+            "name": "picoquic_get_stored_ticket",
+            "line": 592
+          },
+          {
+            "name": "picoquic_get_ticket",
+            "line": 605
+          },
+          {
+            "name": "picoquic_get_ticket_and_version",
+            "line": 620
+          },
+          {
+            "name": "picoquic_save_tickets",
+            "line": 636
+          },
+          {
+            "name": "picoquic_load_tickets",
+            "line": 644
+          },
+          {
+            "name": "picoquic_free_tickets",
+            "line": 648
+          },
+          {
+            "name": "picoquic_seed_ticket",
+            "line": 652
+          },
+          {
+            "name": "picoquic_store_token",
+            "line": 671
+          },
+          {
+            "name": "picoquic_get_token",
+            "line": 683
+          },
+          {
+            "name": "picoquic_save_tokens",
+            "line": 696
+          },
+          {
+            "name": "picoquic_load_tokens",
+            "line": 700
+          },
+          {
+            "name": "picoquic_free_tokens",
+            "line": 704
+          },
+          {
+            "name": "picoquic_remember_issued_ticket",
+            "line": 723
+          },
+          {
+            "name": "picoquic_retrieve_issued_ticket",
+            "line": 734
+          },
+          {
+            "name": "picoquic_context_from_epoch",
+            "line": 920
+          },
+          {
+            "name": "picoquic_registered_token_check_reuse",
+            "line": 924
+          },
+          {
+            "name": "picoquic_registered_token_clear",
+            "line": 933
+          },
+          {
+            "name": "picoquic_create_cnx_internal",
+            "line": 1648
+          },
+          {
+            "name": "picoquic_load_token_file",
+            "line": 1664
+          },
+          {
+            "name": "picoquic_init_transport_parameters",
+            "line": 1668
+          },
+          {
+            "name": "picoquic_register_cnx_id",
+            "line": 1672
+          },
+          {
+            "name": "picoquic_register_net_secret",
+            "line": 1680
+          },
+          {
+            "name": "picoquic_register_net_icid",
+            "line": 1684
+          },
+          {
+            "name": "picoquic_create_local_cnx_id",
+            "line": 1688
+          },
+          {
+            "name": "picoquic_create_tuple",
+            "line": 1699
+          },
+          {
+            "name": "picoquic_delete_demoted_tuples",
+            "line": 1708
+          },
+          {
+            "name": "picoquic_delete_tuple",
+            "line": 1716
+          },
+          {
+            "name": "picoquic_set_first_tuple",
+            "line": 1724
+          },
+          {
+            "name": "picoquic_create_path",
+            "line": 1728
+          },
+          {
+            "name": "picoquic_register_path",
+            "line": 1739
+          },
+          {
+            "name": "picoquic_find_incoming_path",
+            "line": 1743
+          },
+          {
+            "name": "picoquic_prepare_path_control_packet",
+            "line": 1755
+          },
+          {
+            "name": "picoquic_prepare_path_challenge_frames",
+            "line": 1769
+          },
+          {
+            "name": "picoquic_select_next_path_tuple",
+            "line": 1783
+          },
+          {
+            "name": "picoquic_renew_connection_id",
+            "line": 1793
+          },
+          {
+            "name": "picoquic_delete_path",
+            "line": 1797
+          },
+          {
+            "name": "picoquic_demote_path",
+            "line": 1801
+          },
+          {
+            "name": "picoquic_retransmit_demoted_path",
+            "line": 1810
+          },
+          {
+            "name": "picoquic_queue_retransmit_on_ack",
+            "line": 1818
+          },
+          {
+            "name": "picoquic_delete_abandoned_paths",
+            "line": 1826
+          },
+          {
+            "name": "picoquic_set_tuple_challenge",
+            "line": 1834
+          },
+          {
+            "name": "picoquic_set_path_challenge",
+            "line": 1842
+          },
+          {
+            "name": "picoquic_find_path_by_address",
+            "line": 1846
+          },
+          {
+            "name": "picoquic_find_path_by_unique_id",
+            "line": 1855
+          },
+          {
+            "name": "picoquic_check_cid_for_new_tuple",
+            "line": 1859
+          },
+          {
+            "name": "picoquic_assign_peer_cnxid_to_tuple",
+            "line": 1863
+          },
+          {
+            "name": "picoquic_reset_path_mtu",
+            "line": 1871
+          },
+          {
+            "name": "picoquic_get_path_id_from_unique",
+            "line": 1875
+          },
+          {
+            "name": "picoquic_find_or_create_remote_cnxid_stash",
+            "line": 1879
+          },
+          {
+            "name": "picoquic_init_cnxid_stash",
+            "line": 1890
+          },
+          {
+            "name": "picoquic_add_remote_cnxid_to_stash",
+            "line": 1894
+          },
+          {
+            "name": "picoquic_stash_remote_cnxid",
+            "line": 1907
+          },
+          {
+            "name": "picoquic_remove_cnxid_from_stash",
+            "line": 1920
+          },
+          {
+            "name": "picoquic_remove_stashed_cnxid",
+            "line": 1929
+          },
+          {
+            "name": "picoquic_get_cnxid_from_stash",
+            "line": 1938
+          },
+          {
+            "name": "picoquic_obtain_stashed_cnxid",
+            "line": 1944
+          },
+          {
+            "name": "picoquic_dereference_stashed_cnxid",
+            "line": 1951
+          },
+          {
+            "name": "picoquic_dereference_stashed_cnxid_tuple",
+            "line": 1959
+          },
+          {
+            "name": "picoquic_remove_not_before_from_stash",
+            "line": 1968
+          },
+          {
+            "name": "picoquic_delete_remote_cnxid_stash",
+            "line": 1977
+          },
+          {
+            "name": "picoquic_remove_not_before_cid",
+            "line": 1984
+          },
+          {
+            "name": "picoquic_renew_path_connection_id",
+            "line": 1993
+          },
+          {
+            "name": "picoquic_queue_for_retransmit",
+            "line": 2003
+          },
+          {
+            "name": "picoquic_dequeue_retransmit_packet",
+            "line": 2013
+          },
+          {
+            "name": "picoquic_dequeue_retransmitted_packet",
+            "line": 2023
+          },
+          {
+            "name": "picoquic_reset_cnx",
+            "line": 2031
+          },
+          {
+            "name": "picoquic_reset_packet_context",
+            "line": 2035
+          },
+          {
+            "name": "picoquic_connection_error",
+            "line": 2042
+          },
+          {
+            "name": "picoquic_connection_error_ex",
+            "line": 2050
+          },
+          {
+            "name": "picoquic_connection_disconnect",
+            "line": 2059
+          },
+          {
+            "name": "picoquic_cnx_by_id",
+            "line": 2066
+          },
+          {
+            "name": "picoquic_cnx_by_net",
+            "line": 2074
+          },
+          {
+            "name": "picoquic_cnx_by_icid",
+            "line": 2081
+          },
+          {
+            "name": "picoquic_cnx_by_secret",
+            "line": 2089
+          },
+          {
+            "name": "picoquic_pacing_init",
+            "line": 2100
+          },
+          {
+            "name": "picoquic_is_pacing_blocked",
+            "line": 2104
+          },
+          {
+            "name": "picoquic_is_authorized_by_pacing",
+            "line": 2108
+          },
+          {
+            "name": "picoquic_update_pacing_parameters",
+            "line": 2118
+          },
+          {
+            "name": "picoquic_update_pacing_window",
+            "line": 2129
+          },
+          {
+            "name": "picoquic_update_pacing_data_after_send",
+            "line": 2140
+          },
+          {
+            "name": "picoquic_update_pacing_data",
+            "line": 2149
+          },
+          {
+            "name": "picoquic_update_pacing_after_send",
+            "line": 2153
+          },
+          {
+            "name": "picoquic_is_sending_authorized_by_pacing",
+            "line": 2161
+          },
+          {
+            "name": "picoquic_update_pacing_rate",
+            "line": 2170
+          },
+          {
+            "name": "picoquic_refresh_path_quality_thresholds",
+            "line": 2178
+          },
+          {
+            "name": "picoquic_issue_path_quality_update",
+            "line": 2182
+          },
+          {
+            "name": "picoquic_reinsert_by_wake_time",
+            "line": 2189
+          },
+          {
+            "name": "picoformat_16",
+            "line": 2221
+          },
+          {
+            "name": "picoformat_24",
+            "line": 2225
+          },
+          {
+            "name": "picoformat_32",
+            "line": 2229
+          },
+          {
+            "name": "picoformat_64",
+            "line": 2233
+          },
+          {
+            "name": "picoquic_varint_encode",
+            "line": 2237
+          },
+          {
+            "name": "picoquic_varint_encode_16",
+            "line": 2241
+          },
+          {
+            "name": "picoquic_varint_decode",
+            "line": 2245
+          },
+          {
+            "name": "picoquic_frames_varint_decode",
+            "line": 2249
+          },
+          {
+            "name": "picoquic_frames_varint_skip",
+            "line": 2257
+          },
+          {
+            "name": "picoquic_varint_skip",
+            "line": 2261
+          },
+          {
+            "name": "picoquic_encode_varint_length",
+            "line": 2265
+          },
+          {
+            "name": "picoquic_decode_varint_length",
+            "line": 2269
+          },
+          {
+            "name": "picoquic_parse_long_packet_type",
+            "line": 2276
+          },
+          {
+            "name": "picoquic_parse_packet_header",
+            "line": 2283
+          },
+          {
+            "name": "picoquic_create_long_header",
+            "line": 2295
+          },
+          {
+            "name": "picoquic_create_packet_header",
+            "line": 2312
+          },
+          {
+            "name": "picoquic_predict_packet_header_length",
+            "line": 2326
+          },
+          {
+            "name": "picoquic_update_payload_length",
+            "line": 2334
+          },
+          {
+            "name": "picoquic_get_checksum_length",
+            "line": 2343
+          },
+          {
+            "name": "picoquic_protect_packet_header",
+            "line": 2350
+          },
+          {
+            "name": "picoquic_protect_packet",
+            "line": 2359
+          },
+          {
+            "name": "picoquic_get_packet_number64",
+            "line": 2377
+          },
+          {
+            "name": "picoquic_remove_header_protection_inner",
+            "line": 2381
+          },
+          {
+            "name": "picoquic_pad_to_target_length",
+            "line": 2393
+          },
+          {
+            "name": "picoquic_finalize_and_protect_packet_tuple",
+            "line": 2397
+          },
+          {
+            "name": "picoquic_finalize_and_protect_packet",
+            "line": 2414
+          },
+          {
+            "name": "picoquic_implicit_handshake_ack",
+            "line": 2430
+          },
+          {
+            "name": "picoquic_false_start_transition",
+            "line": 2438
+          },
+          {
+            "name": "picoquic_client_almost_ready_transition",
+            "line": 2442
+          },
+          {
+            "name": "picoquic_ready_state_transition",
+            "line": 2446
+          },
+          {
+            "name": "picoquic_parse_header_and_decrypt",
+            "line": 2450
+          },
+          {
+            "name": "picoquic_get_sequence_number",
+            "line": 2469
+          },
+          {
+            "name": "picoquic_get_ack_number",
+            "line": 2477
+          },
+          {
+            "name": "picoquic_get_last_packet",
+            "line": 2485
+          },
+          {
+            "name": "picoquic_init_ack_ctx",
+            "line": 2496
+          },
+          {
+            "name": "picoquic_is_ack_needed",
+            "line": 2500
+          },
+          {
+            "name": "picoquic_is_pn_already_received",
+            "line": 2510
+          },
+          {
+            "name": "picoquic_record_pn_received",
+            "line": 2519
+          },
+          {
+            "name": "picoquic_sack_select_ack_ranges",
+            "line": 2529
+          },
+          {
+            "name": "picoquic_update_sack_list",
+            "line": 2540
+          },
+          {
+            "name": "picoquic_check_sack_list",
+            "line": 2549
+          },
+          {
+            "name": "picoquic_process_ack_of_ack_range",
+            "line": 2557
+          },
+          {
+            "name": "picoquic_update_ack_horizon",
+            "line": 2566
+          },
+          {
+            "name": "picoquic_sack_first_item",
+            "line": 2570
+          },
+          {
+            "name": "picoquic_sack_last_item",
+            "line": 2576
+          },
+          {
+            "name": "picoquic_sack_next_item",
+            "line": 2580
+          },
+          {
+            "name": "picoquic_sack_previous_item",
+            "line": 2584
+          },
+          {
+            "name": "picoquic_sack_insert_item",
+            "line": 2588
+          },
+          {
+            "name": "picoquic_sack_list_is_empty",
+            "line": 2597
+          },
+          {
+            "name": "picoquic_ack_ctx_from_cnx_context",
+            "line": 2601
+          },
+          {
+            "name": "picoquic_sack_list_from_cnx_context",
+            "line": 2609
+          },
+          {
+            "name": "picoquic_sack_list_first",
+            "line": 2617
+          },
+          {
+            "name": "picoquic_sack_list_last",
+            "line": 2621
+          },
+          {
+            "name": "picoquic_sack_list_first_range",
+            "line": 2625
+          },
+          {
+            "name": "picoquic_sack_list_init",
+            "line": 2631
+          },
+          {
+            "name": "picoquic_sack_list_reset",
+            "line": 2635
+          },
+          {
+            "name": "picoquic_sack_list_free",
+            "line": 2644
+          },
+          {
+            "name": "picoquic_sack_item_range_start",
+            "line": 2648
+          },
+          {
+            "name": "picoquic_sack_item_range_end",
+            "line": 2652
+          },
+          {
+            "name": "picoquic_sack_item_nb_times_sent",
+            "line": 2656
+          },
+          {
+            "name": "picoquic_sack_item_record_sent",
+            "line": 2663
+          },
+          {
+            "name": "picoquic_sack_item_record_reset",
+            "line": 2671
+          },
+          {
+            "name": "picoquic_sack_list_size",
+            "line": 2678
+          },
+          {
+            "name": "picoquic_record_ack_packet_data",
+            "line": 2682
+          },
+          {
+            "name": "picoquic_init_packet_ctx",
+            "line": 2689
+          },
+          {
+            "name": "picoquic_process_ack_of_ack_frame",
+            "line": 2697
+          },
+          {
+            "name": "picoquic_compute_ack_gap_and_delay",
+            "line": 2707
+          },
+          {
+            "name": "picoquic_seed_bandwidth",
+            "line": 2718
+          },
+          {
+            "name": "picoquic_current_retransmit_timer",
+            "line": 2728
+          },
+          {
+            "name": "picoquic_update_path_rtt",
+            "line": 2735
+          },
+          {
+            "name": "picoquic_create_stream",
+            "line": 2750
+          },
+          {
+            "name": "picoquic_create_missing_streams",
+            "line": 2757
+          },
+          {
+            "name": "picoquic_is_stream_closed",
+            "line": 2765
+          },
+          {
+            "name": "picoquic_delete_stream_if_closed",
+            "line": 2769
+          },
+          {
+            "name": "picoquic_update_stream_initial_remote",
+            "line": 2776
+          },
+          {
+            "name": "picoquic_stream_from_node",
+            "line": 2780
+          },
+          {
+            "name": "picoquic_insert_output_stream",
+            "line": 2784
+          },
+          {
+            "name": "picoquic_remove_output_stream",
+            "line": 2791
+          },
+          {
+            "name": "picoquic_reorder_output_stream",
+            "line": 2798
+          },
+          {
+            "name": "picoquic_first_stream",
+            "line": 2805
+          },
+          {
+            "name": "picoquic_last_stream",
+            "line": 2809
+          },
+          {
+            "name": "picoquic_next_stream",
+            "line": 2813
+          },
+          {
+            "name": "picoquic_find_stream",
+            "line": 2817
+          },
+          {
+            "name": "picoquic_add_output_streams",
+            "line": 2824
+          },
+          {
+            "name": "picoquic_find_ready_stream_path",
+            "line": 2833
+          },
+          {
+            "name": "picoquic_find_ready_stream",
+            "line": 2841
+          },
+          {
+            "name": "picoquic_is_tls_stream_ready",
+            "line": 2845
+          },
+          {
+            "name": "picoquic_decode_stream_frame",
+            "line": 2849
+          },
+          {
+            "name": "picoquic_format_stream_frame",
+            "line": 2859
+          },
+          {
+            "name": "picoquic_update_max_stream_ID_local",
+            "line": 2872
+          },
+          {
+            "name": "picoquic_check_frame_needs_repeat",
+            "line": 2882
+          },
+          {
+            "name": "picoquic_format_available_stream_frames",
+            "line": 2894
+          },
+          {
+            "name": "picoquic_queue_data_repeat_init",
+            "line": 2908
+          },
+          {
+            "name": "picoquic_queue_data_repeat_packet",
+            "line": 2912
+          },
+          {
+            "name": "picoquic_dequeue_data_repeat_packet",
+            "line": 2919
+          },
+          {
+            "name": "picoquic_first_data_repeat_packet",
+            "line": 2926
+          },
+          {
+            "name": "picoquic_copy_stream_frame_for_retransmit",
+            "line": 2930
+          },
+          {
+            "name": "picoquic_copy_stream_frames_for_retransmit",
+            "line": 2939
+          },
+          {
+            "name": "picoquic_copy_before_retransmit",
+            "line": 2950
+          },
+          {
+            "name": "picoquic_retransmit_needed",
+            "line": 2964
+          },
+          {
+            "name": "picoquic_set_ack_needed",
+            "line": 2977
+          },
+          {
+            "name": "picoquic_process_ack_of_frames",
+            "line": 2987
+          },
+          {
+            "name": "picoquic_is_stream_frame_unlimited",
+            "line": 3009
+          },
+          {
+            "name": "picoquic_format_stream_frame_header",
+            "line": 3013
+          },
+          {
+            "name": "picoquic_parse_stream_header",
+            "line": 3022
+          },
+          {
+            "name": "picoquic_parse_ack_header",
+            "line": 3034
+          },
+          {
+            "name": "picoquic_decode_crypto_hs_frame",
+            "line": 3047
+          },
+          {
+            "name": "picoquic_format_crypto_hs_frame",
+            "line": 3057
+          },
+          {
+            "name": "picoquic_format_ack_frame",
+            "line": 3067
+          },
+          {
+            "name": "picoquic_format_connection_close_frame",
+            "line": 3079
+          },
+          {
+            "name": "picoquic_format_application_close_frame",
+            "line": 3089
+          },
+          {
+            "name": "picoquic_format_required_max_stream_data_frames",
+            "line": 3099
+          },
+          {
+            "name": "picoquic_format_max_data_frame",
+            "line": 3109
+          },
+          {
+            "name": "picoquic_format_max_stream_data_frame",
+            "line": 3120
+          },
+          {
+            "name": "picoquic_cc_increased_window",
+            "line": 3132
+          },
+          {
+            "name": "picoquic_format_max_streams_frame_if_needed",
+            "line": 3136
+          },
+          {
+            "name": "picoquic_stream_data_node_recycle",
+            "line": 3146
+          },
+          {
+            "name": "picoquic_stream_data_node_alloc",
+            "line": 3150
+          },
+          {
+            "name": "picoquic_clear_stream",
+            "line": 3156
+          },
+          {
+            "name": "picoquic_delete_stream",
+            "line": 3160
+          },
+          {
+            "name": "picoquic_find_or_create_local_cnxid_list",
+            "line": 3164
+          },
+          {
+            "name": "picoquic_create_local_cnxid",
+            "line": 3172
+          },
+          {
+            "name": "picoquic_demote_local_cnxid_list",
+            "line": 3181
+          },
+          {
+            "name": "picoquic_delete_local_cnxid",
+            "line": 3189
+          },
+          {
+            "name": "picoquic_delete_local_cnxid_list",
+            "line": 3193
+          },
+          {
+            "name": "picoquic_delete_local_cnxid_lists",
+            "line": 3200
+          },
+          {
+            "name": "picoquic_retire_local_cnxid",
+            "line": 3204
+          },
+          {
+            "name": "picoquic_check_local_cnxid_ttl",
+            "line": 3212
+          },
+          {
+            "name": "picoquic_find_local_cnxid",
+            "line": 3221
+          },
+          {
+            "name": "picoquic_format_path_challenge_frame",
+            "line": 3229
+          },
+          {
+            "name": "picoquic_format_path_response_frame",
+            "line": 3239
+          },
+          {
+            "name": "picoquic_should_repeat_path_response_frame",
+            "line": 3249
+          },
+          {
+            "name": "picoquic_format_new_connection_id_frame",
+            "line": 3257
+          },
+          {
+            "name": "picoquic_format_max_path_id_frame",
+            "line": 3269
+          },
+          {
+            "name": "picoquic_format_blocked_frames",
+            "line": 3278
+          },
+          {
+            "name": "picoquic_queue_retire_connection_id_frame",
+            "line": 3288
+          },
+          {
+            "name": "picoquic_queue_new_token_frame",
+            "line": 3296
+          },
+          {
+            "name": "picoquic_format_one_blocked_frame",
+            "line": 3304
+          },
+          {
+            "name": "picoquic_format_first_misc_or_dg_frame",
+            "line": 3315
+          },
+          {
+            "name": "picoquic_find_first_misc_frame",
+            "line": 3327
+          },
+          {
+            "name": "picoquic_format_misc_frames_in_context",
+            "line": 3334
+          },
+          {
+            "name": "picoquic_queue_misc_or_dg_frame",
+            "line": 3345
+          },
+          {
+            "name": "picoquic_purge_misc_frames_after_ready",
+            "line": 3357
+          },
+          {
+            "name": "picoquic_delete_misc_or_dg",
+            "line": 3361
+          },
+          {
+            "name": "picoquic_clear_ack_ctx",
+            "line": 3369
+          },
+          {
+            "name": "picoquic_reset_ack_context",
+            "line": 3373
+          },
+          {
+            "name": "picoquic_queue_handshake_done_frame",
+            "line": 3377
+          },
+          {
+            "name": "picoquic_format_first_datagram_frame",
+            "line": 3381
+          },
+          {
+            "name": "picoquic_format_ready_datagram_frame",
+            "line": 3392
+          },
+          {
+            "name": "picoquic_decode_datagram_frame_header",
+            "line": 3404
+          },
+          {
+            "name": "picoquic_parse_ack_frequency_frame",
+            "line": 3413
+          },
+          {
+            "name": "picoquic_format_ack_frequency_frame",
+            "line": 3425
+          },
+          {
+            "name": "picoquic_format_immediate_ack_frame",
+            "line": 3434
+          },
+          {
+            "name": "picoquic_format_time_stamp_frame",
+            "line": 3442
+          },
+          {
+            "name": "picoquic_encode_time_stamp_length",
+            "line": 3452
+          },
+          {
+            "name": "picoquic_format_bdp_frame",
+            "line": 3456
+          },
+          {
+            "name": "picoquic_format_path_abandon_frame",
+            "line": 3467
+          },
+          {
+            "name": "picoquic_queue_path_abandon_frame",
+            "line": 3477
+          },
+          {
+            "name": "picoquic_decode_frames",
+            "line": 3485
+          },
+          {
+            "name": "picoquic_parse_observed_address_frame",
+            "line": 3501
+          },
+          {
+            "name": "picoquic_format_observed_address_frame",
+            "line": 3512
+          },
+          {
+            "name": "picoquic_prepare_observed_address_frame",
+            "line": 3524
+          },
+          {
+            "name": "picoquic_update_peer_addr",
+            "line": 3537
+          },
+          {
+            "name": "picoquic_skip_frame",
+            "line": 3541
+          },
+          {
+            "name": "picoquic_skip_path_abandon_frame",
+            "line": 3550
+          },
+          {
+            "name": "picoquic_skip_path_available_or_backup_frame",
+            "line": 3554
+          },
+          {
+            "name": "picoquic_is_path_challenging_packet",
+            "line": 3561
+          },
+          {
+            "name": "picoquic_queue_path_available_or_backup_frame",
+            "line": 3565
+          },
+          {
+            "name": "picoquic_test_and_signal_new_path_allowed",
+            "line": 3573
+          },
+          {
+            "name": "picoquic_decode_closing_frames",
+            "line": 3577
+          },
+          {
+            "name": "picoquic_process_sooner_packets",
+            "line": 3585
+          },
+          {
+            "name": "picoquic_delete_sooner_packets",
+            "line": 3589
+          },
+          {
+            "name": "picoquic_process_tp_version_negotiation",
+            "line": 3596
+          },
+          {
+            "name": "picoquic_prepare_transport_extensions",
+            "line": 3608
+          },
+          {
+            "name": "picoquic_receive_transport_extensions",
+            "line": 3618
+          },
+          {
+            "name": "picoquic_create_misc_frame",
+            "line": 3628
+          },
+          {
+            "name": "picoquic_process_version_upgrade",
+            "line": 3637
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "non_camel_case_types",
+          "line": 53
+        },
+        {
+          "lint": "non_snake_case",
+          "line": 54
+        },
+        {
+          "lint": "non_upper_case_globals",
+          "line": 55
+        },
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 58
+        },
+        {
+          "lint": "clippy::too_many_arguments",
+          "line": 63
+        }
+      ],
+      "imports": [
+        {
+          "from": "picohash::",
+          "item": "*",
+          "line": 68
+        },
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 69
+        },
+        {
+          "from": "picoquic_unified_log::picoquic_unified_logging_t",
+          "item": "*",
+          "line": 77
+        },
+        {
+          "from": "picosplay::",
+          "item": "*",
+          "line": 78
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic_lb.rs",
+      "lines": 244,
+      "decls": {
+        "traits": [],
+        "structs": [
+          {
+            "name": "picoquic_aes128_ecb_context_t",
+            "line": 107
+          },
+          {
+            "name": "picoquic_load_balancer_config_t",
+            "line": 121
+          },
+          {
+            "name": "picoquic_load_balancer_cid_context_t",
+            "line": 162
+          }
+        ],
+        "enums": [
+          {
+            "name": "picoquic_load_balancer_cid_method_enum",
+            "line": 85
+          }
+        ],
+        "types": [],
+        "fns": [
+          {
+            "name": "parse",
+            "line": 147
+          },
+          {
+            "name": "generate",
+            "line": 196
+          },
+          {
+            "name": "verify",
+            "line": 210
+          },
+          {
+            "name": "picoquic_lb_compat_cid_config",
+            "line": 227
+          },
+          {
+            "name": "picoquic_lb_compat_cid_config_free",
+            "line": 239
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "non_camel_case_types",
+          "line": 67
+        },
+        {
+          "lint": "clippy::enum_variant_names",
+          "line": 70
+        },
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 71
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 77
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic_logger.rs",
+      "lines": 115,
+      "decls": {
+        "traits": [],
+        "structs": [],
+        "enums": [],
+        "types": [],
+        "fns": [
+          {
+            "name": "picoquic_set_textlog",
+            "line": 60
+          },
+          {
+            "name": "picoquic_textlog_close",
+            "line": 74
+          },
+          {
+            "name": "picoquic_textlog_picotls_ticket",
+            "line": 89
+          },
+          {
+            "name": "picoquic_log_fin_or_event_name",
+            "line": 110
+          }
+        ]
+      },
+      "inner_attrs": [],
+      "imports": [
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 45
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+      "lines": 773,
+      "decls": {
+        "traits": [
+          {
+            "name": "PicoquicPacketLoopCbFn",
+            "line": 327
+          },
+          {
+            "name": "PicoquicCustomThreadCreateFn",
+            "line": 411
+          },
+          {
+            "name": "PicoquicCustomThreadSetnameFn",
+            "line": 430
+          },
+          {
+            "name": "PicoquicCustomThreadDeleteFn",
+            "line": 438
+          }
+        ],
+        "structs": [
+          {
+            "name": "picoquic_socket_ctx_t",
+            "line": 149
+          },
+          {
+            "name": "packet_loop_system_call_duration_t",
+            "line": 285
+          },
+          {
+            "name": "packet_loop_time_check_arg_t",
+            "line": 304
+          },
+          {
+            "name": "picoquic_packet_loop_options_t",
+            "line": 353
+          },
+          {
+            "name": "picoquic_packet_loop_param_t",
+            "line": 370
+          },
+          {
+            "name": "picoquic_network_thread_ctx_t",
+            "line": 468
+          }
+        ],
+        "enums": [
+          {
+            "name": "picoquic_packet_loop_cb_enum",
+            "line": 246
+          }
+        ],
+        "types": [],
+        "fns": [
+          {
+            "name": "picoquic_packet_loop_v2",
+            "line": 554
+          },
+          {
+            "name": "picoquic_packet_loop_v3",
+            "line": 570
+          },
+          {
+            "name": "picoquic_packet_loop",
+            "line": 578
+          },
+          {
+            "name": "picoquic_start_network_thread",
+            "line": 602
+          },
+          {
+            "name": "picoquic_start_custom_network_thread",
+            "line": 614
+          },
+          {
+            "name": "picoquic_wake_up_network_thread",
+            "line": 633
+          },
+          {
+            "name": "picoquic_delete_network_thread",
+            "line": 646
+          },
+          {
+            "name": "picoquic_internal_thread_create",
+            "line": 662
+          },
+          {
+            "name": "picoquic_internal_thread_delete",
+            "line": 670
+          },
+          {
+            "name": "picoquic_internal_thread_setname",
+            "line": 676
+          },
+          {
+            "name": "picoquic_get_thread_ctx",
+            "line": 688
+          },
+          {
+            "name": "picoquic_server_set_context",
+            "line": 702
+          },
+          {
+            "name": "picoquic_start_server_threads",
+            "line": 720
+          },
+          {
+            "name": "picoquic_packet_loop_close_socket",
+            "line": 743
+          },
+          {
+            "name": "picoquic_packet_loop_open_sockets",
+            "line": 758
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "non_camel_case_types",
+          "line": 97
+        },
+        {
+          "lint": "non_upper_case_globals",
+          "line": 98
+        },
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 100
+        },
+        {
+          "lint": "clippy::too_many_arguments",
+          "line": 102
+        },
+        {
+          "lint": "clippy::boxed_local",
+          "line": 107
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 112
+        },
+        {
+          "from": "picoquic_config::picoquic_quic_config_t",
+          "item": "*",
+          "line": 115
+        },
+        {
+          "from": "picoquic_utils::",
+          "item": "*",
+          "line": 116
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic_qlog.rs",
+      "lines": 38,
+      "decls": {
+        "traits": [],
+        "structs": [],
+        "enums": [],
+        "types": [],
+        "fns": [
+          {
+            "name": "picoquic_set_qlog",
+            "line": 33
+          }
+        ]
+      },
+      "inner_attrs": [],
+      "imports": [
+        {
+          "from": "picoquic::picoquic_quic_t",
+          "item": "*",
+          "line": 9
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic_unified_log.rs",
+      "lines": 419,
+      "decls": {
+        "traits": [
+          {
+            "name": "picoquic_unified_logging_t",
+            "line": 81
+          }
+        ],
+        "structs": [],
+        "enums": [],
+        "types": [],
+        "fns": [
+          {
+            "name": "picoquic_log_context_free_app_message",
+            "line": 249
+          },
+          {
+            "name": "picoquic_log_quic_pdu",
+            "line": 259
+          },
+          {
+            "name": "picoquic_log_close_logs",
+            "line": 274
+          },
+          {
+            "name": "picoquic_log_app_message",
+            "line": 284
+          },
+          {
+            "name": "picoquic_log_pdu",
+            "line": 290
+          },
+          {
+            "name": "picoquic_log_packet",
+            "line": 306
+          },
+          {
+            "name": "picoquic_log_dropped_packet",
+            "line": 321
+          },
+          {
+            "name": "picoquic_log_buffered_packet",
+            "line": 335
+          },
+          {
+            "name": "picoquic_log_outgoing_packet",
+            "line": 349
+          },
+          {
+            "name": "picoquic_log_packet_lost",
+            "line": 363
+          },
+          {
+            "name": "picoquic_log_negotiated_alpn",
+            "line": 378
+          },
+          {
+            "name": "picoquic_log_transport_extension",
+            "line": 391
+          },
+          {
+            "name": "picoquic_log_tls_ticket",
+            "line": 400
+          },
+          {
+            "name": "picoquic_log_new_connection",
+            "line": 405
+          },
+          {
+            "name": "picoquic_log_close_connection",
+            "line": 410
+          },
+          {
+            "name": "picoquic_log_cc_dump",
+            "line": 417
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "non_camel_case_types",
+          "line": 54
+        },
+        {
+          "lint": "clippy::too_many_arguments",
+          "line": 58
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 62
+        },
+        {
+          "from": "picoquic_internal::",
+          "item": "*",
+          "line": 65
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquic_utils.rs",
+      "lines": 1138,
+      "decls": {
+        "traits": [
+          {
+            "name": "PicoquicThreadFn",
+            "line": 733
+          },
+          {
+            "name": "PicoquictestAqmT",
+            "line": 895
+          }
+        ],
+        "structs": [
+          {
+            "name": "picoquic_file_t",
+            "line": 508
+          },
+          {
+            "name": "picoquic_thread_t",
+            "line": 713
+          },
+          {
+            "name": "picoquic_mutex_t",
+            "line": 718
+          },
+          {
+            "name": "picoquic_event_t",
+            "line": 726
+          },
+          {
+            "name": "picoquictest_sim_packet_t",
+            "line": 876
+          },
+          {
+            "name": "picoquictest_sim_link_t",
+            "line": 949
+          }
+        ],
+        "enums": [
+          {
+            "name": "picoquic_jitter_mode",
+            "line": 923
+          }
+        ],
+        "types": [],
+        "fns": [
+          {
+            "name": "debug_set_stream",
+            "line": 130
+          },
+          {
+            "name": "debug_printf",
+            "line": 139
+          },
+          {
+            "name": "debug_printf_push_stream",
+            "line": 147
+          },
+          {
+            "name": "debug_printf_pop_stream",
+            "line": 153
+          },
+          {
+            "name": "debug_printf_suspend",
+            "line": 159
+          },
+          {
+            "name": "debug_printf_resume",
+            "line": 165
+          },
+          {
+            "name": "debug_printf_reset",
+            "line": 173
+          },
+          {
+            "name": "debug_dump",
+            "line": 181
+          },
+          {
+            "name": "picoquic_string_create",
+            "line": 199
+          },
+          {
+            "name": "picoquic_string_duplicate",
+            "line": 206
+          },
+          {
+            "name": "picoquic_string_free",
+            "line": 217
+          },
+          {
+            "name": "picoquic_sprintf",
+            "line": 231
+          },
+          {
+            "name": "picoquic_format_connection_id",
+            "line": 255
+          },
+          {
+            "name": "picoquic_parse_connection_id",
+            "line": 268
+          },
+          {
+            "name": "picoquic_is_connection_id_null",
+            "line": 275
+          },
+          {
+            "name": "picoquic_compare_connection_id",
+            "line": 283
+          },
+          {
+            "name": "picoquic_connection_id_hash",
+            "line": 296
+          },
+          {
+            "name": "picoquic_val64_connection_id",
+            "line": 302
+          },
+          {
+            "name": "picoquic_hash_addr_bytes",
+            "line": 314
+          },
+          {
+            "name": "picoquic_hash_addr",
+            "line": 321
+          },
+          {
+            "name": "picoquic_parse_hexa",
+            "line": 331
+          },
+          {
+            "name": "picoquic_parse_connection_id_hexa",
+            "line": 340
+          },
+          {
+            "name": "picoquic_print_connection_id_hexa",
+            "line": 351
+          },
+          {
+            "name": "picoquic_compare_addr",
+            "line": 361
+          },
+          {
+            "name": "picoquic_compare_ip_addr",
+            "line": 368
+          },
+          {
+            "name": "picoquic_get_addr_port",
+            "line": 374
+          },
+          {
+            "name": "picoquic_set_addr_port",
+            "line": 382
+          },
+          {
+            "name": "picoquic_addr_length",
+            "line": 391
+          },
+          {
+            "name": "picoquic_store_addr",
+            "line": 402
+          },
+          {
+            "name": "picoquic_get_ip_addr",
+            "line": 411
+          },
+          {
+            "name": "picoquic_store_text_addr",
+            "line": 419
+          },
+          {
+            "name": "picoquic_addr_text",
+            "line": 428
+          },
+          {
+            "name": "picoquic_store_loopback_addr",
+            "line": 443
+          },
+          {
+            "name": "picoquic_set_preferred_address",
+            "line": 456
+          },
+          {
+            "name": "picoquic_set_solution_dir",
+            "line": 471
+          },
+          {
+            "name": "picoquic_solution_dir",
+            "line": 478
+          },
+          {
+            "name": "picoquic_get_input_path",
+            "line": 487
+          },
+          {
+            "name": "picoquic_file_open_ex",
+            "line": 517
+          },
+          {
+            "name": "picoquic_file_open",
+            "line": 524
+          },
+          {
+            "name": "picoquic_file_close",
+            "line": 533
+          },
+          {
+            "name": "picoquic_file_delete",
+            "line": 540
+          },
+          {
+            "name": "picoquic_frames_fixed_skip",
+            "line": 558
+          },
+          {
+            "name": "picoquic_frames_varint_skip",
+            "line": 564
+          },
+          {
+            "name": "picoquic_frames_varint_decode",
+            "line": 571
+          },
+          {
+            "name": "picoquic_frames_varlen_decode",
+            "line": 577
+          },
+          {
+            "name": "picoquic_frames_uint8_decode",
+            "line": 582
+          },
+          {
+            "name": "picoquic_frames_uint16_decode",
+            "line": 587
+          },
+          {
+            "name": "picoquic_frames_uint32_decode",
+            "line": 592
+          },
+          {
+            "name": "picoquic_frames_uint64_decode",
+            "line": 597
+          },
+          {
+            "name": "picoquic_frames_length_data_skip",
+            "line": 603
+          },
+          {
+            "name": "picoquic_frames_cid_decode",
+            "line": 610
+          },
+          {
+            "name": "picoquic_frames_varint_encode_length",
+            "line": 616
+          },
+          {
+            "name": "picoquic_frames_varint_encode",
+            "line": 630
+          },
+          {
+            "name": "picoquic_frames_varlen_encode",
+            "line": 636
+          },
+          {
+            "name": "picoquic_frames_uint8_encode",
+            "line": 641
+          },
+          {
+            "name": "picoquic_frames_uint16_encode",
+            "line": 646
+          },
+          {
+            "name": "picoquic_frames_uint24_encode",
+            "line": 652
+          },
+          {
+            "name": "picoquic_frames_uint32_encode",
+            "line": 657
+          },
+          {
+            "name": "picoquic_frames_uint64_encode",
+            "line": 662
+          },
+          {
+            "name": "picoquic_frames_length_data_encode",
+            "line": 670
+          },
+          {
+            "name": "picoquic_frames_cid_encode",
+            "line": 679
+          },
+          {
+            "name": "picoquic_frames_charz_encode",
+            "line": 688
+          },
+          {
+            "name": "picoquic_constant_time_memcmp",
+            "line": 700
+          },
+          {
+            "name": "picoquic_create_thread",
+            "line": 739
+          },
+          {
+            "name": "picoquic_wait_thread",
+            "line": 747
+          },
+          {
+            "name": "picoquic_delete_thread",
+            "line": 752
+          },
+          {
+            "name": "picoquic_create_mutex",
+            "line": 757
+          },
+          {
+            "name": "picoquic_delete_mutex",
+            "line": 762
+          },
+          {
+            "name": "picoquic_lock_mutex",
+            "line": 767
+          },
+          {
+            "name": "picoquic_unlock_mutex",
+            "line": 772
+          },
+          {
+            "name": "picoquic_create_event",
+            "line": 777
+          },
+          {
+            "name": "picoquic_delete_event",
+            "line": 782
+          },
+          {
+            "name": "picoquic_signal_event",
+            "line": 787
+          },
+          {
+            "name": "picoquic_wait_for_event",
+            "line": 793
+          },
+          {
+            "name": "picoquic_uniform_random",
+            "line": 807
+          },
+          {
+            "name": "picoquic_test_random",
+            "line": 814
+          },
+          {
+            "name": "picoquic_test_random_bytes",
+            "line": 822
+          },
+          {
+            "name": "picoquic_test_uniform_random",
+            "line": 828
+          },
+          {
+            "name": "picoquic_test_gauss_random",
+            "line": 834
+          },
+          {
+            "name": "picoquic_test_poisson_random",
+            "line": 841
+          },
+          {
+            "name": "picoquic_uint8_to_str",
+            "line": 853
+          },
+          {
+            "name": "picoquictest_sim_link_create",
+            "line": 985
+          },
+          {
+            "name": "picoquictest_sim_link_delete",
+            "line": 999
+          },
+          {
+            "name": "picoquictest_sim_link_create_packet",
+            "line": 1006
+          },
+          {
+            "name": "picoquictest_sim_link_next_arrival",
+            "line": 1012
+          },
+          {
+            "name": "picoquictest_sim_link_admit_pending",
+            "line": 1021
+          },
+          {
+            "name": "picoquictest_sim_link_next_admission",
+            "line": 1031
+          },
+          {
+            "name": "picoquictest_sim_link_dequeue",
+            "line": 1042
+          },
+          {
+            "name": "picoquictest_sim_link_submit",
+            "line": 1054
+          },
+          {
+            "name": "picoquictest_sim_link_enqueue",
+            "line": 1067
+          },
+          {
+            "name": "picoquictest_sim_link_transmit_time",
+            "line": 1079
+          },
+          {
+            "name": "picoquictest_sim_link_queue_delay",
+            "line": 1088
+          },
+          {
+            "name": "picoquic_test_simlink_suspend",
+            "line": 1102
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "non_camel_case_types",
+          "line": 60
+        },
+        {
+          "lint": "non_upper_case_globals",
+          "line": 61
+        },
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 64
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 69
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picoquictest_dualq.rs",
+      "lines": 259,
+      "decls": {
+        "traits": [],
+        "structs": [
+          {
+            "name": "dualq_queue_t",
+            "line": 78
+          },
+          {
+            "name": "dualq_state_t",
+            "line": 102
+          }
+        ],
+        "enums": [],
+        "types": [],
+        "fns": [
+          {
+            "name": "dualq_configure",
+            "line": 218
+          },
+          {
+            "name": "dualq_enqueue_queue",
+            "line": 238
+          },
+          {
+            "name": "dualq_dequeue_one",
+            "line": 251
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "non_camel_case_types",
+          "line": 42
+        },
+        {
+          "lint": "non_snake_case",
+          "line": 43
+        },
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 46
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic_utils::",
+          "item": "*",
+          "line": 48
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picosocks.rs",
+      "lines": 456,
+      "decls": {
+        "traits": [],
+        "structs": [
+          {
+            "name": "picoquic_socket_t",
+            "line": 66
+          },
+          {
+            "name": "picoquic_server_sockets_t",
+            "line": 81
+          },
+          {
+            "name": "picoquic_msghdr_t",
+            "line": 99
+          },
+          {
+            "name": "RecvInfo",
+            "line": 201
+          },
+          {
+            "name": "SelectInfo",
+            "line": 231
+          },
+          {
+            "name": "SelectExInfo",
+            "line": 253
+          },
+          {
+            "name": "ServerAddress",
+            "line": 364
+          }
+        ],
+        "enums": [],
+        "types": [],
+        "fns": [
+          {
+            "name": "picoquic_bind_to_port",
+            "line": 113
+          },
+          {
+            "name": "picoquic_get_local_address",
+            "line": 121
+          },
+          {
+            "name": "picoquic_open_client_socket",
+            "line": 132
+          },
+          {
+            "name": "picoquic_open_server_sockets",
+            "line": 143
+          },
+          {
+            "name": "picoquic_close_server_sockets",
+            "line": 150
+          },
+          {
+            "name": "picoquic_socket_set_pkt_info",
+            "line": 158
+          },
+          {
+            "name": "picoquic_socket_set_ecn_options",
+            "line": 168
+          },
+          {
+            "name": "picoquic_socket_set_ecn_options_ex",
+            "line": 179
+          },
+          {
+            "name": "picoquic_socket_set_pmtud_options",
+            "line": 191
+          },
+          {
+            "name": "picoquic_recvmsg",
+            "line": 223
+          },
+          {
+            "name": "picoquic_select",
+            "line": 287
+          },
+          {
+            "name": "picoquic_select_ex",
+            "line": 297
+          },
+          {
+            "name": "picoquic_sendmsg",
+            "line": 319
+          },
+          {
+            "name": "picoquic_send_through_socket",
+            "line": 332
+          },
+          {
+            "name": "picoquic_send_through_server_sockets",
+            "line": 345
+          },
+          {
+            "name": "picoquic_get_server_address",
+            "line": 375
+          },
+          {
+            "name": "picoquic_set_key_log_file_from_env",
+            "line": 394
+          },
+          {
+            "name": "picoquic_socket_error_implies_unreachable",
+            "line": 403
+          },
+          {
+            "name": "picoquic_socks_cmsg_parse",
+            "line": 425
+          },
+          {
+            "name": "picoquic_socks_cmsg_format",
+            "line": 445
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 44
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic::picoquic_quic_t",
+          "item": "*",
+          "line": 48
+        }
+      ]
+    },
+    {
+      "path": "rs/fq/src/picoquic/picosplay.rs",
+      "lines": 256,
+      "decls": {
+        "traits": [
+          {
+            "name": "PicoSplayOps",
+            "line": 53
+          }
+        ],
+        "structs": [
+          {
+            "name": "picosplay_node_t",
+            "line": 89
+          },
+          {
+            "name": "picosplay_tree_t",
+            "line": 127
+          }
+        ],
+        "enums": [],
+        "types": [],
+        "fns": [
+          {
+            "name": "picosplay_init_tree",
+            "line": 166
+          },
+          {
+            "name": "picosplay_new_tree",
+            "line": 173
+          },
+          {
+            "name": "picosplay_insert",
+            "line": 181
+          },
+          {
+            "name": "picosplay_find",
+            "line": 190
+          },
+          {
+            "name": "picosplay_find_previous",
+            "line": 200
+          },
+          {
+            "name": "picosplay_first",
+            "line": 209
+          },
+          {
+            "name": "picosplay_previous",
+            "line": 215
+          },
+          {
+            "name": "picosplay_next",
+            "line": 221
+          },
+          {
+            "name": "picosplay_last",
+            "line": 227
+          },
+          {
+            "name": "picosplay_delete",
+            "line": 233
+          },
+          {
+            "name": "picosplay_delete_hint",
+            "line": 242
+          },
+          {
+            "name": "picosplay_empty_tree",
+            "line": 251
+          }
+        ]
+      },
+      "inner_attrs": [],
+      "imports": []
+    },
+    {
+      "path": "rs/fq/src/picoquic/siphash.rs",
+      "lines": 40,
+      "decls": {
+        "traits": [],
+        "structs": [],
+        "enums": [],
+        "types": [],
+        "fns": [
+          {
+            "name": "siphash",
+            "line": 35
+          }
+        ]
+      },
+      "inner_attrs": [],
+      "imports": []
+    },
+    {
+      "path": "rs/fq/src/picoquic/tls_api.rs",
+      "lines": 1037,
+      "decls": {
+        "traits": [],
+        "structs": [
+          {
+            "name": "PicoquicInitialAeadContext",
+            "line": 553
+          },
+          {
+            "name": "PicoquicDecryptedRetryToken",
+            "line": 734
+          },
+          {
+            "name": "PicoquicVerifiedRetryToken",
+            "line": 773
+          }
+        ],
+        "enums": [],
+        "types": [],
+        "fns": [
+          {
+            "name": "picoquic_master_tlscontext",
+            "line": 172
+          },
+          {
+            "name": "picoquic_master_tlscontext_free",
+            "line": 185
+          },
+          {
+            "name": "picoquic_tlscontext_create",
+            "line": 201
+          },
+          {
+            "name": "picoquic_tlscontext_trim_after_handshake",
+            "line": 231
+          },
+          {
+            "name": "picoquic_tlscontext_remove_ticket",
+            "line": 237
+          },
+          {
+            "name": "picoquic_tls_stream_process",
+            "line": 249
+          },
+          {
+            "name": "picoquic_is_tls_complete",
+            "line": 259
+          },
+          {
+            "name": "picoquic_initialize_tls_stream",
+            "line": 265
+          },
+          {
+            "name": "picoquic_get_tls_time",
+            "line": 274
+          },
+          {
+            "name": "picoquic_crypto_random",
+            "line": 288
+          },
+          {
+            "name": "picoquic_crypto_uniform_random",
+            "line": 294
+          },
+          {
+            "name": "picoquic_public_random_64",
+            "line": 300
+          },
+          {
+            "name": "picoquic_public_random_seed_64",
+            "line": 307
+          },
+          {
+            "name": "picoquic_public_random_seed",
+            "line": 313
+          },
+          {
+            "name": "picoquic_public_random",
+            "line": 319
+          },
+          {
+            "name": "picoquic_public_uniform_random",
+            "line": 325
+          },
+          {
+            "name": "picoquic_setup_initial_master_secret",
+            "line": 521
+          },
+          {
+            "name": "picoquic_setup_initial_secrets",
+            "line": 533
+          },
+          {
+            "name": "picoquic_setup_initial_traffic_keys",
+            "line": 545
+          },
+          {
+            "name": "picoquic_get_initial_aead_context",
+            "line": 565
+          },
+          {
+            "name": "picoquic_get_app_secret",
+            "line": 589
+          },
+          {
+            "name": "picoquic_get_app_secret_size",
+            "line": 596
+          },
+          {
+            "name": "picoquic_compute_new_rotated_keys",
+            "line": 603
+          },
+          {
+            "name": "picoquic_apply_rotated_keys",
+            "line": 610
+          },
+          {
+            "name": "picoquic_rotate_app_secret",
+            "line": 617
+          },
+          {
+            "name": "picoquic_crypto_context_free",
+            "line": 627
+          },
+          {
+            "name": "picoquic_setup_test_aead_context",
+            "line": 642
+          },
+          {
+            "name": "picoquic_pn_enc_create_for_test",
+            "line": 652
+          },
+          {
+            "name": "picoquic_create_cnxid_reset_secret",
+            "line": 662
+          },
+          {
+            "name": "picoquic_tls_set_verify_certificate_callback",
+            "line": 681
+          },
+          {
+            "name": "picoquic_dispose_verify_certificate_callback",
+            "line": 692
+          },
+          {
+            "name": "picoquic_tls_set_client_authentication",
+            "line": 699
+          },
+          {
+            "name": "picoquic_tls_client_authentication_activated",
+            "line": 708
+          },
+          {
+            "name": "picoquic_tls_set_use_exporter",
+            "line": 714
+          },
+          {
+            "name": "picoquic_server_decrypt_retry_token",
+            "line": 746
+          },
+          {
+            "name": "picoquic_prepare_retry_token",
+            "line": 758
+          },
+          {
+            "name": "picoquic_verify_retry_token",
+            "line": 785
+          },
+          {
+            "name": "picoquic_hash_create",
+            "line": 807
+          },
+          {
+            "name": "picoquic_hash_get_length",
+            "line": 813
+          },
+          {
+            "name": "picoquic_set_private_key_from_file",
+            "line": 851
+          },
+          {
+            "name": "picoquic_get_certs_from_file",
+            "line": 867
+          },
+          {
+            "name": "picoquic_create_retry_protection_context",
+            "line": 880
+          },
+          {
+            "name": "picoquic_find_retry_protection_context",
+            "line": 891
+          },
+          {
+            "name": "picoquic_delete_retry_protection_contexts",
+            "line": 901
+          },
+          {
+            "name": "picoquic_get_cipher_suite_by_id_v",
+            "line": 945
+          },
+          {
+            "name": "picoquic_get_aes128gcm_sha256_v",
+            "line": 954
+          },
+          {
+            "name": "picoquic_get_aes128gcm_v",
+            "line": 960
+          },
+          {
+            "name": "picoquic_ecb_create_by_name",
+            "line": 967
+          },
+          {
+            "name": "picoquic_aes128_ecb_create",
+            "line": 973
+          },
+          {
+            "name": "picoquic_tls_api_init",
+            "line": 1013
+          },
+          {
+            "name": "picoquic_tls_api_unload",
+            "line": 1019
+          },
+          {
+            "name": "picoquic_tls_api_reset",
+            "line": 1026
+          },
+          {
+            "name": "picoquic_tls_api_log_versions",
+            "line": 1032
+          }
+        ]
+      },
+      "inner_attrs": [
+        {
+          "lint": "clippy::result_unit_err",
+          "line": 74
+        },
+        {
+          "lint": "clippy::too_many_arguments",
+          "line": 75
+        }
+      ],
+      "imports": [
+        {
+          "from": "picoquic::",
+          "item": "*",
+          "line": 84
+        },
+        {
+          "from": "picoquic_internal::picoquic_crypto_context_t",
+          "item": "*",
+          "line": 88
+        }
+      ]
+    }
+  ],
+  "aggregated": {
+    "traits": [
+      {
+        "name": "PicoHashOps",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picohash.rs",
+        "line": 56
+      },
+      {
+        "name": "picoquic_stream_data_cb_fn",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic.rs",
+        "line": 616
+      },
+      {
+        "name": "picoquic_alpn_select_fn",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic.rs",
+        "line": 630
+      },
+      {
+        "name": "picoquic_alpn_select_fn_v2",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic.rs",
+        "line": 636
+      },
+      {
+        "name": "picoquic_connection_id_cb_fn",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic.rs",
+        "line": 643
+      },
+      {
+        "name": "picoquic_fuzz_fn",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic.rs",
+        "line": 655
+      },
+      {
+        "name": "picoquic_verify_sign_cb_fn",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic.rs",
+        "line": 673
+      },
+      {
+        "name": "picoquic_verify_certificate_cb_fn",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic.rs",
+        "line": 681
+      },
+      {
+        "name": "picoquic_free_verify_certificate_ctx",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic.rs",
+        "line": 694
+      },
+      {
+        "name": "picoquic_stream_direct_receive_fn",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic.rs",
+        "line": 702
+      },
+      {
+        "name": "CongestionAlgorithm",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic.rs",
+        "line": 827
+      },
+      {
+        "name": "picoquic_set_tls_key_provider_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 213
+      },
+      {
+        "name": "picoquic_get_private_key_from_file_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 223
+      },
+      {
+        "name": "picoquic_set_private_key_from_file_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 229
+      },
+      {
+        "name": "picoquic_get_public_key_from_private_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 237
+      },
+      {
+        "name": "picoquic_dispose_sign_certificate_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 244
+      },
+      {
+        "name": "picoquic_get_certs_from_file_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 252
+      },
+      {
+        "name": "picoquic_dispose_certificate_verifier_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 258
+      },
+      {
+        "name": "picoquic_get_certificate_verifier_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 281
+      },
+      {
+        "name": "picoquic_set_tls_root_certificates_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 288
+      },
+      {
+        "name": "picoquic_explain_crypto_error_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 298
+      },
+      {
+        "name": "picoquic_clear_crypto_errors_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 304
+      },
+      {
+        "name": "picoquic_set_random_provider_in_ctx_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 311
+      },
+      {
+        "name": "picoquic_crypto_random_provider_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 318
+      },
+      {
+        "name": "picoquic_keyex_from_key_file_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 326
+      },
+      {
+        "name": "picoquic_keyex_dispose_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+        "line": 332
+      },
+      {
+        "name": "SpinBitPolicy",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+        "line": 378
+      },
+      {
+        "name": "AutoQlog",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+        "line": 747
+      },
+      {
+        "name": "PerformanceLog",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+        "line": 754
+      },
+      {
+        "name": "MemLogHook",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+        "line": 769
+      },
+      {
+        "name": "PicomaskOps",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+        "line": 3652
+      },
+      {
+        "name": "PicoquicPacketLoopCbFn",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+        "line": 327
+      },
+      {
+        "name": "PicoquicCustomThreadCreateFn",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+        "line": 411
+      },
+      {
+        "name": "PicoquicCustomThreadSetnameFn",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+        "line": 430
+      },
+      {
+        "name": "PicoquicCustomThreadDeleteFn",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+        "line": 438
+      },
+      {
+        "name": "picoquic_unified_logging_t",
+        "case": "snake_case",
+        "file": "rs/fq/src/picoquic/picoquic_unified_log.rs",
+        "line": 81
+      },
+      {
+        "name": "PicoquicThreadFn",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+        "line": 733
+      },
+      {
+        "name": "PicoquictestAqmT",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+        "line": 895
+      },
+      {
+        "name": "PicoSplayOps",
+        "case": "PascalCase",
+        "file": "rs/fq/src/picoquic/picosplay.rs",
+        "line": 53
+      }
+    ],
+    "inner_by_lint": {
+      "non_camel_case_types": [
+        {
+          "file": "rs/fq/src/picoquic/bytestream.rs",
+          "line": 42
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 48
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_config.rs",
+          "line": 44
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 55
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 53
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_lb.rs",
+          "line": 67
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 97
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_unified_log.rs",
+          "line": 54
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "line": 60
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquictest_dualq.rs",
+          "line": 42
+        }
+      ],
+      "clippy::result_unit_err": [
+        {
+          "file": "rs/fq/src/picoquic/bytestream.rs",
+          "line": 43
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 60
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_binlog.rs",
+          "line": 106
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 56
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 58
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_lb.rs",
+          "line": 71
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 100
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "line": 64
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquictest_dualq.rs",
+          "line": 46
+        },
+        {
+          "file": "rs/fq/src/picoquic/picosocks.rs",
+          "line": 44
+        },
+        {
+          "file": "rs/fq/src/picoquic/tls_api.rs",
+          "line": 74
+        }
+      ],
+      "non_upper_case_globals": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 52
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 55
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 98
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "line": 61
+        }
+      ],
+      "clippy::enum_variant_names": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 57
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_config.rs",
+          "line": 48
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_lb.rs",
+          "line": 70
+        }
+      ],
+      "clippy::too_many_arguments": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic_binlog.rs",
+          "line": 103
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 63
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 102
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_unified_log.rs",
+          "line": 58
+        },
+        {
+          "file": "rs/fq/src/picoquic/tls_api.rs",
+          "line": 75
+        }
+      ],
+      "non_snake_case": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 54
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquictest_dualq.rs",
+          "line": 43
+        }
+      ],
+      "clippy::boxed_local": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 107
+        }
+      ]
+    },
+    "type_defs": {
+      "bytestream": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/bytestream.rs",
+          "line": 87
+        }
+      ],
+      "bytestream_buf": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/bytestream.rs",
+          "line": 106
+        }
+      ],
+      "bytestream_data": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/bytestream.rs",
+          "line": 69
+        }
+      ],
+      "picoquic_min_max_rtt_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/cc_common.rs",
+          "line": 56
+        }
+      ],
+      "picoquic_newreno_sim_state_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/cc_common.rs",
+          "line": 225
+        }
+      ],
+      "picoquic_newreno_alg_state_t": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/cc_common.rs",
+          "line": 216
+        }
+      ],
+      "picoquic_perflog_column_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/performance_log.rs",
+          "line": 46
+        }
+      ],
+      "picohash_item": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picohash.rs",
+          "line": 90
+        }
+      ],
+      "picohash_table": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picohash.rs",
+          "line": 125
+        }
+      ],
+      "picoquic_connection_id_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 377
+        }
+      ],
+      "ptls_iovec_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 396
+        }
+      ],
+      "picoquic_iovec_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 411
+        }
+      ],
+      "picoquic_tp_preferred_address_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 476
+        }
+      ],
+      "picoquic_tp_version_negotiation_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 492
+        }
+      ],
+      "picoquic_tp_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 513
+        }
+      ],
+      "ptls_verify_certificate_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 666
+        }
+      ],
+      "picoquic_path_quality_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 719
+        }
+      ],
+      "picoquic_per_ack_state_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 801
+        }
+      ],
+      "picoquic_congestion_algorithm_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 861
+        }
+      ],
+      "picoquic_alpn_list_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 914
+        }
+      ],
+      "PreparedPacket": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 1934
+        }
+      ],
+      "PreparedCnxPacket": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 1977
+        }
+      ],
+      "picoquic_state_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 228
+        }
+      ],
+      "picoquic_packet_context_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 305
+        }
+      ],
+      "picoquic_pmtud_policy_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 317
+        }
+      ],
+      "picoquic_spinbit_version_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 332
+        }
+      ],
+      "picoquic_lossbit_version_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 348
+        }
+      ],
+      "picoquic_path_status_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 358
+        }
+      ],
+      "picoquic_call_back_event_t": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 437
+        }
+      ],
+      "picoquic_datagram_active_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 756
+        }
+      ],
+      "picoquic_congestion_notification_t": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 779
+        }
+      ],
+      "picoquic_alpn_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 901
+        }
+      ],
+      "picoquic_tp_enum": [
+        {
+          "kind": "type",
+          "file": "rs/fq/src/picoquic/picoquic.rs",
+          "line": 260
+        }
+      ],
+      "picoquic_log_event_type": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic_binlog.rs",
+          "line": 132
+        }
+      ],
+      "picoquic_quic_config_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_config.rs",
+          "line": 143
+        }
+      ],
+      "picoquic_option_enum_t": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic_config.rs",
+          "line": 69
+        }
+      ],
+      "ptls_cipher_suite_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 96
+        }
+      ],
+      "ptls_key_exchange_algorithm_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 102
+        }
+      ],
+      "ptls_hpke_cipher_suite_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 108
+        }
+      ],
+      "ptls_hpke_kem_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 114
+        }
+      ],
+      "ptls_context_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 121
+        }
+      ],
+      "ptls_sign_certificate_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 127
+        }
+      ],
+      "ptls_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 134
+        }
+      ],
+      "ptls_raw_extension_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 142
+        }
+      ],
+      "ptls_handshake_properties_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 148
+        }
+      ],
+      "ptls_key_exchange_context_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 154
+        }
+      ],
+      "PicoquicCertificateVerifier": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 266
+        }
+      ],
+      "picoquic_cipher_suites_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 415
+        }
+      ],
+      "picoquic_tls_ctx_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "line": 557
+        }
+      ],
+      "picoquic_version_parameters_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 287
+        }
+      ],
+      "picoquic_packet_header": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 340
+        }
+      ],
+      "picoquic_spinbit_def_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 393
+        }
+      ],
+      "picoquic_stateless_packet_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 407
+        }
+      ],
+      "picoquic_stream_data_node_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 447
+        }
+      ],
+      "picoquic_stream_queue_node_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 457
+        }
+      ],
+      "picoquic_packet_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 468
+        }
+      ],
+      "picoquic_registered_token_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 531
+        }
+      ],
+      "picoquic_stored_ticket_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 556
+        }
+      ],
+      "picoquic_stored_token_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 659
+        }
+      ],
+      "picoquic_issued_ticket_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 711
+        }
+      ],
+      "picoquic_quic_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 784
+        }
+      ],
+      "picoquic_sack_item_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 940
+        }
+      ],
+      "picoquic_sack_range_count_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 948
+        }
+      ],
+      "picoquic_sack_list_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 952
+        }
+      ],
+      "picoquic_stream_head_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 962
+        }
+      ],
+      "picoquic_misc_frame_header_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1057
+        }
+      ],
+      "picoquic_packet_context_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1068
+        }
+      ],
+      "picoquic_ack_context_track_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1087
+        }
+      ],
+      "picoquic_ack_context_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1098
+        }
+      ],
+      "picoquic_local_cnxid_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1113
+        }
+      ],
+      "picoquic_local_cnxid_list_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1124
+        }
+      ],
+      "picoquic_remote_cnxid_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1137
+        }
+      ],
+      "picoquic_remote_cnxid_stash_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1149
+        }
+      ],
+      "picoquic_pacing_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1160
+        }
+      ],
+      "picoquic_tuple_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1172
+        }
+      ],
+      "picoquic_path_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1198
+        }
+      ],
+      "picoquic_crypto_context_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1333
+        }
+      ],
+      "picoquic_cnx_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1346
+        }
+      ],
+      "picoquic_packet_data_path_ack_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1624
+        }
+      ],
+      "picoquic_packet_data_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 1638
+        }
+      ],
+      "picoquic_stream_data_buffer_argument_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 2998
+        }
+      ],
+      "picoquic_pmtu_discovery_status_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 252
+        }
+      ],
+      "picoquic_epoch_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 313
+        }
+      ],
+      "picoquic_packet_type_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 322
+        }
+      ],
+      "picoquic_tp_0rtt_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 543
+        }
+      ],
+      "picoquic_frame_type_enum_t": [
+        {
+          "kind": "type",
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "line": 201
+        }
+      ],
+      "picoquic_aes128_ecb_context_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_lb.rs",
+          "line": 107
+        }
+      ],
+      "picoquic_load_balancer_config_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_lb.rs",
+          "line": 121
+        }
+      ],
+      "picoquic_load_balancer_cid_context_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_lb.rs",
+          "line": 162
+        }
+      ],
+      "picoquic_load_balancer_cid_method_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic_lb.rs",
+          "line": 85
+        }
+      ],
+      "picoquic_socket_ctx_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 149
+        }
+      ],
+      "packet_loop_system_call_duration_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 285
+        }
+      ],
+      "packet_loop_time_check_arg_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 304
+        }
+      ],
+      "picoquic_packet_loop_options_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 353
+        }
+      ],
+      "picoquic_packet_loop_param_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 370
+        }
+      ],
+      "picoquic_network_thread_ctx_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 468
+        }
+      ],
+      "picoquic_packet_loop_cb_enum": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "line": 246
+        }
+      ],
+      "picoquic_file_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "line": 508
+        }
+      ],
+      "picoquic_thread_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "line": 713
+        }
+      ],
+      "picoquic_mutex_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "line": 718
+        }
+      ],
+      "picoquic_event_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "line": 726
+        }
+      ],
+      "picoquictest_sim_packet_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "line": 876
+        }
+      ],
+      "picoquictest_sim_link_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "line": 949
+        }
+      ],
+      "picoquic_jitter_mode": [
+        {
+          "kind": "enum",
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "line": 923
+        }
+      ],
+      "dualq_queue_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquictest_dualq.rs",
+          "line": 78
+        }
+      ],
+      "dualq_state_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picoquictest_dualq.rs",
+          "line": 102
+        }
+      ],
+      "picoquic_socket_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picosocks.rs",
+          "line": 66
+        }
+      ],
+      "picoquic_server_sockets_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picosocks.rs",
+          "line": 81
+        }
+      ],
+      "picoquic_msghdr_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picosocks.rs",
+          "line": 99
+        }
+      ],
+      "RecvInfo": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picosocks.rs",
+          "line": 201
+        }
+      ],
+      "SelectInfo": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picosocks.rs",
+          "line": 231
+        }
+      ],
+      "SelectExInfo": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picosocks.rs",
+          "line": 253
+        }
+      ],
+      "ServerAddress": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picosocks.rs",
+          "line": 364
+        }
+      ],
+      "picosplay_node_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picosplay.rs",
+          "line": 89
+        }
+      ],
+      "picosplay_tree_t": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/picosplay.rs",
+          "line": 127
+        }
+      ],
+      "PicoquicInitialAeadContext": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/tls_api.rs",
+          "line": 553
+        }
+      ],
+      "PicoquicDecryptedRetryToken": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/tls_api.rs",
+          "line": 734
+        }
+      ],
+      "PicoquicVerifiedRetryToken": [
+        {
+          "kind": "struct",
+          "file": "rs/fq/src/picoquic/tls_api.rs",
+          "line": 773
+        }
+      ]
+    },
+    "imports_by_source": {
+      "picoquic::picoquic_connection_id_t": [
+        {
+          "file": "rs/fq/src/picoquic/bytestream.rs",
+          "item": "*",
+          "line": 50
+        }
+      ],
+      "picoquic::": [
+        {
+          "file": "rs/fq/src/picoquic/cc_common.rs",
+          "item": "*",
+          "line": 10
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_binlog.rs",
+          "item": "*",
+          "line": 110
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_config.rs",
+          "item": "*",
+          "line": 50
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_crypto_provider_api.rs",
+          "item": "*",
+          "line": 63
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "item": "*",
+          "line": 69
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_lb.rs",
+          "item": "*",
+          "line": 77
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_logger.rs",
+          "item": "*",
+          "line": 45
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "item": "*",
+          "line": 112
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_unified_log.rs",
+          "item": "*",
+          "line": 62
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_utils.rs",
+          "item": "*",
+          "line": 69
+        },
+        {
+          "file": "rs/fq/src/picoquic/tls_api.rs",
+          "item": "*",
+          "line": 84
+        }
+      ],
+      "picoquic::picoquic_quic_t": [
+        {
+          "file": "rs/fq/src/picoquic/performance_log.rs",
+          "item": "*",
+          "line": 16
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_qlog.rs",
+          "item": "*",
+          "line": 9
+        },
+        {
+          "file": "rs/fq/src/picoquic/picosocks.rs",
+          "item": "*",
+          "line": 48
+        }
+      ],
+      "picoquic_internal::": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic_binlog.rs",
+          "item": "*",
+          "line": 111
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquic_unified_log.rs",
+          "item": "*",
+          "line": 65
+        }
+      ],
+      "picoquic_utils::picoquic_file_t": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic_binlog.rs",
+          "item": "*",
+          "line": 114
+        }
+      ],
+      "picohash::": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "item": "*",
+          "line": 68
+        }
+      ],
+      "picoquic_unified_log::picoquic_unified_logging_t": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "item": "*",
+          "line": 77
+        }
+      ],
+      "picosplay::": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic_internal.rs",
+          "item": "*",
+          "line": 78
+        }
+      ],
+      "picoquic_config::picoquic_quic_config_t": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "item": "*",
+          "line": 115
+        }
+      ],
+      "picoquic_utils::": [
+        {
+          "file": "rs/fq/src/picoquic/picoquic_packet_loop.rs",
+          "item": "*",
+          "line": 116
+        },
+        {
+          "file": "rs/fq/src/picoquic/picoquictest_dualq.rs",
+          "item": "*",
+          "line": 48
+        }
+      ],
+      "picoquic_internal::picoquic_crypto_context_t": [
+        {
+          "file": "rs/fq/src/picoquic/tls_api.rs",
+          "item": "*",
+          "line": 88
+        }
+      ]
+    }
+  }
+}

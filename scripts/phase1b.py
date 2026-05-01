@@ -1,37 +1,19 @@
 #!/usr/bin/env python3
-"""phase1b.py — Phase 1B: address `// REVIEW` comments left by humans.
+"""phase1b.py — Phase 1B: cross-module consistency report.
 
-Workflow:
-  1. Human reviewer adds `// REVIEW: <instruction>` comments to
-     any line in any Rust file under `rs/fq/src/`.
-  2. This script discovers files that contain plain
-     `// REVIEW: ` markers (the open form,
-     `// REVIEW(open): `, is excluded — those are the AI's
-     "couldn't auto-resolve" signal and require human attention,
-     not another AI pass).
-  3. For each such file, invoke `claude -p` with: the file path,
-     the extracted REVIEW comments (line + text), and a prompt
-     telling claude to apply the requested change and remove the
-     comment when done.  When claude can't fully resolve, it
-     rewrites the comment as `// REVIEW(open): <reason>`.
-  4. After claude finishes, run the gate (cargo fmt + clippy +
-     check).  If the gate passes, mark ok.
+Pure inspection.  Scans the Rust translation under
+`rs/fq/src/picoquic/` and writes a markdown report at
+`xlate/consistency_report.md` cataloguing patterns that vary
+across modules — naming conventions, lint allowances, type
+definitions, cross-module imports.  No claude, no edits.
 
-State and logs:
-  - xlate/phase1b_state.json   — per-file status keyed by Rust path.
-  - xlate/phase1b_runs/*.log   — full stdout for each run.
-  - xlate/claude_logs/phase1b/<path>.log — per-file transcript.
-  - xlate/prompts/phase1b/<path>.md      — the prompt sent.
+The human reviewer reads the report, decides on consistency
+policies, then sprinkles `// REVIEW: <instruction>` markers in
+the source for Phase 1C to address.
 
 Usage:
-  python3 scripts/phase1b.py
-  python3 scripts/phase1b.py --file rs/fq/src/picoquic/cc_common.rs
-  python3 scripts/phase1b.py --list             # print files w/ REVIEW
-  python3 scripts/phase1b.py --limit 1
-  python3 scripts/phase1b.py --dry-run
-  python3 scripts/phase1b.py --status
-  python3 scripts/phase1b.py --force
-  python3 scripts/phase1b.py --stop-on-failure
+  python3 scripts/phase1b.py             # write the report
+  python3 scripts/phase1b.py --json      # also emit raw data
 """
 
 from __future__ import annotations
@@ -39,471 +21,381 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shlex
-import shutil
-import subprocess
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 
-REPO_ROOT      = Path(__file__).resolve().parent.parent
-PHASE1B_STATE  = REPO_ROOT / "xlate" / "phase1b_state.json"
-PROMPTS_DIR    = REPO_ROOT / "xlate" / "prompts" / "phase1b"
-LOG_DIR        = REPO_ROOT / "xlate" / "claude_logs" / "phase1b"
-RUNS_DIR       = REPO_ROOT / "xlate" / "phase1b_runs"
-RS_CRATE       = REPO_ROOT / "rs" / "fq"
-RS_SRC         = RS_CRATE / "src"
+REPO_ROOT  = Path(__file__).resolve().parent.parent
+RS_SRC     = REPO_ROOT / "rs" / "fq" / "src"
+RS_PICO    = RS_SRC / "picoquic"
+OUT_MD     = REPO_ROOT / "xlate" / "consistency_report.md"
+OUT_JSON   = REPO_ROOT / "xlate" / "consistency_report.json"
 
-# `Bash(cmd:*)` is prefix-match (allows args); bare `Bash(cmd)` is
-# exact-match.  Use the wildcard so `cargo clippy -- -D warnings`
-# is accepted.
-ALLOWED_TOOLS  = "Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)"
-
-# Plain REVIEW marker — the open form is excluded so we don't
-# loop on comments the AI explicitly handed back to the human.
-REVIEW_RE      = re.compile(r"//\s*REVIEW:\s*(.+)$")
-OPEN_RE        = re.compile(r"//\s*REVIEW\(open\):\s*(.+)$")
-
-
-# ---------------------------------------------------------------------------
-# Discovery
-
-def find_review_comments(path: Path) -> list[tuple[int, str]]:
-    """Return a list of (line_number, text) for plain `// REVIEW:`
-    comments in `path`.  Excludes the `// REVIEW(open):` form.
-    """
-    out: list[tuple[int, str]] = []
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return out
-    for i, line in enumerate(text.splitlines(), 1):
-        if OPEN_RE.search(line):
-            continue
-        m = REVIEW_RE.search(line)
-        if m:
-            out.append((i, m.group(1).strip()))
-    return out
-
-
-def find_open_comments(path: Path) -> list[tuple[int, str]]:
-    out: list[tuple[int, str]] = []
-    try:
-        text = path.read_text(errors="replace")
-    except OSError:
-        return out
-    for i, line in enumerate(text.splitlines(), 1):
-        m = OPEN_RE.search(line)
-        if m:
-            out.append((i, m.group(1).strip()))
-    return out
-
-
-def files_with_reviews() -> list[Path]:
-    """All Rust files under `rs/fq/src/` containing `// REVIEW:` markers
-    (the plain form), sorted by path.
-    """
-    if not RS_SRC.is_dir():
-        return []
-    found: list[Path] = []
-    for p in sorted(RS_SRC.rglob("*.rs")):
-        if find_review_comments(p):
-            found.append(p)
-    return found
+# Patterns.  Anchored at start-of-line (after stripping leading
+# whitespace for some) so we don't false-positive on text inside
+# doc comments or string literals.
+PUB_TRAIT_RE  = re.compile(r"^\s*pub\s+trait\s+(\w+)")
+PUB_STRUCT_RE = re.compile(r"^\s*pub\s+struct\s+(\w+)")
+PUB_ENUM_RE   = re.compile(r"^\s*pub\s+enum\s+(\w+)")
+PUB_TYPE_RE   = re.compile(r"^\s*pub\s+type\s+(\w+)")
+PUB_FN_RE     = re.compile(r"^\s*pub\s+(?:async\s+)?fn\s+(\w+)")
+INNER_ATTR_RE = re.compile(r"^\s*#!\[(?:allow|warn|deny|forbid)\(([^)]+)\)\]")
+USE_CRATE_RE  = re.compile(r"^\s*use\s+crate::picoquic::([\w:]+)(?:\s*::\s*\{([^}]+)\})?")
 
 
 # ---------------------------------------------------------------------------
-# State
+# Case style
 
-def load_state(path: Path) -> dict:
-    if path.is_file():
-        try:
-            return json.loads(path.read_text())
-        except json.JSONDecodeError:
-            return {}
-    return {}
+def case_style(name: str) -> str:
+    """Bucket a Rust identifier into a case style."""
+    if not name:
+        return "other"
+    if name.startswith("_"):
+        # _private, _padding, etc. — strip the lead and re-classify.
+        return case_style(name.lstrip("_"))
+    has_lower = any(c.islower() for c in name)
+    has_upper = any(c.isupper() for c in name)
+    has_under = "_" in name
+    if name.isupper() and has_under:
+        return "SCREAMING_SNAKE"
+    if has_lower and not has_upper:
+        return "snake_case"
+    if name[0].isupper() and not has_under and has_lower:
+        return "PascalCase"
+    if has_upper and has_lower and has_under:
+        return "Mixed_Case"
+    return "other"
 
 
-def save_state(path: Path, state: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+# ---------------------------------------------------------------------------
+# Per-file extraction
+
+def rel(p: Path) -> str:
+    return str(p.relative_to(REPO_ROOT))
 
 
-def record(state: dict, key: str, status: str, **extra) -> None:
-    state[key] = {
-        "status": status,
-        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        **extra,
+def scan_file(path: Path) -> dict:
+    """Extract declarations and attributes from a single .rs file."""
+    text = path.read_text(errors="replace")
+    decls = {
+        "traits":  [],   # list of {name, line}
+        "structs": [],
+        "enums":   [],
+        "types":   [],
+        "fns":     [],
     }
-    save_state(PHASE1B_STATE, state)
+    inner_attrs: list[dict] = []
+    imports: list[dict] = []  # {item, source_path, line}
+
+    # Strip block comments so we don't catch "pub fn" inside them.
+    # Approximate: drop /* ... */ pairs (won't handle nested but Rust
+    # block comments can nest — close enough for a heuristic report).
+    cleaned = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+
+    for i, line in enumerate(cleaned.splitlines(), 1):
+        # Skip line comments (after stripping) so doc-comment text
+        # doesn't trip the public-decl regex.
+        line_no_comment = line.split("//", 1)[0]
+        for kind, rx in (("traits",  PUB_TRAIT_RE),
+                         ("structs", PUB_STRUCT_RE),
+                         ("enums",   PUB_ENUM_RE),
+                         ("types",   PUB_TYPE_RE),
+                         ("fns",     PUB_FN_RE)):
+            m = rx.match(line_no_comment)
+            if m:
+                decls[kind].append({"name": m.group(1), "line": i})
+                break  # one decl per line
+        m = INNER_ATTR_RE.match(line)
+        if m:
+            for lint in (s.strip() for s in m.group(1).split(",")):
+                if lint:
+                    inner_attrs.append({"lint": lint, "line": i})
+        m = USE_CRATE_RE.match(line_no_comment)
+        if m:
+            mod_path = m.group(1)
+            items = m.group(2)
+            if items:
+                for item in (s.strip() for s in items.split(",")):
+                    if item:
+                        imports.append({"from": mod_path, "item": item, "line": i})
+            else:
+                imports.append({"from": mod_path, "item": "*", "line": i})
+
+    return {
+        "path":   rel(path),
+        "lines":  len(text.splitlines()),
+        "decls":  decls,
+        "inner_attrs": inner_attrs,
+        "imports": imports,
+    }
+
+
+def scan_all() -> list[dict]:
+    if not RS_PICO.is_dir():
+        return []
+    return [scan_file(p) for p in sorted(RS_PICO.rglob("*.rs"))]
 
 
 # ---------------------------------------------------------------------------
-# Path helpers
+# Aggregation
 
-def rel(path: Path) -> str:
-    return str(path.relative_to(REPO_ROOT))
+def aggregate(files: list[dict]) -> dict:
+    """Build the cross-module views from per-file data."""
+    # Trait names → list of (case_style, file, line)
+    traits = []
+    for f in files:
+        for t in f["decls"]["traits"]:
+            traits.append({
+                "name": t["name"],
+                "case": case_style(t["name"]),
+                "file": f["path"],
+                "line": t["line"],
+            })
 
+    # Inner attrs by lint name → list of files mentioning it.
+    inner_by_lint: dict[str, list[dict]] = defaultdict(list)
+    for f in files:
+        for a in f["inner_attrs"]:
+            inner_by_lint[a["lint"]].append({"file": f["path"], "line": a["line"]})
 
-def prompt_path_for(file: Path) -> Path:
-    rel_rs = file.relative_to(RS_SRC)
-    return PROMPTS_DIR / rel_rs.with_suffix(".md")
+    # Type definitions (struct + enum + type alias) by name → list of
+    # (kind, file, line).  Names with >1 entry are duplicates worth
+    # flagging — same C type defined in multiple Rust modules.
+    type_defs: dict[str, list[dict]] = defaultdict(list)
+    for f in files:
+        for kind in ("structs", "enums", "types"):
+            for d in f["decls"][kind]:
+                type_defs[d["name"]].append({
+                    "kind": kind[:-1],  # struct/enum/type
+                    "file": f["path"],
+                    "line": d["line"],
+                })
 
+    # Cross-module imports: which modules use which items, grouped
+    # by source.
+    imports_by_source: dict[str, list[dict]] = defaultdict(list)
+    for f in files:
+        for imp in f["imports"]:
+            imports_by_source[imp["from"]].append({
+                "file": f["path"],
+                "item": imp["item"],
+                "line": imp["line"],
+            })
 
-def claude_log_path_for(file: Path) -> Path:
-    rel_rs = file.relative_to(RS_SRC)
-    return LOG_DIR / rel_rs.with_suffix(".log")
-
-
-# ---------------------------------------------------------------------------
-# Prompt
-
-def compose_prompt(file: Path, comments: list[tuple[int, str]]) -> str:
-    rel_path = rel(file)
-    lines: list[str] = []
-    for line_no, text in comments:
-        lines.append(f"  - line {line_no}: {text}")
-
-    parts: list[str] = [
-        f"# Phase 1B: address `// REVIEW` comments in `{rel_path}`",
-        "",
-        "A human reviewer left actionable `// REVIEW: <instruction>`",
-        "comments in this file.  Apply each requested change and",
-        "remove the comment when you're done.",
-        "",
-        "## Required reading",
-        "1. The file: `" + rel_path + "`",
-        "2. `TRANSLATE_PLAN.md` — Phase 1B section (and the Phase",
-        "   1 contract that still applies: `todo!()` bodies, no",
-        "   `Send`/`Sync`, no_std + alloc, etc.)",
-        "3. `CLAUDE.md` — edit-scope rules.",
-        "",
-        f"## REVIEW comments in {rel_path}",
-        "",
-        *lines,
-        "",
-        "## Procedure",
-        "1. Read the file and the related C source (the matching",
-        "   `picoquic/<stem>.h` / `.c` files) where context helps.",
-        "2. For each `// REVIEW:` comment in the file, apply the",
-        "   requested change.",
-        "   - If you fully address it, **remove the comment line**.",
-        "   - If you can't fully address it (the request needs more",
-        "     context, would break the gate, or the human's intent",
-        "     is unclear), **rewrite the line as**",
-        "     `// REVIEW(open): <one-line reason>` and leave it",
-        "     for the human to revisit.  Don't drop a request",
-        "     silently.",
-        "3. Validate with **both** of these (Bash tool's cwd is the",
-        "   repo root, so prefix with `cd rs/fq && `):",
-        "     cd rs/fq && cargo check",
-        "     cd rs/fq && cargo clippy -- -D warnings",
-        "   Iterate until both pass cleanly.",
-        "4. Report on stdout: how many comments resolved vs. left",
-        "   open, and one sentence per non-trivial change.",
-        "",
-        "## Constraints",
-        "- You may edit any file under `rs/fq/src/picoquic/` if a",
-        "  REVIEW asks for a coordinated change.  Don't touch",
-        "  `lib.rs`, `Cargo.toml`, parent `mod` files, or anything",
-        "  outside `rs/fq/`.",
-        "- Don't introduce new `// REVIEW:` comments.  Use",
-        "  `// REVIEW(open):` for things you couldn't address.",
-        "- Don't run `cargo test` or `cargo fmt`; the parent script",
-        "  runs `fmt` after you.",
-    ]
-    return "\n".join(parts) + "\n"
-
-
-def write_prompt_file(file: Path, comments: list[tuple[int, str]]) -> Path:
-    out = prompt_path_for(file)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(compose_prompt(file, comments))
-    return out
+    return {
+        "traits": traits,
+        "inner_by_lint": inner_by_lint,
+        "type_defs": type_defs,
+        "imports_by_source": imports_by_source,
+    }
 
 
 # ---------------------------------------------------------------------------
-# Claude invocation
+# Report rendering
 
-def invoke_claude(file: Path, prompt_file: Path,
-                  max_turns: int, model: str) -> tuple[int, str]:
-    if shutil.which("claude") is None:
-        return 127, "claude CLI not found on PATH"
-    log = claude_log_path_for(file)
-    log.parent.mkdir(parents=True, exist_ok=True)
-    prompt = prompt_file.read_text()
-    cmd = [
-        "claude", "-p", prompt,
-        "--model", model,
-        "--allowedTools", ALLOWED_TOOLS,
-        "--max-turns", str(max_turns),
-    ]
-    t0 = time.monotonic()
-    res = subprocess.run(
-        cmd, cwd=REPO_ROOT,
-        capture_output=True, text=True,
-        stdin=subprocess.DEVNULL,
-    )
-    elapsed = time.monotonic() - t0
-    transcript = (
-        f"# claude -p (phase1b) for {rel(file)}\n"
-        f"# elapsed: {elapsed:.1f}s, exit: {res.returncode}\n"
-        f"# command: {' '.join(shlex.quote(c) for c in cmd[:1] + cmd[3:])}\n"
-        f"# (prompt omitted; see "
-        f"{prompt_file.relative_to(REPO_ROOT)})\n\n"
-        f"## stdout\n{res.stdout}\n\n## stderr\n{res.stderr}\n"
-    )
-    log.write_text(transcript)
-    return res.returncode, res.stdout
+def render_md(files: list[dict], agg: dict) -> str:
+    out: list[str] = []
+    out.append("# Cross-module consistency report")
+    out.append("")
+    out.append(f"Generated: {time.strftime('%Y-%m-%dT%H:%M:%S')}")
+    out.append(f"Files scanned: {len(files)}")
+    out.append(f"Total lines: {sum(f['lines'] for f in files)}")
+    out.append("")
+    out.append("**How to use this report.**  Read each section.  Where you")
+    out.append("see inconsistency that should be reconciled, decide a")
+    out.append("policy, then sprinkle `// REVIEW: <instruction>` markers in")
+    out.append("the offending files.  Run `scripts/phase1c.py` to apply.")
+    out.append("")
 
-
-# ---------------------------------------------------------------------------
-# Gate
-
-def run_gate() -> int:
-    steps = [
-        ["cargo", "fmt"],
-        ["cargo", "clippy", "--", "-D", "warnings"],
-        ["cargo", "check"],
-    ]
-    for step in steps:
-        sys.stdout.write(f"  $ (cd rs/fq && {' '.join(step)})\n")
-        sys.stdout.flush()
-        r = subprocess.run(step, cwd=RS_CRATE)
-        if r.returncode != 0:
-            return r.returncode
-    return 0
-
-
-# ---------------------------------------------------------------------------
-# Per-file runner
-
-def run_one(file: Path, *, dry_run: bool, max_turns: int,
-            model: str, state: dict) -> str:
-    key = rel(file)
-    print(f"\n=== {key} ===")
-    before = find_review_comments(file)
-    if not before:
-        print("  SKIP: no // REVIEW: comments")
-        return "skip"
-    print(f"  reviews → {len(before)} comment(s)")
-    for line_no, text in before:
-        snippet = text if len(text) <= 78 else text[:75] + "…"
-        print(f"    line {line_no}: {snippet}")
-
-    prompt_file = write_prompt_file(file, before)
-    print(f"  prompt  → {prompt_file.relative_to(REPO_ROOT)}")
-    if dry_run:
-        print("  (dry-run; skipping claude + gate)")
-        return "skip"
-
-    print(f"  claude  → invoking ({model}, max-turns={max_turns}) …")
-    code, _stdout = invoke_claude(file, prompt_file, max_turns, model)
-    if code != 0:
-        print(f"    FAIL: claude exit {code} "
-              f"(see {claude_log_path_for(file).relative_to(REPO_ROOT)})")
-        record(state, key, "fail", stage="claude", exit_code=code,
-               reviews_before=len(before))
-        return "fail"
-
-    after = find_review_comments(file)
-    open_after = find_open_comments(file)
-    resolved = len(before) - len(after)
-    opened = max(0, len(open_after))
-
-    print(f"  result  → {resolved} resolved, {len(after)} remaining, "
-          f"{opened} open")
-
-    print("  gate    → cargo fmt + clippy + check")
-    rc = run_gate()
-    if rc != 0:
-        print(f"    FAIL: gate exit {rc}")
-        record(state, key, "fail", stage="gate", exit_code=rc,
-               reviews_before=len(before),
-               reviews_after=len(after), reviews_open=opened)
-        return "fail"
-
-    if after:
-        print("  ok (partial — some REVIEW: comments remain; will retry "
-              "on next run)")
-        record(state, key, "partial",
-               reviews_before=len(before),
-               reviews_after=len(after), reviews_open=opened)
-        return "ok"
-
-    print("  ok")
-    record(state, key, "ok",
-           reviews_before=len(before),
-           reviews_after=0, reviews_open=opened)
-    return "ok"
-
-
-# ---------------------------------------------------------------------------
-# Status / list
-
-def cmd_status() -> None:
-    files = files_with_reviews()
-    state = load_state(PHASE1B_STATE)
-    print(f"Phase 1B status")
-    print(f"  files with // REVIEW: comments now: {len(files)}")
-    if files:
-        for p in files:
-            n = len(find_review_comments(p))
-            print(f"    - {rel(p)}  ({n} comment{'s' if n != 1 else ''})")
-
-    # Files with open comments but no plain REVIEW: — needs human attention.
-    open_files: list[Path] = []
-    for p in sorted(RS_SRC.rglob("*.rs")):
-        if find_review_comments(p):
+    # ------------- Trait names -------------
+    out.append("## Trait names by case style")
+    out.append("")
+    by_case: dict[str, list[dict]] = defaultdict(list)
+    for t in agg["traits"]:
+        by_case[t["case"]].append(t)
+    out.append(f"Total traits: {len(agg['traits'])}.  "
+               + ", ".join(f"{c}: {len(v)}" for c, v in sorted(by_case.items())))
+    out.append("")
+    out.append("Rust convention says traits are `PascalCase`.  Phase 1's")
+    out.append("policy was to mirror C typedef names where they're part of")
+    out.append("the API contract; that argues for snake_case for callback")
+    out.append("traits whose typedef name appears in C source the user")
+    out.append("can read.  A mix is fine — but the mix should be principled.")
+    out.append("")
+    for case in ("snake_case", "PascalCase", "Mixed_Case",
+                 "SCREAMING_SNAKE", "other"):
+        items = by_case.get(case, [])
+        if not items:
             continue
-        if find_open_comments(p):
-            open_files.append(p)
-    if open_files:
-        print(f"\n  files with REVIEW(open): only (need human attention):")
-        for p in open_files:
-            n = len(find_open_comments(p))
-            print(f"    - {rel(p)}  ({n} open)")
+        out.append(f"### {case} ({len(items)})")
+        out.append("")
+        out.append("| Trait | File | Line |")
+        out.append("|---|---|---|")
+        for t in sorted(items, key=lambda x: (x["file"], x["line"])):
+            out.append(f"| `{t['name']}` | `{t['file']}` | {t['line']} |")
+        out.append("")
 
-    # Recent state entries.
-    if state:
-        recent = sorted(state.items(), key=lambda kv: kv[1].get("at", ""),
-                        reverse=True)[:10]
-        print(f"\n  last 10 runs:")
-        for k, v in recent:
-            print(f"    [{v.get('status'):7}] {k}  "
-                  f"(at: {v.get('at')}; resolved: "
-                  f"{v.get('reviews_before', '?')}→"
-                  f"{v.get('reviews_after', '?')}, "
-                  f"open: {v.get('reviews_open', '?')})")
+    # ------------- Lint allowances -------------
+    out.append("## Module-level lint allowances")
+    out.append("")
+    if not agg["inner_by_lint"]:
+        out.append("(none)")
+        out.append("")
+    else:
+        out.append(f"Lints suppressed at module scope across {len(files)} files:")
+        out.append("")
+        out.append("| Lint | Modules using it | Modules NOT using it |")
+        out.append("|---|---|---|")
+        all_files = sorted(f["path"] for f in files)
+        for lint, occs in sorted(agg["inner_by_lint"].items()):
+            using = sorted({o["file"] for o in occs})
+            not_using = [p for p in all_files if p not in set(using)]
+            using_short = ", ".join(Path(u).name for u in using)
+            not_using_short = (
+                "(all)" if not not_using
+                else ", ".join(Path(u).name for u in not_using[:8])
+                + ("…" if len(not_using) > 8 else "")
+            )
+            out.append(f"| `{lint}` | {len(using)}: {using_short} | "
+                       f"{len(not_using)}: {not_using_short} |")
+        out.append("")
+        out.append("Lints used in only some modules are the interesting ones.")
+        out.append("Either the lint is appropriate for those modules and not")
+        out.append("the others (fine — but worth a line of comment), or the")
+        out.append("application is inconsistent.")
+        out.append("")
 
+    # ------------- Type definitions -------------
+    out.append("## Type definitions across modules")
+    out.append("")
+    duplicates = {n: defs for n, defs in agg["type_defs"].items()
+                  if len(defs) > 1}
+    if not duplicates:
+        out.append("No name is defined in more than one module.  Good.")
+        out.append("")
+    else:
+        out.append(f"**{len(duplicates)} type name(s) defined in more than one module.**")
+        out.append("Usually this means an opaque stub somewhere should be")
+        out.append("replaced by an `use crate::picoquic::other_module::Type;`")
+        out.append("import — Rust resolves the reference fine, but the")
+        out.append("duplicate `pub struct X { _private: () }` is dead weight.")
+        out.append("")
+        out.append("| Type | Definitions |")
+        out.append("|---|---|")
+        for name in sorted(duplicates):
+            defs = duplicates[name]
+            cell = "<br>".join(
+                f"`{d['kind']}` in `{d['file']}:{d['line']}`"
+                for d in sorted(defs, key=lambda x: x["file"])
+            )
+            out.append(f"| `{name}` | {cell} |")
+        out.append("")
 
-def cmd_list() -> None:
-    for p in files_with_reviews():
-        print(rel(p))
+    # All type defs (collapsed)
+    all_types = {n: defs for n, defs in agg["type_defs"].items() if defs}
+    out.append(f"### All `pub struct` / `pub enum` / `pub type` declarations "
+               f"({sum(len(v) for v in all_types.values())} total)")
+    out.append("")
+    out.append("Single definitions are shown collapsed by source file.")
+    out.append("Use this to see at a glance which module owns each type.")
+    out.append("")
+    out.append("| Type | Kind | Source |")
+    out.append("|---|---|---|")
+    for name in sorted(all_types):
+        defs = all_types[name]
+        if len(defs) == 1:
+            d = defs[0]
+            out.append(f"| `{name}` | `{d['kind']}` | "
+                       f"`{d['file']}:{d['line']}` |")
+        else:
+            d = defs[0]
+            out.append(f"| `{name}` | `{d['kind']}` | "
+                       f"**{len(defs)} definitions — see above** |")
+    out.append("")
 
+    # ------------- Imports -------------
+    out.append("## Cross-module imports")
+    out.append("")
+    out.append("Items pulled in via `use crate::picoquic::…`, grouped by")
+    out.append("source module.  A type imported by many modules but defined")
+    out.append("in one place is the healthy pattern; a type imported via")
+    out.append("two different source paths is a smell.")
+    out.append("")
+    out.append("| Source module | Items imported | Importers |")
+    out.append("|---|---|---|")
+    for src in sorted(agg["imports_by_source"]):
+        occs = agg["imports_by_source"][src]
+        items = sorted({o["item"] for o in occs})
+        importers = sorted({o["file"] for o in occs})
+        items_str = ", ".join(f"`{i}`" for i in items[:6]) + (
+            f", … ({len(items) - 6} more)" if len(items) > 6 else ""
+        )
+        importers_str = ", ".join(Path(p).name for p in importers[:5]) + (
+            f", … ({len(importers) - 5} more)" if len(importers) > 5 else ""
+        )
+        out.append(f"| `{src}` | {items_str} | {len(importers)}: "
+                   f"{importers_str} |")
+    out.append("")
 
-# ---------------------------------------------------------------------------
-# Run log
+    # ------------- Per-file summary -------------
+    out.append("## Per-file summary")
+    out.append("")
+    out.append("| File | LOC | Traits | Structs | Enums | Type aliases | Fns | Inner #![allow] |")
+    out.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    for f in files:
+        d = f["decls"]
+        out.append(
+            f"| `{f['path']}` | {f['lines']} | "
+            f"{len(d['traits'])} | {len(d['structs'])} | "
+            f"{len(d['enums'])} | {len(d['types'])} | "
+            f"{len(d['fns'])} | {len(f['inner_attrs'])} |"
+        )
+    out.append("")
 
-class _Tee:
-    def __init__(self, *streams):
-        self._streams = streams
-
-    def write(self, s):
-        for st in self._streams:
-            st.write(s)
-        return len(s)
-
-    def flush(self):
-        for st in self._streams:
-            st.flush()
-
-
-def setup_run_log() -> Path:
-    RUNS_DIR.mkdir(parents=True, exist_ok=True)
-    path = RUNS_DIR / time.strftime("%Y%m%dT%H%M%S.log")
-    f = open(path, "w", buffering=1)
-    sys.stdout = _Tee(sys.__stdout__, f)
-    sys.stderr = _Tee(sys.__stderr__, f)
-    return path
+    return "\n".join(out) + "\n"
 
 
 # ---------------------------------------------------------------------------
 # Main
 
 def main() -> int:
-    p = argparse.ArgumentParser(
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description=__doc__,
-    )
-    p.add_argument("--file",
-                   help="Process only this Rust file (path under rs/fq/src/).")
-    p.add_argument("--limit", type=int, default=None,
-                   help="Stop after processing N files.")
-    p.add_argument("--dry-run", action="store_true",
-                   help="Print plan; do not invoke claude or run the gate.")
-    p.add_argument("--stop-on-failure", action="store_true",
-                   help="Stop at the first failure (default is to continue).")
-    p.add_argument("--force", action="store_true",
-                   help="Process even files with no plain REVIEW: comments "
-                        "(no-op unless --file is given too).")
-    p.add_argument("--status", action="store_true",
-                   help="Print progress and exit.")
-    p.add_argument("--list", action="store_true",
-                   help="Print files containing // REVIEW: comments and exit.")
-    p.add_argument("--max-turns", type=int, default=80,
-                   help="Per-file turn limit for claude (default 80).")
-    p.add_argument("--model", default="sonnet",
-                   help="Model passed to `claude -p --model` "
-                        "(default: sonnet — REVIEW execution is "
-                        "judgement-light).")
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--json", action="store_true",
+                   help="Also write raw aggregated data to "
+                        "xlate/consistency_report.json")
     args = p.parse_args()
 
-    if args.status:
-        cmd_status()
-        return 0
+    files = scan_all()
+    if not files:
+        print(f"no .rs files under {rel(RS_PICO)}", file=sys.stderr)
+        return 1
+    agg = aggregate(files)
+    md = render_md(files, agg)
+    OUT_MD.parent.mkdir(parents=True, exist_ok=True)
+    OUT_MD.write_text(md)
+    print(f"Wrote {rel(OUT_MD)} "
+          f"({len(files)} files, "
+          f"{sum(f['lines'] for f in files)} total lines, "
+          f"{len(agg['traits'])} traits, "
+          f"{len(agg['type_defs'])} unique type names)")
 
-    if args.list:
-        cmd_list()
-        return 0
+    if args.json:
+        # Convert defaultdicts to plain dicts and Paths to strings.
+        agg_plain = {
+            "traits": agg["traits"],
+            "inner_by_lint": dict(agg["inner_by_lint"]),
+            "type_defs": dict(agg["type_defs"]),
+            "imports_by_source": dict(agg["imports_by_source"]),
+        }
+        OUT_JSON.write_text(json.dumps(
+            {"files": files, "aggregated": agg_plain},
+            indent=2,
+        ) + "\n")
+        print(f"Wrote {rel(OUT_JSON)}")
 
-    state = load_state(PHASE1B_STATE)
-
-    if args.file:
-        f = (REPO_ROOT / args.file).resolve()
-        try:
-            f.relative_to(RS_SRC)
-        except ValueError:
-            print(f"file must be under {RS_SRC.relative_to(REPO_ROOT)}: "
-                  f"{args.file}", file=sys.stderr)
-            return 1
-        if not f.is_file():
-            print(f"no such file: {args.file}", file=sys.stderr)
-            return 1
-        if not args.force and not find_review_comments(f):
-            print(f"no // REVIEW: comments in {args.file} "
-                  "(pass --force to invoke claude anyway)")
-            return 0
-        targets = [f]
-    else:
-        targets = files_with_reviews()
-
-    if args.limit is not None:
-        targets = targets[: args.limit]
-
-    if not targets:
-        print("no files contain // REVIEW: comments — nothing to do")
-        return 0
-
-    log_path = setup_run_log()
-    t_run_start = time.monotonic()
-    print(f"Phase 1B: {len(targets)} file(s) to process")
-    print(f"  run log: {log_path.relative_to(REPO_ROOT)}")
-    print(f"  state:   {PHASE1B_STATE.relative_to(REPO_ROOT)}")
-    failed: list[str] = []
-    succeeded: list[str] = []
-    for f in targets:
-        result = run_one(f, dry_run=args.dry_run,
-                         max_turns=args.max_turns, model=args.model,
-                         state=state)
-        if result == "fail":
-            failed.append(rel(f))
-            if args.stop_on_failure:
-                print(f"\nStopped at {rel(f)} (--stop-on-failure).  "
-                      "Re-run to retry.")
-                break
-        elif result == "ok":
-            succeeded.append(rel(f))
-
-    elapsed = time.monotonic() - t_run_start
-    print(f"\n=== Phase 1B run summary ===")
-    print(f"  elapsed:   {elapsed:.1f}s")
-    print(f"  succeeded: {len(succeeded)}")
-    print(f"  failed:    {len(failed)}")
-    for f in failed:
-        print(f"    - {f}")
-    print(f"  log:       {log_path.relative_to(REPO_ROOT)}")
-    return 0 if not failed else 1
+    return 0
 
 
 if __name__ == "__main__":

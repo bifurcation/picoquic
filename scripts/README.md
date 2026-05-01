@@ -56,24 +56,39 @@ python3 scripts/phase1a.py --limit 1     # smoke one header first
 python3 scripts/phase1a.py               # full pass
 ```
 
-## Phase 1B: address `// REVIEW:` comments
+## Phase 1B: cross-module consistency report
 
-`phase1b.py` scans `rs/fq/src/` for `// REVIEW: <instruction>`
+`phase1b.py` is pure inspection — no claude.  It scans
+`rs/fq/src/picoquic/` and writes
+`xlate/consistency_report.md` cataloguing patterns that vary
+across modules: trait naming conventions, module-level lint
+allowances, type definitions (with duplicates flagged), and
+cross-module imports.  The human reviewer reads the report,
+decides on consistency policies, and uses Phase 1C to apply.
+
+```sh
+python3 scripts/phase1b.py            # write the report
+python3 scripts/phase1b.py --json     # additionally emit raw data
+```
+
+## Phase 1C: address `// REVIEW:` comments
+
+`phase1c.py` scans `rs/fq/src/` for `// REVIEW: <instruction>`
 markers a human reviewer left in the code, and asks claude to
 address each one.  Successfully-addressed lines are removed;
 unresolved ones are rewritten as `// REVIEW(open): <reason>` so
 they don't get re-asked on the next run.  State at
-`xlate/phase1b_state.json`, keyed by Rust file path.
+`xlate/phase1c_state.json`, keyed by Rust file path.
 
 ```sh
-python3 scripts/phase1b.py --list        # files with // REVIEW: now
-python3 scripts/phase1b.py --status
-python3 scripts/phase1b.py --dry-run --limit 1
-python3 scripts/phase1b.py               # process all
+python3 scripts/phase1c.py --list        # files with // REVIEW: now
+python3 scripts/phase1c.py --status
+python3 scripts/phase1c.py --dry-run --limit 1
+python3 scripts/phase1c.py               # process all
 ```
 
-1A and 1B can interleave: human reviews, adds REVIEW comments,
-runs 1B, repeats.
+1B and 1C can interleave: human reads the report, adds REVIEW
+markers, runs 1C, regenerates report, repeats.
 
 ## Helpers / diagnostics
 
