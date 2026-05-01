@@ -34,6 +34,47 @@ out of scope: executables (`picoquicfirst/`, `pqbench_app/`,
 `picoquic_t/`, etc.) and fetched dependencies under `build/_deps/`
 (picotls).
 
+## Phase 1: per-header translation (driver)
+
+`phase1.py` translates each in-scope header to a Rust module via
+`claude -p`, gated on `cargo fmt + clippy + check`.  Resumable via
+`xlate/phase1_state.json` (`ok` / `fail` / `stub`).  See
+`TRANSLATE_PLAN.md` Phase 1 for policy; the script's docstring
+explains flags.
+
+## Phase 1A: AI self-review
+
+`phase1a.py` re-reads each Phase-1-`ok` header and applies quality
+improvements (safety, consistency, idiomatic Rust) in place via
+`Edit`.  No `Write` — refinement only.  State at
+`xlate/phase1a_state.json`; per-header transcripts under
+`xlate/claude_logs/phase1a/`.
+
+```sh
+python3 scripts/phase1a.py --status
+python3 scripts/phase1a.py --limit 1     # smoke one header first
+python3 scripts/phase1a.py               # full pass
+```
+
+## Phase 1B: address `// REVIEW:` comments
+
+`phase1b.py` scans `rs/fq/src/` for `// REVIEW: <instruction>`
+markers a human reviewer left in the code, and asks claude to
+address each one.  Successfully-addressed lines are removed;
+unresolved ones are rewritten as `// REVIEW(open): <reason>` so
+they don't get re-asked on the next run.  State at
+`xlate/phase1b_state.json`, keyed by Rust file path.
+
+```sh
+python3 scripts/phase1b.py --list        # files with // REVIEW: now
+python3 scripts/phase1b.py --status
+python3 scripts/phase1b.py --dry-run --limit 1
+python3 scripts/phase1b.py               # process all
+```
+
+1A and 1B can interleave: human reviews, adds REVIEW comments,
+runs 1B, repeats.
+
 ## Helpers / diagnostics
 
 | Script              | Purpose |

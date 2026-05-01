@@ -240,6 +240,132 @@ work parallelizable across translators (human or AI).
   This is *evidence* for the translator's pointer-shape decision — the
   decision itself stays human.
 
+## Phase 1A — AI self-review of translated headers
+
+After Phase 1 lands a Rust stub for each header, run a self-review
+pass: an AI re-reads each translated module against the project's
+quality bar (safety, consistency, idiomatic Rust) and applies
+improvements in place.
+
+This is *not* a regeneration.  The existing translation is the
+starting point and represents real work that already passes the
+gate.  The reviewer Edits, never Writes from scratch.
+
+### What to look for
+
+* **Safety holes** — raw pointers used without a clear `// SAFETY:`
+  story, `unsafe` blocks that have a safe equivalent, ownership
+  patterns that smell wrong (e.g., `&mut` aliasing what should be
+  `Rc<RefCell<_>>`).
+* **Type-shape consistency** — the same C type translated differently
+  in different functions of the same module; signed/unsigned choices
+  that disagree with caller arithmetic; integer widths that drift
+  from the C source.
+* **Idiom** — `&[T]` vs raw pointer + length, `Option<&T>` for
+  nullable, owned `String` vs borrowed `&str` for caller-supplied
+  text, function-pointer typedef → trait, doc-comment placement.
+* **Naming** — Rust convention says traits are `PascalCase` even
+  when the C origin is `snake_case`.  Preserve the C name where
+  callers reference the typedef identifier; let Rust convention
+  win for purely internal traits.
+* **Lint allowances** — `#![allow(…)]` blocks added to silence
+  the initial gate may be wider than necessary.  Tighten to the
+  minimum scope that still passes.
+* **Documentation** — every public item should have a doc comment
+  citing the C source location and explaining non-obvious shape
+  decisions.
+
+### Per-header procedure
+
+1. Read `TRANSLATE_PLAN.md` (this document) and `CLAUDE.md`.
+2. Read the C header, the matching `.c` file, and the existing
+   Rust translation at `rs/fq/src/<path>.rs`.
+3. Identify improvements.
+4. Apply them via `Edit` operations.  No full rewrites.
+5. Run `cargo check` and `cargo clippy -- -D warnings` from
+   `rs/fq/`.  Iterate until both pass.
+6. Report the changes in a one-paragraph summary on stdout.
+
+If nothing needs changing, say so on stdout and exit without
+editing — that's a valid outcome.
+
+### Scripting
+
+`scripts/phase1a.py` drives the pass:
+
+* Iterates Phase 1 `ok` headers in topological order.
+* Per header: composes a review prompt, invokes `claude -p` with
+  `--allowedTools "Read Edit Glob Grep Bash(cargo check)
+  Bash(cargo clippy)"` — no `Write`, this is refinement only.
+* Tracks state in `xlate/phase1a_state.json` (status: `ok` /
+  `fail` / `noop`).
+* Resumable; continues on failure by default.
+* Per-header transcripts at `xlate/claude_logs/phase1a/<path>.log`.
+
+## Phase 1B — Human review with AI execution
+
+After 1A, the human reviewer reads each module and annotates the
+code with `// REVIEW: <instruction>` comments wherever they want
+changes.  Comments can name a target type, a desired pattern, a
+question to investigate — anything actionable.  Running
+`scripts/phase1b.py` then asks the AI to address them.
+
+### How `// REVIEW` comments work
+
+* Plain `// REVIEW: <instruction>` — the AI addresses the request
+  and removes the comment.
+* `// REVIEW(open): <reason>` — the AI tried and could not resolve
+  automatically; the comment stays for further human attention.
+
+The plain form is greppable as `// REVIEW: ` (with the colon and
+space) so the open form doesn't trigger another pass.
+
+### Per-file procedure
+
+For each file containing `// REVIEW: ` markers:
+
+1. Read the file and the inline REVIEW comments.
+2. For each comment, attempt the requested change.  When done,
+   remove the `// REVIEW: ` line.  When stuck — the request needs
+   more context than the file gives, requires breaking the gate,
+   or the human's intent is unclear — rewrite as
+   `// REVIEW(open): <reason>` instead.
+3. Run `cargo check` and `cargo clippy -- -D warnings`.  Iterate.
+4. Report a one-line summary: how many resolved, how many left
+   open.
+
+### Scripting
+
+`scripts/phase1b.py` drives the pass:
+
+* Scans `rs/fq/src/` for files containing `// REVIEW: ` (the
+  open form is excluded).
+* For each, invokes `claude -p` with the same tool allowlist as
+  1A and a prompt naming the file plus the extracted REVIEW
+  comments (line numbers + text).
+* Tracks state in `xlate/phase1b_state.json`, keyed by Rust
+  file path.
+* Supports `--file`, `--list`, `--limit`, `--dry-run`,
+  `--stop-on-failure`, `--force`.
+
+### Iteration
+
+1A and 1B can interleave: the human reviews 1A's output, adds
+REVIEW comments, runs 1B, reviews again, and so on.  Each
+iteration is cheap because `phase1b.py` only touches files with
+fresh REVIEW markers — already-resolved files are skipped.
+
+### Phase 1 acceptance gate (revised)
+
+Phase 1 is complete when:
+
+1. Every in-scope header has a Rust module under `rs/fq/src/`.
+2. `cargo fmt` + `cargo clippy -- -D warnings` + `cargo check`
+   all pass.
+3. Phase 1A self-review has run on every module.
+4. No plain `// REVIEW: ` comments remain (only `// REVIEW(open):`,
+   each with a human-actionable reason recorded).
+
 ## Phase 2 — Translate tests
 
 For each C test:
