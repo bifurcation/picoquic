@@ -1,0 +1,21 @@
+# claude -p (phase1a) for picoquic/picoquic_internal.h
+# elapsed: 234.5s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_internal.md)
+
+## stdout
+Both gates pass clean. Here is what changed and why:
+
+Four improvements applied to `rs/fq/src/picoquic/picoquic_internal.rs`:
+
+1. **Removed `#![allow(clippy::missing_safety_doc)]`** — the module contains no `unsafe fn` declarations (all function stubs are safe; `unsafe` blocks appear in Phase 3 implementations only), so the allow was dead weight. Phase 1A requires tightening lint allowances to the minimum necessary scope.
+
+2. **Added `#[derive(Debug)]` to `picoquic_version_parameters_t`** — all seven fields (`u32`, `&'static [u8]`, `&'static str`, `&'static [u32]`) implement `Debug`; the derive was simply missing.
+
+3. **Fixed `picoquic_decode_datagram_frame_header` pointer mutability** — changed `_bytes: *mut u8` → `*const u8` and the return type `*mut u8` → `*const u8`. Decode functions read input bytes but do not write them; every other frame-walker in the module (`picoquic_decode_stream_frame`, `picoquic_skip_path_abandon_frame`, `picoquic_parse_ack_frequency_frame`, `picoquic_parse_observed_address_frame`, etc.) consistently uses `*const u8` for input and return. The `*mut` was a type-consistency hole.
+
+4. **Fixed `picoquic_process_version_upgrade` pointer type** — changed `_cnx: *mut picoquic_cnx_t` → `&mut picoquic_cnx_t`. This was the only CNX-mutating function in the module using a raw pointer instead of a mutable reference; it was an unnecessary safety hole with no structural justification.
+
+
+## stderr
+

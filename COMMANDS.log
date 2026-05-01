@@ -187,3 +187,7 @@
 2026-05-01T10:17:42-04:00 python3 scripts/phase1a.py --header picoquic/picohash.h (1A smoke 2, sonnet, with cd hint)
 2026-05-01T10:24:19-04:00 python3 scripts/phase1a.py --header picoquic/performance_log.h (1A smoke 3, sonnet, prefix-match perms)
 2026-05-01T10:29:58-04:00 python3 scripts/phase1a.py --stop-on-failure (full 1A run, sonnet)
+2026-05-01T12:29:27-04:00 python3 scripts/phase1a.py --stop-on-failure (resume after credit reset)
+2026-05-01 Phase 1A self-review: picoquic_packet_loop.rs — renamed traits (picoquic_packet_loop_cb_fn → PicoquicPacketLoopCbFn, etc.) and enum variants to PascalCase; removed redundant #![allow(non_snake_case)]
+  cd /Users/richbarn/Projects/picoquic/rs/fq && cargo check
+  cd /Users/richbarn/Projects/picoquic/rs/fq && cargo clippy -- -D warnings

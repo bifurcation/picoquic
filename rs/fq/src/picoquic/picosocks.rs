@@ -29,8 +29,8 @@
 //!   it with a libc `msghdr` wrapper under the `std` feature.
 //! * Receive metadata that the C surface exposes through several
 //!   nullable out-parameters folds into result structs
-//!   ([`picoquic_recv_info`], [`picoquic_select_info`],
-//!   [`picoquic_select_ex_info`]).  C call sites pass `NULL` when
+//!   ([`RecvInfo`], [`SelectInfo`],
+//!   [`SelectExInfo`]).  C call sites pass `NULL` when
 //!   uninterested; Rust call sites can simply ignore unused
 //!   fields, so the Boolean "interested?" argument disappears.
 //! * `int bytes_recv` returns become `Result<usize, ()>` —
@@ -40,9 +40,6 @@
 //!   the `_send_through_*` helpers fold into the `Err` arm:
 //!   `Result<usize, i32>` carries the OS errno on failure.
 
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(non_upper_case_globals)]
 // Stand-in for the not-yet-defined crate-level `Error` enum.
 #![allow(clippy::result_unit_err)]
 
@@ -64,11 +61,13 @@ pub const PICOQUIC_NB_SERVER_SOCKETS: usize = 2;
 /// leak out of the module.  Phase 3 will swap the inner field for
 /// `std::os::fd::OwnedFd` (under the `std` feature) and tighten
 /// the sentinel handling to `Option<picoquic_socket_t>`.
+#[allow(non_camel_case_types)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct picoquic_socket_t {
     /// Raw file descriptor.  `-1` is the [`INVALID_SOCKET`]
-    /// sentinel; the C code compares against it directly.
-    pub fd: i32,
+    /// sentinel; compare against [`INVALID_SOCKET`] rather than
+    /// reading this field directly.
+    fd: i32,
 }
 
 /// Sentinel for "no socket".  C: `INVALID_SOCKET = -1` on Linux.
@@ -77,6 +76,7 @@ pub const INVALID_SOCKET: picoquic_socket_t = picoquic_socket_t { fd: -1 };
 /// Pair of UDP sockets owned by a server (one IPv4, one IPv6).
 /// C: `picoquic_server_sockets_t`.  `repr(C)` is dropped — the
 /// struct is internal scratch, never inspected through FFI.
+#[allow(non_camel_case_types)]
 #[derive(Debug, Copy, Clone)]
 pub struct picoquic_server_sockets_t {
     pub s_socket: [picoquic_socket_t; PICOQUIC_NB_SERVER_SOCKETS],
@@ -95,6 +95,7 @@ impl Default for picoquic_server_sockets_t {
 /// this placeholder with a libc-bound `msghdr` (under the `std`
 /// feature) — keeping the type opaque here so the public surface
 /// doesn't pin a concrete representation prematurely.
+#[allow(non_camel_case_types)]
 pub struct picoquic_msghdr_t {
     _opaque: [u8; 0],
 }
@@ -197,7 +198,7 @@ pub fn picoquic_socket_set_pmtud_options(_sd: picoquic_socket_t, _af: i32) -> Re
 /// Receive metadata returned by [`picoquic_recvmsg`].  Mirrors
 /// the C output parameters folded into a single struct.
 #[derive(Debug, Default, Copy, Clone)]
-pub struct picoquic_recv_info {
+pub struct RecvInfo {
     /// Source address; `None` matches the C `addr_from->ss_family
     /// = 0` written when `recvmsg` returned `<= 0`.
     pub addr_from: Option<SocketAddr>,
@@ -217,25 +218,31 @@ pub struct picoquic_recv_info {
 /// addr_from, struct sockaddr_storage* addr_dest, int* dest_if,
 /// unsigned char* received_ecn, uint8_t* buffer, int buffer_max)`
 /// returning bytes received or `-1`.  Output parameters fold into
-/// [`picoquic_recv_info`]; the slice length subsumes
+/// [`RecvInfo`]; the slice length subsumes
 /// `buffer_max`.
-pub fn picoquic_recvmsg(
-    _fd: picoquic_socket_t,
-    _buffer: &mut [u8],
-) -> Result<picoquic_recv_info, ()> {
+pub fn picoquic_recvmsg(_fd: picoquic_socket_t, _buffer: &mut [u8]) -> Result<RecvInfo, ()> {
     todo!()
 }
 
-/// [`picoquic_select`] result, mirroring [`picoquic_recv_info`]
+/// [`picoquic_select`] result, mirroring [`RecvInfo`]
 /// plus the `picoquic_current_time()` snapshot the C body writes
 /// through `*current_time`.
 #[derive(Debug, Default, Copy, Clone)]
-pub struct picoquic_select_info {
+pub struct SelectInfo {
+    /// Source address; `None` matches the C `addr_from->ss_family
+    /// = 0` written when `recvmsg` returned `<= 0`.
     pub addr_from: Option<SocketAddr>,
+    /// Destination address parsed out of `IP_PKTINFO` /
+    /// `IPV6_PKTINFO` cmsg; `None` when no pktinfo was attached.
     pub addr_dest: Option<SocketAddr>,
+    /// Receiving interface index from the same cmsg.
     pub dest_if: i32,
+    /// `IP_TOS` / `IPV6_TCLASS` ECN code-point byte.
     pub received_ecn: u8,
+    /// Number of bytes written into the caller's buffer.
     pub bytes_recv: usize,
+    /// Snapshot of `picoquic_current_time()` taken after the
+    /// receive; mirrors the C `*current_time` out-parameter.
     pub current_time: u64,
 }
 
@@ -243,13 +250,25 @@ pub struct picoquic_select_info {
 /// socket fired (the C `*socket_rank` out-parameter, here a
 /// `usize` index into the input slice).
 #[derive(Debug, Default, Copy, Clone)]
-pub struct picoquic_select_ex_info {
+pub struct SelectExInfo {
+    /// Source address; `None` matches the C `addr_from->ss_family
+    /// = 0` written when `recvmsg` returned `<= 0`.
     pub addr_from: Option<SocketAddr>,
+    /// Destination address parsed out of `IP_PKTINFO` /
+    /// `IPV6_PKTINFO` cmsg; `None` when no pktinfo was attached.
     pub addr_dest: Option<SocketAddr>,
+    /// Receiving interface index from the same cmsg.
     pub dest_if: i32,
+    /// `IP_TOS` / `IPV6_TCLASS` ECN code-point byte.
     pub received_ecn: u8,
+    /// Number of bytes written into the caller's buffer.
     pub bytes_recv: usize,
+    /// Snapshot of `picoquic_current_time()` taken after the
+    /// receive; mirrors the C `*current_time` out-parameter.
     pub current_time: u64,
+    /// Index into the input socket slice identifying which socket
+    /// received the datagram; mirrors the C `*socket_rank`
+    /// out-parameter.
     pub socket_rank: usize,
 }
 
@@ -263,13 +282,13 @@ pub struct picoquic_select_ex_info {
 ///
 /// The slice subsumes the C `(sockets, nb_sockets)` and
 /// `(buffer, buffer_max)` pairs; the rest of the output folds
-/// into [`picoquic_select_info`].  `Err(())` matches the C `-1`
+/// into [`SelectInfo`].  `Err(())` matches the C `-1`
 /// from `select` / `recvmsg`.
 pub fn picoquic_select(
     _sockets: &[picoquic_socket_t],
     _buffer: &mut [u8],
     _delta_t: i64,
-) -> Result<picoquic_select_info, ()> {
+) -> Result<SelectInfo, ()> {
     todo!()
 }
 
@@ -279,7 +298,7 @@ pub fn picoquic_select_ex(
     _sockets: &[picoquic_socket_t],
     _buffer: &mut [u8],
     _delta_t: i64,
-) -> Result<picoquic_select_ex_info, ()> {
+) -> Result<SelectExInfo, ()> {
     todo!()
 }
 
@@ -342,7 +361,7 @@ pub fn picoquic_send_through_server_sockets(
 /// the caller that the original text should be reused as the SNI
 /// parameter).
 #[derive(Debug, Copy, Clone)]
-pub struct picoquic_server_address {
+pub struct ServerAddress {
     pub server_address: SocketAddr,
     pub is_name: bool,
 }
@@ -356,7 +375,7 @@ pub struct picoquic_server_address {
 pub fn picoquic_get_server_address(
     _ip_address_text: &str,
     _server_port: i32,
-) -> Result<picoquic_server_address, ()> {
+) -> Result<ServerAddress, ()> {
     todo!()
 }
 

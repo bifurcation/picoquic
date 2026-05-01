@@ -1,0 +1,19 @@
+# claude -p (phase1a) for picoquic/picoquic_packet_loop.h
+# elapsed: 477.6s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_packet_loop.md)
+
+## stdout
+Both gates pass cleanly. Here's a summary of what changed and why:
+
+**Three improvements applied to `rs/fq/src/picoquic/picoquic_packet_loop.rs`:**
+
+1. **Removed `#![allow(non_snake_case)]`** — this lint covers functions/methods/variables that aren't snake_case. Every identifier in this file was already snake_case, making the allowance both incorrect (it was suppressing the wrong lint for C-origin type names, which is `non_camel_case_types`) and unnecessarily broad.
+
+2. **Renamed four traits to PascalCase** — `picoquic_packet_loop_cb_fn` → `PicoquicPacketLoopCbFn`, `picoquic_custom_thread_create_fn` → `PicoquicCustomThreadCreateFn`, etc. This aligns with the convention already established in `picoquic_utils.rs` (`PicoquicThreadFn`, `PicoquictestAqmT`) and with the TRANSLATE_PLAN rule that Rust traits are PascalCase. C origin names are preserved verbatim in the backtick code spans of each trait's doc comment (`C: \`int (*picoquic_packet_loop_cb_fn)(...)\``), so the mapping is still traceable.
+
+3. **Renamed `picoquic_packet_loop_cb_enum` variants to PascalCase** — `picoquic_packet_loop_ready = 0` → `Ready = 0`, `picoquic_packet_loop_after_receive` → `AfterReceive`, etc. This follows the precedent of `picoquic_jitter_mode::JitterGauss`/`JitterWifi` in `picoquic_utils.rs`. Each variant now carries a `C: \`original_c_name\`.` citation in its doc comment. All doc cross-references to the old variant paths (`picoquic_packet_loop_cb_enum::picoquic_packet_loop_wake_up`, etc.) were updated to the new names.
+
+
+## stderr
+

@@ -39,8 +39,6 @@
 //! Adapted from <https://github.com/lrem/splay> (MIT, © 2014
 //! Remigiusz Modrzejewski).
 
-#![allow(non_camel_case_types)]
-
 use core::ffi::c_void;
 use core::ptr::{self, NonNull};
 
@@ -86,6 +84,7 @@ pub trait PicoSplayOps {
 /// All three pointers stay raw because the nodes form an intrusive
 /// in-tree chain whose endpoints are owned by the surrounding user
 /// struct, not by this module.
+#[allow(non_camel_case_types)]
 #[derive(Debug)]
 pub struct picosplay_node_t {
     pub parent: *mut picosplay_node_t,
@@ -124,6 +123,7 @@ impl Default for picosplay_node_t {
 ///   state has to be expressible.  After `picosplay_init_tree` the
 ///   field is always `Some`.
 /// * `size` mirrors the C field directly (kept signed).
+#[allow(non_camel_case_types)]
 pub struct picosplay_tree_t {
     pub root: *mut picosplay_node_t,
     pub ops: Option<Box<dyn PicoSplayOps>>,
@@ -198,7 +198,7 @@ pub fn picosplay_find(
 /// `value`.  Unlike [`picosplay_find`] this does *not* splay the
 /// tree.  C: `picosplay_find_previous`.
 pub fn picosplay_find_previous(
-    _tree: &mut picosplay_tree_t,
+    _tree: &picosplay_tree_t,
     _value: *mut c_void,
 ) -> Option<NonNull<picosplay_node_t>> {
     todo!()
@@ -206,7 +206,7 @@ pub fn picosplay_find_previous(
 
 /// Return the smallest (left-most) node, or `None` for an empty
 /// tree.  C: `picosplay_first`.
-pub fn picosplay_first(_tree: &mut picosplay_tree_t) -> Option<NonNull<picosplay_node_t>> {
+pub fn picosplay_first(_tree: &picosplay_tree_t) -> Option<NonNull<picosplay_node_t>> {
     todo!()
 }
 
@@ -224,7 +224,7 @@ pub fn picosplay_next(_node: NonNull<picosplay_node_t>) -> Option<NonNull<picosp
 
 /// Return the largest (right-most) node, or `None` for an empty
 /// tree.  C: `picosplay_last`.
-pub fn picosplay_last(_tree: &mut picosplay_tree_t) -> Option<NonNull<picosplay_node_t>> {
+pub fn picosplay_last(_tree: &picosplay_tree_t) -> Option<NonNull<picosplay_node_t>> {
     todo!()
 }
 

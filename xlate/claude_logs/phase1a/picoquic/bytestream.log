@@ -1,0 +1,13 @@
+# claude -p (phase1a) for picoquic/bytestream.h
+# elapsed: 310.7s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/bytestream.md)
+
+## stdout
+Both pass cleanly. The only applied change is removing `#![allow(non_snake_case)]`.
+
+**Summary:** One targeted improvement was applied. All function names (`bytewrite_int8`, `byteread_vint`, `bytestream_ref_init`, etc.), struct fields (`data`, `ptr`, `buf`), and parameters in this module are already snake_case — the `#![allow(non_snake_case)]` suppressed a lint category with no actual violations. Removing it tightens the lint allowances as the review criteria require, without changing behaviour. The `#[derive(Default)]` idiom improvement for `bytestream_buf` was tested but reverted — the toolchain's `Default` blanket impl for arrays larger than 32 elements isn't available, so the explicit `impl Default` is retained. Everything else in the translation is clean: no raw-pointer safety holes (all unsafe-free, all `todo!()`), type shapes are consistent across functions, lifetime annotations on `bytestream_data`/`bytestream_ptr` are correct for the Phase 1 stub, doc comments cover every public item with C-source citations, and the `clippy::result_unit_err` allow is narrow and intentional.
+
+
+## stderr
+

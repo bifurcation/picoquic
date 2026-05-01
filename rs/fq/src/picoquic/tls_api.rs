@@ -71,9 +71,6 @@
 //!   header (and the `_t` callback variant lives in
 //!   `picoquic_crypto_provider_api.rs`); not translated.
 
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(non_upper_case_globals)]
 #![allow(clippy::result_unit_err)]
 #![allow(clippy::too_many_arguments)]
 
@@ -142,10 +139,6 @@ pub const PICOQUIC_LABEL_QUIC_V1_KEY_BASE: &str = "tls13 quic ";
 /// QUIC v2 TLS key-derivation label prefix.  C:
 /// `PICOQUIC_LABEL_QUIC_V2_KEY_BASE`.
 pub const PICOQUIC_LABEL_QUIC_V2_KEY_BASE: &str = "tls13 quicv2 ";
-
-/// Maximum digest size across the hash algorithms picotls supports.
-/// Mirrors the C `PICOQUIC_HASH_SIZE_MAX`.
-pub const PICOQUIC_HASH_SIZE_MAX: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Forward declaration of `ptls_cipher_suite_t`.
@@ -803,6 +796,10 @@ pub fn picoquic_verify_retry_token(
 
 // ---------------------------------------------------------------------------
 // Hash helpers exposed so applications don't need picotls.h.
+
+/// Maximum digest size across the hash algorithms picotls supports.
+/// C: `PICOQUIC_HASH_SIZE_MAX`.
+pub const PICOQUIC_HASH_SIZE_MAX: usize = 64;
 
 /// Construct a streaming hash context for the named algorithm
 /// (e.g. `"sha256"`).  Returns null on lookup failure (matching the

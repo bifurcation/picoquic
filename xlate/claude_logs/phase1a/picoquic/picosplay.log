@@ -1,0 +1,15 @@
+# claude -p (phase1a) for picoquic/picosplay.h
+# elapsed: 122.6s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/picosplay.md)
+
+## stdout
+Three targeted improvements applied, both gates clean:
+
+1. **Tightened `#![allow(non_camel_case_types)]`** — removed the module-wide inner attribute and replaced it with item-level `#[allow(non_camel_case_types)]` on the two structs that actually need it (`picosplay_node_t`, `picosplay_tree_t`). The lint no longer silently suppresses any future non-camel-case type added to the module.
+
+2. **Fixed mutability on three read-only functions** — `picosplay_find_previous`, `picosplay_first`, and `picosplay_last` were incorrectly taking `&mut picosplay_tree_t`. Inspection of the C source confirms none of them splay or otherwise mutate the tree: `picosplay_find_previous` is a pure BST walk returning the predecessor without splaying, and `picosplay_first`/`picosplay_last` just delegate to `leftmost`/`rightmost`. All three now take `&picosplay_tree_t`, which is more accurate and less restrictive for Phase 3 callers.
+
+
+## stderr
+

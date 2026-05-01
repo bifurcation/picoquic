@@ -40,7 +40,6 @@
 //! Phase 1 contract: signatures only; every body is `todo!()`.
 
 #![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
 #![allow(clippy::result_unit_err)]
 
 extern crate alloc;

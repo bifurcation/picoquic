@@ -1,0 +1,13 @@
+# claude -p (phase1a) for picoquic/tls_api.h
+# elapsed: 250.8s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/tls_api.md)
+
+## stdout
+Both edits are correct. Both `cargo check` and `cargo clippy -- -D warnings` pass cleanly.
+
+**Summary of changes:** Removed three module-level lint suppression attributes that weren't earning their keep — `#![allow(non_camel_case_types)]`, `#![allow(non_snake_case)]`, and `#![allow(non_upper_case_globals)]`. This module defines no non-CamelCase types (the three output structs are all `PascalCase`; the `pub use ptls_cipher_suite_t` re-export doesn't introduce a new definition), uses only snake_case function and parameter names, and all constants follow `UPPER_SNAKE_CASE` — so none of the three lints would have fired. The two remaining allows (`result_unit_err` and `too_many_arguments`) are genuinely needed. Additionally, `PICOQUIC_HASH_SIZE_MAX` was moved from the label-constants section to the hash-helpers section where the C header places it, restoring source-level parity.
+
+
+## stderr
+

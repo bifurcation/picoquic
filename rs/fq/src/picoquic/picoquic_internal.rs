@@ -61,7 +61,6 @@
 // the keys are Phase-3 opaque pointers and not actually keyed
 // on interior mutability.
 #![allow(clippy::too_many_arguments)]
-#![allow(clippy::missing_safety_doc)]
 
 use core::ffi::c_void;
 use core::net::SocketAddr;
@@ -284,6 +283,7 @@ pub const PICOQUIC_INTEROP_VERSION_LATEST: u32 = PICOQUIC_NINETEENTH_INTEROP_VER
 /// C source — Rust models them as borrowed slices.  `upgrade_from`
 /// is a `NULL`-terminated list in C; here it is a borrowed
 /// slice, with an empty slice for "no upgrade path".
+#[derive(Debug)]
 pub struct picoquic_version_parameters_t {
     pub version: u32,
     pub version_aead_key: &'static [u8],
@@ -3402,11 +3402,11 @@ pub fn picoquic_format_ready_datagram_frame(
 }
 
 pub fn picoquic_decode_datagram_frame_header(
-    _bytes: *mut u8,
+    _bytes: *const u8,
     _bytes_max: *const u8,
     _frame_id: &mut u8,
     _length: &mut u64,
-) -> *mut u8 {
+) -> *const u8 {
     todo!()
 }
 
@@ -3635,7 +3635,7 @@ pub fn picoquic_create_misc_frame(
 }
 
 pub fn picoquic_process_version_upgrade(
-    _cnx: *mut picoquic_cnx_t,
+    _cnx: &mut picoquic_cnx_t,
     _old_version_index: i32,
     _new_version_index: i32,
 ) -> i32 {

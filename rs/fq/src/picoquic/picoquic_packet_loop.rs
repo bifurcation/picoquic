@@ -8,7 +8,7 @@
 //! * polls them with [`picosocks::picoquic_select`] (or `select`/
 //!   `WSAWaitForMultipleEvents` in the C original),
 //! * routes received datagrams into picoquic, and
-//! * fires application callbacks ([`picoquic_packet_loop_cb_fn`]) at
+//! * fires application callbacks ([`PicoquicPacketLoopCbFn`]) at
 //!   well-defined points (loop ready, after recv, after send,
 //!   address change, time check, system-call duration spike, wake-up,
 //!   alt-port).
@@ -95,7 +95,6 @@
 //!   `None`; Phase 3 will tighten once the loop is implemented.
 
 #![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 // Stand-in for the not-yet-defined crate-level `Error` enum.
 #![allow(clippy::result_unit_err)]
@@ -237,7 +236,7 @@ impl Default for picoquic_socket_ctx_t {
 // Callback enum + companion arg structs.
 
 /// Tag identifying which event fired the
-/// [`picoquic_packet_loop_cb_fn`] callback.  The expected type of
+/// [`PicoquicPacketLoopCbFn`] callback.  The expected type of
 /// the `callback_argv` payload is documented per-variant.
 /// C: `picoquic_packet_loop_cb_enum`.
 ///
@@ -247,30 +246,36 @@ impl Default for picoquic_socket_ctx_t {
 pub enum picoquic_packet_loop_cb_enum {
     /// Loop has finished initializing.  `callback_argv:
     /// *mut picoquic_packet_loop_options_t`.
-    picoquic_packet_loop_ready = 0,
+    /// C: `picoquic_packet_loop_ready`.
+    Ready = 0,
     /// `callback_argv: *mut size_t` — number of packets received this
-    /// iteration.
-    picoquic_packet_loop_after_receive,
+    /// iteration.  C: `picoquic_packet_loop_after_receive`.
+    AfterReceive,
     /// `callback_argv: *mut size_t` — number of packets sent this
-    /// iteration.
-    picoquic_packet_loop_after_send,
+    /// iteration.  C: `picoquic_packet_loop_after_send`.
+    AfterSend,
     /// `callback_argv: *mut sockaddr` — new local address advertised
     /// by the application after a port update.
-    picoquic_packet_loop_port_update,
+    /// C: `picoquic_packet_loop_port_update`.
+    PortUpdate,
     /// `callback_argv: *mut packet_loop_time_check_arg_t`.  Optional;
     /// only fires when the application set
     /// [`picoquic_packet_loop_options_t::do_time_check`].
-    picoquic_packet_loop_time_check,
+    /// C: `picoquic_packet_loop_time_check`.
+    TimeCheck,
     /// `callback_argv: *mut packet_loop_system_call_duration_t`.
     /// Optional; only fires when the application set
     /// [`picoquic_packet_loop_options_t::do_system_call_duration`].
-    picoquic_packet_loop_system_call_duration,
+    /// C: `picoquic_packet_loop_system_call_duration`.
+    SystemCallDuration,
     /// Wake-up event triggered by [`picoquic_wake_up_network_thread`].
     /// `callback_argv: NULL`.
-    picoquic_packet_loop_wake_up,
+    /// C: `picoquic_packet_loop_wake_up`.
+    WakeUp,
     /// `callback_argv: *mut sockaddr` — alt-port address surfaced for
     /// multipath / migration tests.
-    picoquic_packet_loop_alt_port,
+    /// C: `picoquic_packet_loop_alt_port`.
+    AltPort,
 }
 
 /// System-call duration statistics surfaced through the optional
@@ -319,7 +324,7 @@ pub struct packet_loop_time_check_arg_t {
 /// The return value is the C `int`: `0` for success, non-zero to
 /// signal an error and break out of the loop.  Phase 3 may refine
 /// to a `Result` once the crate-level `Error` enum lands.
-pub trait picoquic_packet_loop_cb_fn {
+pub trait PicoquicPacketLoopCbFn {
     /// Loop-event callback.  See trait docs for `callback_argv`
     /// dispatch.
     ///
@@ -340,14 +345,14 @@ pub trait picoquic_packet_loop_cb_fn {
 // Loop options + parameters.
 
 /// Feature-flags the application advertises in response to the
-/// [`picoquic_packet_loop_cb_enum::picoquic_packet_loop_ready`]
+/// [`picoquic_packet_loop_cb_enum::Ready`]
 /// callback.  C: `picoquic_packet_loop_options_t`, three single-bit
 /// `unsigned int : 1` fields collapsed to `bool` per the
 /// established convention (see `picoquic_config.rs`).
 #[derive(Debug, Default, Copy, Clone)]
 pub struct picoquic_packet_loop_options_t {
     /// Application wants the loop to call back with
-    /// [`picoquic_packet_loop_cb_enum::picoquic_packet_loop_time_check`]
+    /// [`picoquic_packet_loop_cb_enum::TimeCheck`]
     /// before each select.
     pub do_time_check: bool,
     /// Application wants notifications when zero-delay system calls
@@ -403,11 +408,11 @@ pub struct picoquic_packet_loop_param_t {
 /// [`PicoquicThreadFn`](crate::picoquic::picoquic_utils::PicoquicThreadFn)
 /// trait already bundles both into a single trait object, so the
 /// hook reduces to "produce a thread handle from a `Box<dyn …>`".
-pub trait picoquic_custom_thread_create_fn {
+pub trait PicoquicCustomThreadCreateFn {
     /// Create a thread that runs `thread_fn` to completion.  The
     /// returned [`picoquic_thread_t`] is opaque to picoquic and is
     /// passed back through
-    /// [`picoquic_custom_thread_delete_fn::delete`] at teardown.
+    /// [`PicoquicCustomThreadDeleteFn::delete`] at teardown.
     ///
     /// The C contract returns `0` for success / non-zero `errno`
     /// otherwise; we keep the `i32` so call sites can surface the
@@ -422,7 +427,7 @@ pub trait picoquic_custom_thread_create_fn {
 /// Length is capped at 16 bytes (including the trailing NUL) on
 /// Linux's `prctl(PR_SET_NAME, …)`; the trait takes a `&str` slice
 /// and lets the implementor truncate / re-encode as needed.
-pub trait picoquic_custom_thread_setname_fn {
+pub trait PicoquicCustomThreadSetnameFn {
     /// Apply `thread_name` to the *current* thread.  Called from
     /// inside the thread after it starts, per the C convention.
     fn set_name(&mut self, thread_name: &str);
@@ -430,7 +435,7 @@ pub trait picoquic_custom_thread_setname_fn {
 
 /// Tear-down-a-thread hook.  C:
 /// `void (*picoquic_custom_thread_delete_fn)(void** thread_id)`.
-pub trait picoquic_custom_thread_delete_fn {
+pub trait PicoquicCustomThreadDeleteFn {
     /// Release any resources tied to `thread`.  Called from the
     /// destruction path of [`picoquic_network_thread_ctx_t`].
     fn delete(&mut self, thread: picoquic_thread_t);
@@ -474,14 +479,14 @@ pub struct picoquic_network_thread_ctx_t {
     /// Application loop callback.  `None` matches the C `NULL`
     /// (the loop runs without notifying the app on each event —
     /// used by the bench harness).
-    pub loop_callback: Option<Box<dyn picoquic_packet_loop_cb_fn>>,
+    pub loop_callback: Option<Box<dyn PicoquicPacketLoopCbFn>>,
     /// Custom thread-deletion hook; defaults to
     /// `picoquic_internal_thread_delete` when the C caller passes
     /// `NULL`.
-    pub thread_delete_fn: Option<Box<dyn picoquic_custom_thread_delete_fn>>,
+    pub thread_delete_fn: Option<Box<dyn PicoquicCustomThreadDeleteFn>>,
     /// Custom thread-naming hook; defaults to
     /// `picoquic_internal_thread_setname`.
-    pub thread_setname_fn: Option<Box<dyn picoquic_custom_thread_setname_fn>>,
+    pub thread_setname_fn: Option<Box<dyn PicoquicCustomThreadSetnameFn>>,
     /// Optional thread name.  Capped at 16 bytes (including NUL)
     /// on Linux per `prctl(PR_SET_NAME, …)`.
     pub thread_name: Option<String>,
@@ -549,7 +554,7 @@ impl Default for picoquic_network_thread_ctx_t {
 pub fn picoquic_packet_loop_v2(
     _quic: &mut picoquic_quic_t,
     _param: &mut picoquic_packet_loop_param_t,
-    _loop_callback: Option<Box<dyn picoquic_packet_loop_cb_fn>>,
+    _loop_callback: Option<Box<dyn PicoquicPacketLoopCbFn>>,
 ) -> Result<(), ()> {
     todo!()
 }
@@ -577,7 +582,7 @@ pub fn picoquic_packet_loop(
     _dest_if: i32,
     _socket_buffer_size: i32,
     _do_not_use_gso: bool,
-    _loop_callback: Option<Box<dyn picoquic_packet_loop_cb_fn>>,
+    _loop_callback: Option<Box<dyn PicoquicPacketLoopCbFn>>,
 ) -> Result<(), ()> {
     todo!()
 }
@@ -597,7 +602,7 @@ pub fn picoquic_packet_loop(
 pub fn picoquic_start_network_thread(
     _quic: &mut picoquic_quic_t,
     _param: Box<picoquic_packet_loop_param_t>,
-    _loop_callback: Option<Box<dyn picoquic_packet_loop_cb_fn>>,
+    _loop_callback: Option<Box<dyn PicoquicPacketLoopCbFn>>,
 ) -> Result<Box<picoquic_network_thread_ctx_t>, i32> {
     todo!()
 }
@@ -609,18 +614,18 @@ pub fn picoquic_start_network_thread(
 pub fn picoquic_start_custom_network_thread(
     _quic: &mut picoquic_quic_t,
     _param: Box<picoquic_packet_loop_param_t>,
-    _thread_create_fn: Option<Box<dyn picoquic_custom_thread_create_fn>>,
-    _thread_delete_fn: Option<Box<dyn picoquic_custom_thread_delete_fn>>,
-    _thread_setname_fn: Option<Box<dyn picoquic_custom_thread_setname_fn>>,
+    _thread_create_fn: Option<Box<dyn PicoquicCustomThreadCreateFn>>,
+    _thread_delete_fn: Option<Box<dyn PicoquicCustomThreadDeleteFn>>,
+    _thread_setname_fn: Option<Box<dyn PicoquicCustomThreadSetnameFn>>,
     _thread_name: Option<&str>,
-    _loop_callback: Option<Box<dyn picoquic_packet_loop_cb_fn>>,
+    _loop_callback: Option<Box<dyn PicoquicPacketLoopCbFn>>,
 ) -> Result<Box<picoquic_network_thread_ctx_t>, i32> {
     todo!()
 }
 
 /// Wake the loop running in `thread_ctx` so its next iteration runs
 /// immediately and fires
-/// [`picoquic_packet_loop_cb_enum::picoquic_packet_loop_wake_up`].
+/// [`picoquic_packet_loop_cb_enum::WakeUp`].
 /// C: `int picoquic_wake_up_network_thread(picoquic_network_thread_ctx_t*)`.
 ///
 /// Returns the OS error on failure (the `errno` / `GetLastError`
@@ -645,7 +650,7 @@ pub fn picoquic_delete_network_thread(_thread_ctx: Box<picoquic_network_thread_c
 // ---------------------------------------------------------------------------
 // Built-in thread hooks (platform defaults).
 
-/// Default implementation of [`picoquic_custom_thread_create_fn`]
+/// Default implementation of [`PicoquicCustomThreadCreateFn`]
 /// using the platform `pthread_create` / `CreateThread`.
 /// C: `int picoquic_internal_thread_create(void**,
 /// picoquic_thread_fn, void*)`.
@@ -660,13 +665,13 @@ pub fn picoquic_internal_thread_create(
     todo!()
 }
 
-/// Default implementation of [`picoquic_custom_thread_delete_fn`].
+/// Default implementation of [`PicoquicCustomThreadDeleteFn`].
 /// C: `void picoquic_internal_thread_delete(void**)`.
 pub fn picoquic_internal_thread_delete(_thread: picoquic_thread_t) {
     todo!()
 }
 
-/// Default implementation of [`picoquic_custom_thread_setname_fn`].
+/// Default implementation of [`PicoquicCustomThreadSetnameFn`].
 /// C: `void picoquic_internal_thread_setname(char const*)`.
 pub fn picoquic_internal_thread_setname(_thread_name: &str) {
     todo!()
@@ -717,10 +722,10 @@ pub fn picoquic_start_server_threads(
     _current_time: u64,
     _alpn_select_fn: Option<Box<dyn picoquic_alpn_select_fn_v2>>,
     _default_callback: Option<Box<dyn picoquic_stream_data_cb_fn>>,
-    _loop_callback: Option<Box<dyn picoquic_packet_loop_cb_fn>>,
-    _thread_create_fn: Option<Box<dyn picoquic_custom_thread_create_fn>>,
-    _thread_delete_fn: Option<Box<dyn picoquic_custom_thread_delete_fn>>,
-    _thread_setname_fn: Option<Box<dyn picoquic_custom_thread_setname_fn>>,
+    _loop_callback: Option<Box<dyn PicoquicPacketLoopCbFn>>,
+    _thread_create_fn: Option<Box<dyn PicoquicCustomThreadCreateFn>>,
+    _thread_delete_fn: Option<Box<dyn PicoquicCustomThreadDeleteFn>>,
+    _thread_setname_fn: Option<Box<dyn PicoquicCustomThreadSetnameFn>>,
     _thread_ctxs: &mut [Option<Box<picoquic_network_thread_ctx_t>>],
 ) -> Result<usize, ()> {
     todo!()

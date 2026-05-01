@@ -97,9 +97,6 @@
 //! as `Result<(), ()>`.  TODO(error-enum): swap `()` for the
 //! crate-level `Error` once it lands.
 
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(non_upper_case_globals)]
 // Several writers preserve the C parameter list verbatim so the
 // translation reads as a one-for-one mirror; clippy complains about
 // the resulting argument counts.
@@ -131,6 +128,7 @@ use crate::picoquic::picoquic_utils::picoquic_file_t;
 /// must not drift from the C enum.
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
 pub enum picoquic_log_event_type {
     picoquic_log_event_pdu_sent = 0x0002,
     picoquic_log_event_pdu_recv = 0x0003,

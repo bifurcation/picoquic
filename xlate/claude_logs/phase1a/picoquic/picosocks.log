@@ -1,10 +1,18 @@
 # claude -p (phase1a) for picoquic/picosocks.h
-# elapsed: 1.3s, exit: 1
+# elapsed: 328.3s, exit: 0
 # command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picosocks.md)
 
 ## stdout
-You've hit your limit · resets 12pm (America/New_York)
+The file looks correct. Both `cargo check` and `cargo clippy -- -D warnings` pass cleanly.
+
+**Summary of changes to `rs/fq/src/picoquic/picosocks.rs`:**
+
+- **Removed two unused lint suppressions**: `#![allow(non_snake_case)]` and `#![allow(non_upper_case_globals)]` were suppressing nothing — all functions are already `snake_case` and all globals are `UPPER_SNAKE_CASE`. They were dead weight in the allowlist.
+- **Narrowed `non_camel_case_types` from module-wide to per-item**: Moved the allow to the three types that genuinely need to preserve their C names (`picoquic_socket_t`, `picoquic_server_sockets_t`, `picoquic_msghdr_t`).
+- **Renamed four Rust-invented result structs to PascalCase**: `picoquic_recv_info` → `RecvInfo`, `picoquic_select_info` → `SelectInfo`, `picoquic_select_ex_info` → `SelectExInfo`, `picoquic_server_address` → `ServerAddress`. These are purely Rust constructs (folded C out-parameters) with no C typedef identifiers to preserve, so Rust naming convention wins.
+- **Made `picoquic_socket_t::fd` private**: The doc comment stated "opaque newtype so the underlying integer doesn't leak out of the module" while the field was `pub`. Made it module-private; callers compare against the `INVALID_SOCKET` constant via the derived `PartialEq`.
+- **Added field-level doc comments to `SelectInfo` and `SelectExInfo`**: The fields on these structs had no documentation, inconsistent with `RecvInfo` which documented all fields.
 
 
 ## stderr
