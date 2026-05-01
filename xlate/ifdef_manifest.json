@@ -1,13 +1,10 @@
 {
   "metadata": {
     "in_scope_dirs": [
-      "loglib",
-      "picohttp",
-      "picoquic",
-      "picoquictest"
+      "picoquic"
     ],
-    "files_scanned": 195,
-    "symbols_seen": 150,
+    "files_scanned": 83,
+    "symbols_seen": 122,
     "minus_d_macros_in_compile_commands": [
       "PICOTLS_USE_BROTLI",
       "PICOTLS_USE_DTRACE",
@@ -19,11 +16,10 @@
     "always_on": [
       {
         "symbol": "PTLS_WITHOUT_FUSION",
-        "occurrences": 12,
+        "occurrences": 10,
         "files": [
           "picoquic/picoquic_ptls_fusion.c",
-          "picoquic/tls_api.c",
-          "picoquictest/minicrypto_test.c"
+          "picoquic/tls_api.c"
         ],
         "sample": [
           {
@@ -82,34 +78,6 @@
     ],
     "include_guard": [
       {
-        "symbol": "AUTOQLOG_H",
-        "occurrences": 1,
-        "files": [
-          "loglib/autoqlog.h"
-        ],
-        "sample": [
-          {
-            "file": "loglib/autoqlog.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "AUTO_MEMLOG_H",
-        "occurrences": 1,
-        "files": [
-          "loglib/auto_memlog.h"
-        ],
-        "sample": [
-          {
-            "file": "loglib/auto_memlog.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
         "symbol": "C4_H",
         "occurrences": 2,
         "files": [
@@ -138,90 +106,6 @@
         "sample": [
           {
             "file": "picoquic/cc_common.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "DEMO_CLIENT_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/democlient.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/democlient.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "DEMO_SERVER_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/demoserver.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/demoserver.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "H3ZERO_COMMON_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/h3zero_common.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/h3zero_common.h",
-            "line": 21,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "H3ZERO_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/h3zero.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/h3zero.h",
-            "line": 21,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "H3ZERO_URI_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/h3zero_uri.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/h3zero_uri.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "H3ZERO_URL_TEMPLATE_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/h3zero_url_template.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/h3zero_url_template.h",
             "line": 22,
             "directive": "ifndef"
           }
@@ -262,34 +146,6 @@
         ]
       },
       {
-        "symbol": "LOGCONVERT_H",
-        "occurrences": 1,
-        "files": [
-          "loglib/logconvert.h"
-        ],
-        "sample": [
-          {
-            "file": "loglib/logconvert.h",
-            "line": 21,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "LOGREADER_H",
-        "occurrences": 1,
-        "files": [
-          "loglib/logreader.h"
-        ],
-        "sample": [
-          {
-            "file": "loglib/logreader.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
         "symbol": "MAX",
         "occurrences": 1,
         "files": [
@@ -318,20 +174,6 @@
         ]
       },
       {
-        "symbol": "PICOMASK_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/picomask.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/picomask.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
         "symbol": "PICOQUICTEST_DUALQ_H",
         "occurrences": 1,
         "files": [
@@ -340,62 +182,6 @@
         "sample": [
           {
             "file": "picoquic/picoquictest_dualq.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "PICOQUICTEST_H",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/picoquictest.h"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/picoquictest.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "PICOQUICTEST_INTERNAL_H",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/picoquictest_internal.h"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/picoquictest_internal.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "PICOQUICTEST_RCTL_H",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/picoquictest_rctl.h"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/picoquictest_rctl.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "PICOQUICTEST_RED_H",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/picoquictest_red.h"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/picoquictest_red.h",
             "line": 22,
             "directive": "ifndef"
           }
@@ -612,20 +398,6 @@
         ]
       },
       {
-        "symbol": "PICOQUIC_NS_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/picoquic_ns.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/picoquic_ns.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
         "symbol": "PICOQUIC_PACKET_LOOP_H",
         "occurrences": 1,
         "files": [
@@ -669,34 +441,14 @@
       },
       {
         "symbol": "PICOQUIC_QLOG_FNS_H",
-        "occurrences": 2,
+        "occurrences": 1,
         "files": [
-          "loglib/picoquic_qlog_fns.h",
           "picoquic/picoquic_qlog.h"
         ],
         "sample": [
           {
-            "file": "loglib/picoquic_qlog_fns.h",
-            "line": 22,
-            "directive": "ifndef"
-          },
-          {
             "file": "picoquic/picoquic_qlog.h",
             "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "PICOQUIC_QLOG_H",
-        "occurrences": 1,
-        "files": [
-          "loglib/qlog.h"
-        ],
-        "sample": [
-          {
-            "file": "loglib/qlog.h",
-            "line": 21,
             "directive": "ifndef"
           }
         ]
@@ -839,20 +591,6 @@
         ]
       },
       {
-        "symbol": "QUICPERF_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/quicperf.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/quicperf.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
         "symbol": "SIPHASH_H",
         "occurrences": 1,
         "files": [
@@ -862,20 +600,6 @@
           {
             "file": "picoquic/siphash.h",
             "line": 18,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "SLEEP",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/sockloop_test.c"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/sockloop_test.c",
-            "line": 34,
             "directive": "ifndef"
           }
         ]
@@ -1142,20 +866,6 @@
         ]
       },
       {
-        "symbol": "WT_BATON_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/wt_baton.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/wt_baton.h",
-            "line": 30,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
         "symbol": "__APPLE_USE_RFC_3542",
         "occurrences": 1,
         "files": [
@@ -1280,20 +990,6 @@
         ]
       },
       {
-        "symbol": "pico_webtransport_H",
-        "occurrences": 1,
-        "files": [
-          "picohttp/pico_webtransport.h"
-        ],
-        "sample": [
-          {
-            "file": "picohttp/pico_webtransport.h",
-            "line": 22,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
         "symbol": "socklen_t",
         "occurrences": 3,
         "files": [
@@ -1404,62 +1100,6 @@
           {
             "file": "picoquic/picosocks.c",
             "line": 524,
-            "directive": "ifdef"
-          }
-        ]
-      },
-      {
-        "symbol": "COMPARING_TIMES",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/hashtest.c"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/hashtest.c",
-            "line": 299,
-            "directive": "ifdef"
-          }
-        ]
-      },
-      {
-        "symbol": "COMPUTING_RANDOM_TABLE",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/stresstest.c"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/stresstest.c",
-            "line": 1272,
-            "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "COMPUTING_REFERENCE_BASIC_VALUE",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/hashtest.c"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/hashtest.c",
-            "line": 250,
-            "directive": "if"
-          }
-        ]
-      },
-      {
-        "symbol": "COMPUTING_REFERENCE_SIPASH_VALUE",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/hashtest.c"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/hashtest.c",
-            "line": 291,
             "directive": "ifdef"
           }
         ]
@@ -1856,25 +1496,6 @@
         ]
       },
       {
-        "symbol": "MBEDTLS_SHA384_C",
-        "occurrences": 2,
-        "files": [
-          "picoquictest/mbedtls_test.c"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/mbedtls_test.c",
-            "line": 129,
-            "directive": "if"
-          },
-          {
-            "file": "picoquictest/mbedtls_test.c",
-            "line": 129,
-            "directive": "if"
-          }
-        ]
-      },
-      {
         "symbol": "MBEDTLS_VERSION_NUMBER",
         "occurrences": 3,
         "files": [
@@ -1962,14 +1583,13 @@
       },
       {
         "symbol": "PICOQUIC_WITHOUT_SSLKEYLOG",
-        "occurrences": 14,
+        "occurrences": 7,
         "files": [
           "picoquic/config.c",
           "picoquic/picoquic.h",
           "picoquic/picoquic_config.h",
           "picoquic/picosocks.c",
-          "picoquic/quicctx.c",
-          "picoquictest/config_test.c"
+          "picoquic/quicctx.c"
         ],
         "sample": [
           {
@@ -2016,14 +1636,11 @@
       },
       {
         "symbol": "PICOQUIC_WITH_MBEDTLS",
-        "occurrences": 14,
+        "occurrences": 5,
         "files": [
           "picoquic/picoquic_crypto_provider_api.h",
           "picoquic/picoquic_mbedtls.c",
-          "picoquic/tls_api.c",
-          "picoquictest/mbedtls_test.c",
-          "picoquictest/minicrypto_test.c",
-          "picoquictest/picoquictest.h"
+          "picoquic/tls_api.c"
         ],
         "sample": [
           {
@@ -2127,12 +1744,10 @@
       },
       {
         "symbol": "PTLS_WITHOUT_OPENSSL",
-        "occurrences": 12,
+        "occurrences": 5,
         "files": [
           "picoquic/picoquic_ptls_openssl.c",
-          "picoquic/tls_api.c",
-          "picoquictest/minicrypto_test.c",
-          "picoquictest/openssl_test.c"
+          "picoquic/tls_api.c"
         ],
         "sample": [
           {
@@ -2376,17 +1991,8 @@
       },
       {
         "symbol": "_WINDOWS",
-        "occurrences": 221,
+        "occurrences": 132,
         "files": [
-          "loglib/qlog_fns.c",
-          "loglib/svg.c",
-          "picohttp/democlient.c",
-          "picohttp/demoserver.c",
-          "picohttp/h3zero.c",
-          "picohttp/h3zero_common.c",
-          "picohttp/h3zero_server.c",
-          "picohttp/picoquic_ns.c",
-          "picohttp/quicperf.c",
           "picoquic/cubic.c",
           "picoquic/ech.c",
           "picoquic/fastcc.c",
@@ -2412,76 +2018,33 @@
           "picoquic/tls_api.c",
           "picoquic/unified_log.c",
           "picoquic/util.c",
-          "picoquic/winsockloop.c",
-          "picoquictest/bytestream_test.c",
-          "picoquictest/cert_verify_test.c",
-          "picoquictest/cleartext_aead_test.c",
-          "picoquictest/cnx_creation_test.c",
-          "picoquictest/cnxstress.c",
-          "picoquictest/congestion_test.c",
-          "picoquictest/datagram_tests.c",
-          "picoquictest/delay_tolerant_test.c",
-          "picoquictest/ech_test.c",
-          "picoquictest/h3zero_stream_test.c",
-          "picoquictest/h3zerotest.c",
-          "picoquictest/hashtest.c",
-          "picoquictest/high_latency_test.c",
-          "picoquictest/l4s_test.c",
-          "picoquictest/mbedtls_test.c",
-          "picoquictest/memlog_test.c",
-          "picoquictest/minicrypto_test.c",
-          "picoquictest/multipath_test.c",
-          "picoquictest/netperf_test.c",
-          "picoquictest/openssl_test.c",
-          "picoquictest/parseheadertest.c",
-          "picoquictest/picolog_test.c",
-          "picoquictest/picomask_test.c",
-          "picoquictest/picoquic_lb_test.c",
-          "picoquictest/picoquic_ns.c",
-          "picoquictest/rctl_aqm.c",
-          "picoquictest/red_aqm.c",
-          "picoquictest/satellite_test.c",
-          "picoquictest/socket_test.c",
-          "picoquictest/sockloop_test.c",
-          "picoquictest/splay_test.c",
-          "picoquictest/stream0_frame_test.c",
-          "picoquictest/stresstest.c",
-          "picoquictest/tls_api_test.c",
-          "picoquictest/transport_param_test.c",
-          "picoquictest/util_test.c",
-          "picoquictest/webtransport_test.c"
+          "picoquic/winsockloop.c"
         ],
         "sample": [
           {
-            "file": "loglib/qlog_fns.c",
-            "line": 30,
+            "file": "picoquic/cubic.c",
+            "line": 74,
             "directive": "ifdef"
           },
           {
-            "file": "loglib/qlog_fns.c",
-            "line": 250,
+            "file": "picoquic/ech.c",
+            "line": 26,
             "directive": "ifdef"
           },
           {
-            "file": "loglib/qlog_fns.c",
-            "line": 768,
+            "file": "picoquic/ech.c",
+            "line": 31,
             "directive": "ifdef"
           }
         ]
       },
       {
         "symbol": "_WINDOWS64",
-        "occurrences": 23,
+        "occurrences": 10,
         "files": [
           "picoquic/picoquic_ptls_fusion.c",
           "picoquic/picoquic_utils.h",
-          "picoquic/tls_api.c",
-          "picoquictest/congestion_test.c",
-          "picoquictest/high_latency_test.c",
-          "picoquictest/l4s_test.c",
-          "picoquictest/mbedtls_test.c",
-          "picoquictest/multipath_test.c",
-          "picoquictest/tls_api_test.c"
+          "picoquic/tls_api.c"
         ],
         "sample": [
           {
@@ -2498,20 +2061,6 @@
             "file": "picoquic/picoquic_utils.h",
             "line": 46,
             "directive": "ifndef"
-          }
-        ]
-      },
-      {
-        "symbol": "_WINDOWS_BUT_MAYBE_NOT",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/sockloop_test.c"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/sockloop_test.c",
-            "line": 506,
-            "directive": "ifdef"
           }
         ]
       },
@@ -2632,27 +2181,8 @@
       },
       {
         "symbol": "__cplusplus",
-        "occurrences": 106,
+        "occurrences": 60,
         "files": [
-          "loglib/auto_memlog.h",
-          "loglib/autoqlog.h",
-          "loglib/csv.h",
-          "loglib/logconvert.h",
-          "loglib/logreader.h",
-          "loglib/picoquic_qlog_fns.h",
-          "loglib/qlog.h",
-          "loglib/svg.h",
-          "picohttp/democlient.h",
-          "picohttp/demoserver.h",
-          "picohttp/h3zero.h",
-          "picohttp/h3zero_common.h",
-          "picohttp/h3zero_uri.h",
-          "picohttp/h3zero_url_template.h",
-          "picohttp/pico_webtransport.h",
-          "picohttp/picomask.h",
-          "picohttp/picoquic_ns.h",
-          "picohttp/quicperf.h",
-          "picohttp/wt_baton.h",
           "picoquic/bytestream.h",
           "picoquic/c4.h",
           "picoquic/cc_common.h",
@@ -2682,26 +2212,22 @@
           "picoquic/picosplay.h",
           "picoquic/siphash.h",
           "picoquic/tls_api.h",
-          "picoquic/wincompat.h",
-          "picoquictest/picoquictest.h",
-          "picoquictest/picoquictest_internal.h",
-          "picoquictest/picoquictest_rctl.h",
-          "picoquictest/picoquictest_red.h"
+          "picoquic/wincompat.h"
         ],
         "sample": [
           {
-            "file": "loglib/auto_memlog.h",
-            "line": 25,
+            "file": "picoquic/bytestream.h",
+            "line": 27,
             "directive": "ifdef"
           },
           {
-            "file": "loglib/auto_memlog.h",
-            "line": 30,
+            "file": "picoquic/bytestream.h",
+            "line": 96,
             "directive": "ifdef"
           },
           {
-            "file": "loglib/autoqlog.h",
-            "line": 24,
+            "file": "picoquic/c4.h",
+            "line": 10,
             "directive": "ifdef"
           }
         ]
@@ -2721,20 +2247,6 @@
           {
             "file": "picoquic/picosocks.c",
             "line": 233,
-            "directive": "if"
-          }
-        ]
-      },
-      {
-        "symbol": "def",
-        "occurrences": 1,
-        "files": [
-          "picoquictest/hashtest.c"
-        ],
-        "sample": [
-          {
-            "file": "picoquictest/hashtest.c",
-            "line": 250,
             "directive": "if"
           }
         ]

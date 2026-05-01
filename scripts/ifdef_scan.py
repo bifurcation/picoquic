@@ -30,7 +30,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CC_PATH = REPO_ROOT / "build" / "compile_commands.json"
 OUT_PATH = REPO_ROOT / "xlate" / "ifdef_manifest.json"
 
-IN_SCOPE = {"picoquic", "picohttp", "loglib", "picoquictest"}
+# v1 scope: picoquic-core only.  See scripts/inventory.py for context.
+IN_SCOPE = {"picoquic"}
 
 # Patterns that indicate a non-target platform on a macOS / linux build.
 KNOWN_OFF_PATTERNS = [

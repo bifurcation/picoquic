@@ -1,0 +1,22 @@
+Phase 1: 1 header(s) to translate
+  run log: xlate/phase1_runs/20260430T210931.log
+  state:   xlate/phase1_state.json
+
+=== picoquic/cc_common.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/cc_common.rs
+    ok
+  prompt  → xlate/prompts/picoquic/cc_common.md
+  prewire → rs/fq/src/picoquic/cc_common.rs + parent mod files
+  claude  → invoking (max-turns=80) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+    FAIL: gate exit 101
+
+=== Phase 1 run summary ===
+  elapsed:   357.8s
+  succeeded: 0
+  failed:    1
+    - picoquic/cc_common.h
+  log:       xlate/phase1_runs/20260430T210931.log

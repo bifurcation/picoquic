@@ -1,0 +1,28 @@
+# claude -p for picoquic/picoquic_crypto_provider_api.h
+# elapsed: 468.7s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/picoquic_crypto_provider_api.md)
+
+## stdout
+Translation complete. `cargo check` and `cargo clippy` pass cleanly.
+
+## Summary
+
+Translated `picoquic/picoquic_crypto_provider_api.h` to `rs/fq/src/picoquic/picoquic_crypto_provider_api.rs`.
+
+Non-obvious choices:
+
+- **picotls forward-declarations live here**, not in `picoquic.rs`, since this header is the only consumer of types like `ptls_cipher_suite_t`, `ptls_context_t`, `ptls_handshake_properties_t`, etc. `ptls_iovec_t` and `ptls_verify_certificate_t` are imported from `picoquic.rs` to avoid duplicates.
+- **Owning out-pointer C idioms collapse to `Result<Vec<…>, ()>`/`Option<Vec<…>>`** — every `(uint8_t** buf, size_t* len)` or `(ptls_iovec_t* certs, size_t* count)` pair is an owned heap allocation that the caller frees, so `Vec` captures both ownership and length.
+- **`picoquic_get_certificate_verifier_t` returns a `PicoquicCertificateVerifier` bundle struct** rather than three out-parameters — the disposer fn-pointer travels with the verifier rather than as a separate slot.
+- **Extern globals become accessor functions** (`picoquic_cipher_suites()`, `picoquic_*_fn()`) per the existing pattern in `picoquic.rs` (`picoquic_congestion_control_algorithms()`); Phase 3 picks the storage. Function-pointer slots return `Option<&'static mut dyn Trait>` since the C side mutates them.
+- **`picoquic_register_*_fn` setters take `Option<Box<dyn Trait>>`**: `None` is the C `NULL` ("opt out") and `Box` owns the implementor's state.
+- **`picoquic_tls_ctx_t` drops `repr(C)`** (it never crosses an FFI boundary in C) and replaces the `(ptr + size + count)` triplets with owning `Vec<T>`s. `Debug` is *not* derived because `ptls_iovec_t` (in `picoquic.rs`) is opaque without `Debug`.
+- **`picoquic_mbedtls_get_certificate_verifier` is dropped** — gated on `PICOQUIC_WITH_MBEDTLS` in C, which is off in the canonical build, so per the Phase 0 ifdef policy the function is omitted from v1.
+- **`PTLS_MAX_DIGEST_SIZE` is replicated as a `pub const`** (value `64`, mirroring `picotls.h`) so the per-context buffers can be sized without depending on a (still-absent) picotls Rust binding.
+
+No `Cargo.toml` changes were needed.
+
+
+## stderr
+

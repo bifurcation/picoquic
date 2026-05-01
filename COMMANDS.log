@@ -97,3 +97,89 @@
 [2026-04-30] Compile-check phase1.py + smoke-test --status (no claude invocation):
   python3 -m py_compile scripts/phase1.py
   python3 scripts/phase1.py --status
+
+[2026-04-30] Check Phase 1 prerequisites:
+  which claude bindgen cargo
+  python3 scripts/phase1.py --status
+
+[2026-04-30] Smoke-test Phase 1 on a single header (--limit 1):
+  python3 scripts/phase1.py --limit 1
+
+[2026-04-30] Inspect smoke-test failures (bindgen + claude):
+  cat xlate/bindgen_baseline/loglib/auto_memlog.rs
+  cat xlate/claude_logs/loglib/auto_memlog.log
+
+[2026-04-30] Verify bindgen fix (drop -arch, force HOMEBREW_LIBCLANG):
+  python3 scripts/_bindgen_check.py loglib/auto_memlog.h
+
+[2026-04-30] Re-run bindgen check after switching input to matching .c file:
+  python3 scripts/_bindgen_check.py loglib/auto_memlog.h
+
+[2026-04-30] Clear Python bytecode cache and retry bindgen check:
+  rm -rf scripts/__pycache__
+  python3 scripts/_bindgen_check.py loglib/auto_memlog.h
+
+[2026-04-30] Check whether the matching .c exists for loglib/auto_memlog.h:
+  ls -la loglib/auto_memlog.* loglib/memory_log.*
+
+[2026-04-30] Find which .c includes auto_memlog.h:
+  grep -l "auto_memlog.h" loglib/*.c
+
+[2026-04-30] Find any file including auto_memlog.h:
+  grep -lr "auto_memlog.h" loglib picoquic picohttp picoquictest
+  head -30 loglib/auto_memlog.h
+
+[2026-04-30] Verify bindgen with -include of all in-scope headers in topo order:
+  rm -rf scripts/__pycache__
+  python3 scripts/_bindgen_check.py loglib/auto_memlog.h
+
+[2026-04-30] Inspect why topo order put democlient.h before h3zero.h:
+  grep -E '^#\s*include' picohttp/democlient.h
+  grep -E '^#\s*include' picohttp/h3zero.h
+
+[2026-04-30] Re-run Phase 0 with narrowed scope (picoquic/ only):
+  rm -f xlate/phase1_state.json
+  rm -rf scripts/__pycache__
+  python3 scripts/phase0.py
+
+[2026-04-30] Inventory summary at narrowed scope:
+  python3 scripts/inv_query.py xlate/inventory.json summary
+
+[2026-04-30] Phase 1 status + bindgen smoke test on a picoquic/ header:
+  python3 scripts/phase1.py --status
+  python3 scripts/phase1.py order | head -5
+  python3 scripts/_bindgen_check.py picoquic/picoquic_logger.h
+
+[2026-04-30] Inspect picoquic_internal.h for include strategy:
+  grep -E '^#\s*include' picoquic/picoquic_internal.h | head -20
+
+[2026-04-30] Inspect picoquic.h includes:
+  grep -E '^#\s*include' picoquic/picoquic.h | head -10
+  grep -E '^#\s*include' picoquic/picoquic_utils.h | head -10
+  grep -E '^#\s*include' picoquic/cc_common.h | head -10
+
+[2026-04-30] Bindgen smoke with kitchen-sink pre-includes (picoquic.h + picoquic_internal.h):
+  rm -rf scripts/__pycache__
+  python3 scripts/_bindgen_check.py picoquic/cc_common.h
+
+[2026-04-30] Sanity-check bindgen output: are cc_common.h's declarations in there?
+  grep -E '^pub (fn|struct|enum|union|type|const)' xlate/bindgen_baseline/picoquic/cc_common.rs | wc -l
+  grep -E '^pub fn picoquic_cc_common' xlate/bindgen_baseline/picoquic/cc_common.rs | head -10
+
+[2026-04-30] Bindgen smoke on a second picoquic/ header:
+  python3 scripts/_bindgen_check.py picoquic/picoquic_logger.h
+
+[2026-04-30] Phase 1 status + ordered header list at narrowed scope:
+  python3 scripts/phase1.py --status
+  python3 scripts/phase1.py order
+
+[2026-04-30] Print Phase 1 topo order at narrowed scope:
+  python3 scripts/phase1.py --print-order
+2026-04-30T18:59:20-04:00 python3 scripts/phase1.py --limit 1 (smoke test)
+2026-04-30T21:08:56-04:00 reset rs/fq/src and xlate/phase1_state.json before re-running phase 1 smoke
+2026-04-30T21:09:31-04:00 python3 scripts/phase1.py --limit 1 (smoke 2 — pre-wire + 80 turns)
+2026-04-30T21:17:18-04:00 cd rs/fq && cargo fmt && cargo clippy -- -D warnings && cargo check
+2026-04-30T21:21:53-04:00 python3 scripts/phase1.py --limit 3 (small batch)
+2026-04-30T21:42:33-04:00 python3 scripts/phase1.py --header picoquic/picoquic.h (kitchen-sink + stub-replace test)
+2026-04-30T22:03:50-04:00 python3 scripts/phase1.py --stop-on-failure --max-turns 200 (full Phase 1)
+2026-05-01T07:06:56-04:00 python3 scripts/phase1.py --stop-on-failure --max-turns 200 (resume after credit-limit hit)

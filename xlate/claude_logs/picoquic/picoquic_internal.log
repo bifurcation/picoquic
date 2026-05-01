@@ -1,0 +1,25 @@
+# claude -p for picoquic/picoquic_internal.h
+# elapsed: 965.7s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/picoquic_internal.md)
+
+## stdout
+Both `cargo check` and `cargo clippy` pass clean.
+
+`picoquic_internal.h` translated to `rs/fq/src/picoquic/picoquic_internal.rs` (~1690 lines).
+
+Non-obvious choices:
+
+- **`picoquic_quic_t` / `picoquic_cnx_t` / `picoquic_path_t` ownership**: full struct bodies live in `picoquic_internal.rs`; `picoquic.rs` was forward-declaring them as `_opaque: [u8; 0]` stubs. Replaced those stubs with `pub use … internal::{…}` re-exports so existing `crate::picoquic::picoquic::picoquic_quic_t` paths in callers (`picoquic_logger`, `picoquic_unified_log`, etc.) keep resolving. Manual `Debug` impls (using `finish_non_exhaustive`) on the three because the structs hold raw pointers / `Box<dyn Trait>` and `#[derive(Debug)]` is impossible — needed because `PreparedPacket<'a>` in `picoquic.rs` derives `Debug` over `Option<&mut picoquic_cnx_t>`.
+- **Function-pointer typedefs → traits**: `picoquic_autoqlog_fn` → `AutoQlog`, `picoquic_performance_log_fn` → `PerformanceLog`, the spin-bit pair → `SpinBitPolicy`, `picomask_fns_t` → `PicomaskOps`, the `cnx_t.memlog_call_back` field → `MemLogHook`. Spin-bit incoming + outgoing share one trait because they always travel together in `picoquic_spinbit_def_t`.
+- **Bitfields**: every `unsigned int x : 1` collapses to `bool` per field; the lone 2-bit field (`random_initial : 2`) becomes a `u8` to preserve range 0..=3.
+- **Intrusive list / splay pointers stay raw `*mut`** (matching the convention picohash/picosplay already established) — no safe Rust container expresses "node owned by surrounding user struct, not by the list."
+- **External library state** (`tls_master_ctx`, `aead_*`, `pn_enc/dec`, `F_log`, `tls_sendbuf`, `picomask_ctx`) stays as `*mut c_void`.
+- **`struct sockaddr_storage`** by value → `SocketAddr`; pointer parameters → `Option<&SocketAddr>`.
+- **Conditional fields dropped**: `bbr_exp_flags` (`#ifdef BBRExperiment`) and `thread_id` (`#ifdef PICOQUIC_WITH_THREAD_CHECK`) — non-target build branches per the plan.
+- **`extern picoquic_supported_versions[]` / `picoquic_spin_function_table[]`** become accessor functions returning `&'static [T]` — length implicit in the slice.
+- The `PICOPARSE_*` macros become `pub const fn`; `IS_*_STREAM_ID`/`STREAM_ID_FROM_RANK`/etc. likewise.
+
+
+## stderr
+

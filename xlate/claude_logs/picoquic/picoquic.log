@@ -1,0 +1,21 @@
+# claude -p for picoquic/picoquic.h
+# elapsed: 744.2s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 80
+# (prompt omitted; see xlate/prompts/picoquic/picoquic.md)
+
+## stdout
+Translation done — `cargo check` and `cargo clippy` both pass cleanly.
+
+Non-obvious choices:
+- `picoquic_quic_t` / `picoquic_cnx_t` / `picoquic_path_t` are declared as empty opaque structs here; their real layout lands when `picoquic_internal.h` is translated.
+- The four function-pointer typedefs in `picoquic_congestion_algorithm_t` collapse to a single `CongestionAlgorithm` trait (judgment call: the C side always installs the four together).
+- C's `(callback_fn, callback_ctx)` pairs (default callback, ALPN selectors, fuzzer, verify_sign, direct-receive) fold into single trait-object parameters; per-stream/per-path application contexts that round-trip unchanged stay as `*mut c_void`.
+- Multi-output APIs (`picoquic_get_close_reasons`, `picoquic_cnx_get_padding_policy`, `picoquic_prepare_next_packet*`) return tuples or a `PreparedPacket` struct instead of taking out-pointers.
+- `extern picoquic_congestion_control_algorithms` + its companion length variable collapse to one `picoquic_congestion_control_algorithms() -> &'static [...]` accessor.
+- `va_list` has no Rust analogue; `picoquic_log_app_message_v` is dropped in favour of one entry point taking `core::fmt::Arguments<'_>`.
+- `PICOQUIC_DATAGRAM_QUEUE_CAUTIOUS_LENGTH` is given the literal value of `PICOQUIC_ENFORCED_INITIAL_MTU` (1252) with a TODO; the symbolic constant lives in the not-yet-translated internal header.
+- `core::net::SocketAddr` replaces `struct sockaddr*` everywhere.
+
+
+## stderr
+

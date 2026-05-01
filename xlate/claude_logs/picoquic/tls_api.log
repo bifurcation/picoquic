@@ -1,0 +1,18 @@
+# claude -p for picoquic/tls_api.h
+# elapsed: 463.6s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/tls_api.md)
+
+## stdout
+Done. `cargo check` and `cargo clippy` both pass cleanly on `rs/fq/src/picoquic/tls_api.rs`.
+
+Non-obvious choices:
+- **picotls handles stay `*mut c_void`.** Every AEAD/PN/cipher/hash entry point in this header is a thin wrapper over a picotls call whose Rust binding doesn't exist yet, so the opaque handles stay raw with `// SAFETY:` comments rather than inventing forward-declared structs. Phase 3 swaps these once picotls is bound.
+- **`picoquic_tlscontext_free` kept `unsafe fn(_ctx: *mut c_void, …)`.** The connection stores `tls_ctx: *mut c_void` (per `picoquic_internal.rs`); a safe `&mut` shape would require reshaping the field, which is out of scope for this header.
+- **Decrypt/verify return tuples wrapped in structs.** `picoquic_server_decrypt_retry_token` and `picoquic_verify_retry_token` had multiple `int*`/`size_t*`/`picoquic_connection_id_t*` out-parameters; collapsed each into a result struct (`PicoquicDecryptedRetryToken`, `PicoquicVerifiedRetryToken`, `PicoquicInitialAeadContext`).
+- **`PICOQUIC_LABEL_QUIC_BASE` (defined as `NULL` in C) is intentionally not exposed.** Prefix-label parameters that accept it become `Option<&str>` at call sites and pass `None`.
+- **Re-used `ptls_cipher_suite_t` from `picoquic_crypto_provider_api.rs`** rather than declaring a duplicate placeholder.
+
+
+## stderr
+

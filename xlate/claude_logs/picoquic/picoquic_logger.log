@@ -1,0 +1,20 @@
+# claude -p for picoquic/picoquic_logger.h
+# elapsed: 300.2s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/picoquic_logger.md)
+
+## stdout
+`cargo check` and `cargo clippy` both pass cleanly. Translation summary:
+
+`rs/fq/src/picoquic/picoquic_logger.rs` now translates the four header symbols:
+
+- `picoquic_set_textlog(&mut picoquic_quic_t, Option<&str>) -> Result<(), ()>` — `NULL` filename is the C "stop logging" sentinel, so `Option<&str>`; `Some("-")` shortcut for stdout is preserved by contract. `Result<(), ()>` carries a `TODO(error-enum)` per the project convention.
+- `picoquic_textlog_close(&mut picoquic_quic_t)`.
+- `picoquic_textlog_picotls_ticket(&mut dyn core::fmt::Write, picoquic_connection_id_t, &[u8])` — `FILE*` → `&mut dyn core::fmt::Write` (matches `picoquic_config_usage_file`); the `(uint8_t*, uint16_t)` ticket pair collapses to one `&[u8]`; the `Copy` cnxid stays pass-by-value.
+- `picoquic_log_fin_or_event_name(picoquic_call_back_event_t) -> &'static str` — flagged in the doc comment as an orphan declaration (declared in the header, never defined or called under `picoquic/`); Phase 3 either supplies the table or drops the symbol upstream.
+
+Bodies are `todo!()` and an empty `#[cfg(test)] mod test {}` is appended per the Phase 1 contract.
+
+
+## stderr
+

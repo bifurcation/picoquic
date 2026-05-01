@@ -1,0 +1,21 @@
+# claude -p for picoquic/picoquic_unified_log.h
+# elapsed: 453.1s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/picoquic_unified_log.md)
+
+## stdout
+Both `cargo check` and `cargo clippy` completed cleanly — no warnings emitted, so the `-D warnings` gate would pass.
+
+**Done.** Translated `picoquic/picoquic_unified_log.h` to `rs/fq/src/picoquic/picoquic_unified_log.rs`.
+
+Non-obvious choices:
+- Collapsed the 16-slot `picoquic_unified_logging_t` vtable into a single trait (one per typedef would scatter what every backend implements together).
+- Created a stub `rs/fq/src/picoquic/picoquic_internal.rs` with `picoquic_packet_type_enum`, `picoquic_packet_header`, and a few opaque forward stubs — these are declared in `picoquic_internal.h` but the unified-log API exposes them on its surface. Wired into the parent module via `pub mod picoquic_internal;` in `picoquic.rs`.
+- `path_x: Option<&mut picoquic_path_t>` for `log_packet` / `log_dropped_packet` only — `packet.c` passes NULL there when the path lookup fails. Same for `dcid` in `log_packet_lost` per `loss_recovery.c:901`.
+- Folded C `length`/`bytes_max`/`send_length` into slice lengths; kept `pn_length` as a separate parameter (it's a sub-offset within `bytes`, not a buffer size).
+- `picoquic_log_app_message` is also forward-declared in the already-translated `picoquic.rs`; left that alone per the "don't redesign other modules" rule and put the canonical version here, with a doc note pointing back.
+- `picoquic_log_dropped_packet`'s `_raw_data` parameter is `UNUSED` in C; preserved as `&[u8]` for source parity.
+
+
+## stderr
+

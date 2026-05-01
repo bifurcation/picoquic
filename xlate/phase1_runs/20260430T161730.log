@@ -1,0 +1,17 @@
+Phase 1: 1 header(s) to translate
+  run log: xlate/phase1_runs/20260430T161730.log
+  state:   xlate/phase1_state.json
+
+=== loglib/auto_memlog.h ===
+  bindgen → xlate/bindgen_baseline/loglib/auto_memlog.rs
+    fail
+  prompt  → xlate/prompts/loglib/auto_memlog.md
+  claude  → invoking (max-turns=40) …
+    FAIL: claude exit 1 (see xlate/claude_logs/loglib/auto_memlog.log)
+
+=== Phase 1 run summary ===
+  elapsed:   6.8s
+  succeeded: 0
+  failed:    1
+    - loglib/auto_memlog.h
+  log:       xlate/phase1_runs/20260430T161730.log

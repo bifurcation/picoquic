@@ -1,0 +1,20 @@
+# claude -p for picoquic/picohash.h
+# elapsed: 368.3s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 80
+# (prompt omitted; see xlate/prompts/picoquic/picohash.md)
+
+## stdout
+Done. Translation at `rs/fq/src/picoquic/picohash.rs` — both `cargo check` and `cargo clippy` are clean.
+
+**Non-obvious choices:**
+- The C trio of function pointers (`picohash_hash`, `picohash_compare`, `picohash_key_to_item`) folds into a single `PicoHashOps` trait; `key_to_item` has a default `None` impl so owning-mode tables don't have to implement it (intrusive vs. owning mode is decided by the impl, not the constructor variant).
+- `picohash_item.next_in_bin` and `key` stay as raw `*mut`/`*const` pointers — the intrusive-list design (chain nodes embedded in unrelated caller structs) and type-erased keys have no safe-Rust expression at this layer; Phase 3 dereferences inside `unsafe { … }`. Same reason `picohash_delete_item`'s `item` parameter is `*mut` rather than `&mut` (it routinely aliases `hash_table` through caller field-access chains).
+- `picohash_table.hash_seed` is owned `[u8; 16]` instead of borrowing the QUIC context's seed buffer — duplication is 16 bytes set once, and avoiding the lifetime parameter keeps the API simple.
+- `picohash_create` now also takes `Box<dyn PicoHashOps>` (no separate function-pointer args) since the trait subsumes them; the C "convenience wrapper that NULL-passes key_to_item" semantics are expressed by the trait's default impl.
+- `compare` returns `bool` (true ↔ equal); only `== 0` was ever checked in `picohash.c`.
+- `picohash_insert` returns `Result<(), ()>` with a TODO marker for the future crate-level `Error` enum.
+- `Box` left to come from the prelude (with a comment) since the crate is not yet `#![no_std]`; the existing Phase 1 modules follow the same pattern.
+
+
+## stderr
+

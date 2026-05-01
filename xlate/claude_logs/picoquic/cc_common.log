@@ -1,0 +1,19 @@
+# claude -p for picoquic/cc_common.h
+# elapsed: 355.4s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check)' --max-turns 80
+# (prompt omitted; see xlate/prompts/picoquic/cc_common.md)
+
+## stdout
+`cargo check` passes. Translation complete.
+
+**Summary of non-obvious choices:**
+
+- Stubbed `picoquic_cnx_t`, `picoquic_path_t`, `picoquic_per_ack_state_t`, and `picoquic_congestion_notification_t` in a minimal `rs/fq/src/picoquic/picoquic.rs` so this module can compile; the full `picoquic.h` translation is left for a later header.
+- Promoted `picoquic_min_max_rtt_t` and `picoquic_newreno_sim_state_t` functions to inherent methods (`filter_rtt_min_max`, `hystart_*`, `reset`, `notify`); kept the `picoquic_cc_*` cnx/path helpers as free functions since their natural receiver type isn't owned by this module.
+- `int`-typed booleans (`is_init`, `in_css`, `is_one_way_delay_enabled`, the boolean returns from the hystart tests) became `bool`; `sample_current` became `usize` since it indexes `samples`.
+- `cnx`/`path_x` parameters take `&mut` (callers always pass non-NULL state that may be mutated downstream); `ack_state` takes `&` since every caller in `picoquic/` only reads its fields.
+- Added `pub mod picoquic;` to `rs/fq/src/picoquic.rs` so the new stub wires into the crate; the parent script's regenerator will produce the same line.
+
+
+## stderr
+

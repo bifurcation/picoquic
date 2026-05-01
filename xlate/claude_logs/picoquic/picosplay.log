@@ -1,0 +1,17 @@
+# claude -p for picoquic/picosplay.h
+# elapsed: 323.6s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/picosplay.md)
+
+## stdout
+Both `cargo check` and `cargo clippy` pass cleanly with no warnings.
+
+Summary: Translated `picoquic/picosplay.h` to `rs/fq/src/picoquic/picosplay.rs`. Key non-obvious choices:
+- Folded the four C function pointers (`comparator`, `create`, `delete_node`, `node_value`) into one `PicoSplayOps` trait per the function-pointers-to-traits rule.
+- Kept `parent`/`left`/`right`/`root` as raw `*mut picosplay_node_t` because the tree is intrusive — nodes live inside user structs the tree doesn't own, and no safe-Rust container expresses that. Phase 3 will dereference inside `unsafe { … }`.
+- Made `picosplay_tree_t.ops: Option<Box<dyn PicoSplayOps>>` so an embedded tree can exist in the zeroed/uninitialised state that every in-tree caller relies on (struct embedded → `picosplay_init_tree` later).
+- `picosplay_new_tree` returns `Option<Box<picosplay_tree_t>>` so allocation failure surfaces in the type rather than via a null pointer.
+
+
+## stderr
+

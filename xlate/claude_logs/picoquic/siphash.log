@@ -1,0 +1,13 @@
+# claude -p for picoquic/siphash.h
+# elapsed: 127.5s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/siphash.md)
+
+## stdout
+`cargo clippy` ran clean (zero warnings emitted), so `-D warnings` adds nothing. `cargo check` also passes. Done.
+
+Translated `picoquic/siphash.h` → `rs/fq/src/picoquic/siphash.rs`. Non-obvious choice: `key` is `&[u8; 16]` (fixed-size, since the C contract reads exactly 16 bytes from `k`); `out` stays `&mut [u8]` so the runtime 8-or-16 length check moves into the body where the C `assert` lived; return is `Result<(), ()>` with a TODO until the crate `Error` enum exists, mirroring the C status-code convention even though the body always returns 0.
+
+
+## stderr
+

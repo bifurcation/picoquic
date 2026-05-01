@@ -1,0 +1,24 @@
+# claude -p for picoquic/picoquic_utils.h
+# elapsed: 651.5s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/picoquic_utils.md)
+
+## stdout
+Both gates pass: `cargo check` is clean and `cargo clippy` produces zero warnings.
+
+Translated `picoquic/picoquic_utils.h` → `rs/fq/src/picoquic/picoquic_utils.rs`. Notable choices:
+
+- **`FILE *` write sinks → `&mut dyn core::fmt::Write`** (matches `picoquic_logger`/`picoquic_config`); the *persistent* debug stream (`debug_set_stream`/`push`) instead transfers ownership via `Option<Box<dyn Write>>` so the global slot can outlive the call.
+- **`picoquic_file_t`** is an opaque placeholder — Phase 3 will wire it to `std::fs::File` behind the `std` feature; documented inline.
+- **Three-way comparators** (`compare_addr`, `compare_ip_addr`, `compare_connection_id`, `constant_time_memcmp`) return `core::cmp::Ordering`; the boolean-ish `is_connection_id_null` returns `bool`.
+- **`picoquic_solution_dir`** extern global → safe getter function `picoquic_solution_dir() -> Option<&'static str>`.
+- **`picoquic_set_addr_port`** declared `const sockaddr*` in C but the body casts away const — translated as `&mut SocketAddr`.
+- **Frame codec cursor pairs** `(bytes, bytes_max)` collapse to `&[u8]`; encode/decode return `Option<(&[u8], T)>` / `Option<&mut [u8]>` (suffix on success, `None` on overrun).
+- **Sim-link intrusive list** keeps raw `*mut` head/tail/next pointers (same pattern as `picohash::next_in_bin`) with a Phase 3 refactor-candidate note pointing to `VecDeque<Box<...>>`.
+- **AQM vtable** → `picoquictest_aqm_t` trait per the function-pointer rule; documented borrow conflict for Phase 3.
+- **Threading primitives** kept as opaque placeholders since `TRANSLATE_PLAN.md` drops threading from v1.
+- **Windows-only path constants** dropped per v1 single-target scope (Linux/macOS only).
+
+
+## stderr
+

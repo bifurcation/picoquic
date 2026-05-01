@@ -1,0 +1,20 @@
+# claude -p for picoquic/picoquic_binlog.h
+# elapsed: 289.2s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/picoquic_binlog.md)
+
+## stdout
+Done. Translation written at `rs/fq/src/picoquic/picoquic_binlog.rs` (~340 lines); `cargo check` and `cargo clippy` both pass with no diagnostics.
+
+Non-obvious choices:
+
+- **`FILE*` → `&mut picoquic_file_t`.** The three low-level writers (`binlog_pdu`, `binlog_packet`, `binlog_picotls_ticket`) emit *binary* records, so the text-side `&mut dyn core::fmt::Write` convention used by `picoquic_logger` doesn't apply. Re-used the opaque `picoquic_file_t` handle from `picoquic_utils` and borrowed it `&mut` for the duration of one record write — ownership stays with `cnx->f_binlog` or the caller.
+- **`picoquic_set_binlog`'s `binlog_dir` → `Option<&str>`.** The C contract uses `NULL` as the "stop tracing" sentinel (per the header doc-comment); `None` mirrors that.
+- **`dcid` in `binlog_packet_lost` → `Option<&picoquic_connection_id_t>` (shared, not mutable).** `loss_recovery.c` legitimately passes `NULL`; the body only reads through the pointer despite the C signature dropping `const`.
+- **`picoquic_log_event_type` → `#[repr(u32)]` Rust enum.** The discriminant values are part of the binlog wire format, so each variant keeps its hex tag, but `repr(C)` is *not* needed because the type never crosses an FFI boundary — the discriminant is serialized as a varint.
+- **`binlog_outgoing_packet`'s two buffers (`bytes`/`length` and `send_buffer`/`send_length`)** each collapsed to a single `&[u8]`; `pn_length` (the offset of the packet-number field inside `bytes`) survives as a separate `usize`.
+- Did not touch any other module; the existing dependent stubs already export the types I imported (`picoquic_cnx_t`, `picoquic_path_t`, `picoquic_packet_header`, `picoquic_packet_type_enum`, `picoquic_connection_id_t`, `picoquic_quic_t`, `ptls_iovec_t`, `picoquic_file_t`).
+
+
+## stderr
+

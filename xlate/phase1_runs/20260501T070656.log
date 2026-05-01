@@ -1,0 +1,100 @@
+Phase 1: 7 header(s) to translate
+  run log: xlate/phase1_runs/20260501T070656.log
+  state:   xlate/phase1_state.json
+
+=== picoquic/picoquic_packet_loop.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/picoquic_packet_loop.rs
+    ok
+  prompt  → xlate/prompts/picoquic/picoquic_packet_loop.md
+  prewire → rs/fq/src/picoquic/picoquic_packet_loop.rs + parent mod files
+  claude  → invoking (max-turns=200) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picosplay.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/picosplay.rs
+    ok
+  prompt  → xlate/prompts/picoquic/picosplay.md
+  prewire → rs/fq/src/picoquic/picosplay.rs + parent mod files
+  claude  → invoking (max-turns=200) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquic_internal.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/picoquic_internal.rs
+    ok
+  prompt  → xlate/prompts/picoquic/picoquic_internal.md
+  prewire → rs/fq/src/picoquic/picoquic_internal.rs + parent mod files
+  claude  → invoking (max-turns=200) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/bytestream.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/bytestream.rs
+    ok
+  prompt  → xlate/prompts/picoquic/bytestream.md
+  prewire → rs/fq/src/picoquic/bytestream.rs + parent mod files
+  claude  → invoking (max-turns=200) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquic_binlog.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/picoquic_binlog.rs
+    ok
+  prompt  → xlate/prompts/picoquic/picoquic_binlog.md
+  prewire → rs/fq/src/picoquic/picoquic_binlog.rs + parent mod files
+  claude  → invoking (max-turns=200) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/siphash.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/siphash.rs
+    ok
+  prompt  → xlate/prompts/picoquic/siphash.md
+  prewire → rs/fq/src/picoquic/siphash.rs + parent mod files
+  claude  → invoking (max-turns=200) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/tls_api.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/tls_api.rs
+    ok
+  prompt  → xlate/prompts/picoquic/tls_api.md
+  prewire → rs/fq/src/picoquic/tls_api.rs + parent mod files
+  claude  → invoking (max-turns=200) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== Phase 1 run summary ===
+  elapsed:   3206.6s
+  succeeded: 7
+  failed:    0
+  log:       xlate/phase1_runs/20260501T070656.log

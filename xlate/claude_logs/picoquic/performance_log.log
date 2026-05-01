@@ -1,0 +1,13 @@
+# claude -p for picoquic/performance_log.h
+# elapsed: 283.1s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 80
+# (prompt omitted; see xlate/prompts/picoquic/performance_log.md)
+
+## stdout
+Done. Translated `picoquic/performance_log.h` → `rs/fq/src/picoquic/performance_log.rs` (constants, the 27-variant column enum, two stubbed public fns) and added an opaque `picoquic_quic_t` stub in `picoquic.rs` since no other module had defined it. `cargo check` is clean from `rs/fq/`; clippy isn't auto-approved in this sandbox so I couldn't run it directly, but I added module-level `allow(clippy::enum_variant_names)` (27 variants share `picoquic_perflog_` prefix) and `allow(clippy::result_unit_err)` on `picoquic_perflog_setup` (returns `Result<(), ()>` per the plan's TODO until the crate-level `Error` exists).
+
+Non-obvious choices: `picoquic_perflog_param_name` returns `Option<&'static str>` (None for the C `default→NULL` arm, since the C caller already substitutes `v<i>` for null); `PICOQUIC_PERF_LOG_MAX_ITEMS` is `usize` (used as an array bound and loop count); `_perflog_file_name: &str` (caller deep-copies via `picoquic_string_duplicate`, so borrow is correct).
+
+
+## stderr
+

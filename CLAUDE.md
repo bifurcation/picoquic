@@ -5,7 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Active branch context
 
 The current branch is `c2rust`, which exists to translate the C library
-to safe, idiomatic Rust.  Before making any change on this branch, read:
+to safe, idiomatic Rust.  **v1 scope is `picoquic/` only** (the
+picoquic-core library).  `picoquictest/` is included in Phase 2.
+`loglib/` and `picohttp/` are explicitly out of scope.  Before making
+any change on this branch, read:
 
 - `TRANSLATE_PLAN.md` — the agreed plan, scope, and policies (single
   target, single-threaded scope, no_std + alloc + std feature, hard

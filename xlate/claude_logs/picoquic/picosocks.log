@@ -1,0 +1,23 @@
+# claude -p for picoquic/picosocks.h
+# elapsed: 436.5s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/picosocks.md)
+
+## stdout
+Both gates pass cleanly with no warnings:
+- `cargo check` — finished cleanly
+- `cargo clippy` — finished cleanly (re-ran after file edit; no warnings emitted)
+
+Translated `picoquic/picosocks.h` → `rs/fq/src/picoquic/picosocks.rs` (signatures only, every body `todo!()`).
+
+Non-obvious choices:
+- **Windows surface dropped entirely** — the `picoquic_recvmsg_async_ctx_t` family, `WSARecvMsg`/`WSASendMsg` plumbing, and UDP coalescing constants are `#ifdef _WINDOWS` only and out of scope for v1.
+- **`SOCKET_TYPE` → opaque newtype `picoquic_socket_t`** with a `pub fd: i32` payload and an `INVALID_SOCKET` sentinel const, so callers can keep the C-style `!= INVALID_SOCKET` comparison. Phase 3 will swap to `OwnedFd`/`BorrowedFd` behind the `std` feature.
+- **Multi-output receive functions fold into result structs** (`picoquic_recv_info`, `picoquic_select_info`, `picoquic_select_ex_info`) — C call sites pass `NULL` to opt out of fields, but Rust callers can simply ignore unused fields, so the nullable-out-param idiom collapses cleanly.
+- **`int*` `sock_err` out-param folds into `Err(i32)`** for `sendmsg`/`send_through_*` so the OS errno survives the `Result<usize, _>` translation.
+- **`void* vmsg` → opaque `picoquic_msghdr_t` placeholder** — it's a platform `struct msghdr*` that Phase 3 will wire to libc under the `std` feature; keeping it opaque avoids pinning the wire shape now.
+- `addr_dest` in `picoquic_socks_cmsg_parse` is `Option<&mut Option<SocketAddr>>` — outer `Option` is caller-presence, inner is the `AF_UNSPEC` sentinel.
+
+
+## stderr
+

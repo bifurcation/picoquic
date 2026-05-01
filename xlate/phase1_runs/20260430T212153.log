@@ -1,0 +1,48 @@
+Phase 1: 3 header(s) to translate
+  run log: xlate/phase1_runs/20260430T212153.log
+  state:   xlate/phase1_state.json
+
+=== picoquic/performance_log.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/performance_log.rs
+    ok
+  prompt  → xlate/prompts/picoquic/performance_log.md
+  prewire → rs/fq/src/picoquic/performance_log.rs + parent mod files
+  claude  → invoking (max-turns=80) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picohash.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/picohash.rs
+    ok
+  prompt  → xlate/prompts/picoquic/picohash.md
+  prewire → rs/fq/src/picoquic/picohash.rs + parent mod files
+  claude  → invoking (max-turns=80) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquic_config.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/picoquic_config.rs
+    ok
+  prompt  → xlate/prompts/picoquic/picoquic_config.md
+  prewire → rs/fq/src/picoquic/picoquic_config.rs + parent mod files
+  claude  → invoking (max-turns=80) …
+  rewire  → regenerate parent mod files
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== Phase 1 run summary ===
+  elapsed:   1167.2s
+  succeeded: 3
+  failed:    0
+  log:       xlate/phase1_runs/20260430T212153.log

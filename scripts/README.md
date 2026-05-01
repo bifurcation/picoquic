@@ -28,10 +28,11 @@ Individual steps (in order; later scripts depend on earlier outputs):
 | `dashboard.py`      | `xlate/dashboard.html`         | static HTML page consuming all of the above. |
 | `phase0.py`         | (driver)                       | runs all four in sequence. |
 
-In-scope directories: `picoquic/`, `picohttp/`, `loglib/`,
-`picoquictest/`.  Out of scope: executables (`picoquicfirst/`,
-`pqbench_app/`, `picoquic_t/`, etc.) and fetched dependencies under
-`build/_deps/` (picotls).
+In-scope directory (v1): `picoquic/`.  `picoquictest/` will be added
+in Phase 2.  `loglib/` and `picohttp/` are out of scope for v1.  Also
+out of scope: executables (`picoquicfirst/`, `pqbench_app/`,
+`picoquic_t/`, etc.) and fetched dependencies under `build/_deps/`
+(picotls).
 
 ## Helpers / diagnostics
 

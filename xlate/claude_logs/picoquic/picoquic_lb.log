@@ -1,0 +1,17 @@
+# claude -p for picoquic/picoquic_lb.h
+# elapsed: 344.4s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/picoquic_lb.md)
+
+## stdout
+Translated `picoquic/picoquic_lb.h` to `rs/fq/src/picoquic/picoquic_lb.rs`; `cargo check` and `cargo clippy` both pass clean.
+
+Non-obvious choices:
+- **`cid_*_context: Option<Box<picoquic_aes128_ecb_context_t>>`** — the C `void*` AES-ECB contexts are owned by the struct (the `_config_free` path explicitly calls `picoquic_aes128_ecb_free`), so I forward-declared an opaque `picoquic_aes128_ecb_context_t` (since `tls_api.h` isn't translated yet) and modeled the slots as nullable owned boxes; `Box::drop` will subsume the explicit free once Phase 3 lands a `Drop` impl.
+- **`generate` / `verify` are inherent methods on `picoquic_load_balancer_cid_context_t`** — the `void* cnx_id_cb_data` argument *is* the lb context, so the safe Rust idiom is to recover the type and put the methods on the struct rather than keep a `&mut self`-via-`*mut c_void` free function; matches the existing `picoquic_connection_id_cb_fn` trait shape with a Phase 3 trait-impl note.
+- **`first_byte_encodes_length` is a `bool`, `rotation_bits` is a `u8`** — single-bit C bitfields collapse to `bool` (per the `picoquic_config.rs` precedent), multi-bit ones stay as small integers per the Phase 1 rules.
+- **`Result<T, ()>` with `TODO(error-enum)` markers** on the two fallible functions, since `crate::Error` doesn't exist yet.
+
+
+## stderr
+

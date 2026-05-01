@@ -14,12 +14,18 @@ when (a) safety requires them, or (b) the C idiom has no Rust equivalent.
 
 In scope for v1:
 
-* The library code reachable from the project's CMake build, on a single
-  target (`x86_64-unknown-linux-gnu`).
-* The library's own test suite, ported to `cargo test`.
+* **Only the `picoquic/` directory** — the picoquic-core library.  This
+  is CMake's `picoquic-core` target.  `picoquictest/` is translated in
+  Phase 2 (just the tests for picoquic-core, i.e., the files in CMake's
+  `PICOQUIC_TEST_LIBRARY_FILES` list).  Single target
+  (`x86_64-unknown-linux-gnu`).
 * `no_std` + `alloc`, with an `std` feature gate.
 
 Out of scope for v1 (explicit follow-on work):
+
+* `loglib/` (the `picoquic-log` target) and `picohttp/` (the
+  `picohttp-core` HTTP/3 target).  These layer on top of picoquic-core
+  and can be ported in a v2 expansion.
 
 * Multi-threading.  v1 assumes single-threaded C; pthread / atomics /
   volatile usage in the C source becomes a translation note ("threading

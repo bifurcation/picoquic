@@ -1,0 +1,12 @@
+# claude -p for loglib/auto_memlog.h
+# elapsed: 4.4s, exit: 1
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check)' --max-turns 40
+# (prompt omitted; see xlate/prompts/loglib/auto_memlog.md)
+
+## stdout
+Credit balance is too low
+
+
+## stderr
+Warning: no stdin data received in 3s, proceeding without it. If piping from a slow command, redirect stdin explicitly: < /dev/null to skip, or wait longer.
+

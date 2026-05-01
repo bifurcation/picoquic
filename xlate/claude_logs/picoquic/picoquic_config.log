@@ -1,0 +1,19 @@
+# claude -p for picoquic/picoquic_config.h
+# elapsed: 510.9s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 80
+# (prompt omitted; see xlate/prompts/picoquic/picoquic_config.md)
+
+## stdout
+Done. Translation of `picoquic/picoquic_config.h` lives at `rs/fq/src/picoquic/picoquic_config.rs`; both `cargo check` and `cargo clippy` pass cleanly.
+
+**Non-obvious choices:**
+- Single-bit `unsigned int : 1` flag bitfields collapse to individual `bool` fields rather than a packed integer + accessors — every C call site treats them as Boolean, so the source-mirror translation is `bool`.
+- `ticket_encryption_key` is borrowed in C (`picoquic_config_clear` does *not* free it) but became `Option<Vec<u8>>` for safety; v1 demo callers can supply an owned buffer. Phase 3 may revisit if aliasing matters.
+- `(default_callback_fn, default_callback_ctx)` collapse to one `Option<Box<dyn picoquic_stream_data_cb_fn>>` per the function-pointers-map-to-traits rule.
+- `picoquic_config_usage_file` accepts `&mut dyn core::fmt::Write` instead of `FILE*` so the function stays `no_std`-friendly.
+- The `SSLKEYLOG` enum variant and `enable_sslkeylog` field are unconditional (not `#[cfg]`-gated) — v1 follows the canonical build where `PICOQUIC_WITHOUT_SSLKEYLOG` is undefined; build-option translation is a future task.
+- Added stubs to `picoquic.rs` for `picoquic_spinbit_version_enum`, `picoquic_lossbit_version_enum`, `picoquic_call_back_event_t`, and the `picoquic_stream_data_cb_fn` trait, since this header depends on those types from `picoquic.h` which has not yet been fully translated.
+
+
+## stderr
+

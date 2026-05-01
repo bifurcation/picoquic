@@ -1,0 +1,17 @@
+Phase 1: 1 header(s) to translate
+  run log: xlate/phase1_runs/20260430T185920.log
+  state:   xlate/phase1_state.json
+
+=== picoquic/cc_common.h ===
+  bindgen → xlate/bindgen_baseline/picoquic/cc_common.rs
+    ok
+  prompt  → xlate/prompts/picoquic/cc_common.md
+  claude  → invoking (max-turns=40) …
+    FAIL: claude exit 1 (see xlate/claude_logs/picoquic/cc_common.log)
+
+=== Phase 1 run summary ===
+  elapsed:   382.3s
+  succeeded: 0
+  failed:    1
+    - picoquic/cc_common.h
+  log:       xlate/phase1_runs/20260430T185920.log

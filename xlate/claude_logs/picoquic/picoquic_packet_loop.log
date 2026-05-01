@@ -1,0 +1,21 @@
+# claude -p for picoquic/picoquic_packet_loop.h
+# elapsed: 501.4s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/picoquic_packet_loop.md)
+
+## stdout
+Both `cargo check` and `cargo clippy` pass cleanly.
+
+Translation complete: `rs/fq/src/picoquic/picoquic_packet_loop.rs` now contains the Phase 1 stubs for the loop API.
+
+Non-obvious choices:
+- **Borrowed vs. owned `picoquic_packet_loop_param_t`** in `picoquic_network_thread_ctx_t`: collapsed the C `is_param_allocated` flag into `Option<Box<…>>` — borrowed callers store `None` and keep their borrow elsewhere.
+- **`callback_argv` stays `*mut c_void`** with a `# Safety` clause on the trait method, since the concrete type is selected by `cb_mode` at runtime; a tagged enum would diverge from C source structure (Phase 3 candidate).
+- **Volatile shutdown flags** in `picoquic_network_thread_ctx_t` collapse to plain `bool`/`i32`; threading is dropped from v1 so volatile semantics have nowhere to land.
+- **`recv_buffer` ⇒ `Option<Box<[u8]>>`**: only the Windows-async and io_uring paths populate it; canonical Linux build leaves it `None`.
+- **`thread_ctxs[]` out-array** in `picoquic_start_server_threads` becomes `&mut [Option<Box<…>>]`; slot count carries `nb_threads_max`, return value carries `nb_threads_created`.
+- Suppressed `clippy::boxed_local` module-wide because Phase 1 `todo!()` bodies hide the legitimate owning use sites that land in Phase 3.
+
+
+## stderr
+

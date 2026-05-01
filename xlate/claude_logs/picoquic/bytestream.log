@@ -1,0 +1,19 @@
+# claude -p for picoquic/bytestream.h
+# elapsed: 523.3s, exit: 0
+# command: claude --allowedTools 'Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 200
+# (prompt omitted; see xlate/prompts/picoquic/bytestream.md)
+
+## stdout
+Both `cargo check` and `cargo clippy` pass cleanly. Done.
+
+Translated `picoquic/bytestream.h` to `rs/fq/src/picoquic/bytestream.rs`. Non-obvious choices:
+
+- **Storage enum** for `bytestream`: `data` is a `bytestream_data<'a>` enum with `Borrowed(&'a mut [u8])` and `Owned(Box<[u8]>)` variants, so all three C constructors (`ref_init`, `buf_init`, `alloc`) produce the same `bytestream` type rather than splitting into separate borrowed/owned types.
+- **`bytestream_buf` is storage-only** — it doesn't embed a `bytestream` field (the C struct's self-referential aliasing of `s.data → buf` doesn't survive in safe Rust). `bytestream_buf_init` returns a fresh `bytestream<'_>` borrowing from the inline buf.
+- **`bytestream_delete` consumes the `bytestream` by value** — actual freeing happens via `Drop` on the `Owned` variant; the function is kept for source parity with C call sites that explicitly free early.
+- **`Result<T, ()>` placeholder** — out-parameters fold into `Ok(T)` (e.g., `byteread_int8 -> Result<u8, ()>`, `byteread_addr -> Result<SocketAddr, ()>`); the `()` error placeholder will swap to the crate's `Error` enum later.
+- **`SocketAddr`** for the addr helpers (matches `picosocks` / `picoquic_unified_log` convention) instead of raw `sockaddr` / `sockaddr_storage`.
+
+
+## stderr
+

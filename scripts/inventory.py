@@ -38,7 +38,9 @@ CC_PATH = REPO_ROOT / "build" / "compile_commands.json"
 OUT_PATH = REPO_ROOT / "xlate" / "inventory.json"
 
 # Directories whose translation units we treat as in-scope for the port.
-IN_SCOPE = {"picoquic", "picohttp", "loglib", "picoquictest"}
+# v1 = picoquic-core only.  picoquictest/ comes back in Phase 2 (tests);
+# loglib/ and picohttp/ are out of scope for the v1 hard fork.
+IN_SCOPE = {"picoquic"}
 
 
 def relpath(p: Path) -> str:
