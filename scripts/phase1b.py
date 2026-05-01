@@ -54,7 +54,10 @@ RUNS_DIR       = REPO_ROOT / "xlate" / "phase1b_runs"
 RS_CRATE       = REPO_ROOT / "rs" / "fq"
 RS_SRC         = RS_CRATE / "src"
 
-ALLOWED_TOOLS  = "Read Edit Glob Grep Bash(cargo check) Bash(cargo clippy)"
+# `Bash(cmd:*)` is prefix-match (allows args); bare `Bash(cmd)` is
+# exact-match.  Use the wildcard so `cargo clippy -- -D warnings`
+# is accepted.
+ALLOWED_TOOLS  = "Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)"
 
 # Plain REVIEW marker — the open form is excluded so we don't
 # loop on comments the AI explicitly handed back to the human.

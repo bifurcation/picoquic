@@ -93,11 +93,13 @@ RS_SRC        = RS_CRATE / "src"
 # Tools claude is allowed to use during a per-header session.
 # - Read/Edit/Write/Glob/Grep: write the module, search C sources
 #   for caller usage.
-# - Bash(cargo check) + Bash(cargo clippy): self-validation only.
-#   No other shell access.  These match the gate the parent script
-#   runs after claude finishes, so claude can converge on a
-#   gate-clean translation before returning.
-ALLOWED_TOOLS = "Read Edit Write Glob Grep Bash(cargo check) Bash(cargo clippy)"
+# - Bash(cargo check:*) + Bash(cargo clippy:*): self-validation
+#   only.  No other shell access.  These match the gate the
+#   parent script runs after claude finishes, so claude can
+#   converge on a gate-clean translation before returning.  The
+#   `:*` is the prefix-match form — the bare `Bash(cmd)` form is
+#   exact-match and rejects `cargo clippy -- -D warnings`.
+ALLOWED_TOOLS = "Read Edit Write Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)"
 
 # v1 scope: picoquic-core only.  See scripts/inventory.py for context.
 IN_SCOPE = {"picoquic"}

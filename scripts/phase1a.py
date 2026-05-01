@@ -57,7 +57,10 @@ RS_SRC         = RS_CRATE / "src"
 
 # `Write` is intentionally NOT in the allowlist — claude should
 # refine the existing file via Edit, not regenerate from scratch.
-ALLOWED_TOOLS  = "Read Edit Glob Grep Bash(cargo check) Bash(cargo clippy)"
+# Bash granular permissions: `Bash(cmd:*)` is the prefix-match form
+# that allows arguments.  The bare `Bash(cmd)` form is exact-match
+# only, which fails for `cargo clippy -- -D warnings` etc.
+ALLOWED_TOOLS  = "Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)"
 
 IN_SCOPE = {"picoquic"}
 
