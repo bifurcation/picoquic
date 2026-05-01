@@ -1,0 +1,17 @@
+# claude -p (phase1a) for picoquic/performance_log.h
+# elapsed: 171.7s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/performance_log.md)
+
+## stdout
+Both gates pass. Three improvements were made:
+
+1. **Removed `#![allow(non_snake_case)]`** — all function names (`picoquic_perflog_param_name`, `picoquic_perflog_setup`) and parameters are already valid snake_case; the allow was suppressing a lint that never fired here.
+
+2. **Narrowed the remaining two module-level allows** (`non_camel_case_types`, `clippy::enum_variant_names`) down to item-level `#[allow(...)]` on the enum definition — the only site where these lints actually trigger. The rest of the module is now fully lint-clean without suppression.
+
+3. **Changed `picoquic_perflog_param_name` return from `Option<&'static str>` to `&'static str`** — Rust's enum is exhaustive, so the `None` path (C's `default:` arm for out-of-range int inputs) is unreachable. Keeping `Option` would force every Phase 3 caller to unwrap something that can never be `None`, and the doc comment correctly explained why the C case doesn't apply in Rust.
+
+
+## stderr
+

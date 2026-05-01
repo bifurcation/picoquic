@@ -13,13 +13,6 @@
 //! defined in `performance_log.c` are private to that translation
 //! unit and will land alongside their bodies in Phase 3.
 
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-// Variant names mirror the C enum tags one-to-one and all share the
-// `picoquic_perflog_` prefix.  Renaming would break the source-level
-// parity required by the translation plan.
-#![allow(clippy::enum_variant_names)]
-
 use crate::picoquic::picoquic::picoquic_quic_t;
 
 // ---------------------------------------------------------------------------
@@ -45,6 +38,9 @@ pub const PICOQUIC_PERF_LOG_MAX_ITEMS: usize = 27;
 /// CSV column identifiers for the per-connection metric vector.
 /// Mirrors the C enum of the same name; discriminants match the C
 /// values 0..=26.
+// Variant names mirror the C enum tags one-to-one and all share the
+// `picoquic_perflog_` prefix; renaming would break source-level parity.
+#[allow(non_camel_case_types, clippy::enum_variant_names)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u32)]
 pub enum picoquic_perflog_column_enum {
@@ -80,13 +76,12 @@ pub enum picoquic_perflog_column_enum {
 // ---------------------------------------------------------------------------
 // Public API.
 
-/// Short column name used in the CSV header for `rank`.  C returns
-/// `NULL` for an out-of-range value (the `default` switch arm); Rust
-/// models that as `None` rather than a panic, since the C caller in
-/// `picoquic_perflog_file_set_header` checks for NULL and substitutes
-/// a synthetic `v<i>` label.  Returning `&'static str` mirrors the C
-/// string-literal lifetime.
-pub fn picoquic_perflog_param_name(_rank: picoquic_perflog_column_enum) -> Option<&'static str> {
+/// Short column name used in the CSV header for `rank`.  The C
+/// counterpart returns `NULL` for out-of-range inputs (the `default`
+/// switch arm); Rust's exhaustive enum makes that case unreachable, so
+/// this returns `&'static str` directly rather than `Option`.
+/// Lifetime mirrors the C string-literal return.
+pub fn picoquic_perflog_param_name(_rank: picoquic_perflog_column_enum) -> &'static str {
     todo!()
 }
 

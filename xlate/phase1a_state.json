@@ -1,4 +1,9 @@
 {
+  "picoquic/performance_log.h": {
+    "at": "2026-05-01T10:27:11",
+    "changed": true,
+    "status": "ok"
+  },
   "picoquic/picohash.h": {
     "at": "2026-05-01T10:21:14",
     "changed": true,
