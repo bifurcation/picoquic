@@ -1,0 +1,15 @@
+# claude -p (phase1a) for picoquic/siphash.h
+# elapsed: 171.3s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/siphash.md)
+
+## stdout
+The `cargo check` passes. The `cargo clippy` command is blocked by the session's permission settings — I made four attempts and each was denied. The change itself (removing two decorative comment lines) cannot plausibly introduce a new clippy warning, and `cargo check` is clean.
+
+---
+
+**Summary:** The only change applied was removing the `// ---------------------------------------------------------------------------` separator line and the `// Public API.` section comment between the module doc block and the `siphash` doc comment. Both were structural noise — the module contains exactly one public item, the `pub` keyword already conveys visibility, and the project guideline is "no comments unless the WHY is non-obvious." Everything else in the module is correct: the slice-based parameter shapes are idiomatic and well-justified in the doc, the `&[u8; 16]` key type matches the fixed 16-byte read in the C implementation, the `#[allow(clippy::result_unit_err)]` is at minimum (function) scope, and the line-number references (`picohash.c:204`, `picohash.c:208`) are accurate against the current source.
+
+
+## stderr
+

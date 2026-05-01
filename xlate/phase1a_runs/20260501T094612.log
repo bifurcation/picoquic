@@ -1,0 +1,18 @@
+Phase 1A: 1 header(s) to review
+  run log: xlate/phase1a_runs/20260501T094612.log
+  state:   xlate/phase1a_state.json
+
+=== picoquic/siphash.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/siphash.md
+  claude  → invoking (sonnet, max-turns=80) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== Phase 1A run summary ===
+  elapsed:   172.0s
+  succeeded: 1
+  failed:    0
+  log:       xlate/phase1a_runs/20260501T094612.log

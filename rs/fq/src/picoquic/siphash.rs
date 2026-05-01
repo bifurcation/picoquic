@@ -9,9 +9,6 @@
 //!
 //! Phase 1 contract: signature only; the body is `todo!()`.
 
-// ---------------------------------------------------------------------------
-// Public API.
-
 /// Compute a SipHash digest.
 ///
 /// * `input` — message bytes.  C: `const void *in` plus `size_t

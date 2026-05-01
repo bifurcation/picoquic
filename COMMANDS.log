@@ -183,3 +183,4 @@
 2026-04-30T21:42:33-04:00 python3 scripts/phase1.py --header picoquic/picoquic.h (kitchen-sink + stub-replace test)
 2026-04-30T22:03:50-04:00 python3 scripts/phase1.py --stop-on-failure --max-turns 200 (full Phase 1)
 2026-05-01T07:06:56-04:00 python3 scripts/phase1.py --stop-on-failure --max-turns 200 (resume after credit-limit hit)
+2026-05-01T09:46:11-04:00 python3 scripts/phase1a.py --header picoquic/siphash.h (1A smoke, sonnet)
