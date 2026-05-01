@@ -221,7 +221,7 @@ def write_prompt_file(file: Path, comments: list[tuple[int, str]]) -> Path:
 # Claude invocation
 
 def invoke_claude(file: Path, prompt_file: Path,
-                  max_turns: int) -> tuple[int, str]:
+                  max_turns: int, model: str) -> tuple[int, str]:
     if shutil.which("claude") is None:
         return 127, "claude CLI not found on PATH"
     log = claude_log_path_for(file)
@@ -229,6 +229,7 @@ def invoke_claude(file: Path, prompt_file: Path,
     prompt = prompt_file.read_text()
     cmd = [
         "claude", "-p", prompt,
+        "--model", model,
         "--allowedTools", ALLOWED_TOOLS,
         "--max-turns", str(max_turns),
     ]
@@ -273,7 +274,7 @@ def run_gate() -> int:
 # Per-file runner
 
 def run_one(file: Path, *, dry_run: bool, max_turns: int,
-            state: dict) -> str:
+            model: str, state: dict) -> str:
     key = rel(file)
     print(f"\n=== {key} ===")
     before = find_review_comments(file)
@@ -291,8 +292,8 @@ def run_one(file: Path, *, dry_run: bool, max_turns: int,
         print("  (dry-run; skipping claude + gate)")
         return "skip"
 
-    print(f"  claude  → invoking (max-turns={max_turns}) …")
-    code, _stdout = invoke_claude(file, prompt_file, max_turns)
+    print(f"  claude  → invoking ({model}, max-turns={max_turns}) …")
+    code, _stdout = invoke_claude(file, prompt_file, max_turns, model)
     if code != 0:
         print(f"    FAIL: claude exit {code} "
               f"(see {claude_log_path_for(file).relative_to(REPO_ROOT)})")
@@ -427,6 +428,10 @@ def main() -> int:
                    help="Print files containing // REVIEW: comments and exit.")
     p.add_argument("--max-turns", type=int, default=80,
                    help="Per-file turn limit for claude (default 80).")
+    p.add_argument("--model", default="sonnet",
+                   help="Model passed to `claude -p --model` "
+                        "(default: sonnet — REVIEW execution is "
+                        "judgement-light).")
     args = p.parse_args()
 
     if args.status:
@@ -474,7 +479,8 @@ def main() -> int:
     succeeded: list[str] = []
     for f in targets:
         result = run_one(f, dry_run=args.dry_run,
-                         max_turns=args.max_turns, state=state)
+                         max_turns=args.max_turns, model=args.model,
+                         state=state)
         if result == "fail":
             failed.append(rel(f))
             if args.stop_on_failure:

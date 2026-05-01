@@ -279,7 +279,7 @@ def write_prompt_file(header: str) -> Path:
 # Claude invocation
 
 def invoke_claude(header: str, prompt_file: Path,
-                  max_turns: int) -> tuple[int, str]:
+                  max_turns: int, model: str) -> tuple[int, str]:
     if shutil.which("claude") is None:
         return 127, "claude CLI not found on PATH"
     log = claude_log_path(header)
@@ -287,6 +287,7 @@ def invoke_claude(header: str, prompt_file: Path,
     prompt = prompt_file.read_text()
     cmd = [
         "claude", "-p", prompt,
+        "--model", model,
         "--allowedTools", ALLOWED_TOOLS,
         "--max-turns", str(max_turns),
     ]
@@ -346,7 +347,7 @@ def stdout_looks_like_noop(stdout: str) -> bool:
 
 
 def run_one(header: str, *, dry_run: bool, max_turns: int,
-            state: dict) -> str:
+            model: str, state: dict) -> str:
     print(f"\n=== {header} ===")
     rs_target = rust_path_for(header)
     if not rs_target.is_file():
@@ -361,9 +362,9 @@ def run_one(header: str, *, dry_run: bool, max_turns: int,
         print("  (dry-run; skipping claude + gate)")
         return "skip"
 
-    print(f"  claude  → invoking (max-turns={max_turns}) …")
+    print(f"  claude  → invoking ({model}, max-turns={max_turns}) …")
     before = rs_target.read_text()
-    code, stdout = invoke_claude(header, prompt_file, max_turns)
+    code, stdout = invoke_claude(header, prompt_file, max_turns, model)
     if code != 0:
         print(f"    FAIL: claude exit {code} "
               f"(see {claude_log_path(header).relative_to(REPO_ROOT)})")
@@ -464,6 +465,9 @@ def main() -> int:
                    help="Print headers in topological review order and exit.")
     p.add_argument("--max-turns", type=int, default=80,
                    help="Per-header turn limit for claude (default 80).")
+    p.add_argument("--model", default="sonnet",
+                   help="Model passed to `claude -p --model` "
+                        "(default: sonnet — refinement is judgement-light).")
     args = p.parse_args()
 
     if not INV_PATH.is_file():
@@ -521,7 +525,8 @@ def main() -> int:
     succeeded: list[str] = []
     for h in targets:
         result = run_one(h, dry_run=args.dry_run,
-                         max_turns=args.max_turns, state=state)
+                         max_turns=args.max_turns, model=args.model,
+                         state=state)
         if result == "fail":
             failed.append(h)
             if args.stop_on_failure:
