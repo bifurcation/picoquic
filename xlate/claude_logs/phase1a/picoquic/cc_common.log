@@ -1,0 +1,23 @@
+# claude -p (phase1a) for picoquic/cc_common.h
+# elapsed: 203.3s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/cc_common.md)
+
+## stdout
+Good. The file looks correct. Both `cargo check` and `cargo clippy -- -D warnings` pass.
+
+---
+
+Four improvements applied to `rs/fq/src/picoquic/cc_common.rs`:
+
+1. **Removed `#![allow(non_snake_case)]`** — this suppressed nothing; every function and method in the file is already snake_case, so the allow was pure noise.
+
+2. **Moved `#![allow(non_camel_case_types)]` from module level to item level** on the three types that actually need it (`picoquic_min_max_rtt_t`, `picoquic_newreno_alg_state_t`, `picoquic_newreno_sim_state_t`) — tighter scope means future additions to the module don't accidentally inherit a naming dispensation.
+
+3. **Documented the `nb_rtt_excess` type deviation** in the struct doc comment — the previous comment explained the `is_init` and `sample_current` promotions but silently left `int → u32` unexplained, inconsistent with the stated rationale pattern.
+
+4. **Added C source citations** to `picoquic_newreno_alg_state_t` and `picoquic_newreno_sim_state_t` doc comments — both lacked the "C: `<name>` in `<header>`" line that every other public item had.
+
+
+## stderr
+

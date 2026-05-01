@@ -55,8 +55,9 @@
 //!   `wake_line` fields yet, so the macro can't be expressed in
 //!   Rust without redesigning that type.
 
+// C-origin struct and opaque-type names are kept verbatim (snake_case);
+// covers `picoquic_file_t`, the threading stubs, and the sim-link structs.
 #![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 // Three-way comparator helpers return `Ordering`; result-as-`Result`
 // stand-ins are flagged for the missing top-level `Error` enum.
@@ -185,17 +186,17 @@ pub fn debug_dump(_bytes: &[u8]) {
 // String utilities.
 
 /// Allocate a new heap string with up to `len` bytes copied from
-/// `original` (or zero-fill if `original` is empty), with a NUL
-/// terminator that the C contract guarantees.  Returns `None` on
-/// allocation failure to match the C `NULL` return.
+/// `original` (or zero-filled for `len` bytes when `original` is
+/// `None`).  Returns `None` on allocation failure to match the C
+/// `NULL` return.
 ///
-/// Pointer-shape choice: the C `original` accepted `NULL` *or* a
-/// non-NUL-terminated buffer plus an explicit length, so the input
-/// is `&[u8]` (length carried by the slice).  The Rust return is
-/// `Option<String>` because callers in `util.c` immediately
-/// branch on the NULL return.  The C-style trailing NUL byte goes
-/// away — Rust strings carry their length explicitly.
-pub fn picoquic_string_create(_original: &[u8], _len: usize) -> Option<String> {
+/// Pointer-shape choice: the C `original` is `const char*` and may be
+/// `NULL` (zero-fill `len` bytes) or a non-NUL-terminated buffer
+/// (copy up to `len` bytes).  `Option<&[u8]>` represents both cases;
+/// the slice carries the source length.  `len` is the desired output
+/// length independently of the source slice.  The C-style trailing NUL
+/// byte is dropped — Rust strings carry their length explicitly.
+pub fn picoquic_string_create(_original: Option<&[u8]>, _len: usize) -> Option<String> {
     todo!()
 }
 
@@ -729,7 +730,7 @@ pub struct picoquic_event_t {
 /// Trait counterpart of the C `picoquic_thread_fn` typedef.  v1
 /// keeps the trait shape so signatures land; the bodies are
 /// `todo!()` and the trait is unused in the single-threaded scope.
-pub trait picoquic_thread_fn {
+pub trait PicoquicThreadFn {
     /// Thread entry point.  C: `void* (*)(void* lpParam)`.
     fn run(&mut self);
 }
@@ -737,7 +738,7 @@ pub trait picoquic_thread_fn {
 /// Spawn a thread.  Out-of-scope-for-v1 — see module docstring.
 pub fn picoquic_create_thread(
     _thread: &mut picoquic_thread_t,
-    _thread_fn: Box<dyn picoquic_thread_fn>,
+    _thread_fn: Box<dyn PicoquicThreadFn>,
 ) -> Result<(), ()> {
     todo!()
 }
@@ -891,7 +892,7 @@ pub struct picoquictest_sim_packet_t {
 /// each call would conflict with the `&mut self` borrow).  Phase 3
 /// will resolve the borrow with a take-replace pattern or an
 /// `unsafe` raw-pointer access.
-pub trait picoquictest_aqm_t {
+pub trait PicoquictestAqmT {
     /// Submit a packet to the AQM.  C: `submit`.
     fn submit(
         &mut self,
@@ -920,9 +921,11 @@ pub trait picoquictest_aqm_t {
 /// Jitter model used by the sim link.  C: `picoquic_jitter_mode`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub enum picoquic_jitter_mode {
+    /// Gaussian jitter.  C: `jitter_gauss`.
     #[default]
-    jitter_gauss = 0,
-    jitter_wifi = 1,
+    JitterGauss = 0,
+    /// Wi-Fi-style jitter.  C: `jitter_wifi`.
+    JitterWifi = 1,
 }
 
 /// One simulated network link with an embedded queue plus AQM
@@ -939,7 +942,7 @@ pub enum picoquic_jitter_mode {
 ///   and passes its address; staying raw mirrors the C contract
 ///   without forcing a struct lifetime.  `None`-equivalent is the
 ///   null pointer (the C "no mask" sentinel).
-/// * `aqm_state` becomes `Option<Box<dyn picoquictest_aqm_t>>` —
+/// * `aqm_state` becomes `Option<Box<dyn PicoquictestAqmT>>` —
 ///   `None` matches the C `NULL` (no AQM installed).
 /// * `is_switched_off` / `is_unreachable` / `is_suspended` were
 ///   `int` flags in C; promoted to `bool`.
@@ -965,7 +968,7 @@ pub struct picoquictest_sim_link_t {
     pub packets_sent_next_burst: u64,
     pub nb_losses_this_burst: u64,
     pub end_of_burst_time: u64,
-    pub aqm_state: Option<Box<dyn picoquictest_aqm_t>>,
+    pub aqm_state: Option<Box<dyn PicoquictestAqmT>>,
     pub is_switched_off: bool,
     pub is_unreachable: bool,
     pub is_suspended: bool,

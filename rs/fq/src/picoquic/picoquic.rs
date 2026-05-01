@@ -46,7 +46,6 @@
 //!   its length).
 
 #![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
 // `picoquic_tp_*`, `picoquic_nb_packet_context`, and the rest mirror
 // C `#define` / enum tag names verbatim — Rust's `non_upper_case_globals`
 // lint disagrees with that style, so silence it module-wide.
@@ -59,9 +58,6 @@
 // Phase 1 stubs return `Result<T, ()>` until the crate-level `Error`
 // type lands; clippy's `result_unit_err` is silenced module-wide.
 #![allow(clippy::result_unit_err)]
-// Many setters take small primitives by value mirroring the C ABI;
-// clippy occasionally suggests `&` borrows that don't help here.
-#![allow(clippy::too_many_arguments)]
 
 use core::ffi::c_void;
 use core::net::SocketAddr;
@@ -474,6 +470,8 @@ pub enum picoquic_call_back_event_t {
 /// Server's preferred address advertised in transport parameters.
 /// C: `picoquic_tp_preferred_address_t`.  `is_defined` was an `int`
 /// flag in C; promoted to `bool`.
+// Field names mirror the camelCase identifiers from the C struct verbatim.
+#[allow(non_snake_case)]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct picoquic_tp_preferred_address_t {
     pub is_defined: bool,
@@ -1127,6 +1125,7 @@ pub fn picoquic_disable_port_blocking(
 ///
 /// Returns `None` when context creation fails (the C side returned
 /// `NULL`).
+#[allow(clippy::too_many_arguments)]
 pub fn picoquic_create(
     _max_nb_connections: u32,
     _cert_file_name: Option<&str>,
@@ -1454,6 +1453,7 @@ pub fn picoquic_get_max_simultaneous_logs(_quic: &picoquic_quic_t) -> u32 {
 /// The returned `&mut picoquic_cnx_t` borrows from `quic` because
 /// the C side stores the new connection in the context's hash
 /// tables and the application accesses it through the same context.
+#[allow(clippy::too_many_arguments)]
 pub fn picoquic_create_cnx<'a>(
     _quic: &'a mut picoquic_quic_t,
     _initial_cnx_id: picoquic_connection_id_t,

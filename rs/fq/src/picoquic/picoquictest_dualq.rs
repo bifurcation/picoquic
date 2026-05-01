@@ -15,9 +15,10 @@
 //! Translation policy notes for this module:
 //!
 //! * The C vtable struct `picoquictest_aqm_t` is already a Rust
-//!   trait in [`crate::picoquic::picoquic_utils`].  The C "embed
+//!   trait ([`PicoquictestAqmT`](crate::picoquic::picoquic_utils::PicoquictestAqmT))
+//!   in [`crate::picoquic::picoquic_utils`].  The C "embed
 //!   `super` and cast pointer" inheritance pattern collapses to
-//!   `impl picoquictest_aqm_t for dualq_state_t`; the C `super`
+//!   `impl PicoquictestAqmT for dualq_state_t`; the C `super`
 //!   field is dropped.
 //! * Both queue heads (`queue_first` / `queue_last` in
 //!   [`dualq_queue_t`]) stay raw `*mut picoquictest_sim_packet_t`,
@@ -34,19 +35,18 @@
 //! * The C `dualq_release` self-frees with `free(self)` and clears
 //!   `link->aqm_state`.  In Rust the trait method takes
 //!   `&mut self`; the actual deallocation rides on the
-//!   `Option<Box<dyn picoquictest_aqm_t>>` slot in the link being
+//!   `Option<Box<dyn PicoquictestAqmT>>` slot in the link being
 //!   reset to `None` by the caller after `release` drains the
 //!   queues — `release` itself only handles the queue drain.
 
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
-#![allow(non_upper_case_globals)]
 // Status-code returns stand in for the missing top-level `Error`
 // enum — see module docstring.
 #![allow(clippy::result_unit_err)]
 
 use crate::picoquic::picoquic_utils::{
-    picoquictest_aqm_t, picoquictest_sim_link_t, picoquictest_sim_packet_t,
+    PicoquictestAqmT, picoquictest_sim_link_t, picoquictest_sim_packet_t,
 };
 
 // ---------------------------------------------------------------------------
@@ -74,6 +74,7 @@ pub const DUALQ_MAX_LINK_RATE: u64 = 125_000_000;
 /// * `count` was a C `int` that only ever holds non-negative values;
 ///   widened to `i32` to match the underlying C ABI (the dualq
 ///   tests inspect it directly).
+#[derive(Default)]
 pub struct dualq_queue_t {
     pub queue_bytes: u64,
     /// Number of packets currently in the queue.
@@ -86,18 +87,6 @@ pub struct dualq_queue_t {
     pub queue_last: *mut picoquictest_sim_packet_t,
 }
 
-impl Default for dualq_queue_t {
-    fn default() -> Self {
-        Self {
-            queue_bytes: 0,
-            count: 0,
-            sum_p: 0.0,
-            queue_first: core::ptr::null_mut(),
-            queue_last: core::ptr::null_mut(),
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // AQM state.
 
@@ -106,9 +95,10 @@ impl Default for dualq_queue_t {
 ///
 /// The C struct embedded a `picoquictest_aqm_t` vtable in its first
 /// field (`super`); in Rust the equivalent is `impl
-/// picoquictest_aqm_t for dualq_state_t`, so the explicit `super`
+/// PicoquictestAqmT for dualq_state_t`, so the explicit `super`
 /// field is dropped.  All other fields mirror the C layout
 /// one-for-one.
+#[derive(Default)]
 pub struct dualq_state_t {
     // -- Initialization parameters -----------------------------------
     /// PI2 queue-delay target for both L4S and Classic, in
@@ -174,41 +164,10 @@ pub struct dualq_state_t {
     pub last_input_time: u64,
 }
 
-impl Default for dualq_state_t {
-    fn default() -> Self {
-        Self {
-            target: 0,
-            k: 0.0,
-            p_Cmax: 0.0,
-            Tupdate: 0,
-            pi2_alpha: 0.0,
-            pi2_beta: 0.0,
-            maxTh: 0,
-            minTh: 0,
-            range: 0,
-            p_Lmax: 0.0,
-            limit: 0,
-            schedule_tick: 0,
-            lq: dualq_queue_t::default(),
-            cq: dualq_queue_t::default(),
-            curq: 0,
-            prevq: 0,
-            update_next: 0,
-            lq_average_queue: 0,
-            pprime: 0.0,
-            pprime_L: 0.0,
-            p_L: 0.0,
-            p_CL: 0.0,
-            p_C: 0.0,
-            last_input_time: 0,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Trait impl — replaces the C "embedded vtable + cast" inheritance.
 
-impl picoquictest_aqm_t for dualq_state_t {
+impl PicoquictestAqmT for dualq_state_t {
     /// C: `dualq_submit`.  Queues the packet, updates
     /// `last_input_time`, and runs the dequeue/PI2 update pass.
     fn submit(
@@ -229,7 +188,7 @@ impl picoquictest_aqm_t for dualq_state_t {
     /// C: `dualq_release` — drains both queues onto the link as
     /// dropped packets.  The C body also `free(self)`s and nulls
     /// `link->aqm_state`; in Rust the caller drops the
-    /// `Option<Box<dyn picoquictest_aqm_t>>` slot to do the same.
+    /// `Option<Box<dyn PicoquictestAqmT>>` slot to do the same.
     fn release(&mut self, _link: &mut picoquictest_sim_link_t) {
         todo!()
     }

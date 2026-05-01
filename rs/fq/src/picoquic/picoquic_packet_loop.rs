@@ -114,7 +114,7 @@ use crate::picoquic::picoquic::{
     picoquic_alpn_select_fn_v2, picoquic_quic_t, picoquic_stream_data_cb_fn,
 };
 use crate::picoquic::picoquic_config::picoquic_quic_config_t;
-use crate::picoquic::picoquic_utils::{picoquic_thread_fn, picoquic_thread_t};
+use crate::picoquic::picoquic_utils::{PicoquicThreadFn, picoquic_thread_t};
 
 // ---------------------------------------------------------------------------
 // Compile-time limits.
@@ -400,7 +400,7 @@ pub struct picoquic_packet_loop_param_t {
 ///
 /// In C, `(thread_fn, arg)` is the trampoline + state pair the new
 /// thread will run.  In Rust, the existing
-/// [`picoquic_thread_fn`](crate::picoquic::picoquic_utils::picoquic_thread_fn)
+/// [`PicoquicThreadFn`](crate::picoquic::picoquic_utils::PicoquicThreadFn)
 /// trait already bundles both into a single trait object, so the
 /// hook reduces to "produce a thread handle from a `Box<dyn …>`".
 pub trait picoquic_custom_thread_create_fn {
@@ -413,7 +413,7 @@ pub trait picoquic_custom_thread_create_fn {
     /// otherwise; we keep the `i32` so call sites can surface the
     /// raw OS error via the `*ret` out-parameter on
     /// [`picoquic_start_custom_network_thread`].
-    fn create(&mut self, thread_fn: Box<dyn picoquic_thread_fn>) -> Result<picoquic_thread_t, i32>;
+    fn create(&mut self, thread_fn: Box<dyn PicoquicThreadFn>) -> Result<picoquic_thread_t, i32>;
 }
 
 /// Set-thread-name hook.  C:
@@ -655,7 +655,7 @@ pub fn picoquic_delete_network_thread(_thread_ctx: Box<picoquic_network_thread_c
 /// v1 (`TRANSLATE_PLAN.md`) so the body is a `todo!()` placeholder
 /// that lands when v2 multi-threading work begins.
 pub fn picoquic_internal_thread_create(
-    _thread_fn: Box<dyn picoquic_thread_fn>,
+    _thread_fn: Box<dyn PicoquicThreadFn>,
 ) -> Result<picoquic_thread_t, i32> {
     todo!()
 }

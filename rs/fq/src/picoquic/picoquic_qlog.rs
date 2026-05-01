@@ -6,8 +6,6 @@
 //! v1, since `loglib/` is a separate target — this header is the
 //! picoquic-core stub that links against it on demand).
 
-#![allow(non_snake_case)]
-
 use crate::picoquic::picoquic::picoquic_quic_t;
 
 /// Set the qlog directory and start streaming qlog traces for

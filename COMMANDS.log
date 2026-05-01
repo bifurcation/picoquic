@@ -186,3 +186,4 @@
 2026-05-01T09:46:11-04:00 python3 scripts/phase1a.py --header picoquic/siphash.h (1A smoke, sonnet)
 2026-05-01T10:17:42-04:00 python3 scripts/phase1a.py --header picoquic/picohash.h (1A smoke 2, sonnet, with cd hint)
 2026-05-01T10:24:19-04:00 python3 scripts/phase1a.py --header picoquic/performance_log.h (1A smoke 3, sonnet, prefix-match perms)
+2026-05-01T10:29:58-04:00 python3 scripts/phase1a.py --stop-on-failure (full 1A run, sonnet)

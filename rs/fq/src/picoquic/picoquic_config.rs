@@ -26,7 +26,9 @@
 //!   `picoquic_config_clear` does not free it.  Phase 1 stores an
 //!   owned `Option<Vec<u8>>` for safety; in v1 only the demo apps
 //!   set this field, and they can supply an owned buffer.  Phase 3
-//!   may revisit if a caller actually relies on aliasing.
+//!   may revisit if a caller actually relies on aliasing.  The
+//!   paired `ticket_encryption_key_length` field is dropped — its
+//!   value is always implicit in the Vec length.
 //! * Single-bit `unsigned int : 1` flag bitfields (`use_long_log`,
 //!   `do_retry`, …) collapse to individual `bool` fields.  Every C
 //!   call site reads/writes one bit at a time as a Boolean
@@ -40,7 +42,6 @@
 //!   build options are translated.
 
 #![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
 // Variant names mirror the C enum tags one-to-one and all share
 // the `picoquic_option_` prefix.  Renaming would break source-level
 // parity required by the translation plan.
@@ -189,9 +190,9 @@ pub struct picoquic_quic_config_t {
     pub www_dir: Option<String>,
     pub reset_seed: [u8; 16],
     /// Borrowed in C (`picoquic_config_clear` does not free it);
-    /// owned `Vec<u8>` here for safety.
+    /// owned `Vec<u8>` here for safety.  The C `ticket_encryption_key_length`
+    /// field is dropped — its value is always `ticket_encryption_key.as_ref().map_or(0, Vec::len)`.
     pub ticket_encryption_key: Option<Vec<u8>>,
-    pub ticket_encryption_key_length: usize,
 
     // Server flags.
     pub do_retry: bool,
@@ -216,9 +217,10 @@ pub struct picoquic_quic_config_t {
     pub ech_config_file: Option<String>,
     pub ech_public_name: Option<String>,
     /// ECH parameter for the client, base64-decoded.  Owned by
-    /// the config — `picoquic_config_clear` frees it in C.
+    /// the config — `picoquic_config_clear` frees it in C.  The C
+    /// `ech_target_len` field is dropped — its value is always
+    /// `ech_target.as_ref().map_or(0, Vec::len)`.
     pub ech_target: Option<Vec<u8>>,
-    pub ech_target_len: usize,
 
     pub flow_control_max: u64,
 

@@ -42,8 +42,6 @@
 //!   str`; Phase 3 either supplies the lookup table or removes the
 //!   orphan declaration.
 
-#![allow(non_camel_case_types)]
-
 use crate::picoquic::picoquic::{
     picoquic_call_back_event_t, picoquic_connection_id_t, picoquic_quic_t,
 };

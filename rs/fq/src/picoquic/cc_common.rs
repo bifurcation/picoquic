@@ -7,9 +7,6 @@
 //!
 //! Phase 1: signatures only — every function body is `todo!()`.
 
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-
 use crate::picoquic::picoquic::{
     picoquic_cnx_t, picoquic_congestion_notification_t, picoquic_path_t, picoquic_per_ack_state_t,
 };
@@ -49,11 +46,12 @@ pub const PICOQUIC_HYSTART_PP_CSS_ROUNDS: u64 = 5;
 // RTT filter and HyStart-related state.
 
 /// Rolling min/max RTT filter plus smoothed-loss bookkeeping shared
-/// by HyStart exit tests.  Originally `picoquic_min_max_rtt_t` in C.
+/// by HyStart exit tests.  C: `picoquic_min_max_rtt_t` in `cc_common.h`.
 ///
-/// `is_init` was an `int` flag in C (`0`/`1`); promoted to `bool`
-/// since the value is purely boolean.  `sample_current` is used as
-/// an array index, so it lives as `usize` rather than `int`.
+/// Type deviations from C: `is_init` (`int` → `bool`);
+/// `sample_current` (`int` → `usize`, used as array index);
+/// `nb_rtt_excess` (`int` → `u32`, always non-negative; safety wins).
+#[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
 pub struct picoquic_min_max_rtt_t {
     pub last_rtt_sample_time: u64,
@@ -211,7 +209,9 @@ pub fn picoquic_cc_update_cwin_for_long_rtt(_path_x: &mut picoquic_path_t) -> u6
 // bandwidth.  This simulator does not touch the connection or path
 // state directly; everything lives in `picoquic_newreno_sim_state_t`.
 
-/// Internal phase of the New Reno simulator.
+/// Internal phase of the embedded New Reno simulator.
+/// C: `picoquic_newreno_alg_state_t` in `cc_common.h`.
+#[allow(non_camel_case_types)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum picoquic_newreno_alg_state_t {
     picoquic_newreno_alg_slow_start,
@@ -219,6 +219,8 @@ pub enum picoquic_newreno_alg_state_t {
 }
 
 /// Simulator state for the embedded New Reno instance.
+/// C: `picoquic_newreno_sim_state_t` in `cc_common.h`.
+#[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
 pub struct picoquic_newreno_sim_state_t {
     pub alg_state: picoquic_newreno_alg_state_t,

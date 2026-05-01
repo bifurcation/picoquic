@@ -65,7 +65,9 @@
 //!   capacity *is* part of the contract.
 
 #![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
+// Enum variants share the `picoquic_load_balancer_cid_` prefix to mirror
+// the C enum tag names verbatim — renaming would break source-level parity.
+#![allow(clippy::enum_variant_names)]
 #![allow(clippy::result_unit_err)]
 
 extern crate alloc;

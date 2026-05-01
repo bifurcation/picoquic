@@ -1,4 +1,4 @@
-# Phase 1A self-review: `picoquic/cc_common.h`
+# Phase 1A self-review: `picoquic/picoquic_qlog.h`
 
 You're doing a self-review pass on a Phase 1 translation.
 Re-read the existing translation and apply quality
@@ -9,9 +9,10 @@ from scratch.
 ## Required reading
 1. `TRANSLATE_PLAN.md` — Phase 1A section especially.
 2. `CLAUDE.md` — project conventions, edit-scope rules.
-3. The existing translation: `rs/fq/src/picoquic/cc_common.rs`.
-4. The matching `.c` file: `picoquic/cc_common.c`.
-5. (No in-scope dependencies.)
+3. The existing translation: `rs/fq/src/picoquic/picoquic_qlog.rs`.
+4. (No matching `.c` file — header-only module.)
+5. Headers this one directly depends on:
+   - `picoquic/picoquic.h` (translation: `rs/fq/src/picoquic/picoquic.rs`)
 
 ## What to look for
 - **Safety holes** — raw pointers used without a clear
@@ -37,7 +38,7 @@ from scratch.
 ## How to work
 1. Read the materials above.
 2. Identify improvements you'd apply.
-3. Apply them via `Edit` to `rs/fq/src/picoquic/cc_common.rs` (and sibling
+3. Apply them via `Edit` to `rs/fq/src/picoquic/picoquic_qlog.rs` (and sibling
    modules under `rs/fq/src/picoquic/` if a coordinated
    change is needed).
 4. Validate with **both** of these (Bash tool's cwd is the

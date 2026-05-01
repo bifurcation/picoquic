@@ -1,0 +1,21 @@
+# claude -p (phase1a) for picoquic/picoquictest_dualq.h
+# elapsed: 165.6s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquictest_dualq.md)
+
+## stdout
+The file looks correct. Both `cargo check` and `cargo clippy -- -D warnings` pass cleanly.
+
+---
+
+Three improvements applied to `picoquictest_dualq.rs`:
+
+1. **Removed `#![allow(non_upper_case_globals)]`** — this module has exactly one constant (`DUALQ_MAX_LINK_RATE`) which is already upper-case, so the allowance was covering nothing and would silently absorb future lint violations.
+
+2. **`#[derive(Default)]` on `dualq_queue_t`** — `*mut T` implements `Default` (yielding `null_mut()`) in `core`, so the 23-line manual impl was pure boilerplate that `derive` handles identically.
+
+3. **`#[derive(Default)]` on `dualq_state_t`** — same reasoning: every field type (`u64`, `i32`, `i64`, `f64`, and `dualq_queue_t` after change 2) satisfies `Default` with zero-value semantics, making the 30-line manual impl unnecessary.
+
+
+## stderr
+

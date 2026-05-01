@@ -52,7 +52,6 @@
 //!   parity (Phase 3 may drop it once the wrapper is implemented).
 
 #![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
 // Many setters take small primitives by value mirroring the C ABI;
 // `clippy::too_many_arguments` flags several of the trait methods,
 // but trimming them would diverge from the C signatures.
@@ -418,6 +417,3 @@ pub fn picoquic_log_close_connection(_cnx: &mut picoquic_cnx_t) {
 pub fn picoquic_log_cc_dump(_cnx: &mut picoquic_cnx_t, _current_time: u64) {
     todo!()
 }
-
-#[cfg(test)]
-mod test {}

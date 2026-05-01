@@ -1,4 +1,4 @@
-# Phase 1A self-review: `picoquic/cc_common.h`
+# Phase 1A self-review: `picoquic/picoquic.h`
 
 You're doing a self-review pass on a Phase 1 translation.
 Re-read the existing translation and apply quality
@@ -9,8 +9,8 @@ from scratch.
 ## Required reading
 1. `TRANSLATE_PLAN.md` — Phase 1A section especially.
 2. `CLAUDE.md` — project conventions, edit-scope rules.
-3. The existing translation: `rs/fq/src/picoquic/cc_common.rs`.
-4. The matching `.c` file: `picoquic/cc_common.c`.
+3. The existing translation: `rs/fq/src/picoquic/picoquic.rs`.
+4. (No matching `.c` file — header-only module.)
 5. (No in-scope dependencies.)
 
 ## What to look for
@@ -37,7 +37,7 @@ from scratch.
 ## How to work
 1. Read the materials above.
 2. Identify improvements you'd apply.
-3. Apply them via `Edit` to `rs/fq/src/picoquic/cc_common.rs` (and sibling
+3. Apply them via `Edit` to `rs/fq/src/picoquic/picoquic.rs` (and sibling
    modules under `rs/fq/src/picoquic/` if a coordinated
    change is needed).
 4. Validate with **both** of these (Bash tool's cwd is the

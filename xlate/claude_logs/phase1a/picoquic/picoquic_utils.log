@@ -1,0 +1,19 @@
+# claude -p (phase1a) for picoquic/picoquic_utils.h
+# elapsed: 416.7s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_utils.md)
+
+## stdout
+Both gates pass cleanly. Here is a summary of what changed and why:
+
+**Removed `#![allow(non_snake_case)]` from `picoquic_utils.rs`** — the allow was overly broad. No function, method, or field in the module violates Rust's snake_case rule; the allow was doing nothing and should not sit there silently widening the lint scope.
+
+**Renamed trait `picoquic_thread_fn` → `PicoquicThreadFn`** and **`picoquictest_aqm_t` → `PicoquictestAqmT`** — TRANSLATE_PLAN §1A explicitly requires Rust traits to be PascalCase even when the C typedef is snake_case. All references in `picoquic_packet_loop.rs` (import, method signature in the `picoquic_custom_thread_create_fn` trait, and the standalone function) and in `picoquictest_dualq.rs` (import, `impl` block, and doc comments) were updated to match.
+
+**Renamed enum variants `jitter_gauss` → `JitterGauss`, `jitter_wifi` → `JitterWifi`** — lowercase enum variants are the most visibly non-idiomatic Rust in the file. The C enum tag names are preserved in the added per-variant doc comments (`/// C: jitter_gauss`). The `#[default]` attribute stays on `JitterGauss`.
+
+**Fixed `picoquic_string_create` parameter: `&[u8]` → `Option<&[u8]>`** — the C `original` is a `const char*` that may legitimately be `NULL` (meaning zero-fill the output for `len` bytes). The old `&[u8]` had no way to represent that null case; `Option<&[u8]>` corrects the type shape. The `_len: usize` parameter is kept because it is the *output* allocation size, independent of the source slice length. The doc comment was updated to explain the distinction.
+
+
+## stderr
+

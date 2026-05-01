@@ -1,4 +1,9 @@
 {
+  "picoquic/cc_common.h": {
+    "at": "2026-05-01T10:33:22",
+    "changed": true,
+    "status": "ok"
+  },
   "picoquic/performance_log.h": {
     "at": "2026-05-01T10:27:11",
     "changed": true,
@@ -8,6 +13,57 @@
     "at": "2026-05-01T10:21:14",
     "changed": true,
     "status": "ok"
+  },
+  "picoquic/picoquic.h": {
+    "at": "2026-05-01T10:38:40",
+    "changed": true,
+    "status": "ok"
+  },
+  "picoquic/picoquic_config.h": {
+    "at": "2026-05-01T10:40:58",
+    "changed": true,
+    "status": "ok"
+  },
+  "picoquic/picoquic_crypto_provider_api.h": {
+    "at": "2026-05-01T10:47:38",
+    "changed": true,
+    "status": "ok"
+  },
+  "picoquic/picoquic_lb.h": {
+    "at": "2026-05-01T10:49:57",
+    "changed": true,
+    "status": "ok"
+  },
+  "picoquic/picoquic_logger.h": {
+    "at": "2026-05-01T10:55:25",
+    "changed": true,
+    "status": "ok"
+  },
+  "picoquic/picoquic_qlog.h": {
+    "at": "2026-05-01T10:51:10",
+    "changed": true,
+    "status": "ok"
+  },
+  "picoquic/picoquic_unified_log.h": {
+    "at": "2026-05-01T10:53:37",
+    "changed": true,
+    "status": "ok"
+  },
+  "picoquic/picoquic_utils.h": {
+    "at": "2026-05-01T11:02:22",
+    "changed": true,
+    "status": "ok"
+  },
+  "picoquic/picoquictest_dualq.h": {
+    "at": "2026-05-01T11:05:08",
+    "changed": true,
+    "status": "ok"
+  },
+  "picoquic/picosocks.h": {
+    "at": "2026-05-01T11:05:09",
+    "exit_code": 1,
+    "stage": "claude",
+    "status": "fail"
   },
   "picoquic/siphash.h": {
     "at": "2026-05-01T09:49:04",

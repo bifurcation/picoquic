@@ -1,0 +1,19 @@
+# claude -p (phase1a) for picoquic/picoquic_config.h
+# elapsed: 138.3s, exit: 0
+# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_config.md)
+
+## stdout
+Both `cargo check` and `cargo clippy -- -D warnings` pass cleanly. Three changes were applied to `picoquic_config.rs`:
+
+1. **Removed `#![allow(non_snake_case)]`** — no function, method, or field in this module is non-snake-case, so the suppression was buying nothing and hiding future violations.
+
+2. **Removed `ticket_encryption_key_length: usize`** — redundant alongside `Option<Vec<u8>>`; the value is always `ticket_encryption_key.as_ref().map_or(0, Vec::len)`. Keeping it would require Phase 3 to manually synchronize it with the Vec length, an error-prone obligation with no benefit.
+
+3. **Removed `ech_target_len: usize`** — same reason; the module-level doc already stated "length implicit in the vector" yet the field was still present, creating a contradicted-by-the-code comment.
+
+Both length field removals are accompanied by inline doc notes explaining the drop and how to recover the length value, so Phase 3 implementors aren't left wondering why the C field is absent.
+
+
+## stderr
+
