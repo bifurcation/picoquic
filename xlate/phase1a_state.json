@@ -1,4 +1,9 @@
 {
+  "picoquic/picohash.h": {
+    "at": "2026-05-01T10:21:14",
+    "changed": true,
+    "status": "ok"
+  },
   "picoquic/siphash.h": {
     "at": "2026-05-01T09:49:04",
     "changed": true,

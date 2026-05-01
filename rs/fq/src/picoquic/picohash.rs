@@ -36,9 +36,6 @@
 //!
 //! Phase 1 contract: signatures only; every body is `todo!()`.
 
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-
 // `Box` comes from the prelude.  Once the crate flips to
 // `#![no_std]` (per the translation plan) this will become an
 // explicit `use alloc::boxed::Box;` at the crate root.
@@ -88,6 +85,7 @@ pub trait PicoHashOps {
 /// not necessarily owned by the table (intrusive mode).  `key` is
 /// a raw pointer because the table is type-erased.  Both will be
 /// dereferenced inside `unsafe` blocks in Phase 3.
+#[allow(non_camel_case_types)]
 #[derive(Debug)]
 pub struct picohash_item {
     pub hash: u64,
@@ -108,7 +106,10 @@ pub struct picohash_item {
 ///   so a boxed slice expresses the contract better than `Vec`.
 ///   The bin entries themselves are raw pointers because the chain
 ///   nodes are not owned by the table in intrusive mode.
-/// * `nb_bin` and `count` mirror the C fields directly.
+/// * `nb_bin` mirrors the C field directly.  Invariant:
+///   `nb_bin == hash_bin.len()` must hold at all times; Phase 3
+///   code may use either to index bins.
+/// * `count` mirrors the C field directly.
 /// * `hash_seed: [u8; 16]` — the C field was `const uint8_t*` and
 ///   either aliased caller memory (the QUIC context's seed buffer,
 ///   `quicctx.c:706`) or pointed at a `static` zero buffer.  The
@@ -116,6 +117,11 @@ pub struct picohash_item {
 ///   set once at QUIC-context creation, so duplication is cheap.
 /// * `ops: Box<dyn PicoHashOps>` — folds the C function-pointer
 ///   trio into a single trait object per the translation rules.
+///
+/// Threading: the C header carries a `/* TODO: lock ! */` comment.
+/// Multi-threading is out of scope for v1; revisit in v2 when
+/// `Send`/`Sync` are added to the crate.
+#[allow(non_camel_case_types)]
 pub struct picohash_table {
     pub hash_bin: Box<[*mut picohash_item]>,
     pub nb_bin: usize,
