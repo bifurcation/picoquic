@@ -66,14 +66,13 @@ use core::net::SocketAddr;
 
 use crate::hash::{picohash_item, picohash_table};
 use crate::splay::{picosplay_node_t, picosplay_tree_t};
-use crate::unified_log::picoquic_unified_logging_t;
+use crate::unified_log::UnifiedLogging;
 use crate::{
-    PICOQUIC_RESET_SECRET_SIZE, picoquic_alpn_select_fn, picoquic_alpn_select_fn_v2,
-    picoquic_congestion_algorithm_t, picoquic_connection_id_cb_fn, picoquic_connection_id_t,
-    picoquic_free_verify_certificate_ctx, picoquic_fuzz_fn, picoquic_lossbit_version_enum,
-    picoquic_packet_context_enum, picoquic_path_status_enum, picoquic_pmtud_policy_enum,
-    picoquic_spinbit_version_enum, picoquic_state_enum, picoquic_stream_data_cb_fn,
-    picoquic_stream_direct_receive_fn, picoquic_tp_t, ptls_verify_certificate_t,
+    AlpnSelect, AlpnSelectV2, ConnectionIdCb, FreeVerifyCertificateCtx, Fuzz,
+    PICOQUIC_RESET_SECRET_SIZE, StreamDataCb, StreamDirectReceive, picoquic_congestion_algorithm_t,
+    picoquic_connection_id_t, picoquic_lossbit_version_enum, picoquic_packet_context_enum,
+    picoquic_path_status_enum, picoquic_pmtud_policy_enum, picoquic_spinbit_version_enum,
+    picoquic_state_enum, picoquic_tp_t, ptls_verify_certificate_t,
 };
 
 // ---------------------------------------------------------------------------
@@ -782,13 +781,13 @@ pub trait MemLogHook {
 /// scope (per the translation plan): no `Send`/`Sync`.
 pub struct picoquic_quic_t {
     pub tls_master_ctx: *mut c_void,
-    pub default_callback_fn: Option<Box<dyn picoquic_stream_data_cb_fn>>,
+    pub default_callback_fn: Option<Box<dyn StreamDataCb>>,
     pub default_callback_ctx: *mut c_void,
     pub picomask_ctx: *mut c_void,
     pub picomask_fns: Option<Box<dyn PicomaskOps>>,
     pub default_alpn: *const core::ffi::c_char,
-    pub alpn_select_fn: Option<Box<dyn picoquic_alpn_select_fn>>,
-    pub alpn_select_fn_v2: Option<Box<dyn picoquic_alpn_select_fn_v2>>,
+    pub alpn_select_fn: Option<Box<dyn AlpnSelect>>,
+    pub alpn_select_fn_v2: Option<Box<dyn AlpnSelectV2>>,
     pub reset_seed: [u8; PICOQUIC_RESET_SECRET_SIZE],
     pub retry_seed: [u8; PICOQUIC_RETRY_SECRET_SIZE],
     pub p_simulated_time: *mut u64,
@@ -881,7 +880,7 @@ pub struct picoquic_quic_t {
     pub nb_data_nodes_allocated: i32,
     pub nb_data_nodes_allocated_max: i32,
 
-    pub cnx_id_callback_fn: Option<Box<dyn picoquic_connection_id_cb_fn>>,
+    pub cnx_id_callback_fn: Option<Box<dyn ConnectionIdCb>>,
     pub cnx_id_callback_ctx: *mut c_void,
 
     pub aead_encrypt_ticket_ctx: *mut c_void,
@@ -890,11 +889,11 @@ pub struct picoquic_quic_t {
     pub retry_integrity_verify_ctx: *mut *mut c_void,
 
     pub verify_certificate_callback: *mut ptls_verify_certificate_t,
-    pub free_verify_certificate_callback_fn: Option<Box<dyn picoquic_free_verify_certificate_ctx>>,
+    pub free_verify_certificate_callback_fn: Option<Box<dyn FreeVerifyCertificateCtx>>,
 
     pub default_tp: picoquic_tp_t,
 
-    pub fuzz_fn: Option<Box<dyn picoquic_fuzz_fn>>,
+    pub fuzz_fn: Option<Box<dyn Fuzz>>,
     pub fuzz_ctx: *mut c_void,
     pub wake_file: i32,
     pub wake_line: i32,
@@ -908,9 +907,9 @@ pub struct picoquic_quic_t {
     pub binlog_dir: *mut core::ffi::c_char,
     pub qlog_dir: *mut core::ffi::c_char,
     pub autoqlog_fn: Option<Box<dyn AutoQlog>>,
-    pub text_log_fns: Option<Box<dyn picoquic_unified_logging_t>>,
-    pub bin_log_fns: Option<Box<dyn picoquic_unified_logging_t>>,
-    pub qlog_fns: Option<Box<dyn picoquic_unified_logging_t>>,
+    pub text_log_fns: Option<Box<dyn UnifiedLogging>>,
+    pub bin_log_fns: Option<Box<dyn UnifiedLogging>>,
+    pub qlog_fns: Option<Box<dyn UnifiedLogging>>,
     pub perflog_fn: Option<Box<dyn PerformanceLog>>,
     pub v_perflog_ctx: *mut c_void,
     pub v_thread_ctx: *mut c_void,
@@ -981,7 +980,7 @@ pub struct picoquic_stream_head_t {
     pub reliable_size: u64,
     pub send_queue: *mut picoquic_stream_queue_node_t,
     pub app_stream_ctx: *mut c_void,
-    pub direct_receive_fn: Option<Box<dyn picoquic_stream_direct_receive_fn>>,
+    pub direct_receive_fn: Option<Box<dyn StreamDirectReceive>>,
     pub direct_receive_ctx: *mut c_void,
     pub sack_list: picoquic_sack_list_t,
     pub stream_priority: u8,
@@ -1430,7 +1429,7 @@ pub struct picoquic_cnx_t {
     pub alpn: *const core::ffi::c_char,
     pub max_early_data_size: usize,
 
-    pub callback_fn: Option<Box<dyn picoquic_stream_data_cb_fn>>,
+    pub callback_fn: Option<Box<dyn StreamDataCb>>,
     pub callback_ctx: *mut c_void,
 
     pub cnx_state: picoquic_state_enum,

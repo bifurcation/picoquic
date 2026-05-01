@@ -48,8 +48,7 @@
 #![allow(clippy::enum_variant_names)]
 
 use crate::{
-    picoquic_lossbit_version_enum, picoquic_quic_t, picoquic_spinbit_version_enum,
-    picoquic_stream_data_cb_fn,
+    StreamDataCb, picoquic_lossbit_version_enum, picoquic_quic_t, picoquic_spinbit_version_enum,
 };
 
 // ---------------------------------------------------------------------------
@@ -361,7 +360,7 @@ pub fn picoquic_config_usage() {
 ///   downstream owned state, but it does not free the struct
 ///   itself — ownership stays with the caller.
 /// * `default_callback_fn` + `default_callback_ctx` collapse to
-///   one `Option<Box<dyn picoquic_stream_data_cb_fn>>` per the
+///   one `Option<Box<dyn StreamDataCb>>` per the
 ///   function-pointers-map-to-traits rule, with the `void*`
 ///   context folded into the trait implementor's state.  `None`
 ///   matches the C "no default callback" case where the function
@@ -373,7 +372,7 @@ pub fn picoquic_config_usage() {
 ///   context type is real.
 pub fn picoquic_create_and_configure(
     _config: &mut picoquic_quic_config_t,
-    _default_callback: Option<Box<dyn picoquic_stream_data_cb_fn>>,
+    _default_callback: Option<Box<dyn StreamDataCb>>,
     _current_time: u64,
     _p_simulated_time: Option<&mut u64>,
 ) -> Option<Box<picoquic_quic_t>> {

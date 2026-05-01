@@ -4,7 +4,7 @@
 //! complementary logs per QUIC context — a textual trace, a
 //! structured binary trace, and a qlog — but most applications only
 //! enable a subset.  Each backend is documented as a vtable of
-//! function pointers (`picoquic_unified_logging_t` in C) that the
+//! function pointers (`UnifiedLogging` in C) that the
 //! application optionally installs on the QUIC context.  The free
 //! functions in this module are the dispatch layer: they fan a
 //! single log event out to whichever backends are registered.
@@ -13,12 +13,12 @@
 //!
 //! Pointer-shape and translation policy notes for this module:
 //!
-//! * The C `picoquic_unified_logging_t` is a 16-slot vtable.  Per
+//! * The C `UnifiedLogging` is a 16-slot vtable.  Per
 //!   the Phase 1 rule "function pointers map to traits" we collapse
 //!   the whole vtable into a single trait,
-//!   [`picoquic_unified_logging_t`], because every backend
+//!   [`UnifiedLogging`], because every backend
 //!   installs all sixteen entries together.  A QUIC context will
-//!   eventually hold three optional `Box<dyn picoquic_unified_logging_t>`
+//!   eventually hold three optional `Box<dyn UnifiedLogging>`
 //!   slots (`text_log_fns` / `bin_log_fns` / `qlog_fns`); that
 //!   restructuring lands when `picoquic_internal.h` is translated.
 //! * `picoquic_quic_t*` / `picoquic_cnx_t*` — every observed caller
@@ -64,17 +64,15 @@ use crate::{
 // Unified-logger vtable.
 //
 // One trait covers all sixteen function-pointer slots of
-// `picoquic_unified_logging_t`.  Every concrete logger (text /
+// `UnifiedLogging`.  Every concrete logger (text /
 // binary / qlog) implements the full trait — the C source enforces
 // "if a logging type is documented, all three functions for that
 // type shall be documented as well" by convention; the trait
 // requirement makes that explicit.
 
 /// Vtable trait covering every entry of the C
-/// `picoquic_unified_logging_t` struct.  The trait is named in
-/// `snake_case` (matching the C typedef) so the public Rust
-/// surface mirrors the C header byte-for-byte.
-pub trait picoquic_unified_logging_t {
+/// `picoquic_unified_logging_t` struct.
+pub trait UnifiedLogging {
     /// Log an application-supplied message that is not attached to a
     /// live connection — the QUIC context plus a connection-id hint
     /// supply the routing.  C: `picoquic_log_quic_app_message_fn`.

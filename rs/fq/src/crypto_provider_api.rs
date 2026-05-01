@@ -206,61 +206,61 @@ pub fn picoquic_register_hpke_kem(_hpke_kem: &'static ptls_hpke_kem_t) {
 // internal state (e.g. an OpenSSL handle), so the trait methods take
 // `&mut self`.
 
-/// C: `picoquic_set_tls_key_provider_t`.  Installs a key provider in
+/// C: `SetTlsKeyProvider`.  Installs a key provider in
 /// a TLS context using a raw key blob.  Returns 0 on success in C;
 /// modeled as `Result<(), ()>` until the crate-level `Error` enum
 /// lands.
-pub trait picoquic_set_tls_key_provider_t {
+pub trait SetTlsKeyProvider {
     fn set(&mut self, ctx: &mut ptls_context_t, data: &[u8]) -> Result<(), ()>;
 }
 
-/// C: `picoquic_get_private_key_from_file_t`.  Reads a private key
+/// C: `GetPrivateKeyFromFile`.  Reads a private key
 /// PEM file and returns its DER-encoded bytes.  The C callee
 /// `malloc`s the buffer and writes its length through `int*
 /// key_length`; the Rust shape returns an owning `Vec<u8>` that
 /// captures both, with `None` standing in for the C `NULL` failure
 /// sentinel.
-pub trait picoquic_get_private_key_from_file_t {
+pub trait GetPrivateKeyFromFile {
     fn get(&mut self, file_name: &str) -> Option<Vec<u8>>;
 }
 
-/// C: `picoquic_set_private_key_from_file_t`.  Reads a PEM file and
+/// C: `SetPrivateKeyFromFile`.  Reads a PEM file and
 /// installs the resulting key in `ctx`.  Returns 0 on success in C.
-pub trait picoquic_set_private_key_from_file_t {
+pub trait SetPrivateKeyFromFile {
     fn set(&mut self, keypem: &str, ctx: &mut ptls_context_t) -> Result<(), ()>;
 }
 
-/// C: `picoquic_get_public_key_from_private_t`.  Reads a private-key
+/// C: `GetPublicKeyFromPrivate`.  Reads a private-key
 /// PEM file and produces the matching public key DER.  C signature
 /// returned the bytes through `uint8_t** pubkey` plus `size_t*
 /// pubkey_len`; the owning out-pointer collapses to `Vec<u8>`.
-pub trait picoquic_get_public_key_from_private_t {
+pub trait GetPublicKeyFromPrivate {
     fn get(&mut self, keypem: &str) -> Result<Vec<u8>, ()>;
 }
 
-/// C: `picoquic_dispose_sign_certificate_t`.  Provider-specific
+/// C: `DisposeSignCertificate`.  Provider-specific
 /// teardown for a sign-certificate vtable.  Phase 3 may collapse
 /// into `Drop` once the `ptls_sign_certificate_t` binding is real.
-pub trait picoquic_dispose_sign_certificate_t {
+pub trait DisposeSignCertificate {
     fn dispose(&mut self, cert: &mut ptls_sign_certificate_t);
 }
 
-/// C: `picoquic_get_certs_from_file_t`.  Reads a PEM bundle and
+/// C: `GetCertsFromFile`.  Reads a PEM bundle and
 /// returns the certificate chain as a sequence of iovecs.  The C
 /// out-pointer pair (`ptls_iovec_t*` + `size_t* count`) collapses
 /// to `Vec<ptls_iovec_t>`.
-pub trait picoquic_get_certs_from_file_t {
+pub trait GetCertsFromFile {
     fn get(&mut self, file_name: &str) -> Option<Vec<ptls_iovec_t>>;
 }
 
-/// C: `picoquic_dispose_certificate_verifier_t`.  Provider-specific
+/// C: `DisposeCertificateVerifier`.  Provider-specific
 /// teardown for a verifier vtable.
-pub trait picoquic_dispose_certificate_verifier_t {
+pub trait DisposeCertificateVerifier {
     fn dispose(&mut self, verifier: &mut ptls_verify_certificate_t);
 }
 
 /// Output bundle from
-/// [`picoquic_get_certificate_verifier_t::get`].  `is_cert_store_not_empty`
+/// [`GetCertificateVerifier::get`].  `is_cert_store_not_empty`
 /// and the disposer were separate out-parameters in C; grouping them
 /// here keeps the trait method signature one-out, one-return.
 pub struct PicoquicCertificateVerifier {
@@ -270,66 +270,66 @@ pub struct PicoquicCertificateVerifier {
     /// Mirrors the C `unsigned int* is_cert_store_not_empty`
     /// out-parameter.  Promoted to `bool`.
     pub is_cert_store_not_empty: bool,
-    /// Mirrors the C `picoquic_dispose_certificate_verifier_t*`
+    /// Mirrors the C `DisposeCertificateVerifier*`
     /// out-parameter.  `None` matches the C sentinel where the
     /// provider has no teardown hook to register.
-    pub free_certificate_verifier_fn: Option<Box<dyn picoquic_dispose_certificate_verifier_t>>,
+    pub free_certificate_verifier_fn: Option<Box<dyn DisposeCertificateVerifier>>,
 }
 
-/// C: `picoquic_get_certificate_verifier_t`.  Returns a freshly
+/// C: `GetCertificateVerifier`.  Returns a freshly
 /// allocated verifier plus its sidekick metadata.
-pub trait picoquic_get_certificate_verifier_t {
+pub trait GetCertificateVerifier {
     fn get(&mut self, cert_root_file_name: &str) -> Option<PicoquicCertificateVerifier>;
 }
 
-/// C: `picoquic_set_tls_root_certificates_t`.  Installs a root-CA
+/// C: `SetTlsRootCertificates`.  Installs a root-CA
 /// bundle in `ctx`.  The C `(ptls_iovec_t* certs, size_t count)`
 /// pair collapses to a borrowed slice.
-pub trait picoquic_set_tls_root_certificates_t {
+pub trait SetTlsRootCertificates {
     fn set(&mut self, ctx: &mut ptls_context_t, certs: &[ptls_iovec_t]) -> Result<(), ()>;
 }
 
-/// C: `picoquic_explain_crypto_error_t`.  Reports the most recent
+/// C: `ExplainCryptoError`.  Reports the most recent
 /// crypto error's source location.  The C signature filled
 /// `*err_file` (a borrowed pointer into static storage) and
 /// `*err_line`; the Rust shape returns them as a tuple, with
 /// `None` for "no current error".  Returns 0/-1 in C; the
 /// presence of the tuple captures success.
-pub trait picoquic_explain_crypto_error_t {
+pub trait ExplainCryptoError {
     fn explain(&mut self) -> Option<(&'static str, i32)>;
 }
 
-/// C: `picoquic_clear_crypto_errors_t`.  Drains the provider's
+/// C: `ClearCryptoErrors`.  Drains the provider's
 /// thread-local error queue.
-pub trait picoquic_clear_crypto_errors_t {
+pub trait ClearCryptoErrors {
     fn clear(&mut self);
 }
 
-/// C: `picoquic_set_random_provider_in_ctx_t`.  Installs a
+/// C: `SetRandomProviderInCtx`.  Installs a
 /// provider-specific RNG into a TLS context.  Unused in the current
 /// C tree but kept on the API surface.
-pub trait picoquic_set_random_provider_in_ctx_t {
+pub trait SetRandomProviderInCtx {
     fn install(&mut self, ctx: &mut ptls_context_t);
 }
 
-/// C: `picoquic_crypto_random_provider_t`.  Fills `buf` with random
+/// C: `CryptoRandomProvider`.  Fills `buf` with random
 /// bytes.  The C `(void* buf, size_t len)` pair collapses to
 /// `&mut [u8]`.
-pub trait picoquic_crypto_random_provider_t {
+pub trait CryptoRandomProvider {
     fn random(&mut self, buf: &mut [u8]);
 }
 
-/// C: `picoquic_keyex_from_key_file_t`.  Reads a private-key PEM
+/// C: `KeyexFromKeyFile`.  Reads a private-key PEM
 /// file and constructs a key-exchange context.  C returned the
 /// allocated context through `ptls_key_exchange_context_t**`; the
 /// Rust shape returns an owning `Box`.
-pub trait picoquic_keyex_from_key_file_t {
+pub trait KeyexFromKeyFile {
     fn create(&mut self, keypem: &str) -> Result<Box<ptls_key_exchange_context_t>, ()>;
 }
 
-/// C: `picoquic_keyex_dispose_t`.  Provider-specific teardown for a
+/// C: `KeyexDispose`.  Provider-specific teardown for a
 /// key-exchange context.
-pub trait picoquic_keyex_dispose_t {
+pub trait KeyexDispose {
     fn dispose(&mut self, keyex: &mut ptls_key_exchange_context_t);
 }
 
@@ -345,10 +345,10 @@ pub trait picoquic_keyex_dispose_t {
 /// four-function key-provider bundle (private-key import, sign-cert
 /// disposer, cert-chain reader, public-key derivation).
 pub fn picoquic_register_tls_key_provider_fn(
-    _set_private_key_from_file_fn: Option<Box<dyn picoquic_set_private_key_from_file_t>>,
-    _dispose_sign_certificate_fn: Option<Box<dyn picoquic_dispose_sign_certificate_t>>,
-    _get_certs_from_file_fn: Option<Box<dyn picoquic_get_certs_from_file_t>>,
-    _get_public_key_from_private_fn: Option<Box<dyn picoquic_get_public_key_from_private_t>>,
+    _set_private_key_from_file_fn: Option<Box<dyn SetPrivateKeyFromFile>>,
+    _dispose_sign_certificate_fn: Option<Box<dyn DisposeSignCertificate>>,
+    _get_certs_from_file_fn: Option<Box<dyn GetCertsFromFile>>,
+    _get_public_key_from_private_fn: Option<Box<dyn GetPublicKeyFromPrivate>>,
 ) {
     todo!()
 }
@@ -356,9 +356,9 @@ pub fn picoquic_register_tls_key_provider_fn(
 /// C: `picoquic_register_verify_certificate_fn`.  Installs the
 /// three-function certificate-verifier bundle.
 pub fn picoquic_register_verify_certificate_fn(
-    _certificate_verifier_fn: Option<Box<dyn picoquic_get_certificate_verifier_t>>,
-    _dispose_certificate_verifier_fn: Option<Box<dyn picoquic_dispose_certificate_verifier_t>>,
-    _set_tls_root_certificates_fn: Option<Box<dyn picoquic_set_tls_root_certificates_t>>,
+    _certificate_verifier_fn: Option<Box<dyn GetCertificateVerifier>>,
+    _dispose_certificate_verifier_fn: Option<Box<dyn DisposeCertificateVerifier>>,
+    _set_tls_root_certificates_fn: Option<Box<dyn SetTlsRootCertificates>>,
 ) {
     todo!()
 }
@@ -366,8 +366,8 @@ pub fn picoquic_register_verify_certificate_fn(
 /// C: `picoquic_register_explain_crypto_error_fn`.  Installs the
 /// error-explanation hook pair.
 pub fn picoquic_register_explain_crypto_error_fn(
-    _explain_crypto_error_fn: Option<Box<dyn picoquic_explain_crypto_error_t>>,
-    _clear_crypto_errors_fn: Option<Box<dyn picoquic_clear_crypto_errors_t>>,
+    _explain_crypto_error_fn: Option<Box<dyn ExplainCryptoError>>,
+    _clear_crypto_errors_fn: Option<Box<dyn ClearCryptoErrors>>,
 ) {
     todo!()
 }
@@ -375,7 +375,7 @@ pub fn picoquic_register_explain_crypto_error_fn(
 /// C: `picoquic_register_crypto_random_provider_fn`.  Installs the
 /// global RNG provider.
 pub fn picoquic_register_crypto_random_provider_fn(
-    _random_provider: Option<Box<dyn picoquic_crypto_random_provider_t>>,
+    _random_provider: Option<Box<dyn CryptoRandomProvider>>,
 ) {
     todo!()
 }
@@ -383,8 +383,8 @@ pub fn picoquic_register_crypto_random_provider_fn(
 /// C: `picoquic_register_keyex_from_key_file_fn`.  Installs the
 /// key-exchange constructor / disposer pair.
 pub fn picoquic_register_keyex_from_key_file_fn(
-    _keyex_from_key_file_fn: Option<Box<dyn picoquic_keyex_from_key_file_t>>,
-    _keyex_dispose_fn: Option<Box<dyn picoquic_keyex_dispose_t>>,
+    _keyex_from_key_file_fn: Option<Box<dyn KeyexFromKeyFile>>,
+    _keyex_dispose_fn: Option<Box<dyn KeyexDispose>>,
 ) {
     todo!()
 }
@@ -456,83 +456,74 @@ pub fn picoquic_hpke_kems() -> &'static [&'static ptls_hpke_kem_t] {
 
 /// Read access to the registered `picoquic_set_private_key_from_file_fn`
 /// callback.
-pub fn picoquic_set_private_key_from_file_fn()
--> Option<&'static mut dyn picoquic_set_private_key_from_file_t> {
+pub fn picoquic_set_private_key_from_file_fn() -> Option<&'static mut dyn SetPrivateKeyFromFile> {
     todo!()
 }
 
 /// Read access to the registered `picoquic_dispose_sign_certificate_fn`
 /// callback.
-pub fn picoquic_dispose_sign_certificate_fn()
--> Option<&'static mut dyn picoquic_dispose_sign_certificate_t> {
+pub fn picoquic_dispose_sign_certificate_fn() -> Option<&'static mut dyn DisposeSignCertificate> {
     todo!()
 }
 
 /// Read access to the registered `picoquic_get_certs_from_file_fn`
 /// callback.
-pub fn picoquic_get_certs_from_file_fn() -> Option<&'static mut dyn picoquic_get_certs_from_file_t>
-{
+pub fn picoquic_get_certs_from_file_fn() -> Option<&'static mut dyn GetCertsFromFile> {
     todo!()
 }
 
 /// Read access to the registered `picoquic_get_public_key_from_private_fn`
 /// callback.
-pub fn picoquic_get_public_key_from_private_fn()
--> Option<&'static mut dyn picoquic_get_public_key_from_private_t> {
+pub fn picoquic_get_public_key_from_private_fn() -> Option<&'static mut dyn GetPublicKeyFromPrivate>
+{
     todo!()
 }
 
 /// Read access to the registered `picoquic_get_certificate_verifier_fn`
 /// callback.
-pub fn picoquic_get_certificate_verifier_fn()
--> Option<&'static mut dyn picoquic_get_certificate_verifier_t> {
+pub fn picoquic_get_certificate_verifier_fn() -> Option<&'static mut dyn GetCertificateVerifier> {
     todo!()
 }
 
 /// Read access to the registered `picoquic_dispose_certificate_verifier_fn`
 /// callback.
 pub fn picoquic_dispose_certificate_verifier_fn()
--> Option<&'static mut dyn picoquic_dispose_certificate_verifier_t> {
+-> Option<&'static mut dyn DisposeCertificateVerifier> {
     todo!()
 }
 
 /// Read access to the registered `picoquic_set_tls_root_certificates_fn`
 /// callback.
-pub fn picoquic_set_tls_root_certificates_fn()
--> Option<&'static mut dyn picoquic_set_tls_root_certificates_t> {
+pub fn picoquic_set_tls_root_certificates_fn() -> Option<&'static mut dyn SetTlsRootCertificates> {
     todo!()
 }
 
 /// Read access to the registered `picoquic_explain_crypto_error_fn`
 /// callback.
-pub fn picoquic_explain_crypto_error_fn() -> Option<&'static mut dyn picoquic_explain_crypto_error_t>
-{
+pub fn picoquic_explain_crypto_error_fn() -> Option<&'static mut dyn ExplainCryptoError> {
     todo!()
 }
 
 /// Read access to the registered `picoquic_clear_crypto_errors_fn`
 /// callback.
-pub fn picoquic_clear_crypto_errors_fn() -> Option<&'static mut dyn picoquic_clear_crypto_errors_t>
-{
+pub fn picoquic_clear_crypto_errors_fn() -> Option<&'static mut dyn ClearCryptoErrors> {
     todo!()
 }
 
 /// Read access to the registered `picoquic_crypto_random_provider_fn`
 /// callback.
-pub fn picoquic_crypto_random_provider_fn()
--> Option<&'static mut dyn picoquic_crypto_random_provider_t> {
+pub fn picoquic_crypto_random_provider_fn() -> Option<&'static mut dyn CryptoRandomProvider> {
     todo!()
 }
 
 /// Read access to the registered `picoquic_keyex_from_key_file_fn`
 /// callback.
-pub fn picoquic_keyex_from_key_file_fn() -> Option<&'static mut dyn picoquic_keyex_from_key_file_t>
-{
+pub fn picoquic_keyex_from_key_file_fn() -> Option<&'static mut dyn KeyexFromKeyFile> {
     todo!()
 }
 
 /// Read access to the registered `picoquic_keyex_dispose_fn` callback.
-pub fn picoquic_keyex_dispose_fn() -> Option<&'static mut dyn picoquic_keyex_dispose_t> {
+pub fn picoquic_keyex_dispose_fn() -> Option<&'static mut dyn KeyexDispose> {
     todo!()
 }
 

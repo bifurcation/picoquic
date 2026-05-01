@@ -636,7 +636,7 @@ pub fn picoquic_get_quic_time(_quic: &picoquic_quic_t) -> u64 {
 ///
 /// `bytes` is `&[u8]` rather than `*const u8 + size_t`; events that
 /// carry no payload pass `&[]`.
-pub trait picoquic_stream_data_cb_fn {
+pub trait StreamDataCb {
     fn callback(
         &mut self,
         cnx: &mut picoquic_cnx_t,
@@ -649,21 +649,21 @@ pub trait picoquic_stream_data_cb_fn {
 
 /// ALPN-selection callback.  Returns the index of the chosen ALPN
 /// in `list`, or any value `>= list.len()` to signal "none of the
-/// proposed ALPNs is supported".  C: `picoquic_alpn_select_fn`.
-pub trait picoquic_alpn_select_fn {
+/// proposed ALPNs is supported".  C: `AlpnSelect`.
+pub trait AlpnSelect {
     fn select(&mut self, quic: &mut picoquic_quic_t, list: &[ptls_iovec_t]) -> usize;
 }
 
 /// V2 ALPN-selection callback using `picoquic_iovec_t` instead of
-/// `ptls_iovec_t`.  C: `picoquic_alpn_select_fn_v2`.
-pub trait picoquic_alpn_select_fn_v2 {
+/// `ptls_iovec_t`.  C: `AlpnSelectV2`.
+pub trait AlpnSelectV2 {
     fn select(&mut self, quic: &mut picoquic_quic_t, list: &[picoquic_iovec_t]) -> usize;
 }
 
 /// Callback that produces a server-environment-compatible CID.
 /// Folds the C `void* cnx_id_cb_data` into the implementor's state.
-/// C: `picoquic_connection_id_cb_fn`.
-pub trait picoquic_connection_id_cb_fn {
+/// C: `ConnectionIdCb`.
+pub trait ConnectionIdCb {
     fn produce(
         &mut self,
         quic: &mut picoquic_quic_t,
@@ -674,8 +674,8 @@ pub trait picoquic_connection_id_cb_fn {
 
 /// Packet-fuzzer callback.  Folds the C `void* fuzz_ctx` into the
 /// implementor.  Returns the new packet length (which may equal
-/// the input).  C: `picoquic_fuzz_fn`.
-pub trait picoquic_fuzz_fn {
+/// the input).  C: `Fuzz`.
+pub trait Fuzz {
     fn fuzz(
         &mut self,
         cnx: &mut picoquic_cnx_t,
@@ -691,38 +691,38 @@ pub struct ptls_verify_certificate_t {
 }
 
 /// Signature-verification callback installed by a certificate
-/// verifier.  C: `picoquic_verify_sign_cb_fn`.  Returns 0 on
+/// verifier.  C: `VerifySignCb`.  Returns 0 on
 /// match.
-pub trait picoquic_verify_sign_cb_fn {
+pub trait VerifySignCb {
     fn verify(&mut self, data: &[u8], signature: &[u8]) -> i32;
 }
 
 /// Certificate-chain verification callback.  C:
-/// `picoquic_verify_certificate_cb_fn`.  Returns 0 when the chain
+/// `VerifyCertificateCb`.  Returns 0 when the chain
 /// validates and populates `verify_sign` with a signature
 /// verifier for subsequent handshake messages.
-pub trait picoquic_verify_certificate_cb_fn {
+pub trait VerifyCertificateCb {
     fn verify(
         &mut self,
         cnx: &mut picoquic_cnx_t,
         certs: &[ptls_iovec_t],
-        verify_sign: &mut Option<Box<dyn picoquic_verify_sign_cb_fn>>,
+        verify_sign: &mut Option<Box<dyn VerifySignCb>>,
     ) -> i32;
 }
 
 /// Free hook for the verifier context.  C:
-/// `picoquic_free_verify_certificate_ctx`.  In Rust this normally
+/// `FreeVerifyCertificateCtx`.  In Rust this normally
 /// folds into `Drop`, but the trait is kept for source-level parity
 /// with the C API surface.
-pub trait picoquic_free_verify_certificate_ctx {
+pub trait FreeVerifyCertificateCtx {
     fn free(&mut self, ctx: &mut ptls_verify_certificate_t);
 }
 
 /// Direct-receive callback for streams marked with
 /// `picoquic_mark_direct_receive_stream`.  C:
-/// `picoquic_stream_direct_receive_fn`.  Folds `direct_receive_ctx`
+/// `StreamDirectReceive`.  Folds `direct_receive_ctx`
 /// into the implementor.
-pub trait picoquic_stream_direct_receive_fn {
+pub trait StreamDirectReceive {
     fn receive(
         &mut self,
         cnx: &mut picoquic_cnx_t,
@@ -1002,7 +1002,7 @@ pub fn picoquic_tls_get_sni(_cnx: &picoquic_cnx_t) -> Option<&str> {
 
 /// C: `picoquic_set_fuzz`.  Install a per-context packet fuzzer.
 /// `None` removes the fuzzer.
-pub fn picoquic_set_fuzz(_quic: &mut picoquic_quic_t, _fuzzer: Option<Box<dyn picoquic_fuzz_fn>>) {
+pub fn picoquic_set_fuzz(_quic: &mut picoquic_quic_t, _fuzzer: Option<Box<dyn Fuzz>>) {
     todo!()
 }
 
@@ -1136,9 +1136,9 @@ pub fn picoquic_disable_port_blocking(
 /// * Every `char const*` parameter is `Option<&str>` (the C source
 ///   passes `NULL` to mean "absent" — see the sockloop call site).
 /// * `default_callback_fn` + `default_callback_ctx` collapse to one
-///   `Option<Box<dyn picoquic_stream_data_cb_fn>>`.
+///   `Option<Box<dyn StreamDataCb>>`.
 /// * `cnx_id_callback` + `cnx_id_callback_data` collapse to
-///   `Option<Box<dyn picoquic_connection_id_cb_fn>>`.
+///   `Option<Box<dyn ConnectionIdCb>>`.
 /// * `reset_seed[16]` is `[u8; PICOQUIC_RESET_SECRET_SIZE]` taken by
 ///   value (the C body deep-copies it into `quic->reset_seed`).
 /// * `p_simulated_time: *mut u64` becomes `Option<&'a mut u64>`;
@@ -1154,8 +1154,8 @@ pub fn picoquic_create(
     _key_file_name: Option<&str>,
     _cert_root_file_name: Option<&str>,
     _default_alpn: Option<&str>,
-    _default_callback: Option<Box<dyn picoquic_stream_data_cb_fn>>,
-    _cnx_id_callback: Option<Box<dyn picoquic_connection_id_cb_fn>>,
+    _default_callback: Option<Box<dyn StreamDataCb>>,
+    _cnx_id_callback: Option<Box<dyn ConnectionIdCb>>,
     _reset_seed: [u8; PICOQUIC_RESET_SECRET_SIZE],
     _current_time: u64,
     _p_simulated_time: Option<&mut u64>,
@@ -1269,7 +1269,7 @@ pub fn picoquic_set_tls_key(_quic: &mut picoquic_quic_t, _key: &[u8]) -> Result<
 pub fn picoquic_set_verify_certificate_callback(
     _quic: &mut picoquic_quic_t,
     _cb: Box<ptls_verify_certificate_t>,
-    _free_fn: Box<dyn picoquic_free_verify_certificate_ctx>,
+    _free_fn: Box<dyn FreeVerifyCertificateCtx>,
 ) {
     todo!()
 }
@@ -1426,7 +1426,7 @@ pub fn picoquic_set_mtu_max(_quic: &mut picoquic_quic_t, _mtu_max: u32) {
 /// C: `picoquic_set_alpn_select_fn`.
 pub fn picoquic_set_alpn_select_fn(
     _quic: &mut picoquic_quic_t,
-    _alpn_select_fn: Option<Box<dyn picoquic_alpn_select_fn>>,
+    _alpn_select_fn: Option<Box<dyn AlpnSelect>>,
 ) {
     todo!()
 }
@@ -1434,7 +1434,7 @@ pub fn picoquic_set_alpn_select_fn(
 /// C: `picoquic_set_alpn_select_fn_v2`.
 pub fn picoquic_set_alpn_select_fn_v2(
     _quic: &mut picoquic_quic_t,
-    _alpn_select_fn: Option<Box<dyn picoquic_alpn_select_fn_v2>>,
+    _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>,
 ) {
     todo!()
 }
@@ -1443,7 +1443,7 @@ pub fn picoquic_set_alpn_select_fn_v2(
 /// callback_ctx)` pair from C folds into a single trait object.
 pub fn picoquic_set_default_callback(
     _quic: &mut picoquic_quic_t,
-    _callback: Option<Box<dyn picoquic_stream_data_cb_fn>>,
+    _callback: Option<Box<dyn StreamDataCb>>,
 ) {
     todo!()
 }
@@ -1498,7 +1498,7 @@ pub fn picoquic_create_client_cnx<'a>(
     _preferred_version: u32,
     _sni: Option<&str>,
     _alpn: Option<&str>,
-    _callback: Option<Box<dyn picoquic_stream_data_cb_fn>>,
+    _callback: Option<Box<dyn StreamDataCb>>,
 ) -> Option<&'a mut picoquic_cnx_t> {
     todo!()
 }
@@ -1863,16 +1863,13 @@ pub fn picoquic_is_cnx_backlog_empty(_cnx: &picoquic_cnx_t) -> bool {
 
 /// C: `picoquic_set_callback`.  See [`picoquic_set_default_callback`]
 /// for the (`callback_fn`, `callback_ctx`) → trait-object collapse.
-pub fn picoquic_set_callback(
-    _cnx: &mut picoquic_cnx_t,
-    _callback: Option<Box<dyn picoquic_stream_data_cb_fn>>,
-) {
+pub fn picoquic_set_callback(_cnx: &mut picoquic_cnx_t, _callback: Option<Box<dyn StreamDataCb>>) {
     todo!()
 }
 
 pub fn picoquic_get_default_callback_function(
     _quic: &picoquic_quic_t,
-) -> Option<&dyn picoquic_stream_data_cb_fn> {
+) -> Option<&dyn StreamDataCb> {
     todo!()
 }
 
@@ -1881,21 +1878,15 @@ pub fn picoquic_get_default_callback_function(
 /// accessor returns the same trait reference as
 /// [`picoquic_get_default_callback_function`].  The C twin is kept
 /// as a separate API for source-level parity.
-pub fn picoquic_get_default_callback_context(
-    _quic: &picoquic_quic_t,
-) -> Option<&dyn picoquic_stream_data_cb_fn> {
+pub fn picoquic_get_default_callback_context(_quic: &picoquic_quic_t) -> Option<&dyn StreamDataCb> {
     todo!()
 }
 
-pub fn picoquic_get_callback_function(
-    _cnx: &picoquic_cnx_t,
-) -> Option<&dyn picoquic_stream_data_cb_fn> {
+pub fn picoquic_get_callback_function(_cnx: &picoquic_cnx_t) -> Option<&dyn StreamDataCb> {
     todo!()
 }
 
-pub fn picoquic_get_callback_context(
-    _cnx: &picoquic_cnx_t,
-) -> Option<&dyn picoquic_stream_data_cb_fn> {
+pub fn picoquic_get_callback_context(_cnx: &picoquic_cnx_t) -> Option<&dyn StreamDataCb> {
     todo!()
 }
 
@@ -2048,7 +2039,7 @@ pub fn picoquic_notify_destination_unreachable_by_cnxid(
 pub fn picoquic_mark_direct_receive_stream(
     _cnx: &mut picoquic_cnx_t,
     _stream_id: u64,
-    _direct_receive: Box<dyn picoquic_stream_direct_receive_fn>,
+    _direct_receive: Box<dyn StreamDirectReceive>,
 ) -> Result<(), ()> {
     todo!()
 }

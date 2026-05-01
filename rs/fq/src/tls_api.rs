@@ -46,7 +46,7 @@
 //!   storage.
 //! * `struct sockaddr*` arguments map to [`core::net::SocketAddr`]
 //!   for parity with `picoquic.rs`.
-//! * `picoquic_free_verify_certificate_ctx` is a function-pointer
+//! * `FreeVerifyCertificateCtx` is a function-pointer
 //!   typedef in picoquic.h; the trait counterpart is already in
 //!   `picoquic.rs` and is reused here.
 //! * Function-pointer parameters in callbacks
@@ -82,8 +82,8 @@ use core::net::SocketAddr;
 
 use crate::internal::picoquic_crypto_context_t;
 use crate::{
-    PICOQUIC_RESET_SECRET_SIZE, picoquic_cnx_t, picoquic_connection_id_t,
-    picoquic_free_verify_certificate_ctx, picoquic_quic_t, ptls_iovec_t, ptls_verify_certificate_t,
+    FreeVerifyCertificateCtx, PICOQUIC_RESET_SECRET_SIZE, picoquic_cnx_t, picoquic_connection_id_t,
+    picoquic_quic_t, ptls_iovec_t, ptls_verify_certificate_t,
 };
 
 // ---------------------------------------------------------------------------
@@ -680,7 +680,7 @@ pub fn picoquic_create_cnxid_reset_secret(
 pub fn picoquic_tls_set_verify_certificate_callback(
     _quic: &mut picoquic_quic_t,
     _cb: Box<ptls_verify_certificate_t>,
-    _free_fn: Option<Box<dyn picoquic_free_verify_certificate_ctx>>,
+    _free_fn: Option<Box<dyn FreeVerifyCertificateCtx>>,
 ) {
     todo!()
 }

@@ -6,7 +6,7 @@
 //! without ever touching the unified-log vtable directly.  Once a
 //! text log file is installed, the QUIC context's
 //! `text_log_fns` slot points at the textlog implementation of
-//! [`crate::unified_log::picoquic_unified_logging_t`],
+//! [`crate::unified_log::UnifiedLogging`],
 //! and every per-event log call fans out through that vtable.
 //!
 //! Phase 1 contract: signatures only — every body is `todo!()`.

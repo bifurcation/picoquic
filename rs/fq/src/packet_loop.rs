@@ -110,7 +110,7 @@ use core::net::SocketAddr;
 
 use crate::config::picoquic_quic_config_t;
 use crate::utils::{PicoquicThreadFn, picoquic_thread_t};
-use crate::{picoquic_alpn_select_fn_v2, picoquic_quic_t, picoquic_stream_data_cb_fn};
+use crate::{AlpnSelectV2, StreamDataCb, picoquic_quic_t};
 
 // ---------------------------------------------------------------------------
 // Compile-time limits.
@@ -699,8 +699,8 @@ pub fn picoquic_get_thread_ctx(
 pub fn picoquic_server_set_context(
     _config: &mut picoquic_quic_config_t,
     _current_time: u64,
-    _default_callback: Option<Box<dyn picoquic_stream_data_cb_fn>>,
-    _alpn_select_fn: Option<Box<dyn picoquic_alpn_select_fn_v2>>,
+    _default_callback: Option<Box<dyn StreamDataCb>>,
+    _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>,
 ) -> Result<Box<picoquic_quic_t>, ()> {
     todo!()
 }
@@ -717,8 +717,8 @@ pub fn picoquic_server_set_context(
 pub fn picoquic_start_server_threads(
     _config: &mut picoquic_quic_config_t,
     _current_time: u64,
-    _alpn_select_fn: Option<Box<dyn picoquic_alpn_select_fn_v2>>,
-    _default_callback: Option<Box<dyn picoquic_stream_data_cb_fn>>,
+    _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>,
+    _default_callback: Option<Box<dyn StreamDataCb>>,
     _loop_callback: Option<Box<dyn PicoquicPacketLoopCbFn>>,
     _thread_create_fn: Option<Box<dyn PicoquicCustomThreadCreateFn>>,
     _thread_delete_fn: Option<Box<dyn PicoquicCustomThreadDeleteFn>>,
