@@ -1,10 +1,10 @@
-//! Translation of `picoquic/picoquic_crypto_provider_api.h`.
+//! Translation of `quic/crypto_provider_api.h`.
 //!
-//! Plug-in interface between picoquic-core and the swappable TLS /
+//! Plug-in interface between quic-core and the swappable TLS /
 //! crypto providers (OpenSSL, minicrypto, fusion, mbedtls).  Each
-//! provider calls `picoquic_register_*` at startup to install its
+//! provider calls `register_*` at startup to install its
 //! ciphersuites, key-exchange algorithms, HPKE primitives, and the
-//! handful of file-/key-handling callbacks that picoquic-core itself
+//! handful of file-/key-handling callbacks that quic-core itself
 //! does not implement.
 //!
 //! Phase 1: signatures only — every body is `todo!()`.  The registry
@@ -18,37 +18,37 @@
 //! Pointer-shape decisions follow the Phase 1 rules:
 //!
 //! * Function-pointer typedefs become traits (one trait per typedef).
-//!   None of the typedefs carry a `void* ctx` — picoquic.h's pattern
+//!   None of the typedefs carry a `void* ctx` — quic.h's pattern
 //!   of folding a context pointer into the trait implementor still
 //!   applies because every implementation is backed by some
 //!   provider-specific state (e.g. an OpenSSL `EVP_PKEY*`).
-//! * picotls types this header references but does not define
+//! * tls types this header references but does not define
 //!   (`ptls_cipher_suite_t`, `ptls_key_exchange_algorithm_t`, …) are
-//!   forward-declared as zero-sized opaque structs.  picotls is an
+//!   forward-declared as zero-sized opaque structs.  tls is an
 //!   external C dependency that has not been translated; the structs
-//!   are declared here rather than in `picoquic.rs` because that
+//!   are declared here rather than in `quic.rs` because that
 //!   module already pulls in `ptls_iovec_t` and
 //!   `ptls_verify_certificate_t` and we re-use those rather than
-//!   duplicating.  Any future picotls Rust binding can replace these
+//!   duplicating.  Any future tls Rust binding can replace these
 //!   placeholders without touching call sites.
 //! * Owning-out-pointer C idioms (`uint8_t** pubkey, size_t *
 //!   pubkey_len`, `ptls_iovec_t* (*)(…, size_t* count)`, etc.)
 //!   collapse to `Result<Vec<…>, ()>` — the C callee always
 //!   `malloc`s the buffer and the caller `free`s it, so a `Vec`
 //!   captures both ownership and length faithfully.
-//! * The `extern` registry globals (`picoquic_cipher_suites`,
-//!   `picoquic_key_exchanges`, `picoquic_*_fn`, …) are exposed as
+//! * The `extern` registry globals (`cipher_suites`,
+//!   `key_exchanges`, `_*_fn`, …) are exposed as
 //!   accessor functions returning borrowed slices / trait references.
 //!   The companion `_NB_MAX` length constants are kept as `pub const`
 //!   so other modules that index by name can compile against them,
 //!   even though the slice carries its own length.
-//! * `picoquic_tls_ctx_t` is an internal struct; it does not cross
+//! * `tls_ctx_t` is an internal struct; it does not cross
 //!   any FFI boundary (it is allocated and consumed entirely inside
 //!   `tls_api.c`), so `repr(C)` is dropped.  Heap arrays
 //!   (`alpn_vec` + `alpn_vec_size`/`alpn_count`, `ext_data` +
 //!   `ext_data_size`) become owning `Vec<T>`s; the fixed `app_secret_*`
 //!   buffers become `[u8; PTLS_MAX_DIGEST_SIZE]` arrays.
-//! * The `picoquic_register_*_fn` setters take
+//! * The `register_*_fn` setters take
 //!   `Option<Box<dyn Trait>>` so the C `NULL` sentinel ("opt out")
 //!   maps to `None` and the registered impl is owned by the registry.
 
@@ -60,111 +60,111 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use crate::{picoquic_cnx_t, ptls_iovec_t, ptls_verify_certificate_t};
+use crate::{cnx_t, ptls_iovec_t, ptls_verify_certificate_t};
 
 // ---------------------------------------------------------------------------
-// `picoquic_tls_api_init` flag bits.
+// `tls_api_init` flag bits.
 
-/// Suppress the OpenSSL provider during `picoquic_tls_api_init`.
+/// Suppress the OpenSSL provider during `tls_api_init`.
 /// C: `TLS_API_INIT_FLAGS_NO_OPENSSL`.
 pub const TLS_API_INIT_FLAGS_NO_OPENSSL: u64 = 1;
 
-/// Suppress the minicrypto provider during `picoquic_tls_api_init`.
+/// Suppress the minicrypto provider during `tls_api_init`.
 /// C: `TLS_API_INIT_FLAGS_NO_MINICRYPTO`.
 pub const TLS_API_INIT_FLAGS_NO_MINICRYPTO: u64 = 2;
 
-/// Suppress the fusion provider during `picoquic_tls_api_init`.
+/// Suppress the fusion provider during `tls_api_init`.
 /// C: `TLS_API_INIT_FLAGS_NO_FUSION`.
 pub const TLS_API_INIT_FLAGS_NO_FUSION: u64 = 4;
 
-/// Suppress the mbedtls provider during `picoquic_tls_api_init`.
+/// Suppress the mbedtls provider during `tls_api_init`.
 /// C: `TLS_API_INIT_FLAGS_NO_MBEDTLS`.
 pub const TLS_API_INIT_FLAGS_NO_MBEDTLS: u64 = 8;
 
 // ---------------------------------------------------------------------------
-// Forward declarations of picotls types referenced by this header.
+// Forward declarations of tls types referenced by this header.
 //
-// picotls is an external C dependency that has not been ported.  The
+// tls is an external C dependency that has not been ported.  The
 // structs below are zero-sized opaque types so signatures in this
 // module compile; their layout and methods land when (or if) the
-// picotls headers get a Rust counterpart.  Pointers across these
+// tls headers get a Rust counterpart.  Pointers across these
 // types stay behind references (`&T` / `&mut T`) to keep `unsafe`
 // out of Phase 1.
 
-/// Forward declaration of `ptls_cipher_suite_t` from picotls.
+/// Forward declaration of `ptls_cipher_suite_t` from tls.
 #[derive(Debug)]
 pub struct ptls_cipher_suite_t {
     _opaque: [u8; 0],
 }
 
-/// Forward declaration of `ptls_key_exchange_algorithm_t` from picotls.
+/// Forward declaration of `ptls_key_exchange_algorithm_t` from tls.
 #[derive(Debug)]
 pub struct ptls_key_exchange_algorithm_t {
     _opaque: [u8; 0],
 }
 
-/// Forward declaration of `ptls_hpke_cipher_suite_t` from picotls.
+/// Forward declaration of `ptls_hpke_cipher_suite_t` from tls.
 #[derive(Debug)]
 pub struct ptls_hpke_cipher_suite_t {
     _opaque: [u8; 0],
 }
 
-/// Forward declaration of `ptls_hpke_kem_t` from picotls.
+/// Forward declaration of `ptls_hpke_kem_t` from tls.
 #[derive(Debug)]
 pub struct ptls_hpke_kem_t {
     _opaque: [u8; 0],
 }
 
-/// Forward declaration of `ptls_context_t` from picotls.  Setters in
+/// Forward declaration of `ptls_context_t` from tls.  Setters in
 /// this header mutate it in place.
 #[derive(Debug)]
 pub struct ptls_context_t {
     _opaque: [u8; 0],
 }
 
-/// Forward declaration of `ptls_sign_certificate_t` from picotls.
+/// Forward declaration of `ptls_sign_certificate_t` from tls.
 #[derive(Debug)]
 pub struct ptls_sign_certificate_t {
     _opaque: [u8; 0],
 }
 
-/// Forward declaration of `ptls_t` from picotls (the per-connection
-/// TLS state owned by `picoquic_tls_ctx_t`).
+/// Forward declaration of `ptls_t` from tls (the per-connection
+/// TLS state owned by `tls_ctx_t`).
 #[derive(Debug)]
 pub struct ptls_t {
     _opaque: [u8; 0],
 }
 
-/// Forward declaration of `ptls_raw_extension_t` from picotls.  Used
-/// as a fixed two-element array inside `picoquic_tls_ctx_t`; phase 3
+/// Forward declaration of `ptls_raw_extension_t` from tls.  Used
+/// as a fixed two-element array inside `tls_ctx_t`; phase 3
 /// will replace this with the real definition or a dedicated wrapper.
 #[derive(Debug, Default, Copy, Clone)]
 pub struct ptls_raw_extension_t {
     _opaque: [u8; 0],
 }
 
-/// Forward declaration of `ptls_handshake_properties_t` from picotls.
+/// Forward declaration of `ptls_handshake_properties_t` from tls.
 #[derive(Debug, Default)]
 pub struct ptls_handshake_properties_t {
     _opaque: [u8; 0],
 }
 
-/// Forward declaration of `ptls_key_exchange_context_t` from picotls.
+/// Forward declaration of `ptls_key_exchange_context_t` from tls.
 #[derive(Debug)]
 pub struct ptls_key_exchange_context_t {
     _opaque: [u8; 0],
 }
 
 // ---------------------------------------------------------------------------
-// Constants borrowed from picotls.h.
+// Constants borrowed from tls.h.
 //
-// `PTLS_MAX_DIGEST_SIZE` is defined in `picotls.h`; it is replicated
+// `PTLS_MAX_DIGEST_SIZE` is defined in `tls.h`; it is replicated
 // here as a `pub const` to size the per-context app-secret buffers
 // without forcing every consumer of this module to depend on a
-// (still-absent) picotls binding.  The value mirrors picotls 1.x.
+// (still-absent) tls binding.  The value mirrors tls 1.x.
 
-/// Maximum digest size across the hash algorithms picotls supports.
-/// Mirrors `PTLS_MAX_DIGEST_SIZE` in `picotls.h`.
+/// Maximum digest size across the hash algorithms tls supports.
+/// Mirrors `PTLS_MAX_DIGEST_SIZE` in `tls.h`.
 pub const PTLS_MAX_DIGEST_SIZE: usize = 64;
 
 // ---------------------------------------------------------------------------
@@ -172,28 +172,26 @@ pub const PTLS_MAX_DIGEST_SIZE: usize = 64;
 
 /// Install a cipher suite in the global registry.  `is_low_memory`
 /// is a flag (0 / non-zero in C); promoted to `bool`.  C:
-/// `picoquic_register_ciphersuite`.
-pub fn picoquic_register_ciphersuite(_suite: &'static ptls_cipher_suite_t, _is_low_memory: bool) {
+/// `register_ciphersuite`.
+pub fn register_ciphersuite(_suite: &'static ptls_cipher_suite_t, _is_low_memory: bool) {
     todo!()
 }
 
 /// Install a key-exchange algorithm in the global registry.  C:
-/// `picoquic_register_key_exchange_algorithm`.
-pub fn picoquic_register_key_exchange_algorithm(
-    _key_exchange: &'static ptls_key_exchange_algorithm_t,
-) {
+/// `register_key_exchange_algorithm`.
+pub fn register_key_exchange_algorithm(_key_exchange: &'static ptls_key_exchange_algorithm_t) {
     todo!()
 }
 
 /// Install an HPKE cipher suite in the global registry.  C:
-/// `picoquic_register_hpke_cipher_suite`.
-pub fn picoquic_register_hpke_cipher_suite(_hpke_cipher_suite: &'static ptls_hpke_cipher_suite_t) {
+/// `register_hpke_cipher_suite`.
+pub fn register_hpke_cipher_suite(_hpke_cipher_suite: &'static ptls_hpke_cipher_suite_t) {
     todo!()
 }
 
 /// Install an HPKE KEM in the global registry.  C:
-/// `picoquic_register_hpke_kem`.
-pub fn picoquic_register_hpke_kem(_hpke_kem: &'static ptls_hpke_kem_t) {
+/// `register_hpke_kem`.
+pub fn register_hpke_kem(_hpke_kem: &'static ptls_hpke_kem_t) {
     todo!()
 }
 
@@ -263,7 +261,7 @@ pub trait DisposeCertificateVerifier {
 /// [`GetCertificateVerifier::get`].  `is_cert_store_not_empty`
 /// and the disposer were separate out-parameters in C; grouping them
 /// here keeps the trait method signature one-out, one-return.
-pub struct PicoquicCertificateVerifier {
+pub struct CertificateVerifier {
     /// Owned verifier vtable handed back to the caller.  C: the
     /// `ptls_verify_certificate_t*` returned by value.
     pub verifier: Box<ptls_verify_certificate_t>,
@@ -279,7 +277,7 @@ pub struct PicoquicCertificateVerifier {
 /// C: `GetCertificateVerifier`.  Returns a freshly
 /// allocated verifier plus its sidekick metadata.
 pub trait GetCertificateVerifier {
-    fn get(&mut self, cert_root_file_name: &str) -> Option<PicoquicCertificateVerifier>;
+    fn get(&mut self, cert_root_file_name: &str) -> Option<CertificateVerifier>;
 }
 
 /// C: `SetTlsRootCertificates`.  Installs a root-CA
@@ -341,10 +339,10 @@ pub trait KeyexDispose {
 // per slot — `None` is the C `NULL` sentinel for "opt out", and the
 // `Box` owns the implementor's state.
 
-/// C: `picoquic_register_tls_key_provider_fn`.  Installs the
+/// C: `register_tls_key_provider_fn`.  Installs the
 /// four-function key-provider bundle (private-key import, sign-cert
 /// disposer, cert-chain reader, public-key derivation).
-pub fn picoquic_register_tls_key_provider_fn(
+pub fn register_tls_key_provider_fn(
     _set_private_key_from_file_fn: Option<Box<dyn SetPrivateKeyFromFile>>,
     _dispose_sign_certificate_fn: Option<Box<dyn DisposeSignCertificate>>,
     _get_certs_from_file_fn: Option<Box<dyn GetCertsFromFile>>,
@@ -353,9 +351,9 @@ pub fn picoquic_register_tls_key_provider_fn(
     todo!()
 }
 
-/// C: `picoquic_register_verify_certificate_fn`.  Installs the
+/// C: `register_verify_certificate_fn`.  Installs the
 /// three-function certificate-verifier bundle.
-pub fn picoquic_register_verify_certificate_fn(
+pub fn register_verify_certificate_fn(
     _certificate_verifier_fn: Option<Box<dyn GetCertificateVerifier>>,
     _dispose_certificate_verifier_fn: Option<Box<dyn DisposeCertificateVerifier>>,
     _set_tls_root_certificates_fn: Option<Box<dyn SetTlsRootCertificates>>,
@@ -363,26 +361,24 @@ pub fn picoquic_register_verify_certificate_fn(
     todo!()
 }
 
-/// C: `picoquic_register_explain_crypto_error_fn`.  Installs the
+/// C: `register_explain_crypto_error_fn`.  Installs the
 /// error-explanation hook pair.
-pub fn picoquic_register_explain_crypto_error_fn(
+pub fn register_explain_crypto_error_fn(
     _explain_crypto_error_fn: Option<Box<dyn ExplainCryptoError>>,
     _clear_crypto_errors_fn: Option<Box<dyn ClearCryptoErrors>>,
 ) {
     todo!()
 }
 
-/// C: `picoquic_register_crypto_random_provider_fn`.  Installs the
+/// C: `register_crypto_random_provider_fn`.  Installs the
 /// global RNG provider.
-pub fn picoquic_register_crypto_random_provider_fn(
-    _random_provider: Option<Box<dyn CryptoRandomProvider>>,
-) {
+pub fn register_crypto_random_provider_fn(_random_provider: Option<Box<dyn CryptoRandomProvider>>) {
     todo!()
 }
 
-/// C: `picoquic_register_keyex_from_key_file_fn`.  Installs the
+/// C: `register_keyex_from_key_file_fn`.  Installs the
 /// key-exchange constructor / disposer pair.
-pub fn picoquic_register_keyex_from_key_file_fn(
+pub fn register_keyex_from_key_file_fn(
     _keyex_from_key_file_fn: Option<Box<dyn KeyexFromKeyFile>>,
     _keyex_dispose_fn: Option<Box<dyn KeyexDispose>>,
 ) {
@@ -394,25 +390,25 @@ pub fn picoquic_register_keyex_from_key_file_fn(
 // the top of this module — slices carry their length, but other
 // modules index into the registry by name).
 
-/// C: `PICOQUIC_CIPHER_SUITES_NB_MAX`.
-pub const PICOQUIC_CIPHER_SUITES_NB_MAX: usize = 8;
+/// C: `CIPHER_SUITES_NB_MAX`.
+pub const CIPHER_SUITES_NB_MAX: usize = 8;
 
-/// C: `PICOQUIC_KEY_EXCHANGES_NB_MAX`.
-pub const PICOQUIC_KEY_EXCHANGES_NB_MAX: usize = 4;
+/// C: `KEY_EXCHANGES_NB_MAX`.
+pub const KEY_EXCHANGES_NB_MAX: usize = 4;
 
-/// C: `PICOQUIC_HPKE_CIPHER_SUITE_NB_MAX`.
-pub const PICOQUIC_HPKE_CIPHER_SUITE_NB_MAX: usize = 4;
+/// C: `HPKE_CIPHER_SUITE_NB_MAX`.
+pub const HPKE_CIPHER_SUITE_NB_MAX: usize = 4;
 
-/// C: `PICOQUIC_HPKE_KEM_NB_MAX`.
-pub const PICOQUIC_HPKE_KEM_NB_MAX: usize = 3;
+/// C: `HPKE_KEM_NB_MAX`.
+pub const HPKE_KEM_NB_MAX: usize = 3;
 
 /// One entry in the cipher-suite registry: a high-memory and an
 /// optional low-memory implementation of the same suite, paired so
 /// the stack can downshift on memory-constrained connections.  C:
-/// `struct st_picoquic_cipher_suites_t`.  Both slots are nullable in
+/// `struct st_cipher_suites_t`.  Both slots are nullable in
 /// C — promoted to `Option<&'static …>`.
 #[derive(Debug)]
-pub struct picoquic_cipher_suites_t {
+pub struct cipher_suites_t {
     pub high_memory_suite: Option<&'static ptls_cipher_suite_t>,
     pub low_memory_suite: Option<&'static ptls_cipher_suite_t>,
 }
@@ -423,147 +419,145 @@ pub struct picoquic_cipher_suites_t {
 // Phase 3 will pick the storage; Phase 1 just exposes the read-side
 // API surface.  The `_NB_MAX + 1` C arrays kept a NULL sentinel at
 // the end; the Rust slices return populated entries only — the
-// `Option` inside `picoquic_cipher_suites_t` already encodes
+// `Option` inside `cipher_suites_t` already encodes
 // "missing".
 
-/// Read access to `picoquic_cipher_suites`.
-pub fn picoquic_cipher_suites() -> &'static [picoquic_cipher_suites_t] {
+/// Read access to `cipher_suites`.
+pub fn cipher_suites() -> &'static [cipher_suites_t] {
     todo!()
 }
 
-/// Read access to `picoquic_key_exchanges`.
-pub fn picoquic_key_exchanges() -> &'static [&'static ptls_key_exchange_algorithm_t] {
+/// Read access to `key_exchanges`.
+pub fn key_exchanges() -> &'static [&'static ptls_key_exchange_algorithm_t] {
     todo!()
 }
 
-/// Read access to `picoquic_key_exchange_secp256r1`.  C declared a
+/// Read access to `key_exchange_secp256r1`.  C declared a
 /// fixed two-element array (slot + NULL terminator); the Rust
 /// accessor exposes only the populated entry, or `None` when the
 /// secp256r1 implementation has not been registered.
-pub fn picoquic_key_exchange_secp256r1() -> Option<&'static ptls_key_exchange_algorithm_t> {
+pub fn key_exchange_secp256r1() -> Option<&'static ptls_key_exchange_algorithm_t> {
     todo!()
 }
 
-/// Read access to `picoquic_hpke_cipher_suites`.
-pub fn picoquic_hpke_cipher_suites() -> &'static [&'static ptls_hpke_cipher_suite_t] {
+/// Read access to `hpke_cipher_suites`.
+pub fn hpke_cipher_suites() -> &'static [&'static ptls_hpke_cipher_suite_t] {
     todo!()
 }
 
-/// Read access to `picoquic_hpke_kems`.
-pub fn picoquic_hpke_kems() -> &'static [&'static ptls_hpke_kem_t] {
+/// Read access to `hpke_kems`.
+pub fn hpke_kems() -> &'static [&'static ptls_hpke_kem_t] {
     todo!()
 }
 
-/// Read access to the registered `picoquic_set_private_key_from_file_fn`
+/// Read access to the registered `set_private_key_from_file_fn`
 /// callback.
-pub fn picoquic_set_private_key_from_file_fn() -> Option<&'static mut dyn SetPrivateKeyFromFile> {
+pub fn set_private_key_from_file_fn() -> Option<&'static mut dyn SetPrivateKeyFromFile> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_dispose_sign_certificate_fn`
+/// Read access to the registered `dispose_sign_certificate_fn`
 /// callback.
-pub fn picoquic_dispose_sign_certificate_fn() -> Option<&'static mut dyn DisposeSignCertificate> {
+pub fn dispose_sign_certificate_fn() -> Option<&'static mut dyn DisposeSignCertificate> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_get_certs_from_file_fn`
+/// Read access to the registered `get_certs_from_file_fn`
 /// callback.
-pub fn picoquic_get_certs_from_file_fn() -> Option<&'static mut dyn GetCertsFromFile> {
+pub fn get_certs_from_file_fn() -> Option<&'static mut dyn GetCertsFromFile> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_get_public_key_from_private_fn`
+/// Read access to the registered `get_public_key_from_private_fn`
 /// callback.
-pub fn picoquic_get_public_key_from_private_fn() -> Option<&'static mut dyn GetPublicKeyFromPrivate>
-{
+pub fn get_public_key_from_private_fn() -> Option<&'static mut dyn GetPublicKeyFromPrivate> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_get_certificate_verifier_fn`
+/// Read access to the registered `get_certificate_verifier_fn`
 /// callback.
-pub fn picoquic_get_certificate_verifier_fn() -> Option<&'static mut dyn GetCertificateVerifier> {
+pub fn get_certificate_verifier_fn() -> Option<&'static mut dyn GetCertificateVerifier> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_dispose_certificate_verifier_fn`
+/// Read access to the registered `dispose_certificate_verifier_fn`
 /// callback.
-pub fn picoquic_dispose_certificate_verifier_fn()
--> Option<&'static mut dyn DisposeCertificateVerifier> {
+pub fn dispose_certificate_verifier_fn() -> Option<&'static mut dyn DisposeCertificateVerifier> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_set_tls_root_certificates_fn`
+/// Read access to the registered `set_tls_root_certificates_fn`
 /// callback.
-pub fn picoquic_set_tls_root_certificates_fn() -> Option<&'static mut dyn SetTlsRootCertificates> {
+pub fn set_tls_root_certificates_fn() -> Option<&'static mut dyn SetTlsRootCertificates> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_explain_crypto_error_fn`
+/// Read access to the registered `explain_crypto_error_fn`
 /// callback.
-pub fn picoquic_explain_crypto_error_fn() -> Option<&'static mut dyn ExplainCryptoError> {
+pub fn explain_crypto_error_fn() -> Option<&'static mut dyn ExplainCryptoError> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_clear_crypto_errors_fn`
+/// Read access to the registered `clear_crypto_errors_fn`
 /// callback.
-pub fn picoquic_clear_crypto_errors_fn() -> Option<&'static mut dyn ClearCryptoErrors> {
+pub fn clear_crypto_errors_fn() -> Option<&'static mut dyn ClearCryptoErrors> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_crypto_random_provider_fn`
+/// Read access to the registered `crypto_random_provider_fn`
 /// callback.
-pub fn picoquic_crypto_random_provider_fn() -> Option<&'static mut dyn CryptoRandomProvider> {
+pub fn crypto_random_provider_fn() -> Option<&'static mut dyn CryptoRandomProvider> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_keyex_from_key_file_fn`
+/// Read access to the registered `keyex_from_key_file_fn`
 /// callback.
-pub fn picoquic_keyex_from_key_file_fn() -> Option<&'static mut dyn KeyexFromKeyFile> {
+pub fn keyex_from_key_file_fn() -> Option<&'static mut dyn KeyexFromKeyFile> {
     todo!()
 }
 
-/// Read access to the registered `picoquic_keyex_dispose_fn` callback.
-pub fn picoquic_keyex_dispose_fn() -> Option<&'static mut dyn KeyexDispose> {
+/// Read access to the registered `keyex_dispose_fn` callback.
+pub fn keyex_dispose_fn() -> Option<&'static mut dyn KeyexDispose> {
     todo!()
 }
 
 // ---------------------------------------------------------------------------
 // Per-connection TLS context.
 
-/// Per-connection TLS state.  C: `struct st_picoquic_tls_ctx_t`.
+/// Per-connection TLS state.  C: `struct st_tls_ctx_t`.
 ///
 /// `repr(C)` is dropped: the struct is allocated, populated, and
 /// freed entirely within `tls_api.c` — no caller in the C tree
 /// inspects it across an FFI boundary.  Heap-arrays from the C
 /// shape (`alpn_vec` + `alpn_vec_size` / `alpn_count`, `ext_data` +
 /// `ext_data_size`) become owning `Vec<T>`s; capacity-vs-length
-/// tracking moves into the vector.  `tls`, `cnx`, and the picotls
+/// tracking moves into the vector.  `tls`, `cnx`, and the tls
 /// extension array stay as their forward-declared shapes; phase 3
-/// will pick `Box` vs. `&mut` once the picotls bindings settle.
+/// will pick `Box` vs. `&mut` once the tls bindings settle.
 ///
 /// `Debug` is intentionally not derived: `ptls_iovec_t`
-/// (forward-declared in `picoquic.rs`) is opaque and does not
+/// (forward-declared in `quic.rs`) is opaque and does not
 /// implement `Debug`, and adding it there is out of scope for this
 /// header's translation.
-pub struct picoquic_tls_ctx_t {
-    /// Owned picotls connection state.  C allocated this with
+pub struct tls_ctx_t {
+    /// Owned tls connection state.  C allocated this with
     /// `ptls_new`; phase 3 will model the ownership transfer.
     pub tls: Option<Box<ptls_t>>,
     /// Back-pointer to the connection that owns this context.  Not
     /// owned — the connection outlives the TLS context.  Borrows
     /// will be sorted out in phase 3 when the surrounding
     /// connection lifetime is mapped.
-    pub cnx: Option<*mut picoquic_cnx_t>,
+    pub cnx: Option<*mut cnx_t>,
     /// `int client_mode` in C is a 0/1 flag — promoted to `bool`.
     pub client_mode: bool,
     /// QUIC-transport-parameter raw extensions buffer.  C declared
     /// a fixed two-element array; preserved verbatim.
     pub ext: [ptls_raw_extension_t; 2],
-    /// Retry-config opaque blob handed to picotls.
+    /// Retry-config opaque blob handed to tls.
     pub retry_configs: ptls_iovec_t,
-    /// picotls handshake-properties slot.  Embedded by value as in C.
+    /// tls handshake-properties slot.  Embedded by value as in C.
     pub handshake_properties: ptls_handshake_properties_t,
-    /// ALPN list passed to picotls during handshake.  C kept the
+    /// ALPN list passed to tls during handshake.  C kept the
     /// owned buffer pointer plus a max size and a current count;
     /// the Rust `Vec` collapses both length tracks into its `len()`,
     /// while `capacity()` covers the C `alpn_vec_size` invariant.
@@ -578,8 +572,8 @@ pub struct picoquic_tls_ctx_t {
     pub app_secret_dec: [u8; PTLS_MAX_DIGEST_SIZE],
 }
 
-// `picoquic_mbedtls_get_certificate_verifier` is gated on the C
-// `#ifdef PICOQUIC_WITH_MBEDTLS` branch.  v1 targets the canonical
+// `mbedtls_get_certificate_verifier` is gated on the C
+// `#ifdef WITH_MBEDTLS` branch.  v1 targets the canonical
 // build with mbedtls disabled, so the function is dropped here per
 // the Phase 0 ifdef policy ("non-target branches are not
 // translated in v1; other platforms get added back later behind

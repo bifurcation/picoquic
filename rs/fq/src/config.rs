@@ -1,29 +1,29 @@
-//! Translation of `picoquic/picoquic_config.h`.
+//! Translation of `quic/config.h`.
 //!
-//! Demo-application–facing configuration plumbing for picoquic-core:
-//! the `picoquic_quic_config_t` bag of CLI-derived options, the
-//! `picoquic_option_enum_t` tag identifying each option, and the
-//! `picoquic_create_and_configure` one-shot constructor that turns
-//! a populated config into a fully-wired `picoquic_quic_t`.
+//! Demo-application–facing configuration plumbing for quic-core:
+//! the `quic_config_t` bag of CLI-derived options, the
+//! `option_enum_t` tag identifying each option, and the
+//! `create_and_configure` one-shot constructor that turns
+//! a populated config into a fully-wired `quic_t`.
 //!
 //! Phase 1: signatures only — every body is `todo!()`.
 //!
 //! Pointer-shape decisions for the config struct were guided by
-//! reading `picoquic/config.c`:
+//! reading `quic/config.c`:
 //!
 //! * Every `char const*` string field that
-//!   `picoquic_config_clear` `free`s is owned in C (allocated via
+//!   `config_clear` `free`s is owned in C (allocated via
 //!   `config_set_string_param`'s `malloc` + `memcpy`).  These map
 //!   to `Option<String>`; `None` substitutes for the C `NULL`
 //!   sentinel that all callers test before use.
 //! * `multipath_alt_config: *mut char` is owned the same way and
 //!   becomes `Option<String>`.
 //! * `ech_target: uint8_t*` plus `ech_target_len` is owned by the
-//!   config (`picoquic_config_clear` frees it after the base64
-//!   decode in `picoquic_option_ECH_client`); it becomes
+//!   config (`config_clear` frees it after the base64
+//!   decode in `option_ECH_client`); it becomes
 //!   `Option<Vec<u8>>` with the length implicit in the vector.
 //! * `ticket_encryption_key: const uint8_t*` is *borrowed* in C —
-//!   `picoquic_config_clear` does not free it.  Phase 1 stores an
+//!   `config_clear` does not free it.  Phase 1 stores an
 //!   owned `Option<Vec<u8>>` for safety; in v1 only the demo apps
 //!   set this field, and they can supply an owned buffer.  Phase 3
 //!   may revisit if a caller actually relies on aliasing.  The
@@ -36,110 +36,108 @@
 //!   integer-with-mask-and-shift translation buys nothing here and
 //!   `bitflags!` is overkill for an unrelated set of flags.
 //! * Bitfield `enable_sslkeylog` is gated by
-//!   `#ifndef PICOQUIC_WITHOUT_SSLKEYLOG` in C.  v1 follows the
+//!   `#ifndef WITHOUT_SSLKEYLOG` in C.  v1 follows the
 //!   canonical build (the macro is undefined), so the field is
 //!   always present in Rust; a `cfg`-gated variant lands when the
 //!   build options are translated.
 
 #![allow(non_camel_case_types)]
 // Variant names mirror the C enum tags one-to-one and all share
-// the `picoquic_option_` prefix.  Renaming would break source-level
+// the `option_` prefix.  Renaming would break source-level
 // parity required by the translation plan.
 #![allow(clippy::enum_variant_names)]
 
-use crate::{
-    StreamDataCb, picoquic_lossbit_version_enum, picoquic_quic_t, picoquic_spinbit_version_enum,
-};
+use crate::{StreamDataCb, lossbit_version_enum, quic_t, spinbit_version_enum};
 
 // ---------------------------------------------------------------------------
 // Option identifiers.
 
 /// One identifier per CLI / API option understood by
-/// `picoquic_quic_config_t`.  Mirrors the C
-/// `picoquic_option_enum_t`; variant order is load-bearing — the
-/// option dispatch table in `picoquic/config.c` indexes by
+/// `quic_config_t`.  Mirrors the C
+/// `option_enum_t`; variant order is load-bearing — the
+/// option dispatch table in `quic/config.c` indexes by
 /// variant — so the enum does not get its discriminants reordered.
 ///
-/// `picoquic_option_SSLKEYLOG` is unconditional here even though
-/// the C enum gates it on `#ifndef PICOQUIC_WITHOUT_SSLKEYLOG`,
+/// `option_SSLKEYLOG` is unconditional here even though
+/// the C enum gates it on `#ifndef WITHOUT_SSLKEYLOG`,
 /// matching the canonical-build behavior; see the module-level
 /// docs for the rationale.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum picoquic_option_enum_t {
-    picoquic_option_CERT,
-    picoquic_option_KEY,
-    picoquic_option_SERVER_PORT,
-    picoquic_option_PROPOSED_VERSION,
-    picoquic_option_OUTDIR,
-    picoquic_option_WWWDIR,
-    picoquic_option_MAX_CONNECTIONS,
-    picoquic_option_DO_RETRY,
-    picoquic_option_INITIAL_RANDOM,
-    picoquic_option_RESET_SEED,
-    picoquic_option_DisablePortBlocking,
-    picoquic_option_SOLUTION_DIR,
-    picoquic_option_CC_ALGO,
-    picoquic_option_CC_OPTION,
-    picoquic_option_SPINBIT,
-    picoquic_option_LOSSBIT,
-    picoquic_option_MULTIPATH,
-    picoquic_option_DEST_IF,
-    picoquic_option_CIPHER_SUITE,
-    picoquic_option_INIT_CNXID,
-    picoquic_option_LOG_FILE,
-    picoquic_option_LONG_LOG,
-    picoquic_option_BINLOG_DIR,
-    picoquic_option_QLOG_DIR,
-    picoquic_option_MTU_MAX,
-    picoquic_option_SNI,
-    picoquic_option_ALPN,
-    picoquic_option_ROOT_TRUST_FILE,
-    picoquic_option_FORCE_ZERO_SHARE,
-    picoquic_option_CNXID_LENGTH,
-    picoquic_option_NO_DISK,
-    picoquic_option_Idle_Timeout,
-    picoquic_option_LARGE_CLIENT_HELLO,
-    picoquic_option_Ticket_File_Name,
-    picoquic_option_Token_File_Name,
-    picoquic_option_Socket_buffer_size,
-    picoquic_option_Performance_Log,
-    picoquic_option_Preemptive_Repeat,
-    picoquic_option_Version_Upgrade,
-    picoquic_option_No_GSO,
-    picoquic_option_BDP_frame,
-    picoquic_option_CWIN_MAX,
-    picoquic_option_SSLKEYLOG,
-    picoquic_option_AddressDiscovery,
-    picoquic_option_ECH_server,
-    picoquic_option_ECH_client,
-    picoquic_option_ECH_init,
-    picoquic_option_FLOW_CONTROL_MAX,
-    picoquic_option_Preferred_V4,
-    picoquic_option_Preferred_V6,
-    picoquic_option_HELP,
+pub enum option_enum_t {
+    option_CERT,
+    option_KEY,
+    option_SERVER_PORT,
+    option_PROPOSED_VERSION,
+    option_OUTDIR,
+    option_WWWDIR,
+    option_MAX_CONNECTIONS,
+    option_DO_RETRY,
+    option_INITIAL_RANDOM,
+    option_RESET_SEED,
+    option_DisablePortBlocking,
+    option_SOLUTION_DIR,
+    option_CC_ALGO,
+    option_CC_OPTION,
+    option_SPINBIT,
+    option_LOSSBIT,
+    option_MULTIPATH,
+    option_DEST_IF,
+    option_CIPHER_SUITE,
+    option_INIT_CNXID,
+    option_LOG_FILE,
+    option_LONG_LOG,
+    option_BINLOG_DIR,
+    option_QLOG_DIR,
+    option_MTU_MAX,
+    option_SNI,
+    option_ALPN,
+    option_ROOT_TRUST_FILE,
+    option_FORCE_ZERO_SHARE,
+    option_CNXID_LENGTH,
+    option_NO_DISK,
+    option_Idle_Timeout,
+    option_LARGE_CLIENT_HELLO,
+    option_Ticket_File_Name,
+    option_Token_File_Name,
+    option_Socket_buffer_size,
+    option_Performance_Log,
+    option_Preemptive_Repeat,
+    option_Version_Upgrade,
+    option_No_GSO,
+    option_BDP_frame,
+    option_CWIN_MAX,
+    option_SSLKEYLOG,
+    option_AddressDiscovery,
+    option_ECH_server,
+    option_ECH_client,
+    option_ECH_init,
+    option_FLOW_CONTROL_MAX,
+    option_Preferred_V4,
+    option_Preferred_V6,
+    option_HELP,
 }
 
 // ---------------------------------------------------------------------------
 // Configuration struct.
 
 /// Configuration bag for a QUIC context, populated from CLI flags
-/// (via [`picoquic_quic_config_t::command_line`]) or directly
-/// (via [`picoquic_quic_config_t::set_option`]) and consumed by
-/// [`picoquic_create_and_configure`].
+/// (via [`quic_config_t::command_line`]) or directly
+/// (via [`quic_config_t::set_option`]) and consumed by
+/// [`create_and_configure`].
 ///
-/// Mirrors the C `picoquic_quic_config_t` field-for-field;
+/// Mirrors the C `quic_config_t` field-for-field;
 /// `repr(C)` is dropped because the struct never crosses an
 /// external boundary.  See the module-level docs for the
 /// pointer-shape rationale.
 ///
 /// `Default` produces the all-zero / `None` shape that the C side
 /// reaches via `memset(config, 0, sizeof(...))` at the top of
-/// `picoquic_config_init`.  Callers should follow that with
-/// [`picoquic_quic_config_t::init`] to pick up the documented
+/// `config_init`.  Callers should follow that with
+/// [`quic_config_t::init`] to pick up the documented
 /// non-zero defaults (`nb_connections = 256`, `cnx_id_length =
 /// -1`, `cwin_max = u64::MAX`, …).
 #[derive(Debug, Default)]
-pub struct picoquic_quic_config_t {
+pub struct quic_config_t {
     pub nb_connections: u32,
     pub solution_dir: Option<String>,
     pub server_cert_file: Option<String>,
@@ -164,10 +162,10 @@ pub struct picoquic_quic_config_t {
     pub cc_algo_id: Option<String>,
     pub cc_algo_option_string: Option<String>,
     pub cnx_id_cbdata: Option<String>,
-    /// C: `picoquic_spinbit_version_enum spinbit_policy`.
-    pub spinbit_policy: picoquic_spinbit_version_enum,
-    /// C: `picoquic_lossbit_version_enum lossbit_policy`.
-    pub lossbit_policy: picoquic_lossbit_version_enum,
+    /// C: `spinbit_version_enum spinbit_policy`.
+    pub spinbit_policy: spinbit_version_enum,
+    /// C: `lossbit_version_enum lossbit_policy`.
+    pub lossbit_policy: lossbit_version_enum,
     pub multipath_option: i32,
     pub multipath_alt_config: Option<String>,
     pub bdp_frame_option: i32,
@@ -181,14 +179,14 @@ pub struct picoquic_quic_config_t {
     pub do_not_use_gso: bool,
     pub disable_port_blocking: bool,
     /// Originally bitfield-gated by `#ifndef
-    /// PICOQUIC_WITHOUT_SSLKEYLOG`; v1 follows the canonical build
+    /// WITHOUT_SSLKEYLOG`; v1 follows the canonical build
     /// (always defined), so the field is unconditional here.
     pub enable_sslkeylog: bool,
 
     // Server only.
     pub www_dir: Option<String>,
     pub reset_seed: [u8; 16],
-    /// Borrowed in C (`picoquic_config_clear` does not free it);
+    /// Borrowed in C (`config_clear` does not free it);
     /// owned `Vec<u8>` here for safety.  The C `ticket_encryption_key_length`
     /// field is dropped — its value is always `ticket_encryption_key.as_ref().map_or(0, Vec::len)`.
     pub ticket_encryption_key: Option<Vec<u8>>,
@@ -216,7 +214,7 @@ pub struct picoquic_quic_config_t {
     pub ech_config_file: Option<String>,
     pub ech_public_name: Option<String>,
     /// ECH parameter for the client, base64-decoded.  Owned by
-    /// the config — `picoquic_config_clear` frees it in C.  The C
+    /// the config — `config_clear` frees it in C.  The C
     /// `ech_target_len` field is dropped — its value is always
     /// `ech_target.as_ref().map_or(0, Vec::len)`.
     pub ech_target: Option<Vec<u8>>,
@@ -228,11 +226,11 @@ pub struct picoquic_quic_config_t {
     pub preferred_address_v6: Option<String>,
 }
 
-impl picoquic_quic_config_t {
-    /// C: `picoquic_config_init`.  Initialise the struct to the
+impl quic_config_t {
+    /// C: `config_init`.  Initialise the struct to the
     /// documented defaults (256 connections, `cnx_id_length = -1`,
     /// `cwin_max = u64::MAX`, idle timeout from
-    /// `PICOQUIC_MICROSEC_HANDSHAKE_MAX`, etc.).  The C body first
+    /// `MICROSEC_HANDSHAKE_MAX`, etc.).  The C body first
     /// `memset`s the struct to zero; in Rust we expect the caller
     /// to start from `Self::default()` so this method only needs
     /// to layer the non-zero defaults on top.
@@ -240,7 +238,7 @@ impl picoquic_quic_config_t {
         todo!()
     }
 
-    /// C: `picoquic_config_clear`.  Release every owned
+    /// C: `config_clear`.  Release every owned
     /// allocation in the struct (C `free`s each `char const*`
     /// that was set via `config_set_string_param`) and then
     /// re-initialise via [`Self::init`].  In Rust the `Option`
@@ -251,10 +249,10 @@ impl picoquic_quic_config_t {
         todo!()
     }
 
-    /// C: `picoquic_config_set_option`.  Apply one option,
+    /// C: `config_set_option`.  Apply one option,
     /// selected by `option_num`, to the config.  `opt_val` is
-    /// optional — flag-style options (`picoquic_option_DO_RETRY`,
-    /// `picoquic_option_LONG_LOG`, …) ignore it; value-style
+    /// optional — flag-style options (`option_DO_RETRY`,
+    /// `option_LONG_LOG`, …) ignore it; value-style
     /// options require it and return `Err(())` when it is
     /// missing or malformed.
     ///
@@ -265,20 +263,20 @@ impl picoquic_quic_config_t {
     #[allow(clippy::result_unit_err)]
     pub fn set_option(
         &mut self,
-        _option_num: picoquic_option_enum_t,
+        _option_num: option_enum_t,
         _opt_val: Option<&str>,
     ) -> Result<(), ()> {
         todo!()
     }
 
-    /// C: `picoquic_config_command_line`.  Dispatch one option
+    /// C: `config_command_line`.  Dispatch one option
     /// from a single-character flag (`-x`).  `p_optind` advances
     /// past any extra arguments consumed beyond the inline
     /// `optarg`, mirroring the C in/out parameter so that an
     /// outer getopt-style loop stays in sync.
     ///
     /// `argv` is a borrowed slice of borrowed strings — the C
-    /// caller (`picoquicfirst` etc.) owns the argument vector for
+    /// caller (`first` etc.) owns the argument vector for
     /// the program lifetime, so a borrow is safe.  `argc` is
     /// implicit in `argv.len()` and the `int argc` parameter is
     /// dropped.
@@ -294,7 +292,7 @@ impl picoquic_quic_config_t {
         todo!()
     }
 
-    /// C: `picoquic_config_command_line_ex`.  Like
+    /// C: `config_command_line_ex`.  Like
     /// [`Self::command_line`] but accepts both single-character
     /// (`-x`) and long-form (`--name`) option strings; the leading
     /// dashes are part of `opt_string`, matching the C contract.
@@ -314,7 +312,7 @@ impl picoquic_quic_config_t {
 // ---------------------------------------------------------------------------
 // Free functions.
 
-/// C: `picoquic_config_option_letters`.  Build the getopt-style
+/// C: `config_option_letters`.  Build the getopt-style
 /// option string from the dispatch table in `config.c` — one
 /// letter per option, with `:` after each option that takes an
 /// argument.
@@ -327,27 +325,27 @@ impl picoquic_quic_config_t {
 /// signature stability with the rest of the API.
 // TODO(error-enum): swap `()` for the crate's `Error` once it lands.
 #[allow(clippy::result_unit_err)]
-pub fn picoquic_config_option_letters() -> Result<String, ()> {
+pub fn config_option_letters() -> Result<String, ()> {
     todo!()
 }
 
-/// C: `picoquic_config_usage_file` — write the option help to a
+/// C: `config_usage_file` — write the option help to a
 /// `core::fmt::Write` sink.  The C parameter was `FILE*`; the
 /// Rust translation accepts any sink (a `String` buffer, the
 /// stdout/stderr handles under the `std` feature, or a custom
 /// writer) so the function stays `no_std`-friendly.
-pub fn picoquic_config_usage_file(_w: &mut dyn core::fmt::Write) {
+pub fn config_usage_file(_w: &mut dyn core::fmt::Write) {
     todo!()
 }
 
-/// C: `picoquic_config_usage` — convenience wrapper that prints
+/// C: `config_usage` — convenience wrapper that prints
 /// the option help to stderr.  Phase 3 will route this through
 /// `eprintln!` (std-only); for now it is just a `todo!()`.
-pub fn picoquic_config_usage() {
+pub fn config_usage() {
     todo!()
 }
 
-/// C: `picoquic_create_and_configure`.  Build a fully-configured
+/// C: `create_and_configure`.  Build a fully-configured
 /// QUIC context from `config` plus an application-supplied
 /// callback.  Returns `None` when context creation fails (the C
 /// side returned `NULL`).
@@ -355,7 +353,7 @@ pub fn picoquic_config_usage() {
 /// Pointer-shape choices, derived from the C signature and the
 /// body in `config.c`:
 ///
-/// * `config: *mut picoquic_quic_config_t` is consumed-borrowed
+/// * `config: *mut quic_config_t` is consumed-borrowed
 ///   (`&mut`): the body reads every field and may set up
 ///   downstream owned state, but it does not free the struct
 ///   itself — ownership stays with the caller.
@@ -370,12 +368,12 @@ pub fn picoquic_config_usage() {
 ///   so an `&'a mut u64` borrow expresses the contract directly.
 ///   Phase 3 may revisit (e.g. with a clock trait) once the QUIC
 ///   context type is real.
-pub fn picoquic_create_and_configure(
-    _config: &mut picoquic_quic_config_t,
+pub fn create_and_configure(
+    _config: &mut quic_config_t,
     _default_callback: Option<Box<dyn StreamDataCb>>,
     _current_time: u64,
     _p_simulated_time: Option<&mut u64>,
-) -> Option<Box<picoquic_quic_t>> {
+) -> Option<Box<quic_t>> {
     todo!()
 }
 

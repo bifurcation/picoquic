@@ -1,4 +1,4 @@
-//! Translation of `picoquic/performance_log.h`.
+//! Translation of `quic/performance_log.h`.
 //!
 //! The performance log records a fixed-shape vector of metrics
 //! (durations, byte counts, RTTs, congestion-control parameters)
@@ -13,19 +13,19 @@
 //! defined in `performance_log.c` are private to that translation
 //! unit and will land alongside their bodies in Phase 3.
 
-use crate::picoquic_quic_t;
+use crate::quic_t;
 
 // ---------------------------------------------------------------------------
 // Tunable constants (`#define`s in the header).
 
 /// Schema version stamped at the start of every CSV row.  Bumped if
 /// the column layout changes incompatibly.
-pub const PICOQUIC_PER_LOG_VERSION: u32 = 1;
+pub const PER_LOG_VERSION: u32 = 1;
 
-/// Number of metric slots in `picoquic_performance_log_item_t::v`.
-/// Equal to the count of variants in `picoquic_perflog_column_enum`.
+/// Number of metric slots in `performance_log_item_t::v`.
+/// Equal to the count of variants in `perflog_column_enum`.
 /// Used as an array dimension and as a loop bound, hence `usize`.
-pub const PICOQUIC_PERF_LOG_MAX_ITEMS: usize = 27;
+pub const PERF_LOG_MAX_ITEMS: usize = 27;
 
 // ---------------------------------------------------------------------------
 // Column index for the metric vector.
@@ -39,38 +39,38 @@ pub const PICOQUIC_PERF_LOG_MAX_ITEMS: usize = 27;
 /// Mirrors the C enum of the same name; discriminants match the C
 /// values 0..=26.
 // Variant names mirror the C enum tags one-to-one and all share the
-// `picoquic_perflog_` prefix; renaming would break source-level parity.
+// `perflog_` prefix; renaming would break source-level parity.
 #[allow(non_camel_case_types, clippy::enum_variant_names)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u32)]
-pub enum picoquic_perflog_column_enum {
-    picoquic_perflog_is_client = 0,
-    picoquic_perflog_nb_packets_received = 1,
-    picoquic_perflog_nb_trains_sent = 2,
-    picoquic_perflog_nb_trains_short = 3,
-    picoquic_perflog_nb_trains_blocked_cwin = 4,
-    picoquic_perflog_nb_trains_blocked_pacing = 5,
-    picoquic_perflog_nb_trains_blocked_others = 6,
-    picoquic_perflog_nb_packets_sent = 7,
-    picoquic_perflog_nb_retransmission_total = 8,
-    picoquic_perflog_nb_spurious = 9,
-    picoquic_perflog_delayed_ack_option = 10,
-    picoquic_perflog_min_ack_delay_remote = 11,
-    picoquic_perflog_max_ack_delay_remote = 12,
-    picoquic_perflog_max_ack_gap_remote = 13,
-    picoquic_perflog_min_ack_delay_local = 14,
-    picoquic_perflog_max_ack_delay_local = 15,
-    picoquic_perflog_max_ack_gap_local = 16,
-    picoquic_perflog_max_mtu_sent = 17,
-    picoquic_perflog_max_mtu_received = 18,
-    picoquic_perflog_zero_rtt = 19,
-    picoquic_perflog_srtt = 20,
-    picoquic_perflog_minrtt = 21,
-    picoquic_perflog_cwin = 22,
-    picoquic_perflog_ccalgo = 23,
-    picoquic_perflog_bwe_max = 24,
-    picoquic_perflog_pacing_quantum_max = 25,
-    picoquic_perflog_pacing_rate = 26,
+pub enum perflog_column_enum {
+    perflog_is_client = 0,
+    perflog_nb_packets_received = 1,
+    perflog_nb_trains_sent = 2,
+    perflog_nb_trains_short = 3,
+    perflog_nb_trains_blocked_cwin = 4,
+    perflog_nb_trains_blocked_pacing = 5,
+    perflog_nb_trains_blocked_others = 6,
+    perflog_nb_packets_sent = 7,
+    perflog_nb_retransmission_total = 8,
+    perflog_nb_spurious = 9,
+    perflog_delayed_ack_option = 10,
+    perflog_min_ack_delay_remote = 11,
+    perflog_max_ack_delay_remote = 12,
+    perflog_max_ack_gap_remote = 13,
+    perflog_min_ack_delay_local = 14,
+    perflog_max_ack_delay_local = 15,
+    perflog_max_ack_gap_local = 16,
+    perflog_max_mtu_sent = 17,
+    perflog_max_mtu_received = 18,
+    perflog_zero_rtt = 19,
+    perflog_srtt = 20,
+    perflog_minrtt = 21,
+    perflog_cwin = 22,
+    perflog_ccalgo = 23,
+    perflog_bwe_max = 24,
+    perflog_pacing_quantum_max = 25,
+    perflog_pacing_rate = 26,
 }
 
 // ---------------------------------------------------------------------------
@@ -81,21 +81,21 @@ pub enum picoquic_perflog_column_enum {
 /// switch arm); Rust's exhaustive enum makes that case unreachable, so
 /// this returns `&'static str` directly rather than `Option`.
 /// Lifetime mirrors the C string-literal return.
-pub fn picoquic_perflog_param_name(_rank: picoquic_perflog_column_enum) -> &'static str {
+pub fn perflog_param_name(_rank: perflog_column_enum) -> &'static str {
     todo!()
 }
 
 /// Attach a performance log to `quic`, writing CSV rows to
 /// `perflog_file_name` whenever the connection list drains.  Mirrors
-/// `int picoquic_perflog_setup(picoquic_quic_t*, char const*)`.
+/// `int perflog_setup(quic_t*, char const*)`.
 ///
 /// Pointer-shape choices, from the sole observed caller
-/// (`picoquic/sockloop.c:1910`): both arguments are non-NULL — the
+/// (`quic/sockloop.c:1910`): both arguments are non-NULL — the
 /// QUIC context is taken from `*qserver`, and the filename is gated
 /// by `if (config->performance_log != NULL)` immediately above.  So
 /// the QUIC context is `&mut` (the call mutates `quic->perflog_fn`
 /// and `quic->v_perflog_ctx`), and the filename is a borrowed `&str`
-/// (the C body deep-copies via `picoquic_string_duplicate`).
+/// (the C body deep-copies via `string_duplicate`).
 ///
 /// The C `int` return is a 0/-1 status.  No crate-level `Error`
 /// enum exists yet, so this returns `Result<(), ()>`; revisit when
@@ -103,10 +103,7 @@ pub fn picoquic_perflog_param_name(_rank: picoquic_perflog_column_enum) -> &'sta
 // TODO(error-enum): replace `()` with the crate-level `Error` once it
 // lands; clippy's `result_unit_err` is silenced in the meantime.
 #[allow(clippy::result_unit_err)]
-pub fn picoquic_perflog_setup(
-    _quic: &mut picoquic_quic_t,
-    _perflog_file_name: &str,
-) -> Result<(), ()> {
+pub fn perflog_setup(_quic: &mut quic_t, _perflog_file_name: &str) -> Result<(), ()> {
     todo!()
 }
 

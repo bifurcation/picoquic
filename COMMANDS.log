@@ -193,3 +193,4 @@
   cd /Users/richbarn/Projects/picoquic/rs/fq && cargo clippy -- -D warnings
 2026-05-01T14:41:37-04:00 python3 scripts/phase1b.py (consistency report)
 2026-05-01T17:54:40-04:00 Stage 1: flatten src/picoquic to src and drop pico/picoquic file prefixes
+2026-05-01T19:26:33-04:00 python3 scripts/strip_pico.py (stage 5: strip pico/picoquic from identifiers)

@@ -1,23 +1,23 @@
-//! Translation of `picoquic/picoquic_qlog.h`.
+//! Translation of `quic/qlog.h`.
 //!
 //! Header-only module exposing a single entry point that turns
 //! on per-connection qlog tracing for a QUIC context.  The
 //! implementation lives in `loglib/autoqlog.c` (out of scope for
 //! v1, since `loglib/` is a separate target — this header is the
-//! picoquic-core stub that links against it on demand).
+//! quic-core stub that links against it on demand).
 
-use crate::picoquic_quic_t;
+use crate::quic_t;
 
 /// Set the qlog directory and start streaming qlog traces for
-/// each connection.  C: `int picoquic_set_qlog(picoquic_quic_t*
+/// each connection.  C: `int set_qlog(quic_t*
 /// quic, char const* qlog_dir)`.
 ///
 /// Pointer-shape choices:
 ///
-/// * `quic` → `&mut picoquic_quic_t`.  Mutates the unified-logging
+/// * `quic` → `&mut quic_t`.  Mutates the unified-logging
 ///   function-pointer slots on the QUIC context; no in-tree caller
 ///   passes NULL.
-/// * `qlog_dir` → `&str`.  Every caller in `picoquic-core` and the
+/// * `qlog_dir` → `&str`.  Every caller in `quic-core` and the
 ///   sample apps passes a non-NULL path string (often `"."` or a
 ///   `config->qlog_dir` field that is populated before the call).
 ///   Translation note: the C parameter is `char const*` so NULL is
@@ -30,7 +30,7 @@ use crate::picoquic_quic_t;
 /// crate-level `Error` enum does not yet exist.
 // TODO(error-enum): swap `()` for the crate's `Error` once it lands.
 #[allow(clippy::result_unit_err)]
-pub fn picoquic_set_qlog(_quic: &mut picoquic_quic_t, _qlog_dir: &str) -> Result<(), ()> {
+pub fn set_qlog(_quic: &mut quic_t, _qlog_dir: &str) -> Result<(), ()> {
     todo!()
 }
 

@@ -1,4 +1,4 @@
-//! Translation of `picoquic/bytestream.h`.
+//! Translation of `quic/bytestream.h`.
 //!
 //! A small cursor-over-buffer helper used by `logwriter.c` /
 //! `logreader.c` (binlog) and the connection-id encoding paths.
@@ -47,7 +47,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::net::SocketAddr;
 
-use crate::picoquic_connection_id_t;
+use crate::connection_id_t;
 
 // ---------------------------------------------------------------------------
 // Tunable constant.
@@ -330,18 +330,18 @@ pub fn byteread_buffer(_s: &mut bytestream<'_>, _buffer: &mut [u8]) -> Result<()
 /// Encode a connection id as `u8` length + `id_len` raw bytes.  C:
 /// `bytewrite_cid`.
 ///
-/// `cid` is `&picoquic_connection_id_t` — the C param was
-/// `const picoquic_connection_id_t*`, never NULL at any caller
+/// `cid` is `&connection_id_t` — the C param was
+/// `const connection_id_t*`, never NULL at any caller
 /// (`logwriter.c:683`, `:757`, `:908`).
-pub fn bytewrite_cid(_s: &mut bytestream<'_>, _cid: &picoquic_connection_id_t) -> Result<(), ()> {
+pub fn bytewrite_cid(_s: &mut bytestream<'_>, _cid: &connection_id_t) -> Result<(), ()> {
     todo!()
 }
 
 /// Decode a connection id.  C `byteread_cid` filled in an out
 /// parameter; the Rust version returns the value through `Ok`.
 /// Returns `Err(())` when the encoded length exceeds
-/// `PICOQUIC_CONNECTION_ID_MAX_SIZE`.
-pub fn byteread_cid(_s: &mut bytestream<'_>) -> Result<picoquic_connection_id_t, ()> {
+/// `CONNECTION_ID_MAX_SIZE`.
+pub fn byteread_cid(_s: &mut bytestream<'_>) -> Result<connection_id_t, ()> {
     todo!()
 }
 
@@ -382,7 +382,7 @@ pub fn byteskip_cstr(_s: &mut bytestream<'_>) -> Result<(), ()> {
 //
 // The C versions take `struct sockaddr*` / `struct sockaddr_storage*`
 // and branch on `sa_family`.  Rust uses [`core::net::SocketAddr`] —
-// the same convention as `picoquic_unified_log` and `picosocks`.
+// the same convention as `unified_log` and `socks`.
 
 /// Encode a socket address as varint(family) + 4 or 16 raw bytes
 /// (address) + big-endian `u16` (port).  C: `bytewrite_addr`.
