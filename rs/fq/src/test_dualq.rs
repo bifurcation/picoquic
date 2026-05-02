@@ -15,10 +15,10 @@
 //! Translation policy notes for this module:
 //!
 //! * The C vtable struct `test_aqm_t` is already a Rust
-//!   trait ([`testAqmT`](crate::utils::testAqmT))
+//!   trait ([`TestAqm`](crate::utils::TestAqm))
 //!   in [`crate::utils`].  The C "embed
 //!   `super` and cast pointer" inheritance pattern collapses to
-//!   `impl testAqmT for dualq_state_t`; the C `super`
+//!   `impl TestAqm for dualq_state_t`; the C `super`
 //!   field is dropped.
 //! * Both queue heads (`queue_first` / `queue_last` in
 //!   [`dualq_queue_t`]) stay raw `*mut test_sim_packet_t`,
@@ -35,7 +35,7 @@
 //! * The C `dualq_release` self-frees with `free(self)` and clears
 //!   `link->aqm_state`.  In Rust the trait method takes
 //!   `&mut self`; the actual deallocation rides on the
-//!   `Option<Box<dyn testAqmT>>` slot in the link being
+//!   `Option<Box<dyn TestAqm>>` slot in the link being
 //!   reset to `None` by the caller after `release` drains the
 //!   queues — `release` itself only handles the queue drain.
 
@@ -45,7 +45,7 @@
 // enum — see module docstring.
 
 use crate::Error;
-use crate::utils::{test_sim_link_t, test_sim_packet_t, testAqmT};
+use crate::utils::{TestAqm, test_sim_link_t, test_sim_packet_t};
 
 // ---------------------------------------------------------------------------
 // Tunables.
@@ -93,7 +93,7 @@ pub struct dualq_queue_t {
 ///
 /// The C struct embedded a `test_aqm_t` vtable in its first
 /// field (`super`); in Rust the equivalent is `impl
-/// testAqmT for dualq_state_t`, so the explicit `super`
+/// TestAqm for dualq_state_t`, so the explicit `super`
 /// field is dropped.  All other fields mirror the C layout
 /// one-for-one.
 #[derive(Default)]
@@ -165,7 +165,7 @@ pub struct dualq_state_t {
 // ---------------------------------------------------------------------------
 // Trait impl — replaces the C "embedded vtable + cast" inheritance.
 
-impl testAqmT for dualq_state_t {
+impl TestAqm for dualq_state_t {
     /// C: `dualq_submit`.  Queues the packet, updates
     /// `last_input_time`, and runs the dequeue/PI2 update pass.
     fn submit(
@@ -186,7 +186,7 @@ impl testAqmT for dualq_state_t {
     /// C: `dualq_release` — drains both queues onto the link as
     /// dropped packets.  The C body also `free(self)`s and nulls
     /// `link->aqm_state`; in Rust the caller drops the
-    /// `Option<Box<dyn testAqmT>>` slot to do the same.
+    /// `Option<Box<dyn TestAqm>>` slot to do the same.
     fn release(&mut self, _link: &mut test_sim_link_t) {
         todo!()
     }

@@ -759,7 +759,7 @@ pub struct quic_t {
     pub default_callback_fn: Option<Box<dyn StreamDataCb>>,
     pub default_callback_ctx: *mut c_void,
     pub mask_ctx: *mut c_void,
-    pub mask_fns: Option<Box<dyn maskOps>>,
+    pub mask_fns: Option<Box<dyn MaskOps>>,
     pub default_alpn: *const core::ffi::c_char,
     pub alpn_select_fn: Option<Box<dyn AlpnSelect>>,
     pub alpn_select_fn_v2: Option<Box<dyn AlpnSelectV2>>,
@@ -3455,7 +3455,7 @@ pub fn process_version_upgrade(
 /// pointers.  Implemented by the `mask` proxy module when
 /// linked; otherwise `mask_fns` on the QUIC context is
 /// `None` and the proxy hooks are skipped.
-pub trait maskOps {
+pub trait MaskOps {
     /// C: `mask_intercept_fn`.
     fn intercept(
         &self,

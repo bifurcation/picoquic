@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """phase1b.py — Phase 1B: cross-module consistency report.
 
-Pure inspection.  Scans the Rust translation under
-`rs/fq/src/picoquic/` and writes a markdown report at
-`xlate/consistency_report.md` cataloguing patterns that vary
-across modules — naming conventions, lint allowances, type
-definitions, cross-module imports.  No claude, no edits.
+Pure inspection.  Scans the Rust translation under `rs/fq/src/`
+and writes a markdown report at `xlate/consistency_report.md`
+cataloguing patterns that vary across modules — naming
+conventions, lint allowances, type definitions, cross-module
+imports.  No claude, no edits.
 
 The human reviewer reads the report, decides on consistency
 policies, then sprinkles `// REVIEW: <instruction>` markers in
@@ -28,7 +28,6 @@ from pathlib import Path
 
 REPO_ROOT  = Path(__file__).resolve().parent.parent
 RS_SRC     = REPO_ROOT / "rs" / "fq" / "src"
-RS_PICO    = RS_SRC / "picoquic"
 OUT_MD     = REPO_ROOT / "xlate" / "consistency_report.md"
 OUT_JSON   = REPO_ROOT / "xlate" / "consistency_report.json"
 
@@ -41,7 +40,7 @@ PUB_ENUM_RE   = re.compile(r"^\s*pub\s+enum\s+(\w+)")
 PUB_TYPE_RE   = re.compile(r"^\s*pub\s+type\s+(\w+)")
 PUB_FN_RE     = re.compile(r"^\s*pub\s+(?:async\s+)?fn\s+(\w+)")
 INNER_ATTR_RE = re.compile(r"^\s*#!\[(?:allow|warn|deny|forbid)\(([^)]+)\)\]")
-USE_CRATE_RE  = re.compile(r"^\s*use\s+crate::picoquic::([\w:]+)(?:\s*::\s*\{([^}]+)\})?")
+USE_CRATE_RE  = re.compile(r"^\s*use\s+crate::([\w:]+?)(?:\s*::\s*\{([^}]+)\})?\s*;")
 
 
 # ---------------------------------------------------------------------------
@@ -132,9 +131,9 @@ def scan_file(path: Path) -> dict:
 
 
 def scan_all() -> list[dict]:
-    if not RS_PICO.is_dir():
+    if not RS_SRC.is_dir():
         return []
-    return [scan_file(p) for p in sorted(RS_PICO.rglob("*.rs"))]
+    return [scan_file(p) for p in sorted(RS_SRC.rglob("*.rs"))]
 
 
 # ---------------------------------------------------------------------------
@@ -217,11 +216,8 @@ def render_md(files: list[dict], agg: dict) -> str:
     out.append(f"Total traits: {len(agg['traits'])}.  "
                + ", ".join(f"{c}: {len(v)}" for c, v in sorted(by_case.items())))
     out.append("")
-    out.append("Rust convention says traits are `PascalCase`.  Phase 1's")
-    out.append("policy was to mirror C typedef names where they're part of")
-    out.append("the API contract; that argues for snake_case for callback")
-    out.append("traits whose typedef name appears in C source the user")
-    out.append("can read.  A mix is fine — but the mix should be principled.")
+    out.append("Rust convention says traits are `PascalCase`.  Anything")
+    out.append("else is a refactor candidate.")
     out.append("")
     for case in ("snake_case", "PascalCase", "Mixed_Case",
                  "SCREAMING_SNAKE", "other"):
@@ -277,7 +273,7 @@ def render_md(files: list[dict], agg: dict) -> str:
     else:
         out.append(f"**{len(duplicates)} type name(s) defined in more than one module.**")
         out.append("Usually this means an opaque stub somewhere should be")
-        out.append("replaced by an `use crate::picoquic::other_module::Type;`")
+        out.append("replaced by a `use crate::other_module::Type;`")
         out.append("import — Rust resolves the reference fine, but the")
         out.append("duplicate `pub struct X { _private: () }` is dead weight.")
         out.append("")
@@ -317,7 +313,7 @@ def render_md(files: list[dict], agg: dict) -> str:
     # ------------- Imports -------------
     out.append("## Cross-module imports")
     out.append("")
-    out.append("Items pulled in via `use crate::picoquic::…`, grouped by")
+    out.append("Items pulled in via `use crate::…`, grouped by")
     out.append("source module.  A type imported by many modules but defined")
     out.append("in one place is the healthy pattern; a type imported via")
     out.append("two different source paths is a smell.")
@@ -369,7 +365,7 @@ def main() -> int:
 
     files = scan_all()
     if not files:
-        print(f"no .rs files under {rel(RS_PICO)}", file=sys.stderr)
+        print(f"no .rs files under {rel(RS_SRC)}", file=sys.stderr)
         return 1
     agg = aggregate(files)
     md = render_md(files, agg)

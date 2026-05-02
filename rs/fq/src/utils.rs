@@ -870,7 +870,7 @@ pub struct test_sim_packet_t {
 /// each call would conflict with the `&mut self` borrow).  Phase 3
 /// will resolve the borrow with a take-replace pattern or an
 /// `unsafe` raw-pointer access.
-pub trait testAqmT {
+pub trait TestAqm {
     /// Submit a packet to the AQM.  C: `submit`.
     fn submit(
         &mut self,
@@ -920,7 +920,7 @@ pub enum jitter_mode {
 ///   and passes its address; staying raw mirrors the C contract
 ///   without forcing a struct lifetime.  `None`-equivalent is the
 ///   null pointer (the C "no mask" sentinel).
-/// * `aqm_state` becomes `Option<Box<dyn testAqmT>>` —
+/// * `aqm_state` becomes `Option<Box<dyn TestAqm>>` —
 ///   `None` matches the C `NULL` (no AQM installed).
 /// * `is_switched_off` / `is_unreachable` / `is_suspended` were
 ///   `int` flags in C; promoted to `bool`.
@@ -946,7 +946,7 @@ pub struct test_sim_link_t {
     pub packets_sent_next_burst: u64,
     pub nb_losses_this_burst: u64,
     pub end_of_burst_time: u64,
-    pub aqm_state: Option<Box<dyn testAqmT>>,
+    pub aqm_state: Option<Box<dyn TestAqm>>,
     pub is_switched_off: bool,
     pub is_unreachable: bool,
     pub is_suspended: bool,
