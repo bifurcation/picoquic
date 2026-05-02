@@ -15,8 +15,7 @@
 //!   out-parameter and fills it from a hex/ASCII config string.
 //!   In Rust the out-parameter becomes the `T` of `Result<T, _>`;
 //!   the `(char const* txt, size_t txt_length)` pair collapses to
-//!   `&str`.  The function returns `Result<…, ()>` until the
-//!   crate-level `Error` enum lands (see TODO below).
+//!   `&str`.  The function returns `Result<…, Error>`.
 //! * `lb_compat_cid_config(quic, lb_config)` reads
 //!   `lb_config` and writes back into `quic` (sets
 //!   `local_cnxid_length`, installs the callback function and its
@@ -65,12 +64,12 @@
 //!   capacity *is* part of the contract.
 
 #![allow(non_camel_case_types)]
-#![allow(clippy::result_unit_err)]
 
 extern crate alloc;
 
 use alloc::boxed::Box;
 
+use crate::Error;
 use crate::{connection_id_t, quic_t};
 
 // ---------------------------------------------------------------------------
@@ -140,8 +139,7 @@ impl load_balancer_config_t {
     /// `int`; the Rust signature returns the populated struct in
     /// the success arm and folds the explicit length into the
     /// `&str` slice.
-    // TODO(error-enum): swap `()` for the crate's `Error` once it lands.
-    pub fn parse(_txt: &str) -> Result<Self, ()> {
+    pub fn parse(_txt: &str) -> Result<Self, Error> {
         todo!()
     }
 }
@@ -220,11 +218,10 @@ impl load_balancer_cid_context_t {
 /// callback configured, when the requested CID length doesn't
 /// fit the chosen method, or when the AES context allocation
 /// fails.
-// TODO(error-enum): swap `()` for the crate's `Error` once it lands.
 pub fn lb_compat_cid_config(
     _quic: &mut quic_t,
     _lb_config: &load_balancer_config_t,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 

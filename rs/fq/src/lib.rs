@@ -32,7 +32,7 @@
 //!   as `*mut c_void` — they are produced by the application and
 //!   handed back unchanged.
 //! * C `int` / `int64_t` return values that encode 0/-1 or 0/error
-//!   status become `Result<T, ()>` — the crate-level `Error` enum
+//!   status become `Result<T, Error>` — the crate-level `Error` enum
 //!   doesn't exist yet, so `()` is a placeholder per the Phase 1
 //!   contract.  `i32` / `i64` are kept where the C value is a real
 //!   integer (e.g., wake delays in microseconds, interface index).
@@ -50,9 +50,6 @@
 // C `#define` / enum tag names verbatim — Rust's `non_upper_case_globals`
 // lint disagrees with that style, so silence it module-wide.
 #![allow(non_upper_case_globals)]
-// Phase 1 stubs return `Result<T, ()>` until the crate-level `Error`
-// type lands; clippy's `result_unit_err` is silenced module-wide.
-#![allow(clippy::result_unit_err)]
 // Many translated functions mirror C signatures with >7 parameters.
 // Builder patterns or shape changes are out of scope for Phase 1.
 #![allow(clippy::too_many_arguments)]
@@ -90,6 +87,51 @@ use core::net::SocketAddr;
 
 /// Library version string.  C: `VERSION`.
 pub const VERSION: &str = "1.1.48.0";
+
+/// Crate-level error type for fallible operations.
+///
+/// Phase 1 stubs return `Result<T, Error>` even though the
+/// `todo!()` bodies don't yet decide which variant to produce —
+/// Phase 3 will fill that in based on the C control flow.  The
+/// initial variant set covers the broad failure shapes; Phase 3
+/// can add more as needed.  Marked `#[non_exhaustive]` so adding
+/// variants later isn't a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Error {
+    /// Catch-all placeholder for paths Phase 1 has not yet
+    /// distinguished.  Phase 3 should narrow these.
+    Generic,
+    /// Allocation failed.
+    Memory,
+    /// Caller supplied an invalid argument.
+    InvalidArgument,
+    /// A buffer the caller supplied was too small.
+    BufferTooSmall,
+    /// Caller-supplied file does not exist.
+    NoSuchFile,
+    /// Caller-supplied file was malformed.
+    InvalidFile,
+    /// Connection has been disconnected.
+    Disconnected,
+    /// Connection state didn't permit the requested operation.
+    InvalidState,
+    /// Operation produced or received a malformed QUIC frame.
+    InvalidFrame,
+    /// TLS / crypto error.
+    Tls,
+    /// Other QUIC protocol error; the wrapped value is the
+    /// numeric `ERROR_*` code defined in this module.
+    Protocol(u64),
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl core::error::Error for Error {}
 
 /// Base offset for quic's internal error codes.  Allocated in
 /// the `0x400`+ range so they never collide with QUIC transport or
@@ -966,7 +1008,7 @@ pub fn frame_name(_frame_type: u64) -> Option<&'static str> {
 /// C: `add_proposed_alpn`.  Provision an ALPN context
 /// during the TLS callback.  `tls_context` is the opaque pointer
 /// the TLS stack passed to the application callback.
-pub fn add_proposed_alpn(_tls_context: *mut c_void, _alpn: &str) -> Result<(), ()> {
+pub fn add_proposed_alpn(_tls_context: *mut c_void, _alpn: &str) -> Result<(), Error> {
     todo!()
 }
 
@@ -1054,7 +1096,7 @@ pub fn set_key_log_file(_quic: &mut quic_t, _keylog_filename: Option<&str>) {
 
 /// C: `adjust_max_connections`.  Cannot grow past the
 /// limit chosen at context creation.
-pub fn adjust_max_connections(_quic: &mut quic_t, _max_nb_connections: u32) -> Result<(), ()> {
+pub fn adjust_max_connections(_quic: &mut quic_t, _max_nb_connections: u32) -> Result<(), Error> {
     todo!()
 }
 
@@ -1143,7 +1185,7 @@ pub fn free(_quic: Box<quic_t>) {
     todo!()
 }
 
-pub fn set_low_memory_mode(_quic: &mut quic_t, _low_memory_mode: bool) -> Result<(), ()> {
+pub fn set_low_memory_mode(_quic: &mut quic_t, _low_memory_mode: bool) -> Result<(), Error> {
     todo!()
 }
 
@@ -1151,18 +1193,18 @@ pub fn set_cookie_mode(_quic: &mut quic_t, _cookie_mode: i32) {
     todo!()
 }
 
-pub fn set_cipher_suite(_quic: &mut quic_t, _cipher_suite_id: u16) -> Result<(), ()> {
+pub fn set_cipher_suite(_quic: &mut quic_t, _cipher_suite_id: u16) -> Result<(), Error> {
     todo!()
 }
 
-pub fn set_key_exchange(_quic: &mut quic_t, _key_exchange_id: u16) -> Result<(), ()> {
+pub fn set_key_exchange(_quic: &mut quic_t, _key_exchange_id: u16) -> Result<(), Error> {
     todo!()
 }
 
 // ---------------------------------------------------------------------------
 // Default and per-connection transport parameters.
 
-pub fn set_default_tp(_quic: &mut quic_t, _tp: &tp_t) -> Result<(), ()> {
+pub fn set_default_tp(_quic: &mut quic_t, _tp: &tp_t) -> Result<(), Error> {
     todo!()
 }
 
@@ -1170,7 +1212,11 @@ pub fn get_default_tp(_quic: &quic_t) -> &tp_t {
     todo!()
 }
 
-pub fn set_default_tp_value(_quic: &mut quic_t, _tp_type: u64, _tp_value: u64) -> Result<(), ()> {
+pub fn set_default_tp_value(
+    _quic: &mut quic_t,
+    _tp_type: u64,
+    _tp_value: u64,
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1196,7 +1242,10 @@ pub fn set_tls_certificate_chain(_quic: &mut quic_t, _certs: Vec<ptls_iovec_t>) 
 /// ownership.  The C `int` return distinguishes load vs. store
 /// failures (`-1` and `-2`); Phase 1 collapses both to `Err(())`
 /// pending the crate-level error type.
-pub fn set_tls_root_certificates(_quic: &mut quic_t, _certs: Vec<ptls_iovec_t>) -> Result<(), ()> {
+pub fn set_tls_root_certificates(
+    _quic: &mut quic_t,
+    _certs: Vec<ptls_iovec_t>,
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1206,7 +1255,7 @@ pub fn set_null_verifier(_quic: &mut quic_t) {
 
 /// C: `set_tls_key`.  Caller retains ownership of the key
 /// buffer; we copy on the way in.
-pub fn set_tls_key(_quic: &mut quic_t, _key: &[u8]) -> Result<(), ()> {
+pub fn set_tls_key(_quic: &mut quic_t, _key: &[u8]) -> Result<(), Error> {
     todo!()
 }
 
@@ -1235,7 +1284,7 @@ pub fn set_use_exporter(_quic: &mut quic_t, _use_exporter: bool) {
 
 /// C: `export_secret`.  Writes exported keying material
 /// into `out` and returns the number of bytes written.
-pub fn export_secret(_cnx: &mut cnx_t, _label: &str, _out: &mut [u8]) -> Result<usize, ()> {
+pub fn export_secret(_cnx: &mut cnx_t, _label: &str, _out: &mut [u8]) -> Result<usize, Error> {
     todo!()
 }
 
@@ -1253,14 +1302,14 @@ pub fn set_default_padding(_quic: &mut quic_t, _padding_multiple: u32, _padding_
 pub fn set_default_spinbit_policy(
     _quic: &mut quic_t,
     _default_spinbit_policy: spinbit_version_enum,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
 pub fn set_spinbit_policy(
     _cnx: &mut cnx_t,
     _spinbit_policy: spinbit_version_enum,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1313,15 +1362,15 @@ pub fn is_local_cid(_quic: &quic_t, _cid: &connection_id_t) -> bool {
 
 // Session-ticket and retry-token persistence.
 
-pub fn load_retry_tokens(_quic: &mut quic_t, _token_store_filename: &str) -> Result<(), ()> {
+pub fn load_retry_tokens(_quic: &mut quic_t, _token_store_filename: &str) -> Result<(), Error> {
     todo!()
 }
 
-pub fn save_session_tickets(_quic: &mut quic_t, _ticket_store_filename: &str) -> Result<(), ()> {
+pub fn save_session_tickets(_quic: &mut quic_t, _ticket_store_filename: &str) -> Result<(), Error> {
     todo!()
 }
 
-pub fn save_retry_tokens(_quic: &mut quic_t, _token_store_filename: &str) -> Result<(), ()> {
+pub fn save_retry_tokens(_quic: &mut quic_t, _token_store_filename: &str) -> Result<(), Error> {
     todo!()
 }
 
@@ -1329,7 +1378,7 @@ pub fn set_default_bdp_frame_option(_quic: &mut quic_t, _enable_bdp_frame: bool)
     todo!()
 }
 
-pub fn set_default_connection_id_length(_quic: &mut quic_t, _cid_length: u8) -> Result<(), ()> {
+pub fn set_default_connection_id_length(_quic: &mut quic_t, _cid_length: u8) -> Result<(), Error> {
     todo!()
 }
 
@@ -1410,12 +1459,12 @@ pub fn create_client_cnx<'a>(
     todo!()
 }
 
-pub fn start_client_cnx(_cnx: &mut cnx_t) -> Result<(), ()> {
+pub fn start_client_cnx(_cnx: &mut cnx_t) -> Result<(), Error> {
     todo!()
 }
 
 /// C: `close`.  Begin an ordered close.
-pub fn close(_cnx: &mut cnx_t, _application_reason_code: u64) -> Result<(), ()> {
+pub fn close(_cnx: &mut cnx_t, _application_reason_code: u64) -> Result<(), Error> {
     todo!()
 }
 
@@ -1425,7 +1474,7 @@ pub fn close_ex(
     _cnx: &mut cnx_t,
     _application_reason_code: u64,
     _error_reason: Option<&str>,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1459,7 +1508,7 @@ pub fn probe_new_path(
     _addr_peer: &SocketAddr,
     _addr_local: &SocketAddr,
     _current_time: u64,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1470,7 +1519,7 @@ pub fn probe_new_path_ex(
     _if_index: i32,
     _current_time: u64,
     _to_preferred_address: bool,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1482,7 +1531,7 @@ pub fn probe_new_tuple(
     _if_index: i32,
     _current_time: u64,
     _to_preferred_address: bool,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1500,7 +1549,7 @@ pub fn set_app_path_ctx(
     _cnx: &mut cnx_t,
     _unique_path_id: u64,
     _app_path_ctx: *mut c_void,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1509,11 +1558,11 @@ pub fn abandon_path(
     _unique_path_id: u64,
     _reason: u64,
     _current_time: u64,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
-pub fn refresh_path_connection_id(_cnx: &mut cnx_t, _unique_path_id: u64) -> Result<(), ()> {
+pub fn refresh_path_connection_id(_cnx: &mut cnx_t, _unique_path_id: u64) -> Result<(), Error> {
     todo!()
 }
 
@@ -1521,7 +1570,7 @@ pub fn set_stream_path_affinity(
     _cnx: &mut cnx_t,
     _stream_id: u64,
     _unique_path_id: u64,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1529,7 +1578,7 @@ pub fn set_path_status(
     _cnx: &mut cnx_t,
     _unique_path_id: u64,
     _status: path_status_enum,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1539,11 +1588,11 @@ pub fn set_path_status(
 /// allowed (caller can proceed immediately), `Ok(false)` if the
 /// caller will be notified later by callback, and `Err(())` on
 /// error.
-pub fn subscribe_new_path_allowed(_cnx: &mut cnx_t) -> Result<bool, ()> {
+pub fn subscribe_new_path_allowed(_cnx: &mut cnx_t) -> Result<bool, Error> {
     todo!()
 }
 
-pub fn set_first_if_index(_cnx: &mut cnx_t, _if_index: u32) -> Result<(), ()> {
+pub fn set_first_if_index(_cnx: &mut cnx_t, _if_index: u32) -> Result<(), Error> {
     todo!()
 }
 
@@ -1551,11 +1600,11 @@ pub fn set_first_if_index(_cnx: &mut cnx_t, _if_index: u32) -> Result<(), ()> {
 /// which address to return: `1` = local, `2` = peer, `3` = peer's
 /// observed.  Output `struct sockaddr_storage*` folds into the
 /// returned `SocketAddr`.
-pub fn get_path_addr(_cnx: &cnx_t, _unique_path_id: u64, _local: i32) -> Result<SocketAddr, ()> {
+pub fn get_path_addr(_cnx: &cnx_t, _unique_path_id: u64, _local: i32) -> Result<SocketAddr, Error> {
     todo!()
 }
 
-pub fn get_path_quality(_cnx: &cnx_t, _unique_path_id: u64) -> Result<path_quality_t, ()> {
+pub fn get_path_quality(_cnx: &cnx_t, _unique_path_id: u64) -> Result<path_quality_t, Error> {
     todo!()
 }
 
@@ -1568,7 +1617,7 @@ pub fn subscribe_to_quality_update_per_path(
     _unique_path_id: u64,
     _pacing_rate_delta: u64,
     _rtt_delta: u64,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1583,7 +1632,7 @@ pub fn default_quality_update(_quic: &mut quic_t, _pacing_rate_delta: u64, _rtt_
 // ---------------------------------------------------------------------------
 // Connection iteration and timing.
 
-pub fn start_key_rotation(_cnx: &mut cnx_t) -> Result<(), ()> {
+pub fn start_key_rotation(_cnx: &mut cnx_t) -> Result<(), Error> {
     todo!()
 }
 
@@ -1684,7 +1733,7 @@ pub fn get_local_if_index(_cnx: &cnx_t) -> u32 {
     todo!()
 }
 
-pub fn set_local_addr(_cnx: &mut cnx_t, _addr: &SocketAddr) -> Result<(), ()> {
+pub fn set_local_addr(_cnx: &mut cnx_t, _addr: &SocketAddr) -> Result<(), Error> {
     todo!()
 }
 
@@ -1765,11 +1814,11 @@ pub fn queue_misc_frame(
     _bytes: &[u8],
     _is_pure_ack: bool,
     _pc: packet_context_enum,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
-pub fn queue_datagram_frame(_cnx: &mut cnx_t, _bytes: &[u8]) -> Result<(), ()> {
+pub fn queue_datagram_frame(_cnx: &mut cnx_t, _bytes: &[u8]) -> Result<(), Error> {
     todo!()
 }
 
@@ -1787,7 +1836,7 @@ pub fn incoming_packet(
     _if_index_to: i32,
     _received_ecn: u8,
     _current_time: u64,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1802,7 +1851,7 @@ pub fn incoming_packet_ex<'a>(
     _if_index_to: i32,
     _received_ecn: u8,
     _current_time: u64,
-) -> Result<Option<&'a mut cnx_t>, ()> {
+) -> Result<Option<&'a mut cnx_t>, Error> {
     todo!()
 }
 
@@ -1835,7 +1884,7 @@ pub fn prepare_next_packet_ex<'a>(
     _quic: &'a mut quic_t,
     _current_time: u64,
     _send_buffer: &mut [u8],
-) -> Result<PreparedPacket<'a>, ()> {
+) -> Result<PreparedPacket<'a>, Error> {
     todo!()
 }
 
@@ -1846,7 +1895,7 @@ pub fn prepare_next_packet<'a>(
     _quic: &'a mut quic_t,
     _current_time: u64,
     _send_buffer: &mut [u8],
-) -> Result<PreparedPacket<'a>, ()> {
+) -> Result<PreparedPacket<'a>, Error> {
     todo!()
 }
 
@@ -1865,7 +1914,7 @@ pub fn prepare_packet_ex(
     _cnx: &mut cnx_t,
     _current_time: u64,
     _send_buffer: &mut [u8],
-) -> Result<PreparedCnxPacket, ()> {
+) -> Result<PreparedCnxPacket, Error> {
     todo!()
 }
 
@@ -1873,7 +1922,7 @@ pub fn prepare_packet(
     _cnx: &mut cnx_t,
     _current_time: u64,
     _send_buffer: &mut [u8],
-) -> Result<PreparedCnxPacket, ()> {
+) -> Result<PreparedCnxPacket, Error> {
     todo!()
 }
 
@@ -1907,7 +1956,7 @@ pub fn mark_direct_receive_stream(
     _cnx: &mut cnx_t,
     _stream_id: u64,
     _direct_receive: Box<dyn StreamDirectReceive>,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1917,7 +1966,7 @@ pub fn set_app_stream_ctx(
     _cnx: &mut cnx_t,
     _stream_id: u64,
     _app_stream_ctx: *mut c_void,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1932,7 +1981,7 @@ pub fn mark_active_stream(
     _stream_id: u64,
     _is_active: bool,
     _v_stream_ctx: *mut c_void,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1940,7 +1989,7 @@ pub fn set_stream_not_coalesced(
     _cnx: &mut cnx_t,
     _stream_id: u64,
     _is_not_coalesced: bool,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1952,7 +2001,7 @@ pub fn set_stream_priority(
     _cnx: &mut cnx_t,
     _stream_id: u64,
     _stream_priority: u8,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1960,7 +2009,7 @@ pub fn mark_high_priority_stream(
     _cnx: &mut cnx_t,
     _stream_id: u64,
     _is_high_priority: bool,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -1994,7 +2043,7 @@ pub fn add_to_stream(
     _stream_id: u64,
     _data: &[u8],
     _set_fin: bool,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -2008,11 +2057,15 @@ pub fn add_to_stream_with_ctx(
     _data: &[u8],
     _set_fin: bool,
     _app_stream_ctx: *mut c_void,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
-pub fn reset_stream(_cnx: &mut cnx_t, _stream_id: u64, _local_stream_error: u64) -> Result<(), ()> {
+pub fn reset_stream(
+    _cnx: &mut cnx_t,
+    _stream_id: u64,
+    _local_stream_error: u64,
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -2021,7 +2074,7 @@ pub fn reset_stream_at(
     _stream_id: u64,
     _local_stream_error: u64,
     _reliable_size: u64,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -2029,7 +2082,7 @@ pub fn open_flow_control(
     _cnx: &mut cnx_t,
     _stream_id: u64,
     _expected_data_size: u64,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -2037,7 +2090,7 @@ pub fn set_app_flow_control(
     _cnx: &mut cnx_t,
     _stream_id: u64,
     _use_app_flow_control: bool,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -2045,7 +2098,11 @@ pub fn get_next_local_stream_id(_cnx: &mut cnx_t, _is_unidir: bool) -> u64 {
     todo!()
 }
 
-pub fn stop_sending(_cnx: &mut cnx_t, _stream_id: u64, _local_stream_error: u64) -> Result<(), ()> {
+pub fn stop_sending(
+    _cnx: &mut cnx_t,
+    _stream_id: u64,
+    _local_stream_error: u64,
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -2053,14 +2110,14 @@ pub fn discard_stream(
     _cnx: &mut cnx_t,
     _stream_id: u64,
     _local_stream_error: u16,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
 // ---------------------------------------------------------------------------
 // Datagrams.
 
-pub fn mark_datagram_ready(_cnx: &mut cnx_t, _is_ready: bool) -> Result<(), ()> {
+pub fn mark_datagram_ready(_cnx: &mut cnx_t, _is_ready: bool) -> Result<(), Error> {
     todo!()
 }
 
@@ -2068,7 +2125,7 @@ pub fn mark_datagram_ready_path(
     _cnx: &mut cnx_t,
     _unique_path_id: u64,
     _is_path_ready: bool,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -2232,7 +2289,7 @@ pub fn ech_configure_quic_ctx(
     _quic: &mut quic_t,
     _ech_private_key_file_name: Option<&str>,
     _ech_config_file_name: Option<&str>,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -2240,7 +2297,7 @@ pub fn release_quic_ech_ctx(_quic: &mut quic_t) {
     todo!()
 }
 
-pub fn ech_configure_client(_cnx: &mut cnx_t, _config_data: &[u8]) -> Result<(), ()> {
+pub fn ech_configure_client(_cnx: &mut cnx_t, _config_data: &[u8]) -> Result<(), Error> {
     todo!()
 }
 
@@ -2260,7 +2317,7 @@ pub fn ech_create_config_file(
     _public_name: &str,
     _private_key_file: &str,
     _ech_config_file: &str,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -2270,7 +2327,7 @@ pub fn ech_create_config_file(
 /// C: `base64_decode`.  The C signature output an owned
 /// buffer via `uint8_t** v` + `size_t* v_len`; the Rust translation
 /// returns the decoded bytes by value.
-pub fn base64_decode(_b64_txt: &str) -> Result<Vec<u8>, ()> {
+pub fn base64_decode(_b64_txt: &str) -> Result<Vec<u8>, Error> {
     todo!()
 }
 
@@ -2278,7 +2335,7 @@ pub fn base64_decode(_b64_txt: &str) -> Result<Vec<u8>, ()> {
 /// caller-supplied buffer with a fallible "buffer too small" path;
 /// the Rust translation owns the result `String` and reports
 /// errors only when the input is malformed.
-pub fn base64_encode(_v: &[u8]) -> Result<String, ()> {
+pub fn base64_encode(_v: &[u8]) -> Result<String, Error> {
     todo!()
 }
 

@@ -94,18 +94,15 @@
 //!
 //! Error handling: [`set_binlog`] mirrors the C `int`
 //! return (always `0` today, but reserved for future failure modes)
-//! as `Result<(), ()>`.  TODO(error-enum): swap `()` for the
 //! crate-level `Error` once it lands.
 
 // Several writers preserve the C parameter list verbatim so the
 // translation reads as a one-for-one mirror; clippy complains about
 // the resulting argument counts.
-// `set_binlog` returns a placeholder unit error until the
-// crate-level `Error` enum lands.
-#![allow(clippy::result_unit_err)]
 
 use core::net::SocketAddr;
 
+use crate::Error;
 use crate::internal::{cnx_t, packet_header, packet_type_enum, path_t};
 use crate::utils::file_t;
 use crate::{connection_id_t, ptls_iovec_t, quic_t};
@@ -334,9 +331,8 @@ pub fn binlog_cc_dump(_cnx: &mut cnx_t, _path_x: &mut path_t, _current_time: u64
 ///
 /// C: `int set_binlog(quic_t*, char const*)` — the
 /// return is `0` today but reserved for failure modes; mapped to
-/// `Result<(), ()>` per the project's error-handling convention.
-// TODO(error-enum): swap `()` for the crate's `Error` once it lands.
-pub fn set_binlog(_quic: &mut quic_t, _binlog_dir: Option<&str>) -> Result<(), ()> {
+/// `Result<(), Error>` per the project's error-handling convention.
+pub fn set_binlog(_quic: &mut quic_t, _binlog_dir: Option<&str>) -> Result<(), Error> {
     todo!()
 }
 

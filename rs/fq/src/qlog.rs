@@ -6,6 +6,7 @@
 //! v1, since `loglib/` is a separate target — this header is the
 //! quic-core stub that links against it on demand).
 
+use crate::Error;
 use crate::quic_t;
 
 /// Set the qlog directory and start streaming qlog traces for
@@ -25,12 +26,10 @@ use crate::quic_t;
 ///   matches the actual contract.  Swap to `Option<&str>` if a
 ///   future caller needs to clear the directory.
 ///
-/// Returns `Result<(), ()>` to mirror the C status code (`0` on
+/// Returns `Result<(), Error>` to mirror the C status code (`0` on
 /// success, non-zero on failure).  Error type is `()` because the
 /// crate-level `Error` enum does not yet exist.
-// TODO(error-enum): swap `()` for the crate's `Error` once it lands.
-#[allow(clippy::result_unit_err)]
-pub fn set_qlog(_quic: &mut quic_t, _qlog_dir: &str) -> Result<(), ()> {
+pub fn set_qlog(_quic: &mut quic_t, _qlog_dir: &str) -> Result<(), Error> {
     todo!()
 }
 

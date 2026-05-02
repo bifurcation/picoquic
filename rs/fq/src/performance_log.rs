@@ -13,6 +13,7 @@
 //! defined in `performance_log.c` are private to that translation
 //! unit and will land alongside their bodies in Phase 3.
 
+use crate::Error;
 use crate::quic_t;
 
 // ---------------------------------------------------------------------------
@@ -94,13 +95,8 @@ pub fn perflog_param_name(_rank: perflog_column_enum) -> &'static str {
 /// and `quic->v_perflog_ctx`), and the filename is a borrowed `&str`
 /// (the C body deep-copies via `string_duplicate`).
 ///
-/// The C `int` return is a 0/-1 status.  No crate-level `Error`
-/// enum exists yet, so this returns `Result<(), ()>`; revisit when
-/// the top-level error type is introduced.
-// TODO(error-enum): replace `()` with the crate-level `Error` once it
-// lands; clippy's `result_unit_err` is silenced in the meantime.
-#[allow(clippy::result_unit_err)]
-pub fn perflog_setup(_quic: &mut quic_t, _perflog_file_name: &str) -> Result<(), ()> {
+/// The C `int` return is a 0/-1 status, mapped to `Result<(), Error>`.
+pub fn perflog_setup(_quic: &mut quic_t, _perflog_file_name: &str) -> Result<(), Error> {
     todo!()
 }
 

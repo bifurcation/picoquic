@@ -26,13 +26,11 @@
 ///   user.
 ///
 /// Returns `Ok(())` on success.  The C signature is `int` and the
-/// body always returns `0`; the `Result<(), ()>` shape is the
-/// translation plan's placeholder until the crate-level `Error` enum
-/// exists.  Phase 3 will likely upgrade the assertion on `out.len()`
-/// into a real error variant.
-// TODO(error-enum): swap `()` for the crate's `Error` once it lands.
-#[allow(clippy::result_unit_err)]
-pub fn siphash(_input: &[u8], _key: &[u8; 16], _out: &mut [u8]) -> Result<(), ()> {
+/// body always returns `0`; the `Result<(), Error>` shape lets
+/// Phase 3 upgrade the assertion on `out.len()` into a real error
+/// variant.
+use crate::Error;
+pub fn siphash(_input: &[u8], _key: &[u8; 16], _out: &mut [u8]) -> Result<(), Error> {
     todo!()
 }
 

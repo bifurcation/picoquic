@@ -31,22 +31,22 @@
 //! and [`bytestream_buf_init`] returns a `bytestream<'_>` borrowing
 //! from the buf.
 //!
-//! C `int` 0/-1 returns become `Result<T, ()>`; the `()` error type
+//! C `int` 0/-1 returns become `Result<T, Error>`; the `()` error type
 //! is a placeholder — Phase 3 swaps it for the crate's top-level
 //! `Error` enum once that lands.  Out-parameters fold into the
 //! `Ok` variant (e.g., C `int byteread_int8(bytestream*, uint8_t*)`
-//! becomes `fn byteread_int8(&mut bytestream) -> Result<u8, ()>`).
+//! becomes `fn byteread_int8(&mut bytestream) -> Result<u8, Error>`).
 //!
 //! Phase 1 contract: signatures only; every body is `todo!()`.
 
 #![allow(non_camel_case_types)]
-#![allow(clippy::result_unit_err)]
 
 extern crate alloc;
 
 use alloc::boxed::Box;
 use core::net::SocketAddr;
 
+use crate::Error;
 use crate::connection_id_t;
 
 // ---------------------------------------------------------------------------
@@ -221,7 +221,7 @@ pub fn bytestream_finished(_s: &bytestream<'_>) -> bool {
 /// underflow, the C version sets `ptr = size` and returns -1; here
 /// the same side effect occurs and `Err(())` is returned.  C:
 /// `bytestream_skip`.
-pub fn bytestream_skip(_s: &mut bytestream<'_>, _nb_bytes: usize) -> Result<(), ()> {
+pub fn bytestream_skip(_s: &mut bytestream<'_>, _nb_bytes: usize) -> Result<(), Error> {
     todo!()
 }
 
@@ -229,12 +229,12 @@ pub fn bytestream_skip(_s: &mut bytestream<'_>, _nb_bytes: usize) -> Result<(), 
 // Fixed-width integer I/O (big-endian on the wire).
 
 /// Write one byte.  C: `bytewrite_int8`.
-pub fn bytewrite_int8(_s: &mut bytestream<'_>, _value: u8) -> Result<(), ()> {
+pub fn bytewrite_int8(_s: &mut bytestream<'_>, _value: u8) -> Result<(), Error> {
     todo!()
 }
 
 /// Read one byte, advancing the cursor.  C: `byteread_int8`.
-pub fn byteread_int8(_s: &mut bytestream<'_>) -> Result<u8, ()> {
+pub fn byteread_int8(_s: &mut bytestream<'_>) -> Result<u8, Error> {
     todo!()
 }
 
@@ -242,37 +242,37 @@ pub fn byteread_int8(_s: &mut bytestream<'_>) -> Result<u8, ()> {
 ///
 /// The C version takes a non-`const` `bytestream*` because every
 /// other function does, but only reads.  Rust takes `&bytestream`.
-pub fn byteshow_int8(_s: &bytestream<'_>) -> Result<u8, ()> {
+pub fn byteshow_int8(_s: &bytestream<'_>) -> Result<u8, Error> {
     todo!()
 }
 
 /// Write a big-endian `u16`.  C: `bytewrite_int16`.
-pub fn bytewrite_int16(_s: &mut bytestream<'_>, _value: u16) -> Result<(), ()> {
+pub fn bytewrite_int16(_s: &mut bytestream<'_>, _value: u16) -> Result<(), Error> {
     todo!()
 }
 
 /// Read a big-endian `u16`.  C: `byteread_int16`.
-pub fn byteread_int16(_s: &mut bytestream<'_>) -> Result<u16, ()> {
+pub fn byteread_int16(_s: &mut bytestream<'_>) -> Result<u16, Error> {
     todo!()
 }
 
 /// Write a big-endian `u32`.  C: `bytewrite_int32`.
-pub fn bytewrite_int32(_s: &mut bytestream<'_>, _value: u32) -> Result<(), ()> {
+pub fn bytewrite_int32(_s: &mut bytestream<'_>, _value: u32) -> Result<(), Error> {
     todo!()
 }
 
 /// Read a big-endian `u32`.  C: `byteread_int32`.
-pub fn byteread_int32(_s: &mut bytestream<'_>) -> Result<u32, ()> {
+pub fn byteread_int32(_s: &mut bytestream<'_>) -> Result<u32, Error> {
     todo!()
 }
 
 /// Write a big-endian `u64`.  C: `bytewrite_int64`.
-pub fn bytewrite_int64(_s: &mut bytestream<'_>, _value: u64) -> Result<(), ()> {
+pub fn bytewrite_int64(_s: &mut bytestream<'_>, _value: u64) -> Result<(), Error> {
     todo!()
 }
 
 /// Read a big-endian `u64`.  C: `byteread_int64`.
-pub fn byteread_int64(_s: &mut bytestream<'_>) -> Result<u64, ()> {
+pub fn byteread_int64(_s: &mut bytestream<'_>) -> Result<u64, Error> {
     todo!()
 }
 
@@ -280,18 +280,18 @@ pub fn byteread_int64(_s: &mut bytestream<'_>) -> Result<u64, ()> {
 // Variable-length integer I/O (RFC 9000 §16).
 
 /// Write a QUIC variable-length integer.  C: `bytewrite_vint`.
-pub fn bytewrite_vint(_s: &mut bytestream<'_>, _value: u64) -> Result<(), ()> {
+pub fn bytewrite_vint(_s: &mut bytestream<'_>, _value: u64) -> Result<(), Error> {
     todo!()
 }
 
 /// Read a QUIC variable-length integer.  C: `byteread_vint`.
-pub fn byteread_vint(_s: &mut bytestream<'_>) -> Result<u64, ()> {
+pub fn byteread_vint(_s: &mut bytestream<'_>) -> Result<u64, Error> {
     todo!()
 }
 
 /// Skip past a QUIC variable-length integer without decoding it.
 /// C: `byteread_skip_vint`.
-pub fn byteread_skip_vint(_s: &mut bytestream<'_>) -> Result<(), ()> {
+pub fn byteread_skip_vint(_s: &mut bytestream<'_>) -> Result<(), Error> {
     todo!()
 }
 
@@ -304,7 +304,7 @@ pub fn bytestream_vint_len(_value: u64) -> usize {
 /// Read a varint and downcast to `usize`.  C: `byteread_vlen`.
 /// Returns `Err(())` when the value doesn't fit in a `usize` on
 /// the target.  Mirrors the C check `*value != val_read`.
-pub fn byteread_vlen(_s: &mut bytestream<'_>) -> Result<usize, ()> {
+pub fn byteread_vlen(_s: &mut bytestream<'_>) -> Result<usize, Error> {
     todo!()
 }
 
@@ -314,13 +314,13 @@ pub fn byteread_vlen(_s: &mut bytestream<'_>) -> Result<usize, ()> {
 /// Copy `buffer.len()` bytes into the stream.  C:
 /// `bytewrite_buffer(s, buffer, length)` — the explicit `length`
 /// is taken from the slice.
-pub fn bytewrite_buffer(_s: &mut bytestream<'_>, _buffer: &[u8]) -> Result<(), ()> {
+pub fn bytewrite_buffer(_s: &mut bytestream<'_>, _buffer: &[u8]) -> Result<(), Error> {
     todo!()
 }
 
 /// Copy `buffer.len()` bytes out of the stream.  C:
 /// `byteread_buffer`.
-pub fn byteread_buffer(_s: &mut bytestream<'_>, _buffer: &mut [u8]) -> Result<(), ()> {
+pub fn byteread_buffer(_s: &mut bytestream<'_>, _buffer: &mut [u8]) -> Result<(), Error> {
     todo!()
 }
 
@@ -333,7 +333,7 @@ pub fn byteread_buffer(_s: &mut bytestream<'_>, _buffer: &mut [u8]) -> Result<()
 /// `cid` is `&connection_id_t` — the C param was
 /// `const connection_id_t*`, never NULL at any caller
 /// (`logwriter.c:683`, `:757`, `:908`).
-pub fn bytewrite_cid(_s: &mut bytestream<'_>, _cid: &connection_id_t) -> Result<(), ()> {
+pub fn bytewrite_cid(_s: &mut bytestream<'_>, _cid: &connection_id_t) -> Result<(), Error> {
     todo!()
 }
 
@@ -341,12 +341,12 @@ pub fn bytewrite_cid(_s: &mut bytestream<'_>, _cid: &connection_id_t) -> Result<
 /// parameter; the Rust version returns the value through `Ok`.
 /// Returns `Err(())` when the encoded length exceeds
 /// `CONNECTION_ID_MAX_SIZE`.
-pub fn byteread_cid(_s: &mut bytestream<'_>) -> Result<connection_id_t, ()> {
+pub fn byteread_cid(_s: &mut bytestream<'_>) -> Result<connection_id_t, Error> {
     todo!()
 }
 
 /// Skip past an encoded connection id.  C: `byteskip_cid`.
-pub fn byteskip_cid(_s: &mut bytestream<'_>) -> Result<(), ()> {
+pub fn byteskip_cid(_s: &mut bytestream<'_>) -> Result<(), Error> {
     todo!()
 }
 
@@ -357,7 +357,7 @@ pub fn byteskip_cid(_s: &mut bytestream<'_>) -> Result<(), ()> {
 /// wire).  C: `bytewrite_cstr` — took a `const char*` and called
 /// `strlen` to find the length; in Rust the length comes from the
 /// `&str`.
-pub fn bytewrite_cstr(_s: &mut bytestream<'_>, _cstr: &str) -> Result<(), ()> {
+pub fn bytewrite_cstr(_s: &mut bytestream<'_>, _cstr: &str) -> Result<(), Error> {
     todo!()
 }
 
@@ -368,12 +368,12 @@ pub fn bytewrite_cstr(_s: &mut bytestream<'_>, _cstr: &str) -> Result<(), ()> {
 /// `length + 1 <= max_len`; the Rust version writes raw bytes
 /// (callers reconstruct a `&str`/`&CStr` themselves) and returns
 /// `Err(())` when `length > dst.len()`.
-pub fn byteread_cstr(_s: &mut bytestream<'_>, _dst: &mut [u8]) -> Result<usize, ()> {
+pub fn byteread_cstr(_s: &mut bytestream<'_>, _dst: &mut [u8]) -> Result<usize, Error> {
     todo!()
 }
 
 /// Skip past a length-prefixed string.  C: `byteskip_cstr`.
-pub fn byteskip_cstr(_s: &mut bytestream<'_>) -> Result<(), ()> {
+pub fn byteskip_cstr(_s: &mut bytestream<'_>) -> Result<(), Error> {
     todo!()
 }
 
@@ -386,19 +386,19 @@ pub fn byteskip_cstr(_s: &mut bytestream<'_>) -> Result<(), ()> {
 
 /// Encode a socket address as varint(family) + 4 or 16 raw bytes
 /// (address) + big-endian `u16` (port).  C: `bytewrite_addr`.
-pub fn bytewrite_addr(_s: &mut bytestream<'_>, _addr: &SocketAddr) -> Result<(), ()> {
+pub fn bytewrite_addr(_s: &mut bytestream<'_>, _addr: &SocketAddr) -> Result<(), Error> {
     todo!()
 }
 
 /// Decode a socket address.  C: `byteread_addr` filled a
 /// `sockaddr_storage` out parameter; the Rust version returns the
 /// value.
-pub fn byteread_addr(_s: &mut bytestream<'_>) -> Result<SocketAddr, ()> {
+pub fn byteread_addr(_s: &mut bytestream<'_>) -> Result<SocketAddr, Error> {
     todo!()
 }
 
 /// Skip past an encoded socket address.  C: `byteskip_addr`.
-pub fn byteskip_addr(_s: &mut bytestream<'_>) -> Result<(), ()> {
+pub fn byteskip_addr(_s: &mut bytestream<'_>) -> Result<(), Error> {
     todo!()
 }
 

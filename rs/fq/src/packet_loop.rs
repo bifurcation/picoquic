@@ -97,7 +97,6 @@
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
 // Stand-in for the not-yet-defined crate-level `Error` enum.
-#![allow(clippy::result_unit_err)]
 // Mirroring C parameter lists for the threaded entry points.
 // `Box<T>` parameters look local-only to clippy because the Phase
 // 1 bodies are `todo!()`; the owning shape is real once Phase 3
@@ -108,6 +107,7 @@
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
+use crate::Error;
 use crate::config::quic_config_t;
 use crate::utils::{ThreadFn, thread_t};
 use crate::{AlpnSelectV2, StreamDataCb, quic_t};
@@ -320,7 +320,7 @@ pub struct packet_loop_time_check_arg_t {
 ///
 /// The return value is the C `int`: `0` for success, non-zero to
 /// signal an error and break out of the loop.  Phase 3 may refine
-/// to a `Result` once the crate-level `Error` enum lands.
+/// the raw `i32` to a `Result<(), Error>`.
 pub trait PacketLoopCbFn {
     /// Loop-event callback.  See trait docs for `callback_argv`
     /// dispatch.
@@ -552,7 +552,7 @@ pub fn packet_loop_v2(
     _quic: &mut quic_t,
     _param: &mut packet_loop_param_t,
     _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -580,7 +580,7 @@ pub fn packet_loop(
     _socket_buffer_size: i32,
     _do_not_use_gso: bool,
     _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -695,7 +695,7 @@ pub fn server_set_context(
     _current_time: u64,
     _default_callback: Option<Box<dyn StreamDataCb>>,
     _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>,
-) -> Result<Box<quic_t>, ()> {
+) -> Result<Box<quic_t>, Error> {
     todo!()
 }
 
@@ -718,7 +718,7 @@ pub fn start_server_threads(
     _thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
     _thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
     _thread_ctxs: &mut [Option<Box<network_thread_ctx_t>>],
-) -> Result<usize, ()> {
+) -> Result<usize, Error> {
     todo!()
 }
 
@@ -756,7 +756,7 @@ pub fn packet_loop_open_sockets(
     _do_not_use_gso: bool,
     _s_ctx: &mut [socket_ctx_t],
     _ecn_value: u8,
-) -> Result<usize, ()> {
+) -> Result<usize, Error> {
     todo!()
 }
 

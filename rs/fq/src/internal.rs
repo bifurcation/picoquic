@@ -53,9 +53,6 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
-// Phase 1 stubs return `Result<(), ()>` until the crate-level
-// `Error` enum lands.
-#![allow(clippy::result_unit_err)]
 // `*mut Self` chains in linked-list / splay nodes; clippy's
 // `mutable_key_type` lint fires on `hash_table` lookups but
 // the keys are Phase-3 opaque pointers and not actually keyed

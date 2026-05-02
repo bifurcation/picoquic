@@ -22,9 +22,8 @@
 //!   `Option<&str>`.  `Some("-")` is the established
 //!   redirect-to-stdout shortcut and is preserved as-is.
 //! * The C return is `int` (0 on success, `-1` on file-open
-//!   failure).  Mapped to `Result<(), ()>` per the project's
-//!   error-handling convention; the placeholder unit error
-//!   becomes a crate-level `Error` variant once that enum lands.
+//!   failure).  Mapped to `Result<(), Error>` per the project's
+//!   error-handling convention.
 //! * `FILE* F` → `&mut dyn core::fmt::Write`.  Matches the
 //!   convention introduced in
 //!   [`crate::config::config_usage_file`]
@@ -42,6 +41,7 @@
 //!   str`; Phase 3 either supplies the lookup table or removes the
 //!   orphan declaration.
 
+use crate::Error;
 use crate::{call_back_event_t, connection_id_t, quic_t};
 
 /// Set the text log file and start tracing into it.
@@ -52,10 +52,8 @@ use crate::{call_back_event_t, connection_id_t, quic_t};
 /// `logger.c::set_textlog`.
 ///
 /// C: `int set_textlog(quic_t*, char const*)`.
-// TODO(error-enum): swap `()` for the crate's `Error` once it
 // lands.  The C return is 0 / -1 (file-open failure).
-#[allow(clippy::result_unit_err)]
-pub fn set_textlog(_quic: &mut quic_t, _textlog_file: Option<&str>) -> Result<(), ()> {
+pub fn set_textlog(_quic: &mut quic_t, _textlog_file: Option<&str>) -> Result<(), Error> {
     todo!()
 }
 

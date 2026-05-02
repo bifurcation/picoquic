@@ -30,8 +30,7 @@
 //!   `check_reuse`, `sending`) become `bool`.  Likewise
 //!   `unsigned int client_mode` in `tlscontext_free`.
 //! * C status-code returns (`int` 0/-1 / `ERROR_*`) become
-//!   `Result<T, ()>` per the Phase 1 contract — the crate-level
-//!   `Error` enum doesn't exist yet, so `()` is a placeholder.
+//!   `Result<T, Error>` per the Phase 1 contract.
 //! * Owning `ptls_iovec_t* get_certs_from_file(…, size_t*
 //!   count)` collapses to `Option<Vec<ptls_iovec_t>>`: the C callee
 //!   `malloc`s the slot array and writes its length through the
@@ -71,8 +70,6 @@
 //!   header (and the `_t` callback variant lives in
 //!   `crypto_provider_api.rs`); not translated.
 
-#![allow(clippy::result_unit_err)]
-
 extern crate alloc;
 
 use alloc::boxed::Box;
@@ -82,7 +79,7 @@ use core::net::SocketAddr;
 
 use crate::internal::crypto_context_t;
 use crate::{
-    FreeVerifyCertificateCtx, RESET_SECRET_SIZE, cnx_t, connection_id_t, ptls_iovec_t,
+    Error, FreeVerifyCertificateCtx, RESET_SECRET_SIZE, cnx_t, connection_id_t, ptls_iovec_t,
     ptls_verify_certificate_t, quic_t,
 };
 
@@ -173,7 +170,7 @@ pub fn master_tlscontext(
     _key_file_name: Option<&str>,
     _cert_root_file_name: Option<&str>,
     _ticket_key: Option<&[u8]>,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -196,7 +193,7 @@ pub fn master_tlscontext_free(_quic: &mut quic_t) {
 /// 0 on success, `ERROR_TLS_SERVER_CON_WITHOUT_CERT` /
 /// `ERROR_MEMORY` / -1 on failure.  C:
 /// `tlscontext_create`.
-pub fn tlscontext_create(_quic: &mut quic_t, _cnx: &mut cnx_t) -> Result<(), ()> {
+pub fn tlscontext_create(_quic: &mut quic_t, _cnx: &mut cnx_t) -> Result<(), Error> {
     todo!()
 }
 
@@ -241,7 +238,7 @@ pub fn tlscontext_remove_ticket(_cnx: &mut cnx_t) {
 /// returned the consumed-byte count through `int* data_consumed`;
 /// the Rust shape returns it inside the success arm of `Result`.
 /// C: `tls_stream_process`.
-pub fn tls_stream_process(_cnx: &mut cnx_t, _current_time: u64) -> Result<i32, ()> {
+pub fn tls_stream_process(_cnx: &mut cnx_t, _current_time: u64) -> Result<i32, Error> {
     todo!()
 }
 
@@ -254,7 +251,7 @@ pub fn is_tls_complete(_cnx: &cnx_t) -> bool {
 
 /// Send the initial `ClientHello` (or the response to a `HelloRetry`)
 /// on the TLS stream.  C: `initialize_tls_stream`.
-pub fn initialize_tls_stream(_cnx: &mut cnx_t, _current_time: u64) -> Result<(), ()> {
+pub fn initialize_tls_stream(_cnx: &mut cnx_t, _current_time: u64) -> Result<(), Error> {
     todo!()
 }
 
@@ -507,7 +504,7 @@ pub fn setup_initial_master_secret(
     _salt: ptls_iovec_t,
     _initial_cnxid: connection_id_t,
     _master_secret: &mut [u8],
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -519,14 +516,14 @@ pub fn setup_initial_secrets(
     _master_secret: &[u8],
     _client_secret: &mut [u8],
     _server_secret: &mut [u8],
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
 /// Set up `cnx`'s per-epoch initial AEAD / PN encryption contexts
 /// from the connection's initial CID.  C:
 /// `setup_initial_traffic_keys`.
-pub fn setup_initial_traffic_keys(_cnx: &mut cnx_t) -> Result<(), ()> {
+pub fn setup_initial_traffic_keys(_cnx: &mut cnx_t) -> Result<(), Error> {
     todo!()
 }
 
@@ -552,7 +549,7 @@ pub fn get_initial_aead_context(
     _initial_cnxid: &connection_id_t,
     _is_client: bool,
     _is_enc: bool,
-) -> Result<InitialAeadContext, ()> {
+) -> Result<InitialAeadContext, Error> {
     todo!()
 }
 
@@ -584,7 +581,7 @@ pub fn get_app_secret_size(_cnx: &cnx_t) -> usize {
 /// Compute the post-rotation AEAD + PN contexts and stash them in
 /// `cnx->crypto_context_new`.  C:
 /// `compute_new_rotated_keys`.
-pub fn compute_new_rotated_keys(_cnx: &mut cnx_t) -> Result<(), ()> {
+pub fn compute_new_rotated_keys(_cnx: &mut cnx_t) -> Result<(), Error> {
     todo!()
 }
 
@@ -602,7 +599,7 @@ pub fn rotate_app_secret(
     _cipher: &ptls_cipher_suite_t,
     _secret: &mut [u8],
     _traffic_update_label: &str,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -647,7 +644,7 @@ pub fn create_cnxid_reset_secret(
     _quic: &mut quic_t,
     _cnx_id: &connection_id_t,
     _reset_secret: &mut [u8; RESET_SECRET_SIZE],
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -729,7 +726,7 @@ pub fn server_decrypt_retry_token(
     _addr_peer: &SocketAddr,
     _token: &[u8],
     _text: &mut [u8],
-) -> Result<DecryptedRetryToken, ()> {
+) -> Result<DecryptedRetryToken, Error> {
     todo!()
 }
 
@@ -744,7 +741,7 @@ pub fn prepare_retry_token(
     _rcid: &connection_id_t,
     _initial_pn: u32,
     _token: &mut [u8],
-) -> Result<usize, ()> {
+) -> Result<usize, Error> {
     todo!()
 }
 
@@ -771,7 +768,7 @@ pub fn verify_retry_token(
     _initial_pn: u32,
     _token: &[u8],
     _check_reuse: bool,
-) -> Result<VerifiedRetryToken, ()> {
+) -> Result<VerifiedRetryToken, Error> {
     todo!()
 }
 
@@ -829,7 +826,7 @@ pub unsafe fn hash_finalize(_output: &mut [u8], _hash_context: *mut c_void) {
 /// Load a PEM-encoded private key from `file_name` and install it
 /// in `quic`'s master TLS context.  C:
 /// `set_private_key_from_file`.
-pub fn set_private_key_from_file(_quic: &mut quic_t, _file_name: &str) -> Result<(), ()> {
+pub fn set_private_key_from_file(_quic: &mut quic_t, _file_name: &str) -> Result<(), Error> {
     todo!()
 }
 
@@ -910,7 +907,7 @@ pub unsafe fn verify_retry_protection(
     _length: &mut usize,
     _byte_index: usize,
     _odcid: &connection_id_t,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 

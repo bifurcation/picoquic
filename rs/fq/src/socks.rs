@@ -33,7 +33,7 @@
 //!   [`SelectExInfo`]).  C call sites pass `NULL` when
 //!   uninterested; Rust call sites can simply ignore unused
 //!   fields, so the Boolean "interested?" argument disappears.
-//! * `int bytes_recv` returns become `Result<usize, ()>` —
+//! * `int bytes_recv` returns become `Result<usize, Error>` —
 //!   `Ok(n)` for the C non-negative count, `Err(())` for the
 //!   `-1` error path.
 //! * `int* sock_err` out-parameters on [`sendmsg`] and
@@ -41,10 +41,10 @@
 //!   `Result<usize, i32>` carries the OS errno on failure.
 
 // Stand-in for the not-yet-defined crate-level `Error` enum.
-#![allow(clippy::result_unit_err)]
 
 use core::net::SocketAddr;
 
+use crate::Error;
 use crate::quic_t;
 
 // ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ pub struct msghdr_t {
 ///
 /// `af` stays an `i32` — call sites pass the `AF_*` constants from
 /// `<sys/socket.h>` directly.
-pub fn bind_to_port(_fd: socket_t, _af: i32, _port: i32) -> Result<(), ()> {
+pub fn bind_to_port(_fd: socket_t, _af: i32, _port: i32) -> Result<(), Error> {
     todo!()
 }
 
@@ -118,7 +118,7 @@ pub fn bind_to_port(_fd: socket_t, _af: i32, _port: i32) -> Result<(), ()> {
 /// `int get_local_address(SOCKET_TYPE sd, struct
 /// sockaddr_storage* addr)`.  The sockaddr out-parameter folds
 /// into the `Ok` payload; `Err(())` matches the C `-1`.
-pub fn get_local_address(_sd: socket_t) -> Result<SocketAddr, ()> {
+pub fn get_local_address(_sd: socket_t) -> Result<SocketAddr, Error> {
     todo!()
 }
 
@@ -140,7 +140,7 @@ pub fn open_client_socket(_af: i32) -> socket_t {
 /// callers in `sockloop.c` declare the storage on the stack and
 /// pass `&sockets`, so returning by value matches the lifetime
 /// expectation.
-pub fn open_server_sockets(_port: i32) -> Result<server_sockets_t, ()> {
+pub fn open_server_sockets(_port: i32) -> Result<server_sockets_t, Error> {
     todo!()
 }
 
@@ -155,7 +155,7 @@ pub fn close_server_sockets(_sockets: &mut server_sockets_t) {
 /// (`IP_PKTINFO` / `IPV6_RECVPKTINFO`, plus `IPV6_V6ONLY` for v6).
 /// C: `int socket_set_pkt_info(SOCKET_TYPE sd, int af)`
 /// returning 0 / -1.
-pub fn socket_set_pkt_info(_sd: socket_t, _af: i32) -> Result<(), ()> {
+pub fn socket_set_pkt_info(_sd: socket_t, _af: i32) -> Result<(), Error> {
     todo!()
 }
 
@@ -165,7 +165,7 @@ pub fn socket_set_pkt_info(_sd: socket_t, _af: i32) -> Result<(), ()> {
 /// `send_set` out-params fold into the tuple return as `bool`
 /// flags (the C uses 0/1).  `Err(())` matches the C `-1`
 /// "neither could be configured" path.
-pub fn socket_set_ecn_options(_sd: socket_t, _af: i32) -> Result<(bool, bool), ()> {
+pub fn socket_set_ecn_options(_sd: socket_t, _af: i32) -> Result<(bool, bool), Error> {
     todo!()
 }
 
@@ -177,7 +177,7 @@ pub fn socket_set_ecn_options_ex(
     _sd: socket_t,
     _af: i32,
     _ecn_value: u8,
-) -> Result<(bool, bool), ()> {
+) -> Result<(bool, bool), Error> {
     todo!()
 }
 
@@ -185,7 +185,7 @@ pub fn socket_set_ecn_options_ex(
 /// no-op on other platforms).  C:
 /// `int socket_set_pmtud_options(SOCKET_TYPE sd, int af)`
 /// returning 0 / -1.
-pub fn socket_set_pmtud_options(_sd: socket_t, _af: i32) -> Result<(), ()> {
+pub fn socket_set_pmtud_options(_sd: socket_t, _af: i32) -> Result<(), Error> {
     todo!()
 }
 
@@ -217,7 +217,7 @@ pub struct RecvInfo {
 /// returning bytes received or `-1`.  Output parameters fold into
 /// [`RecvInfo`]; the slice length subsumes
 /// `buffer_max`.
-pub fn recvmsg(_fd: socket_t, _buffer: &mut [u8]) -> Result<RecvInfo, ()> {
+pub fn recvmsg(_fd: socket_t, _buffer: &mut [u8]) -> Result<RecvInfo, Error> {
     todo!()
 }
 
@@ -281,7 +281,11 @@ pub struct SelectExInfo {
 /// `(buffer, buffer_max)` pairs; the rest of the output folds
 /// into [`SelectInfo`].  `Err(())` matches the C `-1`
 /// from `select` / `recvmsg`.
-pub fn select(_sockets: &[socket_t], _buffer: &mut [u8], _delta_t: i64) -> Result<SelectInfo, ()> {
+pub fn select(
+    _sockets: &[socket_t],
+    _buffer: &mut [u8],
+    _delta_t: i64,
+) -> Result<SelectInfo, Error> {
     todo!()
 }
 
@@ -291,7 +295,7 @@ pub fn select_ex(
     _sockets: &[socket_t],
     _buffer: &mut [u8],
     _delta_t: i64,
-) -> Result<SelectExInfo, ()> {
+) -> Result<SelectExInfo, Error> {
     todo!()
 }
 
@@ -365,7 +369,10 @@ pub struct ServerAddress {
 /// int server_port, struct sockaddr_storage* server_address, int*
 /// is_name)`.  `Err(())` matches the C `-1` (DNS lookup failure
 /// or unsupported family).
-pub fn get_server_address(_ip_address_text: &str, _server_port: i32) -> Result<ServerAddress, ()> {
+pub fn get_server_address(
+    _ip_address_text: &str,
+    _server_port: i32,
+) -> Result<ServerAddress, Error> {
     todo!()
 }
 

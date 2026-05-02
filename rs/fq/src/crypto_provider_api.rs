@@ -33,7 +33,7 @@
 //!   placeholders without touching call sites.
 //! * Owning-out-pointer C idioms (`uint8_t** pubkey, size_t *
 //!   pubkey_len`, `ptls_iovec_t* (*)(…, size_t* count)`, etc.)
-//!   collapse to `Result<Vec<…>, ()>` — the C callee always
+//!   collapse to `Result<Vec<…>, Error>` — the C callee always
 //!   `malloc`s the buffer and the caller `free`s it, so a `Vec`
 //!   captures both ownership and length faithfully.
 //! * The `extern` registry globals (`cipher_suites`,
@@ -53,13 +53,13 @@
 //!   maps to `None` and the registered impl is owned by the registry.
 
 #![allow(non_camel_case_types)]
-#![allow(clippy::result_unit_err)]
 
 extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+use crate::Error;
 use crate::{cnx_t, ptls_iovec_t, ptls_verify_certificate_t};
 
 // ---------------------------------------------------------------------------
@@ -206,10 +206,9 @@ pub fn register_hpke_kem(_hpke_kem: &'static ptls_hpke_kem_t) {
 
 /// C: `SetTlsKeyProvider`.  Installs a key provider in
 /// a TLS context using a raw key blob.  Returns 0 on success in C;
-/// modeled as `Result<(), ()>` until the crate-level `Error` enum
-/// lands.
+/// modeled as `Result<(), Error>` here.
 pub trait SetTlsKeyProvider {
-    fn set(&mut self, ctx: &mut ptls_context_t, data: &[u8]) -> Result<(), ()>;
+    fn set(&mut self, ctx: &mut ptls_context_t, data: &[u8]) -> Result<(), Error>;
 }
 
 /// C: `GetPrivateKeyFromFile`.  Reads a private key
@@ -225,7 +224,7 @@ pub trait GetPrivateKeyFromFile {
 /// C: `SetPrivateKeyFromFile`.  Reads a PEM file and
 /// installs the resulting key in `ctx`.  Returns 0 on success in C.
 pub trait SetPrivateKeyFromFile {
-    fn set(&mut self, keypem: &str, ctx: &mut ptls_context_t) -> Result<(), ()>;
+    fn set(&mut self, keypem: &str, ctx: &mut ptls_context_t) -> Result<(), Error>;
 }
 
 /// C: `GetPublicKeyFromPrivate`.  Reads a private-key
@@ -233,7 +232,7 @@ pub trait SetPrivateKeyFromFile {
 /// returned the bytes through `uint8_t** pubkey` plus `size_t*
 /// pubkey_len`; the owning out-pointer collapses to `Vec<u8>`.
 pub trait GetPublicKeyFromPrivate {
-    fn get(&mut self, keypem: &str) -> Result<Vec<u8>, ()>;
+    fn get(&mut self, keypem: &str) -> Result<Vec<u8>, Error>;
 }
 
 /// C: `DisposeSignCertificate`.  Provider-specific
@@ -284,7 +283,7 @@ pub trait GetCertificateVerifier {
 /// bundle in `ctx`.  The C `(ptls_iovec_t* certs, size_t count)`
 /// pair collapses to a borrowed slice.
 pub trait SetTlsRootCertificates {
-    fn set(&mut self, ctx: &mut ptls_context_t, certs: &[ptls_iovec_t]) -> Result<(), ()>;
+    fn set(&mut self, ctx: &mut ptls_context_t, certs: &[ptls_iovec_t]) -> Result<(), Error>;
 }
 
 /// C: `ExplainCryptoError`.  Reports the most recent
@@ -322,7 +321,7 @@ pub trait CryptoRandomProvider {
 /// allocated context through `ptls_key_exchange_context_t**`; the
 /// Rust shape returns an owning `Box`.
 pub trait KeyexFromKeyFile {
-    fn create(&mut self, keypem: &str) -> Result<Box<ptls_key_exchange_context_t>, ()>;
+    fn create(&mut self, keypem: &str) -> Result<Box<ptls_key_exchange_context_t>, Error>;
 }
 
 /// C: `KeyexDispose`.  Provider-specific teardown for a

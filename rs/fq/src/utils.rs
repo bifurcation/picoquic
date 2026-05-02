@@ -61,11 +61,11 @@
 #![allow(non_upper_case_globals)]
 // Three-way comparator helpers return `Ordering`; result-as-`Result`
 // stand-ins are flagged for the missing top-level `Error` enum.
-#![allow(clippy::result_unit_err)]
 
 use core::cmp::Ordering;
 use core::net::SocketAddr;
 
+use crate::Error;
 use crate::{MAX_PACKET_SIZE, connection_id_t, tp_preferred_address_t};
 
 // ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ pub fn string_free(_str: Option<String>) {
 /// by [`debug_printf`].  Buffer-overflow returns `Err(())`
 /// (matching the C `-1`); on success the `Ok(usize)` is the byte
 /// count written, replacing the `nb_chars` out-parameter.
-pub fn sprintf(_buf: &mut [u8], _msg: &str) -> Result<usize, ()> {
+pub fn sprintf(_buf: &mut [u8], _msg: &str) -> Result<usize, Error> {
     todo!()
 }
 
@@ -260,10 +260,10 @@ pub fn format_connection_id(_bytes: &mut [u8], _cnx_id: connection_id_t) -> u8 {
 /// connection_id_t* cnx_id)`.
 ///
 /// The C output parameter becomes the function return:
-/// `Result<connection_id_t, ()>` reports the parsed id on
+/// `Result<connection_id_t, Error>` reports the parsed id on
 /// success, `Err(())` on truncation.  The `len` parameter and the
 /// slice length are redundant in safe Rust; the slice carries it.
-pub fn parse_connection_id(_bytes: &[u8]) -> Result<connection_id_t, ()> {
+pub fn parse_connection_id(_bytes: &[u8]) -> Result<connection_id_t, Error> {
     todo!()
 }
 
@@ -332,7 +332,7 @@ pub fn parse_hexa(_hex_input: &str, _bin_output: &mut [u8]) -> usize {
 /// input_length, connection_id_t* cnx_id)` returning the
 /// number of bytes decoded; the output parameter folds into the
 /// `Result` return.
-pub fn parse_connection_id_hexa(_hex_input: &str) -> Result<connection_id_t, ()> {
+pub fn parse_connection_id_hexa(_hex_input: &str) -> Result<connection_id_t, Error> {
     todo!()
 }
 
@@ -342,11 +342,11 @@ pub fn parse_connection_id_hexa(_hex_input: &str) -> Result<connection_id_t, ()>
 ///
 /// The output buffer becomes a `&mut dyn core::fmt::Write` sink to
 /// keep the helper `no_std`-friendly (same convention as the
-/// logger module).  The 0 / -1 status maps to `Result<(), ()>`.
+/// logger module).  The 0 / -1 status maps to `Result<(), Error>`.
 pub fn print_connection_id_hexa(
     _w: &mut dyn core::fmt::Write,
     _cnxid: &connection_id_t,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -411,7 +411,7 @@ pub fn get_ip_addr(_addr: &SocketAddr) -> Option<&[u8]> {
 /// with `port` into a [`SocketAddr`].  C:
 /// `int store_text_addr(struct sockaddr_storage* stored_addr,
 /// const char* ip_address_text, uint16_t port)` returning 0 / -1.
-pub fn store_text_addr(_ip_address_text: &str, _port: u16) -> Result<SocketAddr, ()> {
+pub fn store_text_addr(_ip_address_text: &str, _port: u16) -> Result<SocketAddr, Error> {
     todo!()
 }
 
@@ -435,7 +435,7 @@ pub fn addr_text(
 ///
 /// `addr_family` stays an `i32` to keep parity with the C ABI;
 /// callers in the codebase pass the `AF_*` constants directly.
-pub fn store_loopback_addr(_addr_family: i32, _port: u16) -> Result<SocketAddr, ()> {
+pub fn store_loopback_addr(_addr_family: i32, _port: u16) -> Result<SocketAddr, Error> {
     todo!()
 }
 
@@ -453,7 +453,7 @@ pub fn set_preferred_address(
     _v4_text: Option<&str>,
     _v6_text: Option<&str>,
     _preferred_port: u16,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -483,7 +483,7 @@ pub fn get_input_path(
     _target_file_path: &mut dyn core::fmt::Write,
     _solution_path: Option<&str>,
     _file_name: &str,
-) -> Result<(), ()> {
+) -> Result<(), Error> {
     todo!()
 }
 
@@ -725,12 +725,12 @@ pub trait ThreadFn {
 }
 
 /// Spawn a thread.  Out-of-scope-for-v1 — see module docstring.
-pub fn create_thread(_thread: &mut thread_t, _thread_fn: Box<dyn ThreadFn>) -> Result<(), ()> {
+pub fn create_thread(_thread: &mut thread_t, _thread_fn: Box<dyn ThreadFn>) -> Result<(), Error> {
     todo!()
 }
 
 /// Wait for a thread to exit.  Out-of-scope-for-v1.
-pub fn wait_thread(_thread: thread_t) -> Result<(), ()> {
+pub fn wait_thread(_thread: thread_t) -> Result<(), Error> {
     todo!()
 }
 
@@ -740,27 +740,27 @@ pub fn delete_thread(_thread: &mut thread_t) {
 }
 
 /// Initialize a mutex.  Out-of-scope-for-v1.
-pub fn create_mutex(_mutex: &mut mutex_t) -> Result<(), ()> {
+pub fn create_mutex(_mutex: &mut mutex_t) -> Result<(), Error> {
     todo!()
 }
 
 /// Tear down a mutex.  Out-of-scope-for-v1.
-pub fn delete_mutex(_mutex: &mut mutex_t) -> Result<(), ()> {
+pub fn delete_mutex(_mutex: &mut mutex_t) -> Result<(), Error> {
     todo!()
 }
 
 /// Lock a mutex.  Out-of-scope-for-v1.
-pub fn lock_mutex(_mutex: &mut mutex_t) -> Result<(), ()> {
+pub fn lock_mutex(_mutex: &mut mutex_t) -> Result<(), Error> {
     todo!()
 }
 
 /// Unlock a mutex.  Out-of-scope-for-v1.
-pub fn unlock_mutex(_mutex: &mut mutex_t) -> Result<(), ()> {
+pub fn unlock_mutex(_mutex: &mut mutex_t) -> Result<(), Error> {
     todo!()
 }
 
 /// Initialize an event.  Out-of-scope-for-v1.
-pub fn create_event(_event: &mut event_t) -> Result<(), ()> {
+pub fn create_event(_event: &mut event_t) -> Result<(), Error> {
     todo!()
 }
 
@@ -770,13 +770,13 @@ pub fn delete_event(_event: &mut event_t) {
 }
 
 /// Signal an event.  Out-of-scope-for-v1.
-pub fn signal_event(_event: &mut event_t) -> Result<(), ()> {
+pub fn signal_event(_event: &mut event_t) -> Result<(), Error> {
     todo!()
 }
 
 /// Wait for an event to be signalled, with a timeout in
 /// microseconds.  Out-of-scope-for-v1.
-pub fn wait_for_event(_event: &mut event_t, _microsec_wait: u64) -> Result<(), ()> {
+pub fn wait_for_event(_event: &mut event_t, _microsec_wait: u64) -> Result<(), Error> {
     todo!()
 }
 

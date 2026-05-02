@@ -43,6 +43,7 @@
 
 #![allow(non_camel_case_types)]
 
+use crate::Error;
 use crate::{StreamDataCb, lossbit_version_enum, quic_t, spinbit_version_enum};
 
 // ---------------------------------------------------------------------------
@@ -249,19 +250,16 @@ impl quic_config_t {
     /// selected by `option_num`, to the config.  `opt_val` is
     /// optional — flag-style options (`option_DO_RETRY`,
     /// `option_LONG_LOG`, …) ignore it; value-style
-    /// options require it and return `Err(())` when it is
-    /// missing or malformed.
+    /// options require it and return `Err` when it is missing
+    /// or malformed.
     ///
-    /// `Result<(), ()>` is a placeholder until the crate-level
-    /// `Error` enum lands; the C signature returned `int`
-    /// (`0` ↔ `Ok`, `-1` ↔ `Err`).
-    // TODO(error-enum): swap `()` for the crate's `Error` once it lands.
-    #[allow(clippy::result_unit_err)]
+    /// The C signature returned `int` (`0` ↔ `Ok`, `-1` ↔ `Err`);
+    /// mapped to `Result<(), Error>`.
     pub fn set_option(
         &mut self,
         _option_num: option_enum_t,
         _opt_val: Option<&str>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), Error> {
         todo!()
     }
 
@@ -276,15 +274,13 @@ impl quic_config_t {
     /// the program lifetime, so a borrow is safe.  `argc` is
     /// implicit in `argv.len()` and the `int argc` parameter is
     /// dropped.
-    // TODO(error-enum): swap `()` for the crate's `Error` once it lands.
-    #[allow(clippy::result_unit_err)]
     pub fn command_line(
         &mut self,
         _opt: i32,
         _p_optind: &mut usize,
         _argv: &[&str],
         _optarg: Option<&str>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), Error> {
         todo!()
     }
 
@@ -292,15 +288,13 @@ impl quic_config_t {
     /// [`Self::command_line`] but accepts both single-character
     /// (`-x`) and long-form (`--name`) option strings; the leading
     /// dashes are part of `opt_string`, matching the C contract.
-    // TODO(error-enum): swap `()` for the crate's `Error` once it lands.
-    #[allow(clippy::result_unit_err)]
     pub fn command_line_ex(
         &mut self,
         _opt_string: &str,
         _p_optind: &mut usize,
         _argv: &[&str],
         _optarg: Option<&str>,
-    ) -> Result<(), ()> {
+    ) -> Result<(), Error> {
         todo!()
     }
 }
@@ -317,11 +311,9 @@ impl quic_config_t {
 /// (`option_string`, `string_max`) and reported the populated
 /// length via `*string_length`; the Rust wrapper owns the buffer
 /// and returns it directly, so the buffer-too-small failure mode
-/// disappears.  The `Result<String, ()>` shape is kept for
+/// disappears.  The `Result<String, Error>` shape is kept for
 /// signature stability with the rest of the API.
-// TODO(error-enum): swap `()` for the crate's `Error` once it lands.
-#[allow(clippy::result_unit_err)]
-pub fn config_option_letters() -> Result<String, ()> {
+pub fn config_option_letters() -> Result<String, Error> {
     todo!()
 }
 

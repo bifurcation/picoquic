@@ -39,6 +39,7 @@
 // `Box` comes from the prelude.  Once the crate flips to
 // `#![no_std]` (per the translation plan) this will become an
 // explicit `use alloc::boxed::Box;` at the crate root.
+use crate::Error;
 use core::ffi::c_void;
 use core::ptr::NonNull;
 
@@ -188,11 +189,9 @@ pub fn hash_retrieve(_hash_table: &mut hash_table, _key: *const c_void) -> Optio
 /// `key_to_item` callback yields `None` (matching the C `-1`
 /// return).
 ///
-/// `Result<(), ()>` is a placeholder — the crate-level `Error`
+/// `Result<(), Error>` is a placeholder — the crate-level `Error`
 /// enum doesn't exist yet.  Replace once it lands.
-// TODO(error-enum): swap `()` for the crate's `Error` once it lands.
-#[allow(clippy::result_unit_err)]
-pub fn hash_insert(_hash_table: &mut hash_table, _key: *const c_void) -> Result<(), ()> {
+pub fn hash_insert(_hash_table: &mut hash_table, _key: *const c_void) -> Result<(), Error> {
     todo!()
 }
 

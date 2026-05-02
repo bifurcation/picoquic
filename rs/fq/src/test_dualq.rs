@@ -28,7 +28,7 @@
 //! * `dualq_dequeue_one`'s C `int* should_drop` out-parameter folds
 //!   into a tuple return — `Option<(Box<...>, bool)>` represents
 //!   "no packet ready" / "(packet, drop?)".
-//! * `dualq_configure` returns `Result<(), ()>` because v1 has no
+//! * `dualq_configure` returns `Result<(), Error>` because v1 has no
 //!   top-level [`crate::Error`] enum yet — TODO once it lands,
 //!   replace `Err(())` with the corresponding `Error::Memory`
 //!   variant (the C body returns `ERROR_MEMORY`).
@@ -43,8 +43,8 @@
 #![allow(non_snake_case)]
 // Status-code returns stand in for the missing top-level `Error`
 // enum — see module docstring.
-#![allow(clippy::result_unit_err)]
 
+use crate::Error;
 use crate::utils::{test_sim_link_t, test_sim_packet_t, testAqmT};
 
 // ---------------------------------------------------------------------------
@@ -213,7 +213,7 @@ impl testAqmT for dualq_state_t {
 /// Returns `Err(())` for the C `ERROR_MEMORY` allocation
 /// failure path.  TODO: once the crate-level [`crate::Error`] enum
 /// lands, replace `Err(())` with `Error::Memory`.
-pub fn dualq_configure(_link: &mut test_sim_link_t, _l4s_max: u64) -> Result<(), ()> {
+pub fn dualq_configure(_link: &mut test_sim_link_t, _l4s_max: u64) -> Result<(), Error> {
     todo!()
 }
 
