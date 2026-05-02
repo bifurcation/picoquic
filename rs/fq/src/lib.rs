@@ -272,49 +272,47 @@ pub enum state_enum {
 
 // ---------------------------------------------------------------------------
 // Transport-parameter identifiers.
-//
-// The C source declares this as `typedef uint64_t tp_enum;`
-// followed by a list of `#define` constants — some of the IDs are
-// drawn from the QUIC spec's variable-length integer space and don't
-// fit a packed enum.  Mirror the C type alias and constants directly.
 
-/// Type used for QUIC transport-parameter identifiers.
-pub type tp_enum = u64;
-
-pub const tp_original_connection_id: tp_enum = 0;
-pub const tp_idle_timeout: tp_enum = 1;
-pub const tp_stateless_reset_token: tp_enum = 2;
-pub const tp_max_packet_size: tp_enum = 3;
-pub const tp_initial_max_data: tp_enum = 4;
-pub const tp_initial_max_stream_data_bidi_local: tp_enum = 5;
-pub const tp_initial_max_stream_data_bidi_remote: tp_enum = 6;
-pub const tp_initial_max_stream_data_uni: tp_enum = 7;
-pub const tp_initial_max_streams_bidi: tp_enum = 8;
-pub const tp_initial_max_streams_uni: tp_enum = 9;
-pub const tp_ack_delay_exponent: tp_enum = 10;
-pub const tp_max_ack_delay: tp_enum = 11;
-pub const tp_disable_migration: tp_enum = 12;
-pub const tp_server_preferred_address: tp_enum = 13;
-pub const tp_active_connection_id_limit: tp_enum = 14;
-pub const tp_handshake_connection_id: tp_enum = 15;
-pub const tp_retry_connection_id: tp_enum = 16;
-/// Per `draft-pauly-quic-datagram-05`.
-pub const tp_max_datagram_frame_size: tp_enum = 32;
-pub const tp_test_large_chello: tp_enum = 3127;
-pub const tp_enable_loss_bit: tp_enum = 0x1057;
-pub const tp_min_ack_delay: tp_enum = 0xff04de1b;
-/// `(x & 1)` ↔ "want timestamps", `(x & 2)` ↔ "can send timestamps".
-pub const tp_enable_time_stamp: tp_enum = 0x7158;
-pub const tp_grease_quic_bit: tp_enum = 0x2ab2;
-pub const tp_version_negotiation: tp_enum = 0x11;
-/// Per `draft-kuhn-quic-0rtt-bdp-09`.
-pub const tp_enable_bdp_frame: tp_enum = 0xebd9;
-/// Per `draft-quic-multipath 20`.
-pub const tp_initial_max_path_id: tp_enum = 0x3e;
-/// Per `draft-seemann-quic-address-discovery`.
-pub const tp_address_discovery: tp_enum = 0x9f81a176;
-/// Per `draft-ietf-quic-reliable-stream-reset-07`.
-pub const tp_reset_stream_at: tp_enum = 0x17f7586d2cb571;
+/// QUIC transport-parameter identifiers.  Wire values exceed `u32`
+/// for several extension parameters, hence the `#[repr(u64)]`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u64)]
+pub enum Tp {
+    OriginalConnectionId = 0,
+    IdleTimeout = 1,
+    StatelessResetToken = 2,
+    MaxPacketSize = 3,
+    InitialMaxData = 4,
+    InitialMaxStreamDataBidiLocal = 5,
+    InitialMaxStreamDataBidiRemote = 6,
+    InitialMaxStreamDataUni = 7,
+    InitialMaxStreamsBidi = 8,
+    InitialMaxStreamsUni = 9,
+    AckDelayExponent = 10,
+    MaxAckDelay = 11,
+    DisableMigration = 12,
+    ServerPreferredAddress = 13,
+    ActiveConnectionIdLimit = 14,
+    HandshakeConnectionId = 15,
+    RetryConnectionId = 16,
+    /// Per `draft-quic-multipath 20`.
+    InitialMaxPathId = 0x3e,
+    VersionNegotiation = 0x11,
+    /// Per `draft-pauly-quic-datagram-05`.
+    MaxDatagramFrameSize = 32,
+    TestLargeChello = 3127,
+    EnableLossBit = 0x1057,
+    /// `(x & 1)` ↔ "want timestamps", `(x & 2)` ↔ "can send timestamps".
+    EnableTimeStamp = 0x7158,
+    GreaseQuicBit = 0x2ab2,
+    /// Per `draft-kuhn-quic-0rtt-bdp-09`.
+    EnableBdpFrame = 0xebd9,
+    MinAckDelay = 0xff04de1b,
+    /// Per `draft-seemann-quic-address-discovery`.
+    AddressDiscovery = 0x9f81a176,
+    /// Per `draft-ietf-quic-reliable-stream-reset-07`.
+    ResetStreamAt = 0x17f7586d2cb571,
+}
 
 // ---------------------------------------------------------------------------
 // Packet contexts and enumerated policy types.
@@ -958,8 +956,9 @@ pub fn error_name(_error_code: u64) -> Option<&'static str> {
 }
 
 /// C: `tp_name`.  Returns a textual name for transport
-/// parameter `tp_number`.
-pub fn tp_name(_tp_number: tp_enum) -> Option<&'static str> {
+/// parameter `tp_number`.  Takes a raw `u64` (rather than `Tp`)
+/// because the C function answers for unknown / extension IDs too.
+pub fn tp_name(_tp_number: u64) -> Option<&'static str> {
     todo!()
 }
 

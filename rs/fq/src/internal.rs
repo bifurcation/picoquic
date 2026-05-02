@@ -190,56 +190,61 @@ pub const fn bits_clear_in_range(v: u64, min: u64, max: u64, bits: u64) -> bool 
 // ---------------------------------------------------------------------------
 // Frame types.
 
-/// QUIC frame-type tags.  C: `frame_type_enum_t`.
+/// QUIC frame-type tags.
 ///
-/// Kept as a `u64` typedef + `pub const` block because several of
-/// the values exceed `u32` and the enum is used in arithmetic
-/// contexts (`IN_RANGE`).
-pub type frame_type_enum_t = u64;
-pub const frame_type_padding: frame_type_enum_t = 0;
-pub const frame_type_ping: frame_type_enum_t = 1;
-pub const frame_type_ack: frame_type_enum_t = 0x02;
-pub const frame_type_ack_ecn: frame_type_enum_t = 0x03;
-pub const frame_type_reset_stream: frame_type_enum_t = 0x04;
-pub const frame_type_stop_sending: frame_type_enum_t = 0x05;
-pub const frame_type_crypto_hs: frame_type_enum_t = 0x06;
-pub const frame_type_new_token: frame_type_enum_t = 0x07;
-pub const frame_type_stream_range_min: frame_type_enum_t = 0x08;
-pub const frame_type_stream_range_max: frame_type_enum_t = 0x0f;
-pub const frame_type_max_data: frame_type_enum_t = 0x10;
-pub const frame_type_max_stream_data: frame_type_enum_t = 0x11;
-pub const frame_type_max_streams_bidir: frame_type_enum_t = 0x12;
-pub const frame_type_max_streams_unidir: frame_type_enum_t = 0x13;
-pub const frame_type_data_blocked: frame_type_enum_t = 0x14;
-pub const frame_type_stream_data_blocked: frame_type_enum_t = 0x15;
-pub const frame_type_streams_blocked_bidir: frame_type_enum_t = 0x16;
-pub const frame_type_streams_blocked_unidir: frame_type_enum_t = 0x17;
-pub const frame_type_new_connection_id: frame_type_enum_t = 0x18;
-pub const frame_type_path_new_connection_id: frame_type_enum_t = 0x3e78;
-pub const frame_type_retire_connection_id: frame_type_enum_t = 0x19;
-pub const frame_type_path_retire_connection_id: frame_type_enum_t = 0x3e79;
-pub const frame_type_path_challenge: frame_type_enum_t = 0x1a;
-pub const frame_type_path_response: frame_type_enum_t = 0x1b;
-pub const frame_type_connection_close: frame_type_enum_t = 0x1c;
-pub const frame_type_application_close: frame_type_enum_t = 0x1d;
-pub const frame_type_handshake_done: frame_type_enum_t = 0x1e;
-pub const frame_type_datagram: frame_type_enum_t = 0x30;
-pub const frame_type_datagram_l: frame_type_enum_t = 0x31;
-pub const frame_type_ack_frequency: frame_type_enum_t = 0xAF;
-pub const frame_type_immediate_ack: frame_type_enum_t = 0x1F;
-pub const frame_type_time_stamp: frame_type_enum_t = 757;
-pub const frame_type_path_ack: frame_type_enum_t = 0x3e;
-pub const frame_type_path_ack_ecn: frame_type_enum_t = 0x3f;
-pub const frame_type_path_abandon: frame_type_enum_t = 0x3e75;
-pub const frame_type_path_backup: frame_type_enum_t = 0x3e76;
-pub const frame_type_path_available: frame_type_enum_t = 0x3e77;
-pub const frame_type_max_path_id: frame_type_enum_t = 0x3e7a;
-pub const frame_type_paths_blocked: frame_type_enum_t = 0x3e7b;
-pub const frame_type_path_cid_blocked: frame_type_enum_t = 0x3e7c;
-pub const frame_type_bdp: frame_type_enum_t = 0xebd9;
-pub const frame_type_observed_address_v4: frame_type_enum_t = 0x9f81a6;
-pub const frame_type_observed_address_v6: frame_type_enum_t = 0x9f81a7;
-pub const frame_type_reset_stream_at: frame_type_enum_t = 0x24;
+/// Wire values exceed `u32` for some extension frame types, hence
+/// the `#[repr(u64)]`.  `StreamRangeMin`/`StreamRangeMax` mark the
+/// inclusive bounds of the eight-variant STREAM frame block
+/// (0x08-0x0f); the bit-flag-encoded variants in between aren't
+/// individually named in the C source either.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u64)]
+pub enum FrameType {
+    Padding = 0,
+    Ping = 1,
+    Ack = 0x02,
+    AckEcn = 0x03,
+    ResetStream = 0x04,
+    StopSending = 0x05,
+    CryptoHs = 0x06,
+    NewToken = 0x07,
+    StreamRangeMin = 0x08,
+    StreamRangeMax = 0x0f,
+    MaxData = 0x10,
+    MaxStreamData = 0x11,
+    MaxStreamsBidir = 0x12,
+    MaxStreamsUnidir = 0x13,
+    DataBlocked = 0x14,
+    StreamDataBlocked = 0x15,
+    StreamsBlockedBidir = 0x16,
+    StreamsBlockedUnidir = 0x17,
+    NewConnectionId = 0x18,
+    RetireConnectionId = 0x19,
+    PathChallenge = 0x1a,
+    PathResponse = 0x1b,
+    ConnectionClose = 0x1c,
+    ApplicationClose = 0x1d,
+    HandshakeDone = 0x1e,
+    ImmediateAck = 0x1F,
+    ResetStreamAt = 0x24,
+    Datagram = 0x30,
+    DatagramL = 0x31,
+    PathAck = 0x3e,
+    PathAckEcn = 0x3f,
+    AckFrequency = 0xAF,
+    TimeStamp = 757,
+    PathAbandon = 0x3e75,
+    PathBackup = 0x3e76,
+    PathAvailable = 0x3e77,
+    PathNewConnectionId = 0x3e78,
+    PathRetireConnectionId = 0x3e79,
+    MaxPathId = 0x3e7a,
+    PathsBlocked = 0x3e7b,
+    PathCidBlocked = 0x3e7c,
+    Bdp = 0xebd9,
+    ObservedAddressV4 = 0x9f81a6,
+    ObservedAddressV6 = 0x9f81a7,
+}
 
 // ---------------------------------------------------------------------------
 // PMTU discovery requirement status.
