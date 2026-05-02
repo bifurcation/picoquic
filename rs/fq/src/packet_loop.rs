@@ -96,13 +96,6 @@
 
 #![allow(non_camel_case_types)]
 #![allow(non_upper_case_globals)]
-// Stand-in for the not-yet-defined crate-level `Error` enum.
-// Mirroring C parameter lists for the threaded entry points.
-// `Box<T>` parameters look local-only to clippy because the Phase
-// 1 bodies are `todo!()`; the owning shape is real once Phase 3
-// fills the bodies (`Box` lands inside the thread ctx, the loop
-// param is owned-or-borrowed depending on `is_param_allocated`).
-#![allow(clippy::boxed_local)]
 
 use core::ffi::c_void;
 use core::net::SocketAddr;
@@ -598,7 +591,7 @@ pub fn packet_loop(
 /// the result).
 pub fn start_network_thread(
     _quic: &mut quic_t,
-    _param: Box<packet_loop_param_t>,
+    _param: packet_loop_param_t,
     _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
 ) -> Result<Box<network_thread_ctx_t>, i32> {
     todo!()
@@ -610,7 +603,7 @@ pub fn start_network_thread(
 /// `network_thread_ctx_t* start_custom_network_thread(…)`.
 pub fn start_custom_network_thread(
     _quic: &mut quic_t,
-    _param: Box<packet_loop_param_t>,
+    _param: packet_loop_param_t,
     _thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
     _thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
     _thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
@@ -631,16 +624,10 @@ pub fn wake_up_network_thread(_thread_ctx: &mut network_thread_ctx_t) -> Result<
     todo!()
 }
 
-/// Tear down the background thread: signals shutdown, waits for the
-/// loop to exit, and `free`s the heap-allocated context.  C:
-/// `void delete_network_thread(network_thread_ctx_t*)`.
-///
-/// The Rust signature consumes the owning [`Box`] —
-/// the C `free` call at the end of the body is implicit in the
-/// `Box` drop.
-pub fn delete_network_thread(_thread_ctx: Box<network_thread_ctx_t>) {
-    todo!()
-}
+// C: `void delete_network_thread(network_thread_ctx_t*)`.
+// Dropped from the Rust API: `Box<network_thread_ctx_t>` going
+// out of scope signals shutdown, waits for the loop to exit, and
+// frees the context (Drop in Phase 3).
 
 // ---------------------------------------------------------------------------
 // Built-in thread hooks (platform defaults).

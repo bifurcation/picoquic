@@ -652,16 +652,14 @@ pub fn create_cnxid_reset_secret(
 /// master TLS context, replacing any previously installed one.  C:
 /// `tls_set_verify_certificate_callback`.
 ///
-/// `cb` is owned by the registry; the C side stored the bare
-/// pointer.  `free_fn` runs when the verifier is replaced or the
-/// master context is freed; `None` matches the C `NULL` "no
-/// teardown hook" sentinel.  The `Box` makes the ownership
-/// transfer explicit; clippy's `boxed_local` is silenced because
-/// the Box is the contract, not the implementation.
-#[allow(clippy::boxed_local)]
+/// `cb` is owned by the registry; take it by value.  `free_fn`
+/// runs when the verifier is replaced or the master context is
+/// freed; `None` matches the C `NULL` "no teardown hook" sentinel.
+/// `Box<dyn …>` for `free_fn` is required (you can't own a
+/// `dyn Trait` any other way).
 pub fn tls_set_verify_certificate_callback(
     _quic: &mut quic_t,
-    _cb: Box<ptls_verify_certificate_t>,
+    _cb: ptls_verify_certificate_t,
     _free_fn: Option<Box<dyn FreeVerifyCertificateCtx>>,
 ) {
     todo!()

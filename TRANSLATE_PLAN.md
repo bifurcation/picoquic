@@ -251,29 +251,54 @@ This is *not* a regeneration.  The existing translation is the
 starting point and represents real work that already passes the
 gate.  The reviewer Edits, never Writes from scratch.
 
-### What to look for
+### Top-level rule: idiomatic Rust, not C with Rust syntax
+
+**The translation should not look obviously C-derived.**  The
+guiding question is: would a Rust programmer who hadn't seen the
+C source write this?  If not, change it.  Specifically:
+
+* **Naming convention is universal.**  `quic_t` → `Quic`.
+  `cnx_t` → `Cnx`.  `state_enum` → `State`.
+  `pmtud_policy_enum` → `PmtudPolicy`.  Drop the `_t` and `_enum`
+  suffixes; PascalCase types and traits; PascalCase enum variants;
+  snake_case fields and methods; `SCREAMING_SNAKE` constants.
+  This applies to **every** name — types, traits, fields, enum
+  variants, free functions — not just traits.
+* **Free functions on a primary `&T` / `&mut T` argument are
+  methods on `T`.**  `set_low_memory_mode(quic: &mut Quic, …)`
+  → `impl Quic { fn set_low_memory_mode(&mut self, …) }`.  Same
+  for getters, builders, and any function whose first argument
+  is the type's "self".
+* **Use Rust's memory model.**  `Drop` replaces explicit `free`
+  (`fn free(self: Box<Quic>)` → `impl Drop for Quic`); `Vec` /
+  `Box` / owning `String` replace `malloc`/`free` pairs;
+  `Rc<RefCell<_>>` only when ownership genuinely is a graph;
+  no `Box<T>` parameters when the function doesn't need
+  heap-stable storage (clippy's `boxed_local` flags these).
+* **Use Rust's error model.**  `Result<T, Error>`, not
+  `Result<T, ()>` or `i32` status codes.  Sentinel return values
+  like `-1` map to `Err`, not `Ok(-1)`.
+
+### What else to look for
 
 * **Safety holes** — raw pointers used without a clear `// SAFETY:`
   story, `unsafe` blocks that have a safe equivalent, ownership
-  patterns that smell wrong (e.g., `&mut` aliasing what should be
-  `Rc<RefCell<_>>`).
-* **Type-shape consistency** — the same C type translated differently
-  in different functions of the same module; signed/unsigned choices
-  that disagree with caller arithmetic; integer widths that drift
-  from the C source.
-* **Idiom** — `&[T]` vs raw pointer + length, `Option<&T>` for
-  nullable, owned `String` vs borrowed `&str` for caller-supplied
-  text, function-pointer typedef → trait, doc-comment placement.
-* **Naming** — Rust convention says traits are `PascalCase` even
-  when the C origin is `snake_case`.  Preserve the C name where
-  callers reference the typedef identifier; let Rust convention
-  win for purely internal traits.
+  patterns that smell wrong.
+* **Type-shape consistency** — the same C type translated
+  differently in different functions of the same module;
+  signed/unsigned choices that disagree with caller arithmetic;
+  integer widths that drift from the C source.
+* **Idiom plumbing** — `&[T]` vs raw pointer + length,
+  `Option<&T>` for nullable, owned `String` vs borrowed `&str`
+  for caller-supplied text, function-pointer typedef → trait,
+  doc-comment placement.
 * **Lint allowances** — `#![allow(…)]` blocks added to silence
-  the initial gate may be wider than necessary.  Tighten to the
-  minimum scope that still passes.
+  the initial gate are usually a smell.  Tighten to the minimum
+  scope, or fix the underlying code instead of suppressing.
 * **Documentation** — every public item should have a doc comment
-  citing the C source location and explaining non-obvious shape
-  decisions.
+  explaining non-obvious shape decisions.  A note like
+  `C: \`picoquic_create\`` is fine for traceability but is not
+  a substitute for explaining what the Rust function does.
 
 ### Per-header procedure
 

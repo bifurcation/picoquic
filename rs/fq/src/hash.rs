@@ -229,20 +229,16 @@ pub fn hash_delete_key(_hash_table: &mut hash_table, _key: *mut c_void, _delete_
     todo!()
 }
 
-/// Free the entire table.  Walks every bin chain and (in owning
-/// mode) frees each item; if `delete_key_too` is set, each key
-/// buffer is also freed.  Then the bin array and the table itself
-/// are freed.
-///
-/// Pointer-shape choice: takes `Box<hash_table>` so the table
-/// is consumed and dropped at end of scope, mirroring the C
-/// `free(hash_table)` at the end of the function.  Clippy's
-/// `boxed_local` lint flags the parameter as unnecessary because
-/// the `todo!()` body never moves it, but the Box is intentional
-/// — Phase 3 will use it to free the table.
-#[allow(clippy::boxed_local)]
-pub fn hash_delete(_hash_table: Box<hash_table>, _delete_key_too: bool) {
-    todo!()
+/// Walks every bin chain and (in owning mode) clears each item;
+/// if `delete_key_too` is set, each key buffer is also dropped.
+/// Replaces the C `hash_delete(table)` plus `free(table)`
+/// pattern: the caller transfers the table by value, the method
+/// consumes it, and the destructor at end of scope handles
+/// deallocation.
+impl hash_table {
+    pub fn delete(self, _delete_key_too: bool) {
+        todo!()
+    }
 }
 
 /// quic's bespoke byte-string hash.  Used by

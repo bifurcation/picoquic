@@ -520,14 +520,9 @@ pub fn file_open(_file_name: &str, _flags: &str) -> Option<Box<file_t>> {
     todo!()
 }
 
-/// Close a file and return `None`.  C: `FILE*
-/// file_close(FILE* F)` always returns `NULL` so callers
-/// can write `F = file_close(F)`; ownership transfer is
-/// the natural Rust mirror.
-#[allow(clippy::boxed_local)]
-pub fn file_close(_f: Box<file_t>) {
-    todo!()
-}
+// C: `FILE* file_close(FILE* F)`.  Dropped from the Rust API:
+// `Box<file_t>` going out of scope will be the close hook (Drop
+// in Phase 3).
 
 /// Delete a file by name with a `last_err` out-parameter.  C:
 /// `int file_delete(char const* file_name, int*
@@ -975,13 +970,9 @@ pub fn test_sim_link_create(
     todo!()
 }
 
-/// Tear down a sim link, freeing any queued packets.  C:
-/// `test_sim_link_delete`.  Takes ownership so end of
-/// scope does the freeing.
-#[allow(clippy::boxed_local)]
-pub fn test_sim_link_delete(_link: Box<test_sim_link_t>) {
-    todo!()
-}
+// C: `test_sim_link_delete`.  Dropped from the Rust API:
+// `Box<test_sim_link_t>` going out of scope will free the link
+// and its queued packets via Drop in Phase 3.
 
 /// Allocate a fresh, empty packet.  C:
 /// `test_sim_link_create_packet`.  Returns `None` on

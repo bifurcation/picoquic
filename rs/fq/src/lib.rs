@@ -1177,13 +1177,8 @@ pub fn create(
     todo!()
 }
 
-/// C: `free`.  The Rust translation simply consumes the
-/// `Box<quic_t>` so its contents are dropped at end of
-/// scope, mirroring the C `free(quic)` call.
-#[allow(clippy::boxed_local)]
-pub fn free(_quic: Box<quic_t>) {
-    todo!()
-}
+// C: `free`.  Dropped from the Rust API — `quic_t` cleanup
+// is the job of `Drop`, which Phase 3 will implement.
 
 pub fn set_low_memory_mode(_quic: &mut quic_t, _low_memory_mode: bool) -> Result<(), Error> {
     todo!()
@@ -1261,14 +1256,13 @@ pub fn set_tls_key(_quic: &mut quic_t, _key: &[u8]) -> Result<(), Error> {
 
 /// C: `set_verify_certificate_callback`.  The verifier
 /// context is owned by the QUIC context after this call (the C side
-/// stashes the pointer and later runs `free_fn` on it).  Passing it
-/// as `Box<ptls_verify_certificate_t>` makes the ownership transfer
-/// explicit; clippy's `boxed_local` is silenced because the Box is
-/// the contract, not the implementation.
-#[allow(clippy::boxed_local)]
+/// stashes the pointer and later runs `free_fn` on it).  In Rust,
+/// take `cb` by value — the function moves it into the QUIC
+/// context's owned slot; the trait-object `free_fn` stays as
+/// `Box<dyn …>` because that's the only way to own a `dyn Trait`.
 pub fn set_verify_certificate_callback(
     _quic: &mut quic_t,
-    _cb: Box<ptls_verify_certificate_t>,
+    _cb: ptls_verify_certificate_t,
     _free_fn: Box<dyn FreeVerifyCertificateCtx>,
 ) {
     todo!()
