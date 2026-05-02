@@ -1,101 +1,103 @@
 {
   "picoquic/bytestream.h": {
-    "at": "2026-05-01T12:54:03",
+    "at": "2026-05-02T18:40:25",
     "changed": true,
     "status": "ok"
   },
   "picoquic/cc_common.h": {
-    "at": "2026-05-01T21:52:01",
-    "reason": "missing translation at rs/fq/src/picoquic/cc_common.rs",
-    "status": "fail"
+    "at": "2026-05-02T10:21:27",
+    "changed": true,
+    "status": "ok"
   },
   "picoquic/performance_log.h": {
-    "at": "2026-05-01T10:27:11",
+    "at": "2026-05-02T10:23:35",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picohash.h": {
-    "at": "2026-05-01T10:21:14",
+    "at": "2026-05-02T10:27:59",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picoquic.h": {
-    "at": "2026-05-01T10:38:40",
+    "at": "2026-05-02T11:11:56",
     "changed": true,
+    "note": "opus refactored lib.rs successfully but exit_code=1 (max-turns=200); gate is green",
     "status": "ok"
   },
   "picoquic/picoquic_binlog.h": {
-    "at": "2026-05-01T12:56:45",
+    "at": "2026-05-02T18:46:16",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picoquic_config.h": {
-    "at": "2026-05-01T10:40:58",
+    "at": "2026-05-02T11:20:42",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picoquic_crypto_provider_api.h": {
-    "at": "2026-05-01T10:47:38",
+    "at": "2026-05-02T11:29:40",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picoquic_internal.h": {
-    "at": "2026-05-01T12:48:52",
+    "at": "2026-05-02T18:16:11",
     "changed": true,
+    "note": "opus refactored internal.rs successfully (+933/-698) but exit_code=1 (max-turns=200); gate is green",
     "status": "ok"
   },
   "picoquic/picoquic_lb.h": {
-    "at": "2026-05-01T10:49:57",
+    "at": "2026-05-02T11:35:23",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picoquic_logger.h": {
-    "at": "2026-05-01T10:55:25",
+    "at": "2026-05-02T11:59:33",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picoquic_packet_loop.h": {
-    "at": "2026-05-01T12:42:55",
+    "at": "2026-05-02T17:55:20",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picoquic_qlog.h": {
-    "at": "2026-05-01T10:51:10",
+    "at": "2026-05-02T11:37:17",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picoquic_unified_log.h": {
-    "at": "2026-05-01T10:53:37",
+    "at": "2026-05-02T11:44:59",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picoquic_utils.h": {
-    "at": "2026-05-01T11:02:22",
+    "at": "2026-05-02T12:07:40",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picoquictest_dualq.h": {
-    "at": "2026-05-01T11:05:08",
+    "at": "2026-05-02T12:12:31",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picosocks.h": {
-    "at": "2026-05-01T12:34:57",
+    "at": "2026-05-02T17:50:23",
     "changed": true,
     "status": "ok"
   },
   "picoquic/picosplay.h": {
-    "at": "2026-05-01T12:44:57",
+    "at": "2026-05-02T18:00:25",
     "changed": true,
     "status": "ok"
   },
   "picoquic/siphash.h": {
-    "at": "2026-05-01T09:49:04",
+    "at": "2026-05-02T18:48:54",
     "changed": true,
     "status": "ok"
   },
   "picoquic/tls_api.h": {
-    "at": "2026-05-01T13:00:56",
+    "at": "2026-05-02T18:59:49",
     "changed": true,
     "status": "ok"
   }

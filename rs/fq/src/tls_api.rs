@@ -11,64 +11,82 @@
 //! Phase 1 contract: signatures only — every body is `todo!()`.
 //! Phase 3 fills in the bodies.
 //!
-//! ## Pointer-shape decisions
+//! ## Shape conventions
 //!
-//! * tls types this header references but does not define
-//!   (`ptls_cipher_suite_t`, `ptls_verify_certificate_t`, …) are
-//!   already forward-declared in
-//!   [`crate::crypto_provider_api`] and
-//!   [`crate`]; this module re-uses those
-//!   declarations rather than duplicating them.
+//! * Free C functions whose first argument is a `Quic*` or `Cnx*`
+//!   become inherent methods on [`Quic`] / [`Cnx`].  The remaining
+//!   free functions either operate on opaque tls handles
+//!   (`*mut c_void` — see below) or have no obvious receiver
+//!   (global RNG, hash factories, cipher-suite lookups, the
+//!   `tls_api_init` lifecycle).
+//! * Tls types this header references but does not define
+//!   (`PtlsCipherSuite`, `PtlsVerifyCertificate`, …) are
+//!   already forward-declared in [`crate::crypto_provider_api`] and
+//!   [`crate`]; this module re-uses those declarations rather than
+//!   duplicating them.
 //! * The `void*` AEAD / PN-encryption / cipher / hash contexts on the
 //!   C side are tls handles whose Rust binding doesn't exist yet
-//!   (tls is an external dependency that has not been
-//!   translated).  They stay as `*mut c_void` opaque handles in
-//!   Phase 1; Phase 3 will replace them with proper trait objects or
-//!   forward-declared structs once tls is bound.
+//!   (tls is an external dependency that has not been translated).
+//!   They stay as `*mut c_void` opaque handles in Phase 1; Phase 3
+//!   will replace them with proper trait objects or forward-declared
+//!   structs once tls is bound.  Functions that dereference such a
+//!   handle are `unsafe` with a `# Safety` doc note describing the
+//!   caller's obligations.
 //! * `int` flag parameters that encode booleans (`is_enc`,
 //!   `is_client`, `client_mode`, `use_low_memory`, `reset`,
-//!   `check_reuse`, `sending`) become `bool`.  Likewise
-//!   `unsigned int client_mode` in `tlscontext_free`.
+//!   `check_reuse`, `sending`) become `bool`.
 //! * C status-code returns (`int` 0/-1 / `ERROR_*`) become
-//!   `Result<T, Error>` per the Phase 1 contract.
-//! * Owning `ptls_iovec_t* get_certs_from_file(…, size_t*
-//!   count)` collapses to `Option<Vec<ptls_iovec_t>>`: the C callee
-//!   `malloc`s the slot array and writes its length through the
-//!   out-pointer, and the caller `free`s.  A Rust `Vec` carries both
-//!   ownership and length.
+//!   `Result<T, Error>`.  The `SIZE_MAX` failure sentinel returned
+//!   by `aead_decrypt_*` becomes `Err(Error::AeadCheck)` instead of
+//!   leaking the sentinel through the success arm.
+//! * Owning `PtlsIovec* get_certs_from_file(…, size_t* count)`
+//!   collapses to `Option<Vec<PtlsIovec>>`: the C callee `malloc`s
+//!   the slot array and writes its length through the out-pointer,
+//!   and the caller `free`s.  A Rust `Vec` carries both ownership
+//!   and length, with `Drop` taking the place of the manual free.
 //! * Output parameters (`uint8_t reset_secret[16]`,
 //!   `uint8_t* master_secret`, `void** aead_ctx`, `size_t*
 //!   text_length`, `int* data_consumed`, `int* is_new_token`,
-//!   `connection_id_t* odcid`, `size_t* token_size`) become
-//!   `&mut`-borrowed slots or are returned as part of the function's
-//!   result tuple, depending on whether the caller already holds
-//!   storage.
+//!   `ConnectionId* odcid`, `size_t* token_size`, `size_t* length`)
+//!   become `&mut`-borrowed slots or are returned as part of the
+//!   function's result tuple, depending on whether the caller
+//!   already holds storage.
 //! * `struct sockaddr*` arguments map to [`core::net::SocketAddr`]
 //!   for parity with `quic.rs`.
-//! * `FreeVerifyCertificateCtx` is a function-pointer
-//!   typedef in quic.h; the trait counterpart is already in
-//!   `quic.rs` and is reused here.
+//! * `FreeVerifyCertificateCtx` is a function-pointer typedef in
+//!   `quic.h`; the trait counterpart is already in `quic.rs` and is
+//!   reused here.
 //! * Function-pointer parameters in callbacks
-//!   (`tls_set_verify_certificate_callback`) take
-//!   `Option<Box<dyn …>>` — the C `NULL` sentinel maps to `None` and
-//!   the registered callback is owned by the registry.
+//!   ([`Quic::tls_set_verify_certificate_callback`]) take
+//!   `Option<Box<dyn …>>` — the C `NULL` sentinel maps to `None`
+//!   and the registered callback is owned by the registry.
 //!
 //! ## Initial-secret label constants
 //!
-//! `LABEL_QUIC_BASE` is `#define`d as `NULL` in C — it's
-//! the "no prefix label" sentinel passed to tls.  In Rust the
-//! prefix-label parameters that accept it become `Option<&str>`, so
-//! the constant itself doesn't appear; the call sites pass `None`
-//! when they would have passed `LABEL_QUIC_BASE`.
+//! `LABEL_QUIC_BASE` is `#define`d as `NULL` in C — it's the "no
+//! prefix label" sentinel passed to tls.  In Rust the prefix-label
+//! parameters that accept it become `Option<&str>`, so the constant
+//! itself doesn't appear; the call sites pass `None` when they would
+//! have passed `LABEL_QUIC_BASE`.
+//!
+//! ## Public vs. internal `set_*` methods
+//!
+//! `picoquic.h` exposes `picoquic_set_verify_certificate_callback`,
+//! `picoquic_set_client_authentication`, and
+//! `picoquic_set_use_exporter` as thin wrappers around the
+//! `picoquic_tls_set_*` functions declared here.  The wrappers live
+//! on [`Quic`] without the `tls_` prefix (see `lib.rs`); the
+//! TLS-side methods in this module keep the `tls_` prefix so both
+//! pairs can coexist.
 //!
 //! ## Out of scope
 //!
 //! * The five `#if 0`-disabled `cid_*_under_mask_ctx` /
-//!   `cid_free_encrypt_global_ctx` entries are dead code in
-//!   the C source and are not translated.
-//! * `get_private_key_from_file` is also `#if 0` in the
-//!   header (and the `_t` callback variant lives in
-//!   `crypto_provider_api.rs`); not translated.
+//!   `cid_free_encrypt_global_ctx` entries are dead code in the C
+//!   source and are not translated.
+//! * `get_private_key_from_file` is also `#if 0` in the header (and
+//!   the `_t` callback variant lives in `crypto_provider_api.rs`);
+//!   not translated.
 
 extern crate alloc;
 
@@ -77,10 +95,10 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
-use crate::internal::crypto_context_t;
+use crate::internal::CryptoContext;
 use crate::{
-    Error, FreeVerifyCertificateCtx, RESET_SECRET_SIZE, cnx_t, connection_id_t, ptls_iovec_t,
-    ptls_verify_certificate_t, quic_t,
+    Cnx, ConnectionId, Error, FreeVerifyCertificateCtx, PtlsIovec, PtlsVerifyCertificate, Quic,
+    RESET_SECRET_SIZE,
 };
 
 // ---------------------------------------------------------------------------
@@ -137,7 +155,7 @@ pub const LABEL_QUIC_V1_KEY_BASE: &str = "tls13 quic ";
 pub const LABEL_QUIC_V2_KEY_BASE: &str = "tls13 quicv2 ";
 
 // ---------------------------------------------------------------------------
-// Forward declaration of `ptls_cipher_suite_t`.
+// Forward declaration of `PtlsCipherSuite` (C: `ptls_cipher_suite_t`).
 //
 // The C header re-typedef-s `ptls_cipher_suite_t` as
 // `const struct st_ptls_cipher_suite_t` so consumers don't need
@@ -148,137 +166,153 @@ pub const LABEL_QUIC_V2_KEY_BASE: &str = "tls13 quicv2 ";
 // Note: `crypto_provider_api` already declares an identical
 // placeholder.  Pull it in for use within this module's signatures
 // (no re-export).
-use crate::crypto_provider_api::ptls_cipher_suite_t;
+use crate::crypto_provider_api::PtlsCipherSuite;
 
 // ---------------------------------------------------------------------------
 // Master TLS context.
 //
-// The master context lives in `quic->tls_master_ctx` (a `void*` on
-// the C side, a `ptls_context_t*` once cast).  All three functions
-// take `&mut quic_t` because they install or release state
-// on the QUIC context itself.
+// The master context lives in `quic.tls_master_ctx` (a `*mut c_void`
+// once cast from `ptls_context_t*`).  Both lifecycle entry points
+// install or release state on the QUIC context itself.
 
-/// Initialize the per-`quic_t` master TLS context.  Loads
-/// the certificate chain, the private key, the trusted-root bundle
-/// and the ticket-encryption key.  Any of the file-name / key
-/// parameters may be `NULL` in C (server-only, no roots, no ticket
-/// key); Rust models that with `Option<&str>` / `Option<&[u8]>`.
-/// C: `master_tlscontext`.
-pub fn master_tlscontext(
-    _quic: &mut quic_t,
-    _cert_file_name: Option<&str>,
-    _key_file_name: Option<&str>,
-    _cert_root_file_name: Option<&str>,
-    _ticket_key: Option<&[u8]>,
-) -> Result<(), Error> {
-    todo!()
-}
+impl Quic {
+    /// Initialize this context's master TLS context.  Loads the
+    /// certificate chain, the private key, the trusted-root bundle
+    /// and the ticket-encryption key.  Any of the file-name / key
+    /// parameters may be `NULL` in C (server-only, no roots, no
+    /// ticket key); Rust models that with `Option<&str>` /
+    /// `Option<&[u8]>`.  C: `master_tlscontext`.
+    pub fn init_master_tls_context(
+        &mut self,
+        _cert_file_name: Option<&str>,
+        _key_file_name: Option<&str>,
+        _cert_root_file_name: Option<&str>,
+        _ticket_key: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-/// Tear down the master TLS context allocated by
-/// [`master_tlscontext`].  C:
-/// `master_tlscontext_free`.
-pub fn master_tlscontext_free(_quic: &mut quic_t) {
-    todo!()
+    /// Tear down the master TLS context installed by
+    /// [`Quic::init_master_tls_context`].  C:
+    /// `master_tlscontext_free`.
+    pub fn free_master_tls_context(&mut self) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Per-connection TLS context.
 //
-// `tls_ctx_t` itself lives in
-// `crypto_provider_api.rs`; this module just exposes the
-// API surface that quic-core uses to drive it.
+// `tls_ctx_t` itself lives in `crypto_provider_api.rs`; this module
+// just exposes the API surface that quic-core uses to drive it.
 
-/// Allocate a per-connection TLS context, attach it to `cnx`, and
-/// initialize the tls handshake-property slots.  C side returns
-/// 0 on success, `ERROR_TLS_SERVER_CON_WITHOUT_CERT` /
-/// `ERROR_MEMORY` / -1 on failure.  C:
-/// `tlscontext_create`.
-pub fn tlscontext_create(_quic: &mut quic_t, _cnx: &mut cnx_t) -> Result<(), Error> {
-    todo!()
+impl Cnx {
+    /// Allocate a per-connection TLS context, attach it to this
+    /// connection, and initialize the tls handshake-property slots.
+    /// C: `tlscontext_create`.  C side returns 0 on success,
+    /// `ERROR_TLS_SERVER_CON_WITHOUT_CERT` / `ERROR_MEMORY` / -1 on
+    /// failure.
+    pub fn create_tls_context(&mut self, _quic: &mut Quic) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Drop transient buffers (ALPN list, transport-parameter encode
+    /// scratch) once the handshake is done.  C:
+    /// `tlscontext_trim_after_handshake`.
+    pub fn trim_tls_context_after_handshake(&mut self) {
+        todo!()
+    }
+
+    /// Forget the session ticket installed for a 0-RTT attempt.  C:
+    /// `tlscontext_remove_ticket`.
+    pub fn remove_tls_ticket(&mut self) {
+        todo!()
+    }
 }
 
 /// Free a per-connection TLS context.  C took `void* vctx` because
 /// the connection stores the context as `void* tls_ctx`; the
-/// `client_mode` flag toggled the ECH-config cleanup path.
+/// `client_mode` flag toggles the ECH-config cleanup path.
 ///
-/// Phase 1 keeps the `*mut c_void` shape: `tls_ctx` is `*mut
-/// c_void` in `cnx_t` (see `internal.rs`), and
-/// the cast back to `tls_ctx_t*` happens inside the body.
-/// The eventual safe shape (an owning `Box`, drop-managed) lands
-/// once `tls_ctx`'s storage is reshaped.  C:
-/// `tlscontext_free`.
+/// Phase 1 keeps the `*mut c_void` shape: `tls_ctx` is `*mut c_void`
+/// in [`Cnx`] (see `internal.rs`), and the cast back to `tls_ctx_t*`
+/// happens inside the body.  The eventual safe shape (an owning
+/// `Box`, drop-managed) lands once `tls_ctx`'s storage is reshaped.
+/// C: `tlscontext_free`.
 ///
 /// # Safety
 ///
-/// `ctx` must be a non-null pointer to a `tls_ctx_t`
-/// previously returned by [`tlscontext_create`] and not
-/// yet freed.
-pub unsafe fn tlscontext_free(_ctx: *mut c_void, _client_mode: bool) {
-    todo!()
-}
-
-/// Drop transient buffers (ALPN list, transport-parameter encode
-/// scratch) once the handshake is done.  C:
-/// `tlscontext_trim_after_handshake`.
-pub fn tlscontext_trim_after_handshake(_cnx: &mut cnx_t) {
-    todo!()
-}
-
-/// Forget the session ticket installed for a 0-RTT attempt.  C:
-/// `tlscontext_remove_ticket`.
-pub fn tlscontext_remove_ticket(_cnx: &mut cnx_t) {
+/// `ctx` must be a non-null pointer to a `tls_ctx_t` previously
+/// returned by [`Cnx::create_tls_context`] and not yet freed.  After
+/// the call the pointer is dangling.
+pub unsafe fn tls_context_free(_ctx: *mut c_void, _client_mode: bool) {
     todo!()
 }
 
 // ---------------------------------------------------------------------------
 // TLS stream processing.
 
-/// Drive the TLS handshake by feeding in any data buffered on the
-/// crypto streams and pushing produced data back out.  C signature
-/// returned the consumed-byte count through `int* data_consumed`;
-/// the Rust shape returns it inside the success arm of `Result`.
-/// C: `tls_stream_process`.
-pub fn tls_stream_process(_cnx: &mut cnx_t, _current_time: u64) -> Result<i32, Error> {
-    todo!()
+impl Cnx {
+    /// Drive the TLS handshake by feeding in any data buffered on
+    /// the crypto streams and pushing produced data back out.
+    /// Returns the number of bytes consumed (the C `int*
+    /// data_consumed` out-parameter; bytes consumed is non-negative,
+    /// so the type widens to `usize` rather than tracking the C
+    /// `int`).  C: `tls_stream_process`.
+    pub fn process_tls_stream(&mut self, _current_time: u64) -> Result<usize, Error> {
+        todo!()
+    }
+
+    /// Report whether the TLS handshake has completed.  C signature
+    /// returned `int` (0/1); promoted to `bool`.  C:
+    /// `is_tls_complete`.
+    pub fn is_tls_complete(&self) -> bool {
+        todo!()
+    }
+
+    /// Send the initial `ClientHello` (or the response to a
+    /// `HelloRetry`) on the TLS stream.  C:
+    /// `initialize_tls_stream`.
+    pub fn initialize_tls_stream(&mut self, _current_time: u64) -> Result<(), Error> {
+        todo!()
+    }
 }
 
-/// Report whether the TLS handshake has completed.  C signature
-/// returned `int` (0/1); promoted to `bool`.  C:
-/// `is_tls_complete`.
-pub fn is_tls_complete(_cnx: &cnx_t) -> bool {
-    todo!()
-}
-
-/// Send the initial `ClientHello` (or the response to a `HelloRetry`)
-/// on the TLS stream.  C: `initialize_tls_stream`.
-pub fn initialize_tls_stream(_cnx: &mut cnx_t, _current_time: u64) -> Result<(), Error> {
-    todo!()
-}
-
-/// Read the virtual time tls sees through its `get_time`
-/// callback (microseconds).  C: `get_tls_time`.
-pub fn get_tls_time(_quic: &quic_t) -> u64 {
-    todo!()
+impl Quic {
+    /// Read the virtual time tls sees through its `get_time`
+    /// callback (microseconds).  C: `get_tls_time`.
+    pub fn tls_time(&self) -> u64 {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Random number generation.
 //
-// The crypto-grade RNG is the tls / OpenSSL provider; the
-// public RNG is xorshift1024* seeded from the crypto RNG.  Both
-// take a destination slice; the C `(void* buf, size_t len)` pair
-// collapses to `&mut [u8]`.
+// The crypto-grade RNG is the tls / OpenSSL provider; the public RNG
+// is xorshift1024* seeded from the crypto RNG.  Both take a
+// destination slice; the C `(void* buf, size_t len)` pair collapses
+// to `&mut [u8]`.
 
-/// Fill `buf` with cryptographically random bytes drawn from the
-/// provider RNG attached to `quic`.  C: `crypto_random`.
-pub fn crypto_random(_quic: &mut quic_t, _buf: &mut [u8]) {
-    todo!()
-}
+impl Quic {
+    /// Fill `buf` with cryptographically random bytes drawn from the
+    /// provider RNG attached to this context.  C: `crypto_random`.
+    pub fn crypto_random(&mut self, _buf: &mut [u8]) {
+        todo!()
+    }
 
-/// Sample a uniform `u64` in `[0, rnd_max)` from the crypto RNG.
-/// C: `crypto_uniform_random`.
-pub fn crypto_uniform_random(_quic: &mut quic_t, _rnd_max: u64) -> u64 {
-    todo!()
+    /// Sample a uniform `u64` in `[0, rnd_max)` from the crypto
+    /// RNG.  C: `crypto_uniform_random`.
+    pub fn crypto_uniform_random(&mut self, _rnd_max: u64) -> u64 {
+        todo!()
+    }
+
+    /// Re-seed the public RNG by drawing fresh entropy from the
+    /// crypto RNG installed in this context.  C:
+    /// `public_random_seed`.
+    pub fn seed_public_random(&mut self) {
+        todo!()
+    }
 }
 
 /// Single 64-bit draw from the public xorshift1024* RNG.  C:
@@ -291,12 +325,6 @@ pub fn public_random_64() -> u64 {
 /// to the documented constants; otherwise the seed is XORed into
 /// the current state.  C: `public_random_seed_64`.
 pub fn public_random_seed_64(_seed: u64, _reset: bool) {
-    todo!()
-}
-
-/// Re-seed the public RNG by drawing fresh entropy from the crypto
-/// RNG installed in `quic`.  C: `public_random_seed`.
-pub fn public_random_seed(_quic: &mut quic_t) {
     todo!()
 }
 
@@ -363,27 +391,28 @@ pub unsafe fn aead_encrypt_generic(
 }
 
 /// Decrypt `input` into `output`.  Returns the number of plaintext
-/// bytes produced, or `usize::MAX` (mirroring the C `SIZE_MAX`
-/// failure sentinel) when the AEAD context is null or
-/// authentication fails.  C: `aead_decrypt_generic`.
+/// bytes produced; the C `SIZE_MAX` failure sentinel (returned when
+/// the AEAD context is null or authentication fails) maps to
+/// `Err`.  C: `aead_decrypt_generic`.
 ///
 /// # Safety
 ///
-/// `aead_ctx` may be null (the C path returns `SIZE_MAX`); when
-/// non-null it must point to a valid `ptls_aead_context_t`.
+/// `aead_ctx` may be null (the C path returns `SIZE_MAX`, which
+/// becomes `Err`); when non-null it must point to a valid
+/// `ptls_aead_context_t`.
 pub unsafe fn aead_decrypt_generic(
     _output: &mut [u8],
     _input: &[u8],
     _seq_num: u64,
     _auth_data: &[u8],
     _aead_ctx: *mut c_void,
-) -> usize {
+) -> Result<usize, Error> {
     todo!()
 }
 
-/// Multipath variant of [`aead_decrypt_generic`].  The IV
-/// is XORed with the path id before / after the tls call,
-/// per the multipath extension.  C: `aead_decrypt_mp`.
+/// Multipath variant of [`aead_decrypt_generic`].  The IV is XORed
+/// with the path id before / after the tls call, per the multipath
+/// extension.  C: `aead_decrypt_mp`.
 ///
 /// # Safety
 ///
@@ -395,7 +424,7 @@ pub unsafe fn aead_decrypt_mp(
     _seq_num: u64,
     _auth_data: &[u8],
     _aead_context: *mut c_void,
-) -> usize {
+) -> Result<usize, Error> {
     todo!()
 }
 
@@ -500,9 +529,9 @@ pub unsafe fn pn_encrypt(_pn_enc: *mut c_void, _iv: &[u8], _output: &mut [u8], _
 /// Derive the per-connection-ID initial master secret.  C:
 /// `setup_initial_master_secret`.
 pub fn setup_initial_master_secret(
-    _cipher: &ptls_cipher_suite_t,
-    _salt: ptls_iovec_t,
-    _initial_cnxid: connection_id_t,
+    _cipher: &PtlsCipherSuite,
+    _salt: PtlsIovec,
+    _initial_cnxid: ConnectionId,
     _master_secret: &mut [u8],
 ) -> Result<(), Error> {
     todo!()
@@ -512,7 +541,7 @@ pub fn setup_initial_master_secret(
 /// `client_secret` and `server_secret` are filled in place.  C:
 /// `setup_initial_secrets`.
 pub fn setup_initial_secrets(
-    _cipher: &ptls_cipher_suite_t,
+    _cipher: &PtlsCipherSuite,
     _master_secret: &[u8],
     _client_secret: &mut [u8],
     _server_secret: &mut [u8],
@@ -520,17 +549,19 @@ pub fn setup_initial_secrets(
     todo!()
 }
 
-/// Set up `cnx`'s per-epoch initial AEAD / PN encryption contexts
-/// from the connection's initial CID.  C:
-/// `setup_initial_traffic_keys`.
-pub fn setup_initial_traffic_keys(_cnx: &mut cnx_t) -> Result<(), Error> {
-    todo!()
+impl Cnx {
+    /// Set up this connection's per-epoch initial AEAD / PN
+    /// encryption contexts from the connection's initial CID.  C:
+    /// `setup_initial_traffic_keys`.
+    pub fn setup_initial_traffic_keys(&mut self) -> Result<(), Error> {
+        todo!()
+    }
 }
 
-/// Output bundle from [`get_initial_aead_context`].  C
-/// returned the AEAD and PN contexts through `void**` out-pointers;
-/// the Rust shape collapses both into a struct so the function
-/// signature is one-out, one-return.
+/// Output bundle from [`Quic::initial_aead_context`].  C returned
+/// the AEAD and PN contexts through `void**` out-pointers; the Rust
+/// shape collapses both into a struct so the function signature is
+/// one-out, one-return.
 pub struct InitialAeadContext {
     /// Owned AEAD context handle.
     pub aead_ctx: *mut c_void,
@@ -538,19 +569,21 @@ pub struct InitialAeadContext {
     pub pn_enc_ctx: *mut c_void,
 }
 
-/// Derive an AEAD + PN context for the initial encryption level.
-/// `version_index` selects the QUIC version's salt and prefix
-/// label; `is_client` and `is_enc` pick the client/server and
-/// encrypt/decrypt directions.  C:
-/// `get_initial_aead_context`.
-pub fn get_initial_aead_context(
-    _quic: &mut quic_t,
-    _version_index: i32,
-    _initial_cnxid: &connection_id_t,
-    _is_client: bool,
-    _is_enc: bool,
-) -> Result<InitialAeadContext, Error> {
-    todo!()
+impl Quic {
+    /// Derive an AEAD + PN context for the initial encryption
+    /// level.  `version_index` selects the QUIC version's salt and
+    /// prefix label; `is_client` and `is_enc` pick the
+    /// client/server and encrypt/decrypt directions.  C:
+    /// `get_initial_aead_context`.
+    pub fn initial_aead_context(
+        &mut self,
+        _version_index: i32,
+        _initial_cnxid: &ConnectionId,
+        _is_client: bool,
+        _is_enc: bool,
+    ) -> Result<InitialAeadContext, Error> {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -564,49 +597,57 @@ pub fn get_initial_aead_context(
 // today, which is redundant once the borrow encodes it).  Phase 3
 // may collapse the size accessor.
 
-/// Return a borrow of the app-data traffic secret stored in `cnx`'s
-/// TLS context for the chosen direction.  C:
-/// `get_app_secret`.
-pub fn get_app_secret(_cnx: &mut cnx_t, _is_enc: bool) -> &mut [u8] {
-    todo!()
-}
+impl Cnx {
+    /// Return a borrow of the app-data traffic secret stored in
+    /// this connection's TLS context for the chosen direction.  C:
+    /// `get_app_secret`.
+    pub fn app_secret(&mut self, _is_enc: bool) -> &mut [u8] {
+        todo!()
+    }
 
-/// Length (bytes) of the app-data traffic secret — the digest size
-/// of the negotiated cipher's hash.  C:
-/// `get_app_secret_size`.
-pub fn get_app_secret_size(_cnx: &cnx_t) -> usize {
-    todo!()
-}
+    /// Length (bytes) of the app-data traffic secret — the digest
+    /// size of the negotiated cipher's hash.  C:
+    /// `get_app_secret_size`.  Phase 3 may collapse this accessor
+    /// since [`Cnx::app_secret`] already returns a sized slice.
+    pub fn app_secret_size(&self) -> usize {
+        todo!()
+    }
 
-/// Compute the post-rotation AEAD + PN contexts and stash them in
-/// `cnx->crypto_context_new`.  C:
-/// `compute_new_rotated_keys`.
-pub fn compute_new_rotated_keys(_cnx: &mut cnx_t) -> Result<(), Error> {
-    todo!()
-}
+    /// Compute the post-rotation AEAD + PN contexts and stash them
+    /// in `crypto_context_new`.  C: `compute_new_rotated_keys`.
+    pub fn compute_new_rotated_keys(&mut self) -> Result<(), Error> {
+        todo!()
+    }
 
-/// Promote `cnx->crypto_context_new` to the active `crypto_context[3]`
-/// slot, demoting the previous keys.  C:
-/// `apply_rotated_keys`.
-pub fn apply_rotated_keys(_cnx: &mut cnx_t, _is_enc: bool) {
-    todo!()
+    /// Promote `crypto_context_new` to the active
+    /// `crypto_context[3]` slot, demoting the previous keys.  C:
+    /// `apply_rotated_keys`.
+    pub fn apply_rotated_keys(&mut self, _is_enc: bool) {
+        todo!()
+    }
 }
 
 /// Rotate the application traffic secret in place using the
 /// version-specific traffic-update label.  C:
 /// `rotate_app_secret`.
 pub fn rotate_app_secret(
-    _cipher: &ptls_cipher_suite_t,
+    _cipher: &PtlsCipherSuite,
     _secret: &mut [u8],
     _traffic_update_label: &str,
 ) -> Result<(), Error> {
     todo!()
 }
 
-/// Free every AEAD / PN-encryption slot held by a crypto context.
-/// C: `crypto_context_free`.
-pub fn crypto_context_free(_ctx: &mut crypto_context_t) {
-    todo!()
+impl CryptoContext {
+    /// Free every AEAD / PN-encryption slot held by this crypto
+    /// context.  Called from key-rotation paths to recycle the
+    /// underlying tls handles without dropping the parent
+    /// [`Cnx`], so this is *not* an `impl Drop` — Phase 3 may
+    /// still install one for the parent-drop path.  C:
+    /// `crypto_context_free`.
+    pub fn free_handles(&mut self) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -637,58 +678,64 @@ pub fn pn_enc_create_for_test(_secret: &[u8], _prefix_label: &str) -> *mut c_voi
 // ---------------------------------------------------------------------------
 // Reset secret and verify-certificate management.
 
-/// Compute the 16-byte reset secret tied to `cnx_id` using the
-/// per-`quic` reset seed.  C:
-/// `create_cnxid_reset_secret`.
-pub fn create_cnxid_reset_secret(
-    _quic: &mut quic_t,
-    _cnx_id: &connection_id_t,
-    _reset_secret: &mut [u8; RESET_SECRET_SIZE],
-) -> Result<(), Error> {
-    todo!()
-}
+impl Quic {
+    /// Compute the 16-byte reset secret tied to `cnx_id` using this
+    /// context's reset seed.  C: `create_cnxid_reset_secret`.
+    pub fn create_cnxid_reset_secret(
+        &mut self,
+        _cnx_id: &ConnectionId,
+        _reset_secret: &mut [u8; RESET_SECRET_SIZE],
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-/// Install a custom certificate-verification callback into the
-/// master TLS context, replacing any previously installed one.  C:
-/// `tls_set_verify_certificate_callback`.
-///
-/// `cb` is owned by the registry; take it by value.  `free_fn`
-/// runs when the verifier is replaced or the master context is
-/// freed; `None` matches the C `NULL` "no teardown hook" sentinel.
-/// `Box<dyn …>` for `free_fn` is required (you can't own a
-/// `dyn Trait` any other way).
-pub fn tls_set_verify_certificate_callback(
-    _quic: &mut quic_t,
-    _cb: ptls_verify_certificate_t,
-    _free_fn: Option<Box<dyn FreeVerifyCertificateCtx>>,
-) {
-    todo!()
-}
+    /// Install a custom certificate-verification callback into the
+    /// master TLS context, replacing any previously installed one.
+    /// C: `tls_set_verify_certificate_callback`.
+    ///
+    /// `cb` is owned by the registry; take it by value.  `free_fn`
+    /// runs when the verifier is replaced or the master context is
+    /// freed; `None` matches the C `NULL` "no teardown hook"
+    /// sentinel.  `Box<dyn …>` for `free_fn` is required (you can't
+    /// own a `dyn Trait` any other way).
+    ///
+    /// The public-API wrapper [`Quic::set_verify_certificate_callback`]
+    /// (declared in `picoquic.h`) calls
+    /// [`Quic::dispose_verify_certificate_callback`] first; this
+    /// internal entry point does not.
+    pub fn tls_set_verify_certificate_callback(
+        &mut self,
+        _cb: PtlsVerifyCertificate,
+        _free_fn: Option<Box<dyn FreeVerifyCertificateCtx>>,
+    ) {
+        todo!()
+    }
 
-/// Tear down whatever certificate-verifier callback is currently
-/// installed in `quic`'s master TLS context.  C:
-/// `dispose_verify_certificate_callback`.
-pub fn dispose_verify_certificate_callback(_quic: &mut quic_t) {
-    todo!()
-}
+    /// Tear down whatever certificate-verifier callback is
+    /// currently installed in this context's master TLS context.
+    /// C: `dispose_verify_certificate_callback`.
+    pub fn dispose_verify_certificate_callback(&mut self) {
+        todo!()
+    }
 
-/// Toggle whether the server requires client certificates.  C
-/// took an `int`; promoted to `bool`.  C:
-/// `tls_set_client_authentication`.
-pub fn tls_set_client_authentication(_quic: &mut quic_t, _client_authentication: bool) {
-    todo!()
-}
+    /// Toggle whether the server requires client certificates.  C
+    /// took an `int`; promoted to `bool`.  C:
+    /// `tls_set_client_authentication`.
+    pub fn tls_set_client_authentication(&mut self, _client_authentication: bool) {
+        todo!()
+    }
 
-/// Report whether client authentication is currently required.  C:
-/// `tls_client_authentication_activated`.
-pub fn tls_client_authentication_activated(_quic: &quic_t) -> bool {
-    todo!()
-}
+    /// Report whether client authentication is currently required.
+    /// C: `tls_client_authentication_activated`.
+    pub fn tls_client_authentication_activated(&self) -> bool {
+        todo!()
+    }
 
-/// Toggle whether tls exposes its exporter API on this master
-/// context.  C: `tls_set_use_exporter`.
-pub fn tls_set_use_exporter(_quic: &mut quic_t, _use_exporter: bool) {
-    todo!()
+    /// Toggle whether tls exposes its exporter API on this master
+    /// context.  C: `tls_set_use_exporter`.
+    pub fn tls_set_use_exporter(&mut self, _use_exporter: bool) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -715,59 +762,64 @@ pub struct DecryptedRetryToken {
     pub text_length: usize,
 }
 
-/// Decrypt a retry token and verify its peer-address binding.  The
-/// plaintext is written into `text`; the result describes how many
-/// bytes were written and whether the token was a "new token" or a
-/// classic retry token.  C: `server_decrypt_retry_token`.
-pub fn server_decrypt_retry_token(
-    _quic: &mut quic_t,
-    _addr_peer: &SocketAddr,
-    _token: &[u8],
-    _text: &mut [u8],
-) -> Result<DecryptedRetryToken, Error> {
-    todo!()
-}
+impl Quic {
+    /// Decrypt a retry token and verify its peer-address binding.
+    /// The plaintext is written into `text`; the result describes
+    /// how many bytes were written and whether the token was a "new
+    /// token" or a classic retry token.  C:
+    /// `server_decrypt_retry_token`.
+    pub fn server_decrypt_retry_token(
+        &mut self,
+        _addr_peer: &SocketAddr,
+        _token: &[u8],
+        _text: &mut [u8],
+    ) -> Result<DecryptedRetryToken, Error> {
+        todo!()
+    }
 
-/// Construct a retry / new token signed for `addr_peer`.  Returns
-/// the number of bytes written into `token`; `token_max` is
-/// `token.len()`.  C: `prepare_retry_token`.
-pub fn prepare_retry_token(
-    _quic: &mut quic_t,
-    _addr_peer: &SocketAddr,
-    _current_time: u64,
-    _odcid: &connection_id_t,
-    _rcid: &connection_id_t,
-    _initial_pn: u32,
-    _token: &mut [u8],
-) -> Result<usize, Error> {
-    todo!()
+    /// Construct a retry / new token signed for `addr_peer`.
+    /// Returns the number of bytes written into `token`; `token_max`
+    /// is `token.len()`.  C: `prepare_retry_token`.
+    pub fn prepare_retry_token(
+        &mut self,
+        _addr_peer: &SocketAddr,
+        _current_time: u64,
+        _odcid: &ConnectionId,
+        _rcid: &ConnectionId,
+        _initial_pn: u32,
+        _token: &mut [u8],
+    ) -> Result<usize, Error> {
+        todo!()
+    }
 }
 
 /// Output bundle from [`verify_retry_token`].  Mirrors the
-/// `int* is_new_token` and `connection_id_t* odcid`
+/// `int* is_new_token` and `ConnectionId* odcid`
 /// out-parameters of the C signature.
 pub struct VerifiedRetryToken {
     /// Mirrors the C `int* is_new_token`; promoted to `bool`.
     pub is_new_token: bool,
     /// Original Destination Connection ID extracted from the
     /// token.  Empty (`id_len == 0`) for "new tokens".
-    pub odcid: connection_id_t,
+    pub odcid: ConnectionId,
 }
 
-/// Verify a retry / new token presented by the peer.  Returns the
-/// extracted bundle when the token is fresh, address-bound, and
-/// (for retry tokens) RCID-matched.  C:
-/// `verify_retry_token`.
-pub fn verify_retry_token(
-    _quic: &mut quic_t,
-    _addr_peer: &SocketAddr,
-    _current_time: u64,
-    _rcid: &connection_id_t,
-    _initial_pn: u32,
-    _token: &[u8],
-    _check_reuse: bool,
-) -> Result<VerifiedRetryToken, Error> {
-    todo!()
+impl Quic {
+    /// Verify a retry / new token presented by the peer.  Returns
+    /// the extracted bundle when the token is fresh, address-bound,
+    /// and (for retry tokens) RCID-matched.  C:
+    /// `verify_retry_token`.
+    pub fn verify_retry_token(
+        &mut self,
+        _addr_peer: &SocketAddr,
+        _current_time: u64,
+        _rcid: &ConnectionId,
+        _initial_pn: u32,
+        _token: &[u8],
+        _check_reuse: bool,
+    ) -> Result<VerifiedRetryToken, Error> {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -821,23 +873,25 @@ pub unsafe fn hash_finalize(_output: &mut [u8], _hash_context: *mut c_void) {
 // ---------------------------------------------------------------------------
 // Private-key / certificate file loaders.
 
-/// Load a PEM-encoded private key from `file_name` and install it
-/// in `quic`'s master TLS context.  C:
-/// `set_private_key_from_file`.
-pub fn set_private_key_from_file(_quic: &mut quic_t, _file_name: &str) -> Result<(), Error> {
-    todo!()
+impl Quic {
+    /// Load a PEM-encoded private key from `file_name` and install
+    /// it in this context's master TLS context.  C:
+    /// `set_private_key_from_file`.
+    pub fn set_private_key_from_file(&mut self, _file_name: &str) -> Result<(), Error> {
+        todo!()
+    }
 }
 
 /// Load a PEM-encoded certificate chain from `file_name` and
 /// return it as an owned vector.  C:
 /// `get_certs_from_file`.  The C side allocated both the
-/// outer `ptls_iovec_t*` array and each `base` slot; the Rust
-/// shape is `Option<Vec<ptls_iovec_t>>` because the iovec slot
+/// outer `PtlsIovec*` array and each `base` slot; the Rust
+/// shape is `Option<Vec<PtlsIovec>>` because the iovec slot
 /// type is still opaque (its `base`/`len` fields aren't surfaced
-/// through `ptls_iovec_t` in `quic.rs`).  Callers free by
+/// through `PtlsIovec` in `quic.rs`).  Callers free by
 /// dropping the vector.  Returns `None` when the loader callback
 /// is unset or the file fails to parse.
-pub fn get_certs_from_file(_file_name: &str) -> Option<Vec<ptls_iovec_t>> {
+pub fn get_certs_from_file(_file_name: &str) -> Option<Vec<PtlsIovec>> {
     todo!()
 }
 
@@ -858,21 +912,23 @@ pub fn create_retry_protection_context(
     todo!()
 }
 
-/// Look up (and lazily create) the retry-protection context for the
-/// chosen QUIC version, on the chosen direction.  C:
-/// `find_retry_protection_context`.
-pub fn find_retry_protection_context(
-    _quic: &mut quic_t,
-    _version_index: i32,
-    _sending: bool,
-) -> *mut c_void {
-    todo!()
-}
+impl Quic {
+    /// Look up (and lazily create) the retry-protection context for
+    /// the chosen QUIC version, on the chosen direction.  C:
+    /// `find_retry_protection_context`.
+    pub fn find_retry_protection_context(
+        &mut self,
+        _version_index: i32,
+        _sending: bool,
+    ) -> *mut c_void {
+        todo!()
+    }
 
-/// Tear down every retry-protection AEAD context held by `quic`.
-/// C: `delete_retry_protection_contexts`.
-pub fn delete_retry_protection_contexts(_quic: &mut quic_t) {
-    todo!()
+    /// Tear down every retry-protection AEAD context held by this
+    /// context.  C: `delete_retry_protection_contexts`.
+    pub fn delete_retry_protection_contexts(&mut self) {
+        todo!()
+    }
 }
 
 /// Append the integrity tag to the bytes already written into the
@@ -887,13 +943,15 @@ pub unsafe fn encode_retry_protection(
     _integrity_aead: *mut c_void,
     _bytes: &mut [u8],
     _byte_index: usize,
-    _odcid: &connection_id_t,
+    _odcid: &ConnectionId,
 ) -> usize {
     todo!()
 }
 
 /// Verify the integrity tag at the end of an inbound retry packet.
-/// `length` is updated in place to strip the tag on success.  C:
+/// Returns the new payload length (with the tag stripped); the C
+/// signature took `size_t* length` to mutate in place, the Rust
+/// shape returns the updated length on success.  C:
 /// `verify_retry_protection`.
 ///
 /// # Safety
@@ -902,10 +960,10 @@ pub unsafe fn encode_retry_protection(
 pub unsafe fn verify_retry_protection(
     _integrity_aead: *mut c_void,
     _bytes: &mut [u8],
-    _length: &mut usize,
+    _length: usize,
     _byte_index: usize,
-    _odcid: &connection_id_t,
-) -> Result<(), Error> {
+    _odcid: &ConnectionId,
+) -> Result<usize, Error> {
     todo!()
 }
 
@@ -993,10 +1051,12 @@ pub fn tls_api_reset(_init_flags: u64) {
     todo!()
 }
 
-/// Log the loaded provider versions to the connection's app-message
-/// stream.  C: `tls_api_log_versions`.
-pub fn tls_api_log_versions(_cnx: &mut cnx_t) {
-    todo!()
+impl Cnx {
+    /// Log the loaded provider versions to this connection's
+    /// app-message stream.  C: `tls_api_log_versions`.
+    pub fn log_tls_api_versions(&mut self) {
+        todo!()
+    }
 }
 
 #[cfg(test)]

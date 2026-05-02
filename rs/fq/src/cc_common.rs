@@ -7,7 +7,8 @@
 //!
 //! Phase 1: signatures only — every function body is `todo!()`.
 
-use crate::{cnx_t, congestion_notification_t, path_t, per_ack_state_t};
+use crate::internal::{Cnx, Path};
+use crate::{CongestionNotification, PerAckState};
 
 // ---------------------------------------------------------------------------
 // Tunable constants (`#define`s in the header).
@@ -44,14 +45,13 @@ pub const HYSTART_PP_CSS_ROUNDS: u64 = 5;
 // RTT filter and HyStart-related state.
 
 /// Rolling min/max RTT filter plus smoothed-loss bookkeeping shared
-/// by HyStart exit tests.  C: `min_max_rtt_t` in `cc_common.h`.
+/// by HyStart exit tests.  C: `picoquic_min_max_rtt_t`.
 ///
 /// Type deviations from C: `is_init` (`int` → `bool`);
 /// `sample_current` (`int` → `usize`, used as array index);
 /// `nb_rtt_excess` (`int` → `u32`, always non-negative; safety wins).
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone)]
-pub struct min_max_rtt_t {
+#[derive(Debug, Clone, Default)]
+pub struct MinMaxRtt {
     pub last_rtt_sample_time: u64,
     pub rtt_filtered_min: u64,
     pub nb_rtt_excess: u32,
@@ -66,42 +66,43 @@ pub struct min_max_rtt_t {
     pub samples: [u64; MIN_MAX_RTT_SCOPE],
 }
 
-impl min_max_rtt_t {
+impl MinMaxRtt {
     /// Append `rtt` to the rolling sample window and recompute
-    /// `sample_min`/`sample_max`.  C: `cc_filter_rtt_min_max`.
+    /// `sample_min` / `sample_max`.  C: `picoquic_cc_filter_rtt_min_max`.
     pub fn filter_rtt_min_max(&mut self, _rtt: u64) {
         todo!()
     }
 
-    /// HyStart loss-count test.  Returns `true` if the smoothed loss
-    /// rate is high enough (or a timeout was observed) to trigger
-    /// slow-start exit.  C: `cc_hystart_loss_test` — the C
-    /// `int` return is purely boolean here.
+    /// HyStart loss-count test: `true` when the smoothed loss rate
+    /// has exceeded `error_rate_max` (or a timeout was observed),
+    /// signalling that slow start should end.  C:
+    /// `picoquic_cc_hystart_loss_test` — the C `int` return is
+    /// purely boolean here.
     pub fn hystart_loss_test(
         &mut self,
-        _event: congestion_notification_t,
+        _event: CongestionNotification,
         _lost_packet_number: u64,
         _error_rate_max: f64,
     ) -> bool {
         todo!()
     }
 
-    /// HyStart loss-volume test, parallel to `hystart_loss_test` but
-    /// driven by byte counts rather than packet sequence numbers.
-    /// C: `cc_hystart_loss_volume_test`.
+    /// HyStart loss-volume test, parallel to [`Self::hystart_loss_test`]
+    /// but driven by byte counts rather than packet sequence numbers.
+    /// C: `picoquic_cc_hystart_loss_volume_test`.
     pub fn hystart_loss_volume_test(
         &mut self,
-        _event: congestion_notification_t,
+        _event: CongestionNotification,
         _nb_bytes_newly_acked: u64,
         _nb_bytes_newly_lost: u64,
     ) -> bool {
         todo!()
     }
 
-    /// HyStart RTT-rise test: returns `true` when the filtered RTT
-    /// has grown enough above its minimum to call slow-start.
-    /// C: `cc_hystart_test`.  `is_one_way_delay_enabled` was
-    /// an `int` in C; promoted to `bool`.
+    /// HyStart RTT-rise test: `true` when the filtered RTT has grown
+    /// enough above its minimum to call slow-start over.
+    /// C: `picoquic_cc_hystart_test`.  `is_one_way_delay_enabled`
+    /// was an `int` in C; promoted to `bool`.
     pub fn hystart_test(
         &mut self,
         _rtt_measurement: u64,
@@ -114,79 +115,95 @@ impl min_max_rtt_t {
 }
 
 // ---------------------------------------------------------------------------
-// Free helpers that read/write QUIC connection and path state.
+// Helpers that read QUIC connection and path state.
 //
-// Pointer-shape choices for these signatures: every caller in
-// `quic/` (bbr, bbr1, c4, cubic, fastcc, newreno, prague, …)
-// passes a non-NULL `cnx`/`path_x` taken from existing connection
-// state.  The helpers may dispatch into mutable state (e.g. updating
-// pacing/recovery fields), so both parameters are `&mut` rather than
-// `&`.  Phase 3 may refine these once the cnx/path types are
-// translated and concrete borrow conflicts are visible.
+// These are pure reads in the C source, so the receivers are `&self`
+// rather than `&mut self`.  Each was a free function whose primary
+// argument is a connection or path; per the Phase 1A rules they fold
+// into inherent methods on `Cnx` / `Path`.  Inherent impls land in
+// this module because the methods belong with the rest of the
+// congestion-control surface; the structs themselves stay in
+// `crate::internal`.
 
-/// C: `cc_get_sequence_number`.  Returns the next-to-send
-/// packet sequence number for the relevant packet context.
-pub fn cc_get_sequence_number(_cnx: &mut cnx_t, _path_x: &mut path_t) -> u64 {
-    todo!()
+impl Cnx {
+    /// Next-to-send packet sequence number for the relevant packet
+    /// context — per-path under multipath, otherwise the connection's
+    /// application context.  C: `picoquic_cc_get_sequence_number`.
+    pub fn cc_sequence_number(&self, _path_x: &Path) -> u64 {
+        todo!()
+    }
+
+    /// Highest acknowledged packet sequence number for the relevant
+    /// packet context.  C: `picoquic_cc_get_ack_number`.
+    pub fn cc_ack_number(&self, _path_x: &Path) -> u64 {
+        todo!()
+    }
+
+    /// Wall-clock time at which the most recent ACK was received for
+    /// the relevant packet context.  C: `picoquic_cc_get_ack_sent_time`.
+    pub fn cc_ack_sent_time(&self, _path_x: &Path) -> u64 {
+        todo!()
+    }
 }
 
-/// C: `cc_get_ack_number`.  Returns the highest-acknowledged
-/// sequence number for the relevant packet context.
-pub fn cc_get_ack_number(_cnx: &mut cnx_t, _path_x: &mut path_t) -> u64 {
-    todo!()
-}
+impl Path {
+    /// Lowest sequence number not yet acknowledged on this path: the
+    /// pending-list head if any, else `highest_acknowledged + 1`.
+    /// C: `picoquic_cc_get_lowest_not_ack` (reaches the connection
+    /// through the path's `cnx` back-pointer, so no `cnx` argument).
+    pub fn cc_lowest_not_ack(&self) -> u64 {
+        todo!()
+    }
 
-/// C: `cc_get_lowest_not_ack`.  The C body reaches the
-/// connection through `path_x->cnx`, so this signature only needs a
-/// path.
-pub fn cc_get_lowest_not_ack(_path_x: &mut path_t) -> u64 {
-    todo!()
-}
+    // -----------------------------------------------------------------
+    // Slow-start window-growth helpers.  Each returns the number of
+    // bytes by which CWIN should be increased.  None mutate path
+    // state, hence `&self`.
 
-/// C: `cc_get_ack_sent_time`.
-pub fn cc_get_ack_sent_time(_cnx: &mut cnx_t, _path_x: &mut path_t) -> u64 {
-    todo!()
-}
+    /// Bytes to add to CWIN while in classic slow start.  Returns
+    /// `nb_delivered` if the path is currently CWIN-blocked, else
+    /// zero (no growth without back-pressure).
+    /// C: `picoquic_cc_slow_start_increase`.
+    pub fn cc_slow_start_increase(&self, _nb_delivered: u64) -> u64 {
+        todo!()
+    }
 
-// ---------------------------------------------------------------------------
-// Slow-start window-growth helpers.
-//
-// Returns the number of bytes by which CWIN should be increased.
+    /// Bytes to add to CWIN, with HyStart++ Conservative Slow Start
+    /// support: when `in_css` is true, growth is divided by
+    /// [`HYSTART_PP_CSS_GROWTH_DIVISOR`].
+    /// C: `picoquic_cc_slow_start_increase_ex`.
+    pub fn cc_slow_start_increase_ex(&self, _nb_delivered: u64, _in_css: bool) -> u64 {
+        todo!()
+    }
 
-/// C: `cc_slow_start_increase`.
-pub fn cc_slow_start_increase(_path_x: &mut path_t, _nb_delivered: u64) -> u64 {
-    todo!()
-}
+    /// Bytes to add to CWIN, with Prague-style ECN damping.
+    /// `prague_alpha` is an integer fraction over 1024 (so `0` means
+    /// no ECN signal and the call falls back to
+    /// [`Self::cc_slow_start_increase_ex`]).
+    /// C: `picoquic_cc_slow_start_increase_ex2`.
+    pub fn cc_slow_start_increase_ex2(
+        &self,
+        _nb_delivered: u64,
+        _in_css: bool,
+        _prague_alpha: u64,
+    ) -> u64 {
+        todo!()
+    }
 
-/// C: `cc_slow_start_increase_ex`.  `in_css` ("in
-/// Conservative Slow Start", a HyStart++ phase) is a boolean flag.
-pub fn cc_slow_start_increase_ex(_path_x: &mut path_t, _nb_delivered: u64, _in_css: bool) -> u64 {
-    todo!()
-}
+    /// Bandwidth-derived target CWIN: returns the half-BDP estimate
+    /// if it exceeds the current CWIN, otherwise the current CWIN.
+    /// C: `picoquic_cc_update_target_cwin_estimation`.
+    pub fn cc_update_target_cwin_estimation(&self) -> u64 {
+        todo!()
+    }
 
-/// C: `cc_slow_start_increase_ex2`.  Adds Prague-style ECN
-/// damping via `prague_alpha` (an integer fraction over 1024).
-pub fn cc_slow_start_increase_ex2(
-    _path_x: &mut path_t,
-    _nb_delivered: u64,
-    _in_css: bool,
-    _prague_alpha: u64,
-) -> u64 {
-    todo!()
-}
-
-/// C: `cc_update_target_cwin_estimation`.  Returns the
-/// updated CWIN if the bandwidth-derived target is larger than the
-/// current value, otherwise the current CWIN.
-pub fn cc_update_target_cwin_estimation(_path_x: &mut path_t) -> u64 {
-    todo!()
-}
-
-/// C: `cc_update_cwin_for_long_rtt`.  Same shape, but the
-/// floor is derived from the path's `rtt_min` rather than its
-/// estimated bandwidth.
-pub fn cc_update_cwin_for_long_rtt(_path_x: &mut path_t) -> u64 {
-    todo!()
+    /// CWIN floor for long-RTT paths: scales `CWIN_INITIAL` by the
+    /// path's `rtt_min` (capped at the satellite RTT target).
+    /// Returns the floor if it exceeds the current CWIN, otherwise
+    /// the current CWIN.  C: `picoquic_cc_update_cwin_for_long_rtt`.
+    pub fn cc_update_cwin_for_long_rtt(&self) -> u64 {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,23 +212,22 @@ pub fn cc_update_cwin_for_long_rtt(_path_x: &mut path_t) -> u64 {
 // Several congestion controllers run a parallel New Reno instance to
 // derive a lower bound on the congestion window or minimum
 // bandwidth.  This simulator does not touch the connection or path
-// state directly; everything lives in `newreno_sim_state_t`.
+// state directly; everything lives in `NewRenoSimState`.
 
 /// Internal phase of the embedded New Reno simulator.
-/// C: `newreno_alg_state_t` in `cc_common.h`.
-#[allow(non_camel_case_types)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum newreno_alg_state_t {
-    newreno_alg_slow_start,
-    newreno_alg_congestion_avoidance,
+/// C: `picoquic_newreno_alg_state_t`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub enum NewRenoAlgState {
+    #[default]
+    SlowStart,
+    CongestionAvoidance,
 }
 
 /// Simulator state for the embedded New Reno instance.
-/// C: `newreno_sim_state_t` in `cc_common.h`.
-#[allow(non_camel_case_types)]
-#[derive(Debug, Clone)]
-pub struct newreno_sim_state_t {
-    pub alg_state: newreno_alg_state_t,
+/// C: `picoquic_newreno_sim_state_t`.
+#[derive(Debug, Clone, Default)]
+pub struct NewRenoSimState {
+    pub alg_state: NewRenoAlgState,
     pub cwin: u64,
     pub residual_ack: u64,
     pub ssthresh: u64,
@@ -219,21 +235,25 @@ pub struct newreno_sim_state_t {
     pub recovery_sequence: u64,
 }
 
-impl newreno_sim_state_t {
-    /// C: `newreno_sim_reset` — zero out the simulator.
+impl NewRenoSimState {
+    /// Reset the simulator to its initial state.
+    /// C: `picoquic_newreno_sim_reset`.
     pub fn reset(&mut self) {
         todo!()
     }
 
-    /// C: `newreno_sim_notify`.  `ack_state` is read-only
-    /// in every observed caller (`newreno.c`, etc.) so it gets `&`
-    /// rather than `&mut`.
+    /// Drive the simulator with a congestion-control event.
+    ///
+    /// `cnx` and `path_x` are read-only here: the C body only mutates
+    /// `self`, reading the connection and path to resolve sequence
+    /// numbers and timestamps via the `cc_*` accessors.  C:
+    /// `picoquic_newreno_sim_notify`.
     pub fn notify(
         &mut self,
-        _cnx: &mut cnx_t,
-        _path_x: &mut path_t,
-        _notification: congestion_notification_t,
-        _ack_state: &per_ack_state_t,
+        _cnx: &Cnx,
+        _path_x: &Path,
+        _notification: CongestionNotification,
+        _ack_state: &PerAckState,
         _current_time: u64,
     ) {
         todo!()

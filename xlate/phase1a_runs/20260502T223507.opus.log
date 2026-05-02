@@ -1,0 +1,55 @@
+Phase 1A: 4 header(s) to review
+  run log: xlate/phase1a_runs/20260502T183507.log
+  state:   xlate/phase1a_state.json
+
+=== picoquic/bytestream.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/bytestream.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+    Checking fq v0.1.0 (/Users/richbarn/Projects/picoquic/rs/fq)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.24s
+  $ (cd rs/fq && cargo check)
+    Checking fq v0.1.0 (/Users/richbarn/Projects/picoquic/rs/fq)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.16s
+  ok
+
+=== picoquic/picoquic_binlog.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquic_binlog.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s
+  $ (cd rs/fq && cargo check)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+  ok
+
+=== picoquic/siphash.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/siphash.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s
+  $ (cd rs/fq && cargo check)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+  ok
+
+=== picoquic/tls_api.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/tls_api.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s
+  $ (cd rs/fq && cargo check)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.03s
+  ok
+
+=== Phase 1A run summary ===
+  elapsed:   1482.2s
+  succeeded: 4
+  failed:    0
+  log:       xlate/phase1a_runs/20260502T183507.log

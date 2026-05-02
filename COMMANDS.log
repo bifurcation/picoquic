@@ -195,3 +195,6 @@
 2026-05-01T17:54:40-04:00 Stage 1: flatten src/picoquic to src and drop pico/picoquic file prefixes
 2026-05-01T19:26:33-04:00 python3 scripts/strip_pico.py (stage 5: strip pico/picoquic from identifiers)
 2026-05-02T10:08:22-04:00 python3 scripts/phase1b.py (regenerate report after stages 1-7)
+2026-05-02T10:15:14-04:00 python3 scripts/phase1a.py --force --model opus --stop-on-failure (broader idiomatic refactor)
+2026-05-02T10:42:22-04:00 python3 scripts/phase1a.py --model opus --stop-on-failure --max-turns 200 (resume after picoquic.h failure with higher budget)
+2026-05-02T11:12:26-04:00 python3 scripts/phase1a.py --model opus --stop-on-failure --max-turns 200 (refactor remaining 16 modules)

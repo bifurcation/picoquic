@@ -1,0 +1,89 @@
+Phase 1A: 16 header(s) to review
+  run log: xlate/phase1a_runs/20260502T111226.log
+  state:   xlate/phase1a_state.json
+
+=== picoquic/picoquic_config.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquic_config.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquic_crypto_provider_api.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquic_crypto_provider_api.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquic_lb.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquic_lb.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquic_qlog.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquic_qlog.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquic_unified_log.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquic_unified_log.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquic_logger.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquic_logger.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquic_utils.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquic_utils.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquictest_dualq.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquictest_dualq.md
+  claude  → invoking (opus, max-turns=200) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picosocks.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picosocks.md
+  claude  → invoking (opus, max-turns=200) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase1a/picoquic/picosocks.log)
+
+Stopped at picoquic/picosocks.h (--stop-on-failure).  Re-run to retry.
+
+=== Phase 1A run summary ===
+  elapsed:   3792.3s
+  succeeded: 8
+  failed:    1
+    - picoquic/picosocks.h
+  log:       xlate/phase1a_runs/20260502T111226.log

@@ -1,0 +1,44 @@
+Phase 1A: 20 header(s) to review
+  run log: xlate/phase1a_runs/20260502T101514.log
+  state:   xlate/phase1a_state.json
+
+=== picoquic/cc_common.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/cc_common.md
+  claude  → invoking (opus, max-turns=80) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/performance_log.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/performance_log.md
+  claude  → invoking (opus, max-turns=80) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picohash.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picohash.md
+  claude  → invoking (opus, max-turns=80) …
+  gate    → cargo fmt + clippy + check
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo clippy -- -D warnings)
+  $ (cd rs/fq && cargo check)
+  ok
+
+=== picoquic/picoquic.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquic.md
+  claude  → invoking (opus, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase1a/picoquic/picoquic.log)
+
+Stopped at picoquic/picoquic.h (--stop-on-failure).  Re-run to retry.
+
+=== Phase 1A run summary ===
+  elapsed:   1404.2s
+  succeeded: 3
+  failed:    1
+    - picoquic/picoquic.h
+  log:       xlate/phase1a_runs/20260502T101514.log

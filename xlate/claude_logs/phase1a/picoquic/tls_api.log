@@ -1,12 +1,14 @@
 # claude -p (phase1a) for picoquic/tls_api.h
-# elapsed: 250.8s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 654.4s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/tls_api.md)
 
 ## stdout
-Both edits are correct. Both `cargo check` and `cargo clippy -- -D warnings` pass cleanly.
+Both gates pass cleanly.
 
-**Summary of changes:** Removed three module-level lint suppression attributes that weren't earning their keep — `#![allow(non_camel_case_types)]`, `#![allow(non_snake_case)]`, and `#![allow(non_upper_case_globals)]`. This module defines no non-CamelCase types (the three output structs are all `PascalCase`; the `pub use ptls_cipher_suite_t` re-export doesn't introduce a new definition), uses only snake_case function and parameter names, and all constants follow `UPPER_SNAKE_CASE` — so none of the three lints would have fired. The two remaining allows (`result_unit_err` and `too_many_arguments`) are genuinely needed. Additionally, `PICOQUIC_HASH_SIZE_MAX` was moved from the label-constants section to the hash-helpers section where the C header places it, restoring source-level parity.
+## Summary
+
+I refactored `rs/fq/src/tls_api.rs` to look like Rust rather than a thin transliteration of C. The biggest change was promoting every free function whose first argument was `&[mut] Quic` or `&[mut] Cnx` to inherent methods on those types — about 28 functions, organized into multiple `impl Quic` and `impl Cnx` blocks that preserve the original section structure (`init_master_tls_context`, `Cnx::process_tls_stream`, `Quic::tls_time`, `Quic::seed_public_random`, `Cnx::app_secret`, `Quic::tls_set_verify_certificate_callback`, etc.). I kept the `tls_` prefix on the three TLS setters that have a same-named public-API wrapper in `lib.rs`/`picoquic.h` (`tls_set_verify_certificate_callback`, `tls_set_client_authentication`, `tls_set_use_exporter`) and added a docstring section explaining the public/internal split, since the wrappers without `tls_` already exist on `Quic`. `crypto_context_free` became `CryptoContext::free_handles` with a note explaining why it isn't a `Drop` (it runs on key rotation, not on parent teardown). On the error-model side, `aead_decrypt_generic`/`aead_decrypt_mp` now return `Result<usize, Error>` with the C `SIZE_MAX` sentinel mapped to `Err`; `Cnx::process_tls_stream` switched from `Result<i32, Error>` to `Result<usize, Error>` since data-consumed counts are non-negative; `verify_retry_protection` now returns the new length as `Result<usize, Error>` rather than mutating `&mut usize`. Renamed the `tlscontext_free` free function to `tls_context_free` for snake-case consistency. Free functions that operate on opaque tls handles, on no receiver (global RNG, hash factories, cipher-suite lookups, init/unload), or on a non-quic primary argument (`setup_initial_master_secret`, `rotate_app_secret`, `setup_test_aead_context`) stayed as free functions per the existing pointer-shape policy. Updated the module-level docs to describe the new shape conventions and the public/internal naming split. `cargo check` and `cargo clippy -- -D warnings` both pass clean.
 
 
 ## stderr

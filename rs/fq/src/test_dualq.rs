@@ -1,11 +1,11 @@
-//! Translation of `quic/test_dualq.h` (and matching
-//! body in `quic/dualq_aqm.c`).
+//! Translation of `picoquic/picoquictest_dualq.h` (with bodies in
+//! `picoquictest/dualq_aqm.c`).
 //!
 //! DualQ-Coupled AQM used by the test suite (RFC 9332 timestamp
-//! variant).  Sits behind a [`test_sim_link_t`]'s `aqm_state`
-//! slot and classifies arriving packets into an L4S queue (`lq`) or
-//! a Classic queue (`cq`); marks/drops on dequeue using the PI2
-//! controller; and feeds admitted packets back into the link's
+//! variant).  Sits behind a [`TestSimLink`]'s `aqm_state` slot and
+//! classifies arriving packets into an L4S queue ([`Dualq::lq`]) or
+//! a Classic queue ([`Dualq::cq`]); marks/drops on dequeue using the
+//! PI2 controller; and feeds admitted packets back into the link's
 //! transit queue.
 //!
 //! Phase 1 contract: signatures only — every function body is
@@ -14,38 +14,28 @@
 //!
 //! Translation policy notes for this module:
 //!
-//! * The C vtable struct `test_aqm_t` is already a Rust
-//!   trait ([`TestAqm`](crate::utils::TestAqm))
-//!   in [`crate::utils`].  The C "embed
-//!   `super` and cast pointer" inheritance pattern collapses to
-//!   `impl TestAqm for dualq_state_t`; the C `super`
-//!   field is dropped.
+//! * The C vtable struct `picoquictest_aqm_t` is already a Rust
+//!   trait ([`TestAqm`](crate::utils::TestAqm)) in
+//!   [`crate::utils`].  The C "embed `super` and cast pointer"
+//!   inheritance pattern collapses to `impl TestAqm for Dualq`; the
+//!   C `super` field is dropped.
 //! * Both queue heads (`queue_first` / `queue_last` in
-//!   [`dualq_queue_t`]) stay raw `*mut test_sim_packet_t`,
-//!   matching the intrusive-linked-list shape used by the parent
-//!   sim-link.  Phase 3 will dereference inside `unsafe` blocks
-//!   with `// SAFETY:` notes (or refactor to `VecDeque`).
-//! * `dualq_dequeue_one`'s C `int* should_drop` out-parameter folds
-//!   into a tuple return — `Option<(Box<...>, bool)>` represents
-//!   "no packet ready" / "(packet, drop?)".
-//! * `dualq_configure` returns `Result<(), Error>` because v1 has no
-//!   top-level [`crate::Error`] enum yet — TODO once it lands,
-//!   replace `Err(())` with the corresponding `Error::Memory`
-//!   variant (the C body returns `ERROR_MEMORY`).
+//!   [`DualqQueue`]) stay raw `*mut TestSimPacket`, matching the
+//!   intrusive-linked-list shape used by the parent sim-link.  Phase
+//!   3 will dereference inside `unsafe` blocks with `// SAFETY:`
+//!   notes (or refactor to `VecDeque`).
+//! * The C `dualq_dequeue_one`'s `int* should_drop` out-parameter
+//!   folds into a tuple return — `Option<(Box<...>, bool)>`
+//!   represents "no packet ready" / "(packet, drop?)".
 //! * The C `dualq_release` self-frees with `free(self)` and clears
 //!   `link->aqm_state`.  In Rust the trait method takes
 //!   `&mut self`; the actual deallocation rides on the
-//!   `Option<Box<dyn TestAqm>>` slot in the link being
-//!   reset to `None` by the caller after `release` drains the
-//!   queues — `release` itself only handles the queue drain.
-
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-// Status-code returns stand in for the missing top-level `Error`
-// enum — see module docstring.
+//!   `Option<Box<dyn TestAqm>>` slot in the link being reset to
+//!   `None` by the caller after `release` drains the queues —
+//!   `release` itself only handles the queue drain.
 
 use crate::Error;
-use crate::utils::{TestAqm, test_sim_link_t, test_sim_packet_t};
+use crate::utils::{TestAqm, TestSimLink, TestSimPacket};
 
 // ---------------------------------------------------------------------------
 // Tunables.
@@ -57,23 +47,20 @@ pub const DUALQ_MAX_LINK_RATE: u64 = 125_000_000;
 // ---------------------------------------------------------------------------
 // Per-queue state.
 
-/// One classified queue (L4S or Classic) inside a [`dualq_state_t`].
+/// One classified queue (L4S or Classic) inside a [`Dualq`].
 /// C: `dualq_queue_t`.
 ///
 /// Pointer-shape choices:
 ///
 /// * `queue_first` / `queue_last` stay raw pointers — same intrusive
-///   list pattern as
-///   [`crate::utils::test_sim_link_t`].
-///   The queue does not own the node allocations on its own; the
-///   parent [`dualq_state_t`] reaches them through these raw heads
-///   and hands ownership back to callers via
-///   [`dualq_dequeue_one`].
-/// * `count` was a C `int` that only ever holds non-negative values;
-///   widened to `i32` to match the underlying C ABI (the dualq
-///   tests inspect it directly).
+///   list pattern as [`crate::utils::TestSimLink`].  The queue does
+///   not own the node allocations on its own; the parent [`Dualq`]
+///   reaches them through these raw heads and hands ownership back
+///   to callers via [`Dualq::dequeue_one`].
+/// * `count` mirrors the C `int`, kept as `i32` for ABI parity with
+///   the dualq tests that inspect it directly.
 #[derive(Default)]
-pub struct dualq_queue_t {
+pub struct DualqQueue {
     pub queue_bytes: u64,
     /// Number of packets currently in the queue.
     pub count: i32,
@@ -81,8 +68,23 @@ pub struct dualq_queue_t {
     /// `dualq_recur` helper "fires" and the head packet is
     /// dropped/marked.  C: `double sum_p`.
     pub sum_p: f64,
-    pub queue_first: *mut test_sim_packet_t,
-    pub queue_last: *mut test_sim_packet_t,
+    pub queue_first: *mut TestSimPacket,
+    pub queue_last: *mut TestSimPacket,
+}
+
+impl DualqQueue {
+    /// Append `packet` to the tail of this queue's intrusive list.
+    /// C: `dualq_enqueue_queue(dualq_queue_t* xq,
+    /// picoquictest_sim_packet_t* packet)`.
+    ///
+    /// Pointer-shape choice: callers (`Dualq::submit` and the
+    /// `dualq_enqueue_test` unit test) hand off ownership of the
+    /// packet to the queue, so the Rust signature takes `Box<...>`.
+    /// Phase 3 stores `Box::into_raw` into the intrusive
+    /// `next_packet` chain (matching the C raw-pointer storage).
+    pub fn enqueue(&mut self, _packet: Box<TestSimPacket>) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -91,38 +93,41 @@ pub struct dualq_queue_t {
 /// DualQ Coupled AQM state attached to a sim link.  C:
 /// `dualq_state_t`.
 ///
-/// The C struct embedded a `test_aqm_t` vtable in its first
-/// field (`super`); in Rust the equivalent is `impl
-/// TestAqm for dualq_state_t`, so the explicit `super`
-/// field is dropped.  All other fields mirror the C layout
-/// one-for-one.
+/// The C struct embedded a `picoquictest_aqm_t` vtable in its first
+/// field (`super`); in Rust the equivalent is `impl TestAqm for
+/// Dualq`, so the explicit `super` field is dropped.  All other
+/// fields mirror the C layout one-for-one.  Field names follow Rust
+/// conventions: the RFC 9332 symbols `p_Cmax`, `p'_L`, etc., become
+/// `p_c_max`, `p_prime_l`, and so on.
 #[derive(Default)]
-pub struct dualq_state_t {
+pub struct Dualq {
     // -- Initialization parameters -----------------------------------
     /// PI2 queue-delay target for both L4S and Classic, in
     /// microseconds.
     pub target: u64,
     /// Coupling factor `k`.
     pub k: f64,
-    /// Above this drop probability, classic queue uses drops
-    /// instead of marks.
-    pub p_Cmax: f64,
+    /// Above this drop probability, the classic queue uses drops
+    /// instead of marks.  C: `p_Cmax`.
+    pub p_c_max: f64,
     /// Interval between PI2 parameter updates, in microseconds.
-    pub Tupdate: u64,
+    /// C: `Tupdate`.
+    pub t_update: u64,
     /// PI integral gain in Hz.
     pub pi2_alpha: f64,
     /// PI proportional gain in MHz (1 / microsecond).
     pub pi2_beta: f64,
     /// Above this queue-size threshold, the L queue behaves as
-    /// classic.
-    pub maxTh: u64,
+    /// classic.  C: `maxTh`.
+    pub max_th: u64,
     /// Queue size above which the L queue starts CE marking.
-    pub minTh: u64,
-    /// `maxTh - minTh`.
+    /// C: `minTh`.
+    pub min_th: u64,
+    /// `max_th - min_th`.
     pub range: u64,
     /// Above this drop probability, the L4S queue uses drops
-    /// instead of marks.
-    pub p_Lmax: f64,
+    /// instead of marks.  C: `p_Lmax`.
+    pub p_l_max: f64,
     /// Maximum size of L4S + Classic queues, in bytes.
     pub limit: u64,
     /// Counter used for weighted fair queuing — 15 ticks for L4S,
@@ -131,9 +136,9 @@ pub struct dualq_state_t {
 
     // -- Queues ------------------------------------------------------
     /// L4S queue of pending packets.
-    pub lq: dualq_queue_t,
+    pub lq: DualqQueue,
     /// Classic queue of pending packets.
-    pub cq: dualq_queue_t,
+    pub cq: DualqQueue,
 
     // -- PI2 controller scratch space --------------------------------
     /// Current length of the classic queue, in microseconds.
@@ -144,20 +149,21 @@ pub struct dualq_state_t {
     pub update_next: u64,
     pub lq_average_queue: u64,
     /// `p'` coefficient (RFC 9332): nominal mark rate of the L4S
-    /// queue derived from the classic queue length.
-    pub pprime: f64,
+    /// queue derived from the classic queue length.  C: `pprime`.
+    pub p_prime: f64,
     /// `p'_L`: mark rate of the L4S queue computed from L4S queue
-    /// length, before coupling.
-    pub pprime_L: f64,
+    /// length, before coupling.  C: `pprime_L`.
+    pub p_prime_l: f64,
     /// Actual mark rate of the L4S queue, after combining with
-    /// `p_CL`.
-    pub p_L: f64,
-    /// Coupled L4S probability: `pprime_L * k`.
-    pub p_CL: f64,
-    /// Nominal drop rate of the classic queue (`pprime_L^2`).
-    pub p_C: f64,
+    /// `p_cl`.  C: `p_L`.
+    pub p_l: f64,
+    /// Coupled L4S probability: `p_prime_l * k`.  C: `p_CL`.
+    pub p_cl: f64,
+    /// Nominal drop rate of the classic queue (`p_prime_l^2`).
+    /// C: `p_C`.
+    pub p_c: f64,
 
-    // -- quic NS data --------------------------------------------
+    // -- Picoquic NS data --------------------------------------------
     /// Time of the last `submit` call (microseconds).
     pub last_input_time: u64,
 }
@@ -165,21 +171,16 @@ pub struct dualq_state_t {
 // ---------------------------------------------------------------------------
 // Trait impl — replaces the C "embedded vtable + cast" inheritance.
 
-impl TestAqm for dualq_state_t {
+impl TestAqm for Dualq {
     /// C: `dualq_submit`.  Queues the packet, updates
     /// `last_input_time`, and runs the dequeue/PI2 update pass.
-    fn submit(
-        &mut self,
-        _link: &mut test_sim_link_t,
-        _packet: Box<test_sim_packet_t>,
-        _current_time: u64,
-    ) {
+    fn submit(&mut self, _link: &mut TestSimLink, _packet: Box<TestSimPacket>, _current_time: u64) {
         todo!()
     }
 
     /// C: `dualq_reset` — runs the dequeue/PI2 update pass at
     /// `current_time`.
-    fn reset(&mut self, _link: &mut test_sim_link_t, _current_time: u64) {
+    fn reset(&mut self, _link: &mut TestSimLink, _current_time: u64) {
         todo!()
     }
 
@@ -187,7 +188,7 @@ impl TestAqm for dualq_state_t {
     /// dropped packets.  The C body also `free(self)`s and nulls
     /// `link->aqm_state`; in Rust the caller drops the
     /// `Option<Box<dyn TestAqm>>` slot to do the same.
-    fn release(&mut self, _link: &mut test_sim_link_t) {
+    fn release(&mut self, _link: &mut TestSimLink) {
         todo!()
     }
 
@@ -199,58 +200,40 @@ impl TestAqm for dualq_state_t {
 
     /// C: `dualq_admit_pending` — runs the dequeue/PI2 update pass
     /// at `current_time`.
-    fn admit_pending(&mut self, _link: &mut test_sim_link_t, _current_time: u64) {
+    fn admit_pending(&mut self, _link: &mut TestSimLink, _current_time: u64) {
         todo!()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public configuration entry point.
+impl Dualq {
+    /// Install a fresh DualQ AQM on `link`, sized for an L4S queue
+    /// of at most `l4s_max` bytes.  C: `int
+    /// dualq_configure(picoquictest_sim_link_t* link, uint64_t
+    /// l4s_max)`.
+    ///
+    /// Returns [`Error::Memory`] on the C `ERROR_MEMORY`
+    /// allocation-failure path.
+    pub fn install(_link: &mut TestSimLink, _l4s_max: u64) -> Result<(), Error> {
+        todo!()
+    }
 
-/// Install (or reconfigure) DualQ on `link`.  C:
-/// `int dualq_configure(test_sim_link_t* link, uint64_t l4s_max)`.
-///
-/// Returns `Err(())` for the C `ERROR_MEMORY` allocation
-/// failure path.  TODO: once the crate-level [`crate::Error`] enum
-/// lands, replace `Err(())` with `Error::Memory`.
-pub fn dualq_configure(_link: &mut test_sim_link_t, _l4s_max: u64) -> Result<(), Error> {
-    todo!()
-}
-
-// ---------------------------------------------------------------------------
-// Internal helpers exposed for tests / monitoring.
-//
-// The header documents these as "for tests and monitoring".  Phase 2
-// translates `test/dualq_aqm_test.c`; keeping the same
-// public surface keeps that translation mechanical.
-
-/// Append `packet` to the tail of `xq`'s intrusive list.  C:
-/// `void dualq_enqueue_queue(dualq_queue_t* xq,
-/// test_sim_packet_t* packet)`.
-///
-/// Pointer-shape choice: callers (`dualq_enqueue` and the
-/// `dualq_enqueue_test` unit test) hand off ownership of the packet
-/// to the queue, so the Rust signature takes `Box<...>`.  Phase 3
-/// stores `Box::into_raw` into the intrusive `next_packet` chain
-/// (matching the C raw-pointer storage).
-pub fn dualq_enqueue_queue(_xq: &mut dualq_queue_t, _packet: Box<test_sim_packet_t>) {
-    todo!()
-}
-
-/// Run the scheduler / mark / drop logic for one packet, returning
-/// the chosen packet (if any) along with the should-drop flag.  C:
-/// `test_sim_packet_t* dualq_dequeue_one(dualq_state_t*
-/// dualq, uint64_t current_time, int* should_drop)`.
-///
-/// The C `should_drop` out-parameter folds into the tuple return.
-/// `None` mirrors the C `NULL` "no packet ready" path; the C body
-/// always sets `*should_drop = 0` before returning `NULL`, so no
-/// flag survives that branch.
-pub fn dualq_dequeue_one(
-    _dualq: &mut dualq_state_t,
-    _current_time: u64,
-) -> Option<(Box<test_sim_packet_t>, bool)> {
-    todo!()
+    /// Run the scheduler / mark / drop logic for one packet,
+    /// returning the chosen packet (if any) along with the
+    /// should-drop flag.  C: `picoquictest_sim_packet_t*
+    /// dualq_dequeue_one(dualq_state_t* dualq, uint64_t
+    /// current_time, int* should_drop)`.
+    ///
+    /// The C `should_drop` out-parameter folds into the tuple
+    /// return.  `None` mirrors the C `NULL` "no packet ready" path;
+    /// the C body always sets `*should_drop = 0` before returning
+    /// `NULL`, so no flag survives that branch.
+    ///
+    /// Exposed publicly to mirror the C surface used by the
+    /// `dualq_aqm_test.c` unit tests; Phase 2 translates those
+    /// tests directly.
+    pub fn dequeue_one(&mut self, _current_time: u64) -> Option<(Box<TestSimPacket>, bool)> {
+        todo!()
+    }
 }
 
 #[cfg(test)]

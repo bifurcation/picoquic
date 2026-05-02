@@ -4,8 +4,8 @@
 //! quic-core library: it defines the protocol error codes, the
 //! transport-parameter identifiers, the application-facing enums, the
 //! opaque QUIC / connection / path types, the public structs that
-//! cross the API boundary (`tp_t`, `path_quality_t`,
-//! `per_ack_state_t`, `congestion_algorithm_t`, …)
+//! cross the API boundary (`TransportParameters`, `PathQuality`,
+//! `PerAckState`, `CongestionAlgorithm`, …)
 //! and the dozens of free functions that make up the application API.
 //!
 //! Phase 1 contract: signatures only — every body is `todo!()`.
@@ -13,7 +13,7 @@
 //! Pointer-shape and translation policy notes that apply throughout
 //! this module:
 //!
-//! * `quic_t`, `cnx_t`, `path_t` are
+//! * `Quic`, `Cnx`, `Path` are
 //!   opaque types defined in `internal.h`.  Phase 1 declares
 //!   them as empty structs here so the public API can refer to them;
 //!   the real layout lands when the internal header is translated.
@@ -24,7 +24,7 @@
 //!   become a `SocketAddr` returned by value.
 //! * Function-pointer typedefs become traits (one trait per typedef
 //!   by default).  Trait grouping is used for the four-function
-//!   `congestion_algorithm_t` vtable, where the C side
+//!   `CongestionAlgorithm` vtable, where the C side
 //!   always installs the four together.
 //! * `void*` "callback context" arguments are folded into the trait
 //!   implementor's state.  Per-stream / per-path application
@@ -45,11 +45,6 @@
 //!   companion `_nb_` length variable disappears (the slice carries
 //!   its length).
 
-#![allow(non_camel_case_types)]
-// `tp_*`, `nb_packet_context`, and the rest mirror
-// C `#define` / enum tag names verbatim — Rust's `non_upper_case_globals`
-// lint disagrees with that style, so silence it module-wide.
-#![allow(non_upper_case_globals)]
 // Many translated functions mirror C signatures with >7 parameters.
 // Builder patterns or shape changes are out of scope for Phase 1.
 #![allow(clippy::too_many_arguments)]
@@ -281,30 +276,31 @@ pub const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
 // ---------------------------------------------------------------------------
 // Connection state.
 
-/// Mirrors the C `state_enum`.  Discriminants follow the
-/// declaration order of the C enum.
+/// Connection-state machine, listing the QUIC connection states a
+/// `Cnx` walks through from initial handshake to teardown.
+/// Discriminants follow the declaration order of the C `state_enum`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum state_enum {
-    state_client_init,
-    state_client_init_sent,
-    state_client_renegotiate,
-    state_client_retry_received,
-    state_client_init_resent,
-    state_server_init,
-    state_server_handshake,
-    state_client_handshake_start,
-    state_handshake_failure,
-    state_handshake_failure_resend,
-    state_client_almost_ready,
-    state_server_false_start,
-    state_server_almost_ready,
-    state_client_ready_start,
-    state_ready,
-    state_disconnecting,
-    state_closing_received,
-    state_closing,
-    state_draining,
-    state_disconnected,
+pub enum State {
+    ClientInit,
+    ClientInitSent,
+    ClientRenegotiate,
+    ClientRetryReceived,
+    ClientInitResent,
+    ServerInit,
+    ServerHandshake,
+    ClientHandshakeStart,
+    HandshakeFailure,
+    HandshakeFailureResend,
+    ClientAlmostReady,
+    ServerFalseStart,
+    ServerAlmostReady,
+    ClientReadyStart,
+    Ready,
+    Disconnecting,
+    ClosingReceived,
+    Closing,
+    Draining,
+    Disconnected,
 }
 
 // ---------------------------------------------------------------------------
@@ -354,68 +350,77 @@ pub enum Tp {
 // ---------------------------------------------------------------------------
 // Packet contexts and enumerated policy types.
 
-/// Mirrors `packet_context_enum`.  The trailing
-/// `nb_packet_context` was a count; the Rust idiom is the
-/// `pub const` below, leaving the enum as just the real variants.
+/// Encryption-level packet context.  Each value selects one of the
+/// three QUIC packet-number spaces (Initial, Handshake, 1-RTT).
+/// The C enum's trailing `nb_packet_context` count is exposed as
+/// the [`NB_PACKET_CONTEXT`] constant below.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
-pub enum packet_context_enum {
-    packet_context_application = 0,
-    packet_context_handshake = 1,
-    packet_context_initial = 2,
+pub enum PacketContext {
+    Application = 0,
+    Handshake = 1,
+    Initial = 2,
 }
 
-/// Number of packet contexts.  C: `nb_packet_context`.
-pub const nb_packet_context: usize = 3;
+/// Number of packet contexts (matches the variant count of
+/// [`PacketContext`]).
+pub const NB_PACKET_CONTEXT: usize = 3;
 
-/// PMTUD policy for a connection.  C: `pmtud_policy_enum`.
+/// Path-MTU-discovery policy for a connection.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 #[repr(u8)]
-pub enum pmtud_policy_enum {
+pub enum PmtudPolicy {
     /// Default opportunistic PMTUD.
     #[default]
-    pmtud_basic = 0,
+    Basic = 0,
     /// Force PMTUD as soon as possible.
-    pmtud_required = 1,
+    Required = 1,
     /// Only do PMTUD if a lot of data has to be sent.
-    pmtud_delayed = 2,
+    Delayed = 2,
     /// Never do PMTUD.
-    pmtud_blocked = 3,
+    Blocked = 3,
 }
 
-/// Spin-bit variant policy.  C: `spinbit_version_enum`.
+/// Spin-bit variant policy.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 #[repr(u8)]
-pub enum spinbit_version_enum {
+pub enum SpinbitVersion {
     /// Default behaviour, per the spin-bit draft.
     #[default]
-    spinbit_basic = 0,
+    Basic = 0,
     /// Randomise per packet.
-    spinbit_random = 1,
+    Random = 1,
     /// Null behaviour, randomised per path.
-    spinbit_null = 2,
+    Null = 2,
     /// Test-only "always on" mode.  Not valid as a per-connection
-    /// override (server only; see `set_default_spinbit_policy`).
-    spinbit_on = 3,
+    /// override (server only; see [`Quic::set_default_spinbit_policy`]).
+    On = 3,
 }
 
-/// Loss-bit support level.  C: `lossbit_version_enum`.
+/// Loss-bit support level.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 #[repr(u8)]
-pub enum lossbit_version_enum {
+pub enum LossbitVersion {
+    /// Loss bits disabled.
     #[default]
-    lossbit_none = 0,
-    lossbit_send_only = 1,
-    lossbit_send_receive = 2,
+    None = 0,
+    /// This endpoint sets the loss bits but does not interpret peer's.
+    SendOnly = 1,
+    /// This endpoint both sets and receives loss bits.
+    SendReceive = 2,
 }
 
-/// Path scheduling status.  C: `path_status_enum`.
+/// Path scheduling status — whether a path participates in normal
+/// scheduling or is held in reserve.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 #[repr(u8)]
-pub enum path_status_enum {
+pub enum PathStatus {
+    /// Path is available for sending.
     #[default]
-    path_status_available = 0,
-    path_status_backup = 1,
+    Available = 0,
+    /// Path is held as a backup; data only flows when no Available
+    /// path remains.
+    Backup = 1,
 }
 
 // ---------------------------------------------------------------------------
@@ -424,14 +429,14 @@ pub enum path_status_enum {
 pub const CONNECTION_ID_MIN_SIZE: usize = 0;
 pub const CONNECTION_ID_MAX_SIZE: usize = 20;
 
-/// Fixed-capacity QUIC connection ID.  C: `connection_id_t`.
+/// Fixed-capacity QUIC connection ID.  C: `ConnectionId`.
 ///
 /// Stored as a 20-byte buffer plus a length so the type is `Copy`,
 /// matching the C usage where connection IDs are passed by value
 /// in many APIs (`get_local_cnxid`, `create_cnx`,
 /// …).
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-pub struct connection_id_t {
+pub struct ConnectionId {
     pub id: [u8; CONNECTION_ID_MAX_SIZE],
     pub id_len: u8,
 }
@@ -439,33 +444,33 @@ pub struct connection_id_t {
 // ---------------------------------------------------------------------------
 // IO vectors.
 //
-// `ptls_iovec_t` is forward-declared from the tls library, which
+// `PtlsIovec` is forward-declared from the tls library, which
 // is an external dependency that hasn't been translated yet.
-// `iovec_t` is quic's matching shape, intended for
+// `Iovec` is quic's matching shape, intended for
 // applications that don't want a hard dependency on tls.h.  The
 // two are layout-compatible; in C the application can cast a
-// `ptls_iovec_t*` to a `iovec_t*`.  Phase 1 keeps both as
+// `PtlsIovec*` to a `Iovec*`.  Phase 1 keeps both as
 // distinct opaque/struct types; Phase 3 may revisit if a true
 // shared layout is needed at the FFI boundary.
 
-/// Forward declaration of `ptls_iovec_t` from tls.  The real
+/// Forward declaration of `PtlsIovec` from tls.  The real
 /// definition lands when tls bindings are introduced.
-pub struct ptls_iovec_t {
+pub struct PtlsIovec {
     _opaque: [u8; 0],
 }
 
 /// quic-defined IO vector, layout-compatible with
-/// `ptls_iovec_t` so applications can cast between the two without
-/// pulling in `tls.h`.  C: `iovec_t`.
+/// `PtlsIovec` so applications can cast between the two without
+/// pulling in `tls.h`.  C: `Iovec`.
 ///
 /// `repr(C)` is kept because C code aliases this with
-/// `ptls_iovec_t*` — the layout *is* the contract.  `base` stays a
+/// `PtlsIovec*` — the layout *is* the contract.  `base` stays a
 /// raw pointer rather than `&[u8]` because the buffer's lifetime is
 /// not tied to the iovec; Phase 3 may revisit at specific call
 /// sites.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct iovec_t {
+pub struct Iovec {
     pub base: *mut u8,
     pub len: usize,
 }
@@ -473,7 +478,7 @@ pub struct iovec_t {
 // ---------------------------------------------------------------------------
 // Opaque types (forward declarations).
 //
-// `quic_t`, `cnx_t`, and `path_t` are
+// `Quic`, `Cnx`, and `Path` are
 // defined in `internal.h`.  Phase 1 declares them as empty
 // structs so callers can refer to them; the real layout lands when
 // the internal header is translated.  The `_opaque` field prevents
@@ -483,70 +488,72 @@ pub struct iovec_t {
 // Full bodies live in `crate::internal`; pull them in for use within
 // this module's signatures (no re-export — callers reach them as
 // `crate::internal::*`).
-use crate::internal::{cnx_t, path_t, quic_t};
+use crate::internal::{Cnx, Path, Quic};
 
 // ---------------------------------------------------------------------------
 // Application callback events.
 
-/// Event type for the application stream/data callback.  C:
-/// `call_back_event_t`.
+/// Event type passed to the application's stream / connection
+/// callback (see [`StreamDataCb`]).  Identifies which sort of
+/// notification the stack is delivering — stream data, lifecycle
+/// transition, datagram event, path event, etc.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum call_back_event_t {
-    callback_stream_data = 0,
-    callback_stream_fin,
-    callback_stream_reset,
-    callback_stop_sending,
-    callback_stateless_reset,
-    callback_close,
-    callback_application_close,
-    callback_stream_gap,
-    callback_prepare_to_send,
-    callback_almost_ready,
-    callback_ready,
-    callback_datagram,
-    callback_version_negotiation,
-    callback_request_alpn_list,
-    callback_set_alpn,
-    callback_pacing_changed,
-    callback_prepare_datagram,
-    callback_datagram_acked,
-    callback_datagram_lost,
-    callback_datagram_spurious,
-    callback_path_available,
-    callback_path_suspended,
-    callback_path_deleted,
-    callback_path_quality_changed,
-    callback_path_address_observed,
-    callback_app_wakeup,
-    callback_next_path_allowed,
+pub enum CallbackEvent {
+    StreamData = 0,
+    StreamFin,
+    StreamReset,
+    StopSending,
+    StatelessReset,
+    Close,
+    ApplicationClose,
+    StreamGap,
+    PrepareToSend,
+    AlmostReady,
+    Ready,
+    Datagram,
+    VersionNegotiation,
+    RequestAlpnList,
+    SetAlpn,
+    PacingChanged,
+    PrepareDatagram,
+    DatagramAcked,
+    DatagramLost,
+    DatagramSpurious,
+    PathAvailable,
+    PathSuspended,
+    PathDeleted,
+    PathQualityChanged,
+    PathAddressObserved,
+    AppWakeup,
+    NextPathAllowed,
 }
 
 // ---------------------------------------------------------------------------
 // Transport parameters.
 
 /// Server's preferred address advertised in transport parameters.
-/// C: `tp_preferred_address_t`.  `is_defined` was an `int`
+/// C: `TpPreferredAddress`.  `is_defined` was an `int`
 /// flag in C; promoted to `bool`.
 // Field names mirror the camelCase identifiers from the C struct verbatim.
 #[allow(non_snake_case)]
 #[derive(Debug, Default, Copy, Clone)]
-pub struct tp_preferred_address_t {
+pub struct TpPreferredAddress {
     pub is_defined: bool,
     pub ipv4Address: [u8; 4],
     pub ipv4Port: u16,
     pub ipv6Address: [u8; 16],
     pub ipv6Port: u16,
-    pub connection_id: connection_id_t,
+    pub connection_id: ConnectionId,
     pub statelessResetToken: [u8; 16],
 }
 
 /// Version negotiation TP payload.  C:
-/// `tp_version_negotiation_t`.  The flexible-length
+/// `TpVersionNegotiation`.  The flexible-length
 /// `received` and `supported` arrays use `Vec<u32>`; the explicit
 /// `nb_received` / `nb_supported` length fields disappear (the
 /// `Vec` carries its length).
 #[derive(Debug, Default, Clone)]
-pub struct tp_version_negotiation_t {
+pub struct TpVersionNegotiation {
     /// Version found in TP, should match envelope.
     pub current: u32,
     /// Version that triggered a previous version negotiation.
@@ -558,7 +565,7 @@ pub struct tp_version_negotiation_t {
 }
 
 /// Full set of QUIC transport parameters carried during the
-/// handshake.  C: `tp_t`.
+/// handshake.  C: `TransportParameters`.
 ///
 /// `migration_disabled` was `unsigned int` in C, used as a Boolean
 /// flag; promoted to `bool`.  Same for `do_grease_quic_bit`,
@@ -567,7 +574,7 @@ pub struct tp_version_negotiation_t {
 /// `address_discovery_mode` are kept as integers because callers
 /// inspect the low bits separately ("want / can" flags).
 #[derive(Debug, Default, Clone)]
-pub struct tp_t {
+pub struct TransportParameters {
     pub initial_max_stream_data_bidi_local: u64,
     pub initial_max_stream_data_bidi_remote: u64,
     pub initial_max_stream_data_uni: u64,
@@ -581,14 +588,14 @@ pub struct tp_t {
     pub active_connection_id_limit: u32,
     pub ack_delay_exponent: u8,
     pub migration_disabled: bool,
-    pub preferred_address: tp_preferred_address_t,
+    pub preferred_address: TpPreferredAddress,
     pub max_datagram_frame_size: u32,
     pub enable_loss_bit: i32,
     /// `(x & 1)` want, `(x & 2)` can.
     pub enable_time_stamp: i32,
     pub min_ack_delay: u64,
     pub do_grease_quic_bit: bool,
-    pub version_negotiation: tp_version_negotiation_t,
+    pub version_negotiation: TpVersionNegotiation,
     pub enable_bdp_frame: bool,
     pub initial_max_path_id: u64,
     /// `0`=none, `1`=provide-only, `2`=receive-only, `3`=both.
@@ -632,7 +639,7 @@ pub const fn is_bidir_stream_id(id: u64) -> bool {
 // ---------------------------------------------------------------------------
 // Time management.
 
-/// C: `current_time`.  Returns wall-clock microseconds.
+/// Wall-clock microseconds since the Unix epoch.
 ///
 /// The C body reads the OS clock; in Rust this requires the `std`
 /// feature (`std::time::SystemTime`).  The `cfg`-gated split lands
@@ -643,11 +650,13 @@ pub fn current_time() -> u64 {
     todo!()
 }
 
-/// C: `get_quic_time`.  Returns the virtual time used by
-/// the QUIC context (wall-clock or simulated, depending on how the
-/// context was created).
-pub fn get_quic_time(_quic: &quic_t) -> u64 {
-    todo!()
+impl Quic {
+    /// Virtual time used by this QUIC context (wall-clock or
+    /// simulated, depending on whether a simulated-time pointer was
+    /// supplied at creation).  C: `get_quic_time`.
+    pub fn time(&self) -> u64 {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -669,10 +678,10 @@ pub fn get_quic_time(_quic: &quic_t) -> u64 {
 pub trait StreamDataCb {
     fn callback(
         &mut self,
-        cnx: &mut cnx_t,
+        cnx: &mut Cnx,
         stream_id: u64,
         bytes: &[u8],
-        fin_or_event: call_back_event_t,
+        fin_or_event: CallbackEvent,
         stream_ctx: *mut c_void,
     ) -> i32;
 }
@@ -681,13 +690,13 @@ pub trait StreamDataCb {
 /// in `list`, or any value `>= list.len()` to signal "none of the
 /// proposed ALPNs is supported".  C: `AlpnSelect`.
 pub trait AlpnSelect {
-    fn select(&mut self, quic: &mut quic_t, list: &[ptls_iovec_t]) -> usize;
+    fn select(&mut self, quic: &mut Quic, list: &[PtlsIovec]) -> usize;
 }
 
-/// V2 ALPN-selection callback using `iovec_t` instead of
-/// `ptls_iovec_t`.  C: `AlpnSelectV2`.
+/// V2 ALPN-selection callback using `Iovec` instead of
+/// `PtlsIovec`.  C: `AlpnSelectV2`.
 pub trait AlpnSelectV2 {
-    fn select(&mut self, quic: &mut quic_t, list: &[iovec_t]) -> usize;
+    fn select(&mut self, quic: &mut Quic, list: &[Iovec]) -> usize;
 }
 
 /// Callback that produces a server-environment-compatible CID.
@@ -696,27 +705,22 @@ pub trait AlpnSelectV2 {
 pub trait ConnectionIdCb {
     fn produce(
         &mut self,
-        quic: &mut quic_t,
-        cnx_id_local: connection_id_t,
-        cnx_id_remote: connection_id_t,
-    ) -> connection_id_t;
+        quic: &mut Quic,
+        cnx_id_local: ConnectionId,
+        cnx_id_remote: ConnectionId,
+    ) -> ConnectionId;
 }
 
 /// Packet-fuzzer callback.  Folds the C `void* fuzz_ctx` into the
 /// implementor.  Returns the new packet length (which may equal
 /// the input).  C: `Fuzz`.
 pub trait Fuzz {
-    fn fuzz(
-        &mut self,
-        cnx: &mut cnx_t,
-        bytes: &mut [u8],
-        length: usize,
-        header_length: usize,
-    ) -> u32;
+    fn fuzz(&mut self, cnx: &mut Cnx, bytes: &mut [u8], length: usize, header_length: usize)
+    -> u32;
 }
 
-/// Forward declaration of `ptls_verify_certificate_t` from tls.
-pub struct ptls_verify_certificate_t {
+/// Forward declaration of `PtlsVerifyCertificate` from tls.
+pub struct PtlsVerifyCertificate {
     _opaque: [u8; 0],
 }
 
@@ -734,8 +738,8 @@ pub trait VerifySignCb {
 pub trait VerifyCertificateCb {
     fn verify(
         &mut self,
-        cnx: &mut cnx_t,
-        certs: &[ptls_iovec_t],
+        cnx: &mut Cnx,
+        certs: &[PtlsIovec],
         verify_sign: &mut Option<Box<dyn VerifySignCb>>,
     ) -> i32;
 }
@@ -745,7 +749,7 @@ pub trait VerifyCertificateCb {
 /// folds into `Drop`, but the trait is kept for source-level parity
 /// with the C API surface.
 pub trait FreeVerifyCertificateCtx {
-    fn free(&mut self, ctx: &mut ptls_verify_certificate_t);
+    fn free(&mut self, ctx: &mut PtlsVerifyCertificate);
 }
 
 /// Direct-receive callback for streams marked with
@@ -755,7 +759,7 @@ pub trait FreeVerifyCertificateCtx {
 pub trait StreamDirectReceive {
     fn receive(
         &mut self,
-        cnx: &mut cnx_t,
+        cnx: &mut Cnx,
         stream_id: u64,
         fin: bool,
         bytes: &[u8],
@@ -767,9 +771,9 @@ pub trait StreamDirectReceive {
 // Path quality and per-ack state.
 
 /// Per-path quality snapshot reported by
-/// `get_path_quality`.  C: `path_quality_t`.
+/// `get_path_quality`.  C: `PathQuality`.
 #[derive(Debug, Default, Copy, Clone)]
-pub struct path_quality_t {
+pub struct PathQuality {
     /// Receive rate estimate in bytes per second.
     pub receive_rate_estimate: u64,
     /// Pacing rate in bytes per second.
@@ -801,17 +805,20 @@ pub struct path_quality_t {
 // ---------------------------------------------------------------------------
 // Datagram and congestion APIs.
 
-/// Datagram-readiness signalling for
-/// `provide_datagram_buffer_ex`.  C:
-/// `datagram_active_enum`.
+/// Datagram-readiness signalling passed to
+/// [`provide_datagram_buffer_ex`].
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 #[repr(u8)]
-pub enum datagram_active_enum {
+pub enum DatagramActive {
+    /// Application has nothing more to send.
     #[default]
-    datagram_not_active = 0,
-    datagram_active_any_path = 1,
-    datagram_active_this_path_only = 2,
-    datagram_active_this_path_and_others = 3,
+    NotActive = 0,
+    /// Application can send on any path.
+    AnyPath = 1,
+    /// Application can send only on the current path.
+    ThisPathOnly = 2,
+    /// Application can send on the current path *and* others.
+    ThisPathAndOthers = 3,
 }
 
 /// Default stream priority used when none is set explicitly.
@@ -826,32 +833,41 @@ pub const DEFAULT_STREAM_PRIORITY: u8 = 9;
 /// the internal module once it is translated.
 pub const DATAGRAM_QUEUE_CAUTIOUS_LENGTH: usize = INITIAL_MTU_IPV4;
 
-/// Congestion-control event fed to the algorithm callbacks.  C:
-/// `congestion_notification_t`.
+/// Congestion-control event fed to a [`CongestionControl`]
+/// implementation's `alg_notify` hook.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum congestion_notification_t {
-    congestion_notification_acknowledgement,
-    congestion_notification_repeat,
-    congestion_notification_timeout,
-    congestion_notification_spurious_repeat,
-    congestion_notification_rtt_measurement,
-    congestion_notification_ecn_ec,
-    congestion_notification_cwin_blocked,
-    congestion_notification_seed_cwin,
-    congestion_notification_reset,
+pub enum CongestionNotification {
+    /// At least one packet was acknowledged.
+    Acknowledgement,
+    /// A packet was retransmitted.
+    Repeat,
+    /// A retransmission timer expired.
+    Timeout,
+    /// A retransmission was found to have been spurious.
+    SpuriousRepeat,
+    /// A new RTT sample is available.
+    RttMeasurement,
+    /// ECN-marked traffic was acknowledged.
+    EcnEc,
+    /// The send path is blocked by the congestion window.
+    CwinBlocked,
+    /// Seed the congestion window from external knowledge.
+    SeedCwin,
+    /// Reset congestion-control state.
+    Reset,
     /// Notification of lost feedback.
-    congestion_notification_lost_feedback,
+    LostFeedback,
 }
 
 /// Per-ACK state passed to the congestion-control algorithm.  C:
-/// `per_ack_state_t`.
+/// `PerAckState`.
 ///
 /// Single-bit `unsigned int : 1` bitfields collapse to `bool`.  `pc`
 /// stays an `i32` (the C field used `int` instead of the enum
 /// itself to avoid include dependencies; we follow suit so the
 /// translation can be checked field-by-field).
 #[derive(Debug, Default, Copy, Clone)]
-pub struct per_ack_state_t {
+pub struct PerAckState {
     pub rtt_measurement: u64,
     pub send_delay: u64,
     pub one_way_delay: u64,
@@ -877,45 +893,45 @@ pub struct per_ack_state_t {
 /// `option_string` arrives as an optional borrowed `&str`; the C
 /// version accepted a nullable `char const*` that callers either
 /// owned for the duration of the call or set to `NULL`.
-pub trait CongestionAlgorithm {
-    fn alg_init(&self, path_x: &mut path_t, option_string: Option<&str>, current_time: u64);
+pub trait CongestionControl {
+    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: u64);
 
     fn alg_notify(
         &self,
-        cnx: &mut cnx_t,
-        path_x: &mut path_t,
-        notification: congestion_notification_t,
-        ack_state: &per_ack_state_t,
+        cnx: &mut Cnx,
+        path_x: &mut Path,
+        notification: CongestionNotification,
+        ack_state: &PerAckState,
         current_time: u64,
     );
 
-    fn alg_delete(&self, path_x: &mut path_t);
+    fn alg_delete(&self, path_x: &mut Path);
 
     /// Optional observation hook — many algorithms leave this
     /// unimplemented (`NULL` in C).  Callers that don't care can
     /// rely on the default `None` return.
-    fn alg_observe(&self, _path_x: &path_t) -> Option<(u64, u64)> {
+    fn alg_observe(&self, _path_x: &Path) -> Option<(u64, u64)> {
         None
     }
 }
 
 /// Congestion-control algorithm descriptor.  C:
-/// `congestion_algorithm_t`.
+/// `CongestionAlgorithm`.
 ///
 /// The four function pointers from the C struct fold into a single
 /// trait-object reference; the algorithm identifier and numeric tag
 /// stay alongside it.  `congestion_algorithm_id` is `&'static str`
 /// because the C side stores compile-time string literals.
-pub struct congestion_algorithm_t {
+pub struct CongestionAlgorithm {
     pub congestion_algorithm_id: &'static str,
     pub congestion_algorithm_number: u8,
     pub ecn_mark: u8,
-    pub algorithm: &'static dyn CongestionAlgorithm,
+    pub algorithm: &'static dyn CongestionControl,
 }
 
-impl core::fmt::Debug for congestion_algorithm_t {
+impl core::fmt::Debug for CongestionAlgorithm {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("congestion_algorithm_t")
+        f.debug_struct("CongestionAlgorithm")
             .field("congestion_algorithm_id", &self.congestion_algorithm_id)
             .field(
                 "congestion_algorithm_number",
@@ -934,7 +950,7 @@ impl core::fmt::Debug for congestion_algorithm_t {
 /// length is implicit.  The slice is empty until
 /// [`register_congestion_control_algorithms`] (or its
 /// `_all_` convenience wrapper) is called.
-pub fn congestion_control_algorithms() -> &'static [&'static congestion_algorithm_t] {
+pub fn congestion_control_algorithms() -> &'static [&'static CongestionAlgorithm] {
     todo!()
 }
 
@@ -942,24 +958,25 @@ pub fn congestion_control_algorithms() -> &'static [&'static congestion_algorith
 // ALPN list.
 
 /// Application-protocol identifiers used during session
-/// negotiation.  C: `alpn_enum`.
+/// negotiation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 #[repr(u8)]
-pub enum alpn_enum {
+pub enum Alpn {
+    /// No ALPN selected / unrecognised.
     #[default]
-    alpn_undef = 0,
-    alpn_http_0_9,
-    alpn_http_3,
-    alpn_quicperf,
+    Undef = 0,
+    Http0_9,
+    Http3,
+    Quicperf,
 }
 
-/// One entry in the ALPN dispatch table.  C:
-/// `alpn_list_t`.  `len` is implicit in the byte slice but
-/// kept as a separate field for source-level parity with the C
-/// struct; Phase 3 may collapse to a single `&'static [u8]` slice.
+/// One entry in the ALPN dispatch table.  `len` is implicit in
+/// `alpn_val.len()` but kept as a separate field for source-level
+/// parity with the C struct; Phase 3 may collapse to a single
+/// `&'static [u8]` slice.
 #[derive(Debug, Copy, Clone)]
-pub struct alpn_list_t {
-    pub alpn_code: alpn_enum,
+pub struct AlpnEntry {
+    pub alpn_code: Alpn,
     pub alpn_val: &'static str,
     pub len: usize,
 }
@@ -1012,841 +1029,947 @@ pub fn add_proposed_alpn(_tls_context: *mut c_void, _alpn: &str) -> Result<(), E
     todo!()
 }
 
-/// C: `tls_get_negotiated_alpn`.  Returns the negotiated
-/// ALPN value as a borrowed string, or `None` when none was
-/// selected.
-pub fn tls_get_negotiated_alpn(_cnx: &cnx_t) -> Option<&str> {
-    todo!()
-}
+impl Cnx {
+    /// Negotiated ALPN value (borrowed), or `None` when none was
+    /// selected.
+    pub fn tls_negotiated_alpn(&self) -> Option<&str> {
+        todo!()
+    }
 
-/// C: `tls_get_sni`.  Returns the SNI value the peer
-/// presented during the handshake, or `None` when none was given.
-pub fn tls_get_sni(_cnx: &cnx_t) -> Option<&str> {
-    todo!()
-}
+    /// SNI value the peer presented during the handshake, or `None`
+    /// when none was given.
+    pub fn tls_sni(&self) -> Option<&str> {
+        todo!()
+    }
 
-/// C: `set_fuzz`.  Install a per-context packet fuzzer.
-/// `None` removes the fuzzer.
-pub fn set_fuzz(_quic: &mut quic_t, _fuzzer: Option<Box<dyn Fuzz>>) {
-    todo!()
-}
-
-// ---------------------------------------------------------------------------
-// Logging and diagnostics.
-
-/// C: `log_app_message` (and its `_v` variadic twin).
-/// Both C entry points are folded into one Rust function taking
-/// `core::fmt::Arguments<'_>`; the variadic flavour is redundant in
-/// Rust because formatting is done at the call site via the
-/// `format_args!` macro.
-pub fn log_app_message(_cnx: &mut cnx_t, _args: core::fmt::Arguments<'_>) {
-    todo!()
-}
-
-/// C: `set_log_level`.  `1` → log every packet, `0` →
-/// log only the first 100 packets per connection.
-pub fn set_log_level(_quic: &mut quic_t, _log_level: i32) {
-    todo!()
-}
-
-/// C: `use_unique_log_names`.  Toggles randomised
-/// log-file names (defeating accidental collisions when clients
-/// pick non-random initial CIDs).
-pub fn use_unique_log_names(_quic: &mut quic_t, _use_unique_log_names: bool) {
-    todo!()
-}
-
-/// C: `enable_sslkeylog`.
-///
-/// Phase 1 follows the canonical build (`WITHOUT_SSLKEYLOG`
-/// undefined); a `cfg`-gated variant lands when build options are
-/// translated.
-pub fn enable_sslkeylog(_quic: &mut quic_t, _enable_sslkeylog: bool) {
-    todo!()
-}
-
-/// C: `is_sslkeylog_enabled`.
-pub fn is_sslkeylog_enabled(_quic: &quic_t) -> bool {
-    todo!()
-}
-
-/// C: `set_random_initial`.  Values are `0` (no
-/// randomisation), `1` (only Initial PNs) or `2` (all PN spaces).
-pub fn set_random_initial(_quic: &mut quic_t, _random_initial: i32) {
-    todo!()
-}
-
-/// C: `set_packet_train_mode`.
-pub fn set_packet_train_mode(_quic: &mut quic_t, _train_mode: bool) {
-    todo!()
-}
-
-/// C: `set_padding_policy`.
-pub fn set_padding_policy(_quic: &mut quic_t, _padding_min_size: u32, _padding_multiple: u32) {
-    todo!()
-}
-
-/// C: `set_key_log_file`.  `None` clears the keylog file.
-pub fn set_key_log_file(_quic: &mut quic_t, _keylog_filename: Option<&str>) {
-    todo!()
+    /// Reasons the connection closed.  Returns `(local_reason,
+    /// remote_reason, local_application_reason,
+    /// remote_application_reason)`; the C signature exposed these as
+    /// four `uint64_t*` out-parameters.
+    pub fn close_reasons(&self) -> (u64, u64, u64, u64) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Connection-pool sizing and stats.
+// Per-context settings (logging, diagnostics, pool sizing,
+// port-blocking).
 
-/// C: `adjust_max_connections`.  Cannot grow past the
-/// limit chosen at context creation.
-pub fn adjust_max_connections(_quic: &mut quic_t, _max_nb_connections: u32) -> Result<(), Error> {
-    todo!()
-}
+impl Quic {
+    /// Install a per-context packet fuzzer; `None` removes any
+    /// previously installed fuzzer.
+    pub fn set_fuzz(&mut self, _fuzzer: Option<Box<dyn Fuzz>>) {
+        todo!()
+    }
 
-pub fn current_number_connections(_quic: &quic_t) -> u32 {
-    todo!()
-}
+    /// `1` → log every packet, `0` → log only the first
+    /// [`LOG_PACKET_MAX_SEQUENCE`] packets per connection.
+    pub fn set_log_level(&mut self, _log_level: i32) {
+        todo!()
+    }
 
-pub fn set_max_half_open_retry_threshold(_quic: &mut quic_t, _max_half_open_before_retry: u32) {
-    todo!()
-}
+    /// Toggle randomised log-file names (defeating accidental
+    /// collisions when clients pick non-random initial CIDs).
+    pub fn set_use_unique_log_names(&mut self, _use_unique_log_names: bool) {
+        todo!()
+    }
 
-pub fn get_max_half_open_retry_threshold(_quic: &quic_t) -> u32 {
-    todo!()
-}
+    /// Toggle SSL-keylog output.  Phase 1 follows the canonical
+    /// build (`WITHOUT_SSLKEYLOG` undefined); a `cfg`-gated variant
+    /// lands when build options are translated.
+    pub fn set_sslkeylog_enabled(&mut self, _enable_sslkeylog: bool) {
+        todo!()
+    }
 
-/// Fan-out version of "why was this connection closed?".  C:
-/// `get_close_reasons`.  The four `uint64_t*` output
-/// parameters fold into a single returned tuple of `(local_reason,
-/// remote_reason, local_application_reason,
-/// remote_application_reason)`.
-pub fn get_close_reasons(_cnx: &cnx_t) -> (u64, u64, u64, u64) {
-    todo!()
+    /// Whether SSL-keylog output is enabled on this context.
+    pub fn is_sslkeylog_enabled(&self) -> bool {
+        todo!()
+    }
+
+    /// Configure packet-number randomisation: `0` (no
+    /// randomisation), `1` (Initial PNs only), `2` (all PN spaces).
+    pub fn set_random_initial(&mut self, _random_initial: i32) {
+        todo!()
+    }
+
+    /// Toggle packet-train mode (groups outbound packets into
+    /// coalesced trains).
+    pub fn set_packet_train_mode(&mut self, _train_mode: bool) {
+        todo!()
+    }
+
+    /// Configure default padding policy applied to outbound packets.
+    pub fn set_padding_policy(&mut self, _padding_min_size: u32, _padding_multiple: u32) {
+        todo!()
+    }
+
+    /// Set (or clear, with `None`) the keylog destination file.
+    pub fn set_key_log_file(&mut self, _keylog_filename: Option<&str>) {
+        todo!()
+    }
+
+    /// Read `SSLKEYLOGFILE` from the process environment (gated
+    /// behind the build-time `WITHOUT_SSLKEYLOG` opt-out and the
+    /// per-context `is_sslkeylog_enabled` flag) and install it via
+    /// [`Quic::set_key_log_file`].  C:
+    /// `picoquic_set_key_log_file_from_env`.
+    ///
+    /// The environment lookup is a `std`-only operation (it goes
+    /// through `getenv`); Phase 3 will feature-gate the body.
+    pub fn set_key_log_file_from_env(&mut self) {
+        todo!()
+    }
+
+    /// Adjust the connection-pool ceiling.  Cannot grow past the
+    /// limit chosen at context creation.
+    pub fn adjust_max_connections(&mut self, _max_nb_connections: u32) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Number of connections currently registered with this context.
+    pub fn current_number_connections(&self) -> u32 {
+        todo!()
+    }
+
+    /// Set the half-open-connection threshold above which the server
+    /// switches to retry-token mode.
+    pub fn set_max_half_open_retry_threshold(&mut self, _max_half_open_before_retry: u32) {
+        todo!()
+    }
+
+    /// Retrieve the configured half-open retry threshold.
+    pub fn max_half_open_retry_threshold(&self) -> u32 {
+        todo!()
+    }
+
+    /// Toggle per-context port blocking.
+    pub fn set_port_blocking_disabled(&mut self, _is_port_blocking_disabled: bool) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Port-blocking and address helpers.
+// Free-standing port / address blocklist queries (no per-context
+// state — these consult a process-wide allowlist).
 
+/// Returns `true` when `port` is on the QUIC well-known-port
+/// blocklist.
 pub fn check_port_blocked(_port: u16) -> bool {
     todo!()
 }
 
+/// Returns `true` when `addr_from` belongs to a blocked address
+/// range.
 pub fn check_addr_blocked(_addr_from: &SocketAddr) -> bool {
     todo!()
 }
 
-pub fn disable_port_blocking(_quic: &mut quic_t, _is_port_blocking_disabled: bool) {
-    todo!()
+// ---------------------------------------------------------------------------
+// QUIC context: construction, TLS configuration, default policies.
+//
+// `picoquic_create` is the canonical constructor in the C source;
+// here it is `Quic::new`.  The setters that follow are all on the
+// QUIC context; per-connection siblings live in `impl Cnx` further
+// down.
+
+impl Quic {
+    /// Build a QUIC context with the supplied certificate paths,
+    /// default callbacks, and reset seed.
+    ///
+    /// Pointer-shape choices, derived from `quic/quicctx.c:634` and
+    /// `quic/sockloop.c:2009`:
+    ///
+    /// * Every `char const*` parameter is `Option<&str>` (the C
+    ///   source passes `NULL` to mean "absent").
+    /// * `default_callback_fn` + `default_callback_ctx` collapse to
+    ///   one `Option<Box<dyn StreamDataCb>>`.
+    /// * `cnx_id_callback` + `cnx_id_callback_data` collapse to
+    ///   `Option<Box<dyn ConnectionIdCb>>`.
+    /// * `reset_seed[16]` is `[u8; RESET_SECRET_SIZE]` taken by
+    ///   value (the C body deep-copies it into the context).
+    /// * `p_simulated_time: *mut u64` becomes `Option<&mut u64>`;
+    ///   the QUIC context retains the borrow across calls.
+    /// * `ticket_encryption_key` + `ticket_encryption_key_length`
+    ///   collapse to a borrowed `Option<&[u8]>`.
+    ///
+    /// Returns `None` when context creation fails (the C side
+    /// returned `NULL`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        _max_nb_connections: u32,
+        _cert_file_name: Option<&str>,
+        _key_file_name: Option<&str>,
+        _cert_root_file_name: Option<&str>,
+        _default_alpn: Option<&str>,
+        _default_callback: Option<Box<dyn StreamDataCb>>,
+        _cnx_id_callback: Option<Box<dyn ConnectionIdCb>>,
+        _reset_seed: [u8; RESET_SECRET_SIZE],
+        _current_time: u64,
+        _p_simulated_time: Option<&mut u64>,
+        _ticket_file_name: Option<&str>,
+        _ticket_encryption_key: Option<&[u8]>,
+    ) -> Option<Box<Quic>> {
+        todo!()
+    }
+
+    // The C `picoquic_free` entry point is dropped from the Rust API
+    // — context cleanup is the job of `Drop`, which Phase 3 will
+    // implement.
+
+    /// Toggle low-memory mode (smaller buffers, more aggressive
+    /// reclaim).
+    pub fn set_low_memory_mode(&mut self, _low_memory_mode: bool) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Configure the server cookie / retry-token mode.
+    pub fn set_cookie_mode(&mut self, _cookie_mode: i32) {
+        todo!()
+    }
+
+    /// Restrict TLS cipher-suite selection to the given IANA ID.
+    pub fn set_cipher_suite(&mut self, _cipher_suite_id: u16) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Restrict TLS key-exchange selection to the given IANA group.
+    pub fn set_key_exchange(&mut self, _key_exchange_id: u16) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Replace the default transport parameters used for new
+    /// connections.
+    pub fn set_default_tp(&mut self, _tp: &TransportParameters) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Borrow this context's default transport parameters.
+    pub fn default_tp(&self) -> &TransportParameters {
+        todo!()
+    }
+
+    /// Override a single transport-parameter slot in the default
+    /// set.  `tp_type` is the wire ID; values for unknown types are
+    /// stored verbatim and emitted as extension parameters.
+    pub fn set_default_tp_value(&mut self, _tp_type: u64, _tp_value: u64) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Install the TLS certificate chain.  The context takes
+    /// ownership of `certs`.
+    pub fn set_tls_certificate_chain(&mut self, _certs: Vec<PtlsIovec>) {
+        todo!()
+    }
+
+    /// Install the TLS root certificate set.  The C `int` return
+    /// distinguished load vs. store failure (`-1` / `-2`); Phase 1
+    /// collapses both into [`Error::Generic`] pending refinement in
+    /// Phase 3.
+    pub fn set_tls_root_certificates(&mut self, _certs: Vec<PtlsIovec>) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Install a no-op certificate verifier (test / interop only).
+    pub fn set_null_verifier(&mut self) {
+        todo!()
+    }
+
+    /// Install the TLS private key (caller-owned bytes; the context
+    /// copies on the way in).
+    pub fn set_tls_key(&mut self, _key: &[u8]) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Install a custom certificate-verification callback.  The
+    /// verifier context is owned by the QUIC context after this call
+    /// (the C side stashes the pointer and later runs `free_fn` on
+    /// it); `free_fn` mirrors that custodial role.
+    pub fn set_verify_certificate_callback(
+        &mut self,
+        _cb: PtlsVerifyCertificate,
+        _free_fn: Box<dyn FreeVerifyCertificateCtx>,
+    ) {
+        todo!()
+    }
+
+    /// Toggle whether this context demands client-side TLS
+    /// authentication.
+    pub fn set_client_authentication(&mut self, _client_authentication: bool) {
+        todo!()
+    }
+
+    /// Toggle whether the TLS exporter API is available on this
+    /// context.
+    pub fn set_use_exporter(&mut self, _use_exporter: bool) {
+        todo!()
+    }
+
+    /// Reject server-mode connections on this context (clients
+    /// only).
+    pub fn enforce_client_only(&mut self, _do_enforce: bool) {
+        todo!()
+    }
+
+    /// Default packet-padding policy (multiple, min-size).
+    pub fn set_default_padding(&mut self, _padding_multiple: u32, _padding_minsize: u32) {
+        todo!()
+    }
+
+    /// Default spin-bit policy applied to new connections.
+    pub fn set_default_spinbit_policy(
+        &mut self,
+        _default_spinbit_policy: SpinbitVersion,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Default loss-bit policy applied to new connections.
+    pub fn set_default_lossbit_policy(&mut self, _default_lossbit_policy: LossbitVersion) {
+        todo!()
+    }
+
+    /// Default multipath option (per the multipath QUIC draft).
+    pub fn set_default_multipath_option(&mut self, _multipath_option: i32) {
+        todo!()
+    }
+
+    /// Default address-discovery mode (per the address-discovery
+    /// draft): `0`=none, `1`=provide-only, `2`=receive-only,
+    /// `3`=both.
+    pub fn set_default_address_discovery_mode(&mut self, _mode: i32) {
+        todo!()
+    }
+
+    /// Cap the congestion window across all connections on this
+    /// context.
+    pub fn set_cwin_max(&mut self, _cwin_max: u64) {
+        todo!()
+    }
+
+    /// Cap the maximum stream data control window across this
+    /// context.
+    pub fn set_max_data_control(&mut self, _max_data: u64) {
+        todo!()
+    }
+
+    /// Default idle-timeout (in milliseconds) advertised on new
+    /// connections.
+    pub fn set_default_idle_timeout(&mut self, _idle_timeout_ms: u64) {
+        todo!()
+    }
+}
+
+impl Cnx {
+    /// Replace the local transport parameters for this connection
+    /// before the handshake completes.
+    pub fn set_transport_parameters(&mut self, _tp: &TransportParameters) {
+        todo!()
+    }
+
+    /// Borrow the local (`get_local = true`) or remote transport
+    /// parameters of this connection.
+    pub fn transport_parameters(&self, _get_local: bool) -> &TransportParameters {
+        todo!()
+    }
+
+    /// Export TLS keying material to `out` using `label`.  Returns
+    /// the number of bytes written.
+    pub fn export_secret(&mut self, _label: &str, _out: &mut [u8]) -> Result<usize, Error> {
+        todo!()
+    }
+
+    /// Per-connection spin-bit policy override.
+    pub fn set_spinbit_policy(&mut self, _spinbit_policy: SpinbitVersion) -> Result<(), Error> {
+        todo!()
+    }
+}
+
+impl Quic {
+    /// Default per-connection handshake-timeout (microseconds).
+    pub fn set_default_handshake_timeout(&mut self, _handshake_timeout_us: u64) {
+        todo!()
+    }
+
+    /// Default per-connection crypto-epoch length (in encrypted
+    /// bytes before triggering a key update).
+    pub fn set_default_crypto_epoch_length(&mut self, _crypto_epoch_length_max: u64) {
+        todo!()
+    }
+
+    /// Retrieve the configured default crypto-epoch length.
+    pub fn default_crypto_epoch_length(&self) -> u64 {
+        todo!()
+    }
+
+    /// Local-CID length in bytes (the value advertised in new
+    /// connections).
+    pub fn local_cid_length(&self) -> u8 {
+        todo!()
+    }
+
+    /// Returns `true` when `cid` was issued by this context.
+    pub fn is_local_cid(&self, _cid: &ConnectionId) -> bool {
+        todo!()
+    }
+
+    /// Load issued-retry-tokens from a persistent store.
+    pub fn load_retry_tokens(&mut self, _token_store_filename: &str) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Persist session tickets to disk.
+    pub fn save_session_tickets(&mut self, _ticket_store_filename: &str) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Persist outstanding retry tokens to disk.
+    pub fn save_retry_tokens(&mut self, _token_store_filename: &str) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Toggle BDP-frame extension on new connections (per the
+    /// 0-RTT-BDP draft).
+    pub fn set_default_bdp_frame_option(&mut self, _enable_bdp_frame: bool) {
+        todo!()
+    }
+
+    /// Configure the local CID length (in bytes) advertised on new
+    /// connections.
+    pub fn set_default_connection_id_length(&mut self, _cid_length: u8) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Default per-connection-ID time-to-live before retirement, in
+    /// microseconds.
+    pub fn set_default_connection_id_ttl(&mut self, _ttl_usec: u64) {
+        todo!()
+    }
+
+    /// Retrieve the configured default connection-ID TTL.
+    pub fn default_connection_id_ttl(&self) -> u64 {
+        todo!()
+    }
+
+    /// Cap the maximum MTU PMTUD will probe up to.
+    pub fn set_mtu_max(&mut self, _mtu_max: u32) {
+        todo!()
+    }
+
+    /// Install (or remove, with `None`) the ALPN-selection callback.
+    pub fn set_alpn_select_fn(&mut self, _alpn_select_fn: Option<Box<dyn AlpnSelect>>) {
+        todo!()
+    }
+
+    /// Install (or remove, with `None`) the V2 ALPN-selection
+    /// callback (uses [`Iovec`] rather than [`PtlsIovec`]).
+    pub fn set_alpn_select_fn_v2(&mut self, _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>) {
+        todo!()
+    }
+
+    /// Install (or remove, with `None`) the default stream/event
+    /// callback applied to new connections.  The `(callback_fn,
+    /// callback_ctx)` pair from C collapses into one trait object.
+    pub fn set_default_callback(&mut self, _callback: Option<Box<dyn StreamDataCb>>) {
+        todo!()
+    }
+
+    /// Default minimum interval between stateless-reset emissions
+    /// (microseconds).
+    pub fn set_default_stateless_reset_min_interval(&mut self, _min_interval_usec: u64) {
+        todo!()
+    }
+
+    /// Cap the number of connections that may emit logs
+    /// simultaneously.
+    pub fn set_max_simultaneous_logs(&mut self, _max_simultaneous_logs: u32) {
+        todo!()
+    }
+
+    /// Retrieve the configured maximum-simultaneous-logs cap.
+    pub fn max_simultaneous_logs(&self) -> u32 {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
-// QUIC context create / dispose.
+// Connection lifecycle and path management.
 
-/// C: `create`.  Builds a QUIC context with the supplied
-/// certificate paths, default callbacks, and reset seed.
-///
-/// Pointer-shape choices, derived from `quicctx.c:634` and
-/// `sockloop.c:2009`:
-///
-/// * Every `char const*` parameter is `Option<&str>` (the C source
-///   passes `NULL` to mean "absent" — see the sockloop call site).
-/// * `default_callback_fn` + `default_callback_ctx` collapse to one
-///   `Option<Box<dyn StreamDataCb>>`.
-/// * `cnx_id_callback` + `cnx_id_callback_data` collapse to
-///   `Option<Box<dyn ConnectionIdCb>>`.
-/// * `reset_seed[16]` is `[u8; RESET_SECRET_SIZE]` taken by
-///   value (the C body deep-copies it into `quic->reset_seed`).
-/// * `p_simulated_time: *mut u64` becomes `Option<&'a mut u64>`;
-///   the QUIC context retains the borrow across calls.
-/// * `ticket_encryption_key` + `ticket_encryption_key_length`
-///   collapse to a borrowed `Option<&[u8]>`.
-///
-/// Returns `None` when context creation fails (the C side returned
-/// `NULL`).
-pub fn create(
-    _max_nb_connections: u32,
-    _cert_file_name: Option<&str>,
-    _key_file_name: Option<&str>,
-    _cert_root_file_name: Option<&str>,
-    _default_alpn: Option<&str>,
-    _default_callback: Option<Box<dyn StreamDataCb>>,
-    _cnx_id_callback: Option<Box<dyn ConnectionIdCb>>,
-    _reset_seed: [u8; RESET_SECRET_SIZE],
-    _current_time: u64,
-    _p_simulated_time: Option<&mut u64>,
-    _ticket_file_name: Option<&str>,
-    _ticket_encryption_key: Option<&[u8]>,
-) -> Option<Box<quic_t>> {
-    todo!()
+impl Quic {
+    /// Create a new connection bound to this QUIC context.
+    /// `client_mode` selects between the client and server roles
+    /// (`char` flag in C, promoted to `bool` here).
+    ///
+    /// The returned `&mut Cnx` borrows from the context because the
+    /// C side stores the new connection in the context's hash
+    /// tables.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_cnx(
+        &mut self,
+        _initial_cnx_id: ConnectionId,
+        _remote_cnx_id: ConnectionId,
+        _addr_to: Option<&SocketAddr>,
+        _start_time: u64,
+        _preferred_version: u32,
+        _sni: Option<&str>,
+        _alpn: Option<&str>,
+        _client_mode: bool,
+    ) -> Option<&mut Cnx> {
+        todo!()
+    }
+
+    /// Convenience wrapper around [`Self::create_cnx`] for the
+    /// client side; `addr` is required.
+    pub fn create_client_cnx(
+        &mut self,
+        _addr: &SocketAddr,
+        _start_time: u64,
+        _preferred_version: u32,
+        _sni: Option<&str>,
+        _alpn: Option<&str>,
+        _callback: Option<Box<dyn StreamDataCb>>,
+    ) -> Option<&mut Cnx> {
+        todo!()
+    }
+
+    /// Default callback enablement for path-state events on new
+    /// connections.
+    pub fn set_path_callbacks_default(&mut self, _are_enabled: bool) {
+        todo!()
+    }
+
+    /// Default thresholds for the path-quality-update callback.
+    pub fn set_default_quality_update(&mut self, _pacing_rate_delta: u64, _rtt_delta: u64) {
+        todo!()
+    }
 }
 
-// C: `free`.  Dropped from the Rust API — `quic_t` cleanup
-// is the job of `Drop`, which Phase 3 will implement.
+impl Cnx {
+    /// Begin the client-side handshake on this connection.
+    pub fn start_client(&mut self) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn set_low_memory_mode(_quic: &mut quic_t, _low_memory_mode: bool) -> Result<(), Error> {
-    todo!()
-}
+    /// Begin an ordered close.
+    pub fn close(&mut self, _application_reason_code: u64) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn set_cookie_mode(_quic: &mut quic_t, _cookie_mode: i32) {
-    todo!()
-}
+    /// Same as [`Self::close`] but carries a textual `error_reason`.
+    /// `None` matches the C `NULL` case.
+    pub fn close_with_reason(
+        &mut self,
+        _application_reason_code: u64,
+        _error_reason: Option<&str>,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn set_cipher_suite(_quic: &mut quic_t, _cipher_suite_id: u16) -> Result<(), Error> {
-    todo!()
-}
+    /// Force-close the connection without waiting for the protocol
+    /// drain.
+    pub fn close_immediate(&mut self) {
+        todo!()
+    }
 
-pub fn set_key_exchange(_quic: &mut quic_t, _key_exchange_id: u16) -> Result<(), Error> {
-    todo!()
-}
+    /// Delete the connection.  In the C API this releases the
+    /// connection's slot inside its QUIC context; in Rust the
+    /// resources drop when `Cnx` itself does, so this remains a
+    /// `todo!()` until Phase 3 wires up the deletion semantics.
+    pub fn delete(&mut self) {
+        todo!()
+    }
 
-// ---------------------------------------------------------------------------
-// Default and per-connection transport parameters.
+    /// Override the application-set wake time.
+    pub fn set_app_wake_time(&mut self, _app_wake_time: u64) {
+        todo!()
+    }
 
-pub fn set_default_tp(_quic: &mut quic_t, _tp: &tp_t) -> Result<(), Error> {
-    todo!()
-}
+    /// Set the version the client should request on next handshake.
+    pub fn set_desired_version(&mut self, _desired_version: u32) {
+        todo!()
+    }
 
-pub fn get_default_tp(_quic: &quic_t) -> &tp_t {
-    todo!()
-}
+    /// Record a peer-rejected version (for diagnostics / VN frames).
+    pub fn set_rejected_version(&mut self, _rejected_version: u32) {
+        todo!()
+    }
 
-pub fn set_default_tp_value(
-    _quic: &mut quic_t,
-    _tp_type: u64,
-    _tp_value: u64,
-) -> Result<(), Error> {
-    todo!()
-}
+    /// Probe a new local↔peer path tuple.
+    pub fn probe_new_path(
+        &mut self,
+        _addr_peer: &SocketAddr,
+        _addr_local: &SocketAddr,
+        _current_time: u64,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn set_transport_parameters(_cnx: &mut cnx_t, _tp: &tp_t) {
-    todo!()
-}
+    /// Probe a new path with explicit interface index and
+    /// preferred-address flag.
+    pub fn probe_new_path_ex(
+        &mut self,
+        _addr_peer: &SocketAddr,
+        _addr_local: &SocketAddr,
+        _if_index: i32,
+        _current_time: u64,
+        _to_preferred_address: bool,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn get_transport_parameters(_cnx: &cnx_t, _get_local: bool) -> &tp_t {
-    todo!()
-}
+    /// Probe a new tuple on an existing path object.
+    #[allow(clippy::too_many_arguments)]
+    pub fn probe_new_tuple(
+        &mut self,
+        _path_x: &mut Path,
+        _addr_peer: &SocketAddr,
+        _addr_local: &SocketAddr,
+        _if_index: i32,
+        _current_time: u64,
+        _to_preferred_address: bool,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-// ---------------------------------------------------------------------------
-// TLS configuration.
+    /// Toggle path-state event callbacks for this connection.
+    pub fn set_path_callbacks(&mut self, _are_enabled: bool) {
+        todo!()
+    }
 
-/// C: `set_tls_certificate_chain`.  The QUIC context takes
-/// ownership of the certs vector, so it is consumed by value
-/// (`Vec<ptls_iovec_t>`).
-pub fn set_tls_certificate_chain(_quic: &mut quic_t, _certs: Vec<ptls_iovec_t>) {
-    todo!()
-}
+    /// Attach opaque application data to a specific path.
+    /// `app_path_ctx` is produced and consumed by the application
+    /// without the stack interpreting it.
+    pub fn set_app_path_ctx(
+        &mut self,
+        _unique_path_id: u64,
+        _app_path_ctx: *mut c_void,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-/// C: `set_tls_root_certificates`.  See above for
-/// ownership.  The C `int` return distinguishes load vs. store
-/// failures (`-1` and `-2`); Phase 1 collapses both to `Err(())`
-/// pending the crate-level error type.
-pub fn set_tls_root_certificates(
-    _quic: &mut quic_t,
-    _certs: Vec<ptls_iovec_t>,
-) -> Result<(), Error> {
-    todo!()
-}
+    /// Tear down a path.
+    pub fn abandon_path(
+        &mut self,
+        _unique_path_id: u64,
+        _reason: u64,
+        _current_time: u64,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn set_null_verifier(_quic: &mut quic_t) {
-    todo!()
-}
+    /// Issue a fresh CID for the given path.
+    pub fn refresh_path_connection_id(&mut self, _unique_path_id: u64) -> Result<(), Error> {
+        todo!()
+    }
 
-/// C: `set_tls_key`.  Caller retains ownership of the key
-/// buffer; we copy on the way in.
-pub fn set_tls_key(_quic: &mut quic_t, _key: &[u8]) -> Result<(), Error> {
-    todo!()
-}
+    /// Pin a stream to a specific path.
+    pub fn set_stream_path_affinity(
+        &mut self,
+        _stream_id: u64,
+        _unique_path_id: u64,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-/// C: `set_verify_certificate_callback`.  The verifier
-/// context is owned by the QUIC context after this call (the C side
-/// stashes the pointer and later runs `free_fn` on it).  In Rust,
-/// take `cb` by value — the function moves it into the QUIC
-/// context's owned slot; the trait-object `free_fn` stays as
-/// `Box<dyn …>` because that's the only way to own a `dyn Trait`.
-pub fn set_verify_certificate_callback(
-    _quic: &mut quic_t,
-    _cb: ptls_verify_certificate_t,
-    _free_fn: Box<dyn FreeVerifyCertificateCtx>,
-) {
-    todo!()
-}
+    /// Mark a path as Available or Backup.
+    pub fn set_path_status(
+        &mut self,
+        _unique_path_id: u64,
+        _status: PathStatus,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn set_client_authentication(_quic: &mut quic_t, _client_authentication: bool) {
-    todo!()
-}
+    /// Subscribe to "new path allowed" events.
+    ///
+    /// The C signature returned the answer through an
+    /// `int* is_already_allowed` parameter that doubled as a status
+    /// flag; the Rust shape splits that: `Ok(true)` if a new path is
+    /// already allowed (caller can proceed immediately), `Ok(false)`
+    /// if the caller will be notified later by callback.
+    pub fn subscribe_new_path_allowed(&mut self) -> Result<bool, Error> {
+        todo!()
+    }
 
-pub fn set_use_exporter(_quic: &mut quic_t, _use_exporter: bool) {
-    todo!()
-}
+    /// Override the interface index for the first path.
+    pub fn set_first_if_index(&mut self, _if_index: u32) -> Result<(), Error> {
+        todo!()
+    }
 
-/// C: `export_secret`.  Writes exported keying material
-/// into `out` and returns the number of bytes written.
-pub fn export_secret(_cnx: &mut cnx_t, _label: &str, _out: &mut [u8]) -> Result<usize, Error> {
-    todo!()
-}
+    /// Look up a path's address.  `local` selects which: `1` =
+    /// local, `2` = peer, `3` = peer's observed.  The C side
+    /// returned this through a `struct sockaddr_storage*`
+    /// out-parameter; here it folds into the `Result`.
+    pub fn path_addr(&self, _unique_path_id: u64, _local: i32) -> Result<SocketAddr, Error> {
+        todo!()
+    }
 
-pub fn enforce_client_only(_quic: &mut quic_t, _do_enforce: bool) {
-    todo!()
-}
+    /// Snapshot a path's quality metrics.
+    pub fn path_quality(&self, _unique_path_id: u64) -> Result<PathQuality, Error> {
+        todo!()
+    }
 
-// ---------------------------------------------------------------------------
-// Default policies on the QUIC context.
+    /// Snapshot the default path's quality metrics.
+    pub fn default_path_quality(&self) -> PathQuality {
+        todo!()
+    }
 
-pub fn set_default_padding(_quic: &mut quic_t, _padding_multiple: u32, _padding_minsize: u32) {
-    todo!()
-}
+    /// Subscribe to quality-update events on a specific path with
+    /// the given thresholds.
+    pub fn subscribe_to_quality_update_per_path(
+        &mut self,
+        _unique_path_id: u64,
+        _pacing_rate_delta: u64,
+        _rtt_delta: u64,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn set_default_spinbit_policy(
-    _quic: &mut quic_t,
-    _default_spinbit_policy: spinbit_version_enum,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn set_spinbit_policy(
-    _cnx: &mut cnx_t,
-    _spinbit_policy: spinbit_version_enum,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn set_default_lossbit_policy(
-    _quic: &mut quic_t,
-    _default_lossbit_policy: lossbit_version_enum,
-) {
-    todo!()
-}
-
-pub fn set_default_multipath_option(_quic: &mut quic_t, _multipath_option: i32) {
-    todo!()
-}
-
-pub fn set_default_address_discovery_mode(_quic: &mut quic_t, _mode: i32) {
-    todo!()
-}
-
-pub fn set_cwin_max(_quic: &mut quic_t, _cwin_max: u64) {
-    todo!()
-}
-
-pub fn set_max_data_control(_quic: &mut quic_t, _max_data: u64) {
-    todo!()
-}
-
-pub fn set_default_idle_timeout(_quic: &mut quic_t, _idle_timeout_ms: u64) {
-    todo!()
-}
-
-pub fn set_default_handshake_timeout(_quic: &mut quic_t, _handshake_timeout_us: u64) {
-    todo!()
-}
-
-pub fn set_default_crypto_epoch_length(_quic: &mut quic_t, _crypto_epoch_length_max: u64) {
-    todo!()
-}
-
-pub fn get_default_crypto_epoch_length(_quic: &quic_t) -> u64 {
-    todo!()
-}
-
-pub fn get_local_cid_length(_quic: &quic_t) -> u8 {
-    todo!()
-}
-
-pub fn is_local_cid(_quic: &quic_t, _cid: &connection_id_t) -> bool {
-    todo!()
-}
-
-// Session-ticket and retry-token persistence.
-
-pub fn load_retry_tokens(_quic: &mut quic_t, _token_store_filename: &str) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn save_session_tickets(_quic: &mut quic_t, _ticket_store_filename: &str) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn save_retry_tokens(_quic: &mut quic_t, _token_store_filename: &str) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn set_default_bdp_frame_option(_quic: &mut quic_t, _enable_bdp_frame: bool) {
-    todo!()
-}
-
-pub fn set_default_connection_id_length(_quic: &mut quic_t, _cid_length: u8) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn set_default_connection_id_ttl(_quic: &mut quic_t, _ttl_usec: u64) {
-    todo!()
-}
-
-pub fn get_default_connection_id_ttl(_quic: &quic_t) -> u64 {
-    todo!()
-}
-
-pub fn set_mtu_max(_quic: &mut quic_t, _mtu_max: u32) {
-    todo!()
-}
-
-/// C: `set_alpn_select_fn`.
-pub fn set_alpn_select_fn(_quic: &mut quic_t, _alpn_select_fn: Option<Box<dyn AlpnSelect>>) {
-    todo!()
-}
-
-/// C: `set_alpn_select_fn_v2`.
-pub fn set_alpn_select_fn_v2(_quic: &mut quic_t, _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>) {
-    todo!()
-}
-
-/// C: `set_default_callback`.  The combined `(callback_fn,
-/// callback_ctx)` pair from C folds into a single trait object.
-pub fn set_default_callback(_quic: &mut quic_t, _callback: Option<Box<dyn StreamDataCb>>) {
-    todo!()
-}
-
-pub fn set_default_stateless_reset_min_interval(_quic: &mut quic_t, _min_interval_usec: u64) {
-    todo!()
-}
-
-pub fn set_max_simultaneous_logs(_quic: &mut quic_t, _max_simultaneous_logs: u32) {
-    todo!()
-}
-
-pub fn get_max_simultaneous_logs(_quic: &quic_t) -> u32 {
-    todo!()
+    /// Subscribe to quality-update events on every path of this
+    /// connection.
+    pub fn subscribe_to_quality_update(&mut self, _pacing_rate_delta: u64, _rtt_delta: u64) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Connection lifecycle.
-
-/// C: `create_cnx`.  `client_mode` was a `char` flag in C;
-/// promoted to `bool`.
-///
-/// The returned `&mut cnx_t` borrows from `quic` because
-/// the C side stores the new connection in the context's hash
-/// tables and the application accesses it through the same context.
-pub fn create_cnx<'a>(
-    _quic: &'a mut quic_t,
-    _initial_cnx_id: connection_id_t,
-    _remote_cnx_id: connection_id_t,
-    _addr_to: Option<&SocketAddr>,
-    _start_time: u64,
-    _preferred_version: u32,
-    _sni: Option<&str>,
-    _alpn: Option<&str>,
-    _client_mode: bool,
-) -> Option<&'a mut cnx_t> {
-    todo!()
-}
-
-/// C: `create_client_cnx`.  Convenience wrapper around
-/// [`create_cnx`] for the client side; `addr` is required.
-pub fn create_client_cnx<'a>(
-    _quic: &'a mut quic_t,
-    _addr: &SocketAddr,
-    _start_time: u64,
-    _preferred_version: u32,
-    _sni: Option<&str>,
-    _alpn: Option<&str>,
-    _callback: Option<Box<dyn StreamDataCb>>,
-) -> Option<&'a mut cnx_t> {
-    todo!()
-}
-
-pub fn start_client_cnx(_cnx: &mut cnx_t) -> Result<(), Error> {
-    todo!()
-}
-
-/// C: `close`.  Begin an ordered close.
-pub fn close(_cnx: &mut cnx_t, _application_reason_code: u64) -> Result<(), Error> {
-    todo!()
-}
-
-/// C: `close_ex`.  Same as [`close`] but carries
-/// a textual `error_reason`.  `None` matches the C `NULL` case.
-pub fn close_ex(
-    _cnx: &mut cnx_t,
-    _application_reason_code: u64,
-    _error_reason: Option<&str>,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn close_immediate(_cnx: &mut cnx_t) {
-    todo!()
-}
-
-/// C: `delete_cnx`.  Consumes the connection so its
-/// resources drop at end of scope.
-pub fn delete_cnx(_cnx: &mut cnx_t) {
-    todo!()
-}
-
-pub fn set_app_wake_time(_cnx: &mut cnx_t, _app_wake_time: u64) {
-    todo!()
-}
-
-pub fn set_desired_version(_cnx: &mut cnx_t, _desired_version: u32) {
-    todo!()
-}
-
-pub fn set_rejected_version(_cnx: &mut cnx_t, _rejected_version: u32) {
-    todo!()
-}
-
-// ---------------------------------------------------------------------------
-// Path management.
-
-pub fn probe_new_path(
-    _cnx: &mut cnx_t,
-    _addr_peer: &SocketAddr,
-    _addr_local: &SocketAddr,
-    _current_time: u64,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn probe_new_path_ex(
-    _cnx: &mut cnx_t,
-    _addr_peer: &SocketAddr,
-    _addr_local: &SocketAddr,
-    _if_index: i32,
-    _current_time: u64,
-    _to_preferred_address: bool,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn probe_new_tuple(
-    _cnx: &mut cnx_t,
-    _path_x: &mut path_t,
-    _addr_peer: &SocketAddr,
-    _addr_local: &SocketAddr,
-    _if_index: i32,
-    _current_time: u64,
-    _to_preferred_address: bool,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn enable_path_callbacks(_cnx: &mut cnx_t, _are_enabled: bool) {
-    todo!()
-}
-
-pub fn enable_path_callbacks_default(_quic: &mut quic_t, _are_enabled: bool) {
-    todo!()
-}
-
-/// C: `set_app_path_ctx`.  `app_path_ctx` is opaque
-/// application data and stays a raw pointer.
-pub fn set_app_path_ctx(
-    _cnx: &mut cnx_t,
-    _unique_path_id: u64,
-    _app_path_ctx: *mut c_void,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn abandon_path(
-    _cnx: &mut cnx_t,
-    _unique_path_id: u64,
-    _reason: u64,
-    _current_time: u64,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn refresh_path_connection_id(_cnx: &mut cnx_t, _unique_path_id: u64) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn set_stream_path_affinity(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _unique_path_id: u64,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn set_path_status(
-    _cnx: &mut cnx_t,
-    _unique_path_id: u64,
-    _status: path_status_enum,
-) -> Result<(), Error> {
-    todo!()
-}
-
-/// C: `subscribe_new_path_allowed`.  The C signature took
-/// `int* is_already_allowed` as both an output and a status flag;
-/// the Rust shape returns `Ok(true)` if a new path is already
-/// allowed (caller can proceed immediately), `Ok(false)` if the
-/// caller will be notified later by callback, and `Err(())` on
-/// error.
-pub fn subscribe_new_path_allowed(_cnx: &mut cnx_t) -> Result<bool, Error> {
-    todo!()
-}
-
-pub fn set_first_if_index(_cnx: &mut cnx_t, _if_index: u32) -> Result<(), Error> {
-    todo!()
-}
-
-/// C: `get_path_addr`.  The C `int local` argument selects
-/// which address to return: `1` = local, `2` = peer, `3` = peer's
-/// observed.  Output `struct sockaddr_storage*` folds into the
-/// returned `SocketAddr`.
-pub fn get_path_addr(_cnx: &cnx_t, _unique_path_id: u64, _local: i32) -> Result<SocketAddr, Error> {
-    todo!()
-}
-
-pub fn get_path_quality(_cnx: &cnx_t, _unique_path_id: u64) -> Result<path_quality_t, Error> {
-    todo!()
-}
-
-pub fn get_default_path_quality(_cnx: &cnx_t) -> path_quality_t {
-    todo!()
-}
-
-pub fn subscribe_to_quality_update_per_path(
-    _cnx: &mut cnx_t,
-    _unique_path_id: u64,
-    _pacing_rate_delta: u64,
-    _rtt_delta: u64,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn subscribe_to_quality_update(_cnx: &mut cnx_t, _pacing_rate_delta: u64, _rtt_delta: u64) {
-    todo!()
-}
-
-pub fn default_quality_update(_quic: &mut quic_t, _pacing_rate_delta: u64, _rtt_delta: u64) {
-    todo!()
-}
-
-// ---------------------------------------------------------------------------
-// Connection iteration and timing.
-
-pub fn start_key_rotation(_cnx: &mut cnx_t) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn get_quic_ctx(_cnx: &mut cnx_t) -> &mut quic_t {
-    todo!()
-}
-
-pub fn get_first_cnx(_quic: &mut quic_t) -> Option<&mut cnx_t> {
-    todo!()
-}
-
-pub fn get_next_cnx(_cnx: &mut cnx_t) -> Option<&mut cnx_t> {
-    todo!()
-}
-
-pub fn get_next_wake_delay(_quic: &quic_t, _current_time: u64, _delay_max: i64) -> i64 {
-    todo!()
-}
-
-pub fn get_wake_delay(_cnx: &cnx_t, _current_time: u64, _delay_max: i64) -> i64 {
-    todo!()
-}
-
-pub fn get_earliest_cnx_to_wake(_quic: &mut quic_t, _max_wake_time: u64) -> Option<&mut cnx_t> {
-    todo!()
-}
-
-pub fn get_next_wake_time(_quic: &quic_t, _current_time: u64) -> u64 {
-    todo!()
-}
-
-pub fn get_cnx_state(_cnx: &cnx_t) -> state_enum {
-    todo!()
-}
-
-pub fn get_cnx_in_progress(_quic: &mut quic_t) -> Option<&mut cnx_t> {
-    todo!()
-}
-
-pub fn cnx_set_padding_policy(_cnx: &mut cnx_t, _padding_multiple: u32, _padding_minsize: u32) {
-    todo!()
-}
-
-/// C: `cnx_get_padding_policy`.  Two `uint32_t*` output
-/// parameters fold into a returned tuple `(padding_multiple,
-/// padding_minsize)`.
-pub fn cnx_get_padding_policy(_cnx: &cnx_t) -> (u32, u32) {
-    todo!()
-}
-
-pub fn cnx_set_spinbit_policy(_cnx: &mut cnx_t, _spinbit_policy: spinbit_version_enum) {
-    todo!()
-}
-
-pub fn set_crypto_epoch_length(_cnx: &mut cnx_t, _crypto_epoch_length_max: u64) {
-    todo!()
-}
-
-pub fn get_crypto_epoch_length(_cnx: &cnx_t) -> u64 {
-    todo!()
-}
-
-pub fn set_default_pmtud_policy(_quic: &mut quic_t, _pmtud_policy: pmtud_policy_enum) {
-    todo!()
-}
-
-pub fn cnx_set_pmtud_policy(_cnx: &mut cnx_t, _pmtud_policy: pmtud_policy_enum) {
-    todo!()
-}
-
-/// Obsolete: prefer [`cnx_set_pmtud_policy`].  Kept for
-/// source-level parity with the C API.
-pub fn cnx_set_pmtud_required(_cnx: &mut cnx_t, _is_pmtud_required: bool) {
-    todo!()
-}
-
-pub fn tls_is_psk_handshake(_cnx: &cnx_t) -> bool {
-    todo!()
-}
-
-// ---------------------------------------------------------------------------
-// Address helpers.
-
-/// C: `get_peer_addr`.  The C side returned an aliasing
-/// `struct sockaddr*` into internal storage; the Rust translation
-/// returns `SocketAddr` by value.
-pub fn get_peer_addr(_cnx: &cnx_t) -> SocketAddr {
-    todo!()
-}
-
-/// C: `get_local_addr`.  Same shape as
-/// [`get_peer_addr`].
-pub fn get_local_addr(_cnx: &cnx_t) -> SocketAddr {
-    todo!()
-}
-
-pub fn get_local_if_index(_cnx: &cnx_t) -> u32 {
-    todo!()
-}
-
-pub fn set_local_addr(_cnx: &mut cnx_t, _addr: &SocketAddr) -> Result<(), Error> {
-    todo!()
-}
-
-// ---------------------------------------------------------------------------
-// Connection ID accessors.
-
-pub fn get_local_cnxid(_cnx: &cnx_t) -> connection_id_t {
-    todo!()
-}
-
-pub fn get_remote_cnxid(_cnx: &cnx_t) -> connection_id_t {
-    todo!()
-}
-
-pub fn get_initial_cnxid(_cnx: &cnx_t) -> connection_id_t {
-    todo!()
-}
-
-pub fn get_client_cnxid(_cnx: &cnx_t) -> connection_id_t {
-    todo!()
-}
-
-pub fn get_server_cnxid(_cnx: &cnx_t) -> connection_id_t {
-    todo!()
-}
-
-pub fn get_logging_cnxid(_cnx: &cnx_t) -> connection_id_t {
-    todo!()
-}
-
-// ---------------------------------------------------------------------------
-// Connection-level state.
-
-pub fn get_cnx_start_time(_cnx: &cnx_t) -> u64 {
-    todo!()
-}
-
-pub fn is_0rtt_available(_cnx: &cnx_t) -> bool {
-    todo!()
-}
-
-pub fn is_cnx_backlog_empty(_cnx: &cnx_t) -> bool {
-    todo!()
-}
-
-/// C: `set_callback`.  See [`set_default_callback`]
-/// for the (`callback_fn`, `callback_ctx`) → trait-object collapse.
-pub fn set_callback(_cnx: &mut cnx_t, _callback: Option<Box<dyn StreamDataCb>>) {
-    todo!()
-}
-
-pub fn get_default_callback_function(_quic: &quic_t) -> Option<&dyn StreamDataCb> {
-    todo!()
-}
-
-/// C: `get_default_callback_context`.  In the trait
-/// translation the "context" is the trait object's state; this
-/// accessor returns the same trait reference as
-/// [`get_default_callback_function`].  The C twin is kept
-/// as a separate API for source-level parity.
-pub fn get_default_callback_context(_quic: &quic_t) -> Option<&dyn StreamDataCb> {
-    todo!()
-}
-
-pub fn get_callback_function(_cnx: &cnx_t) -> Option<&dyn StreamDataCb> {
-    todo!()
-}
-
-pub fn get_callback_context(_cnx: &cnx_t) -> Option<&dyn StreamDataCb> {
-    todo!()
-}
-
-// ---------------------------------------------------------------------------
-// Frame queueing.
-
-pub fn queue_misc_frame(
-    _cnx: &mut cnx_t,
-    _bytes: &[u8],
-    _is_pure_ack: bool,
-    _pc: packet_context_enum,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn queue_datagram_frame(_cnx: &mut cnx_t, _bytes: &[u8]) -> Result<(), Error> {
-    todo!()
+// Connection iteration, timing, accessors, and frame queueing.
+
+impl Cnx {
+    /// Trigger the next TLS key rotation.
+    pub fn start_key_rotation(&mut self) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Borrow the QUIC context that owns this connection.
+    pub fn quic(&mut self) -> &mut Quic {
+        todo!()
+    }
+
+    /// Walk to the next connection in the QUIC context's list, if
+    /// any.  (Named `next_in_list` rather than `next` to avoid
+    /// confusion with the `Iterator::next` shape — Phase 3 may
+    /// turn this into a proper `Iterator` impl on `Quic`.)
+    pub fn next_in_list(&mut self) -> Option<&mut Cnx> {
+        todo!()
+    }
+
+    /// Compute the number of microseconds until this connection
+    /// next needs attention, capped at `delay_max`.
+    pub fn wake_delay(&self, _current_time: u64, _delay_max: i64) -> i64 {
+        todo!()
+    }
+
+    /// Connection state-machine position.
+    pub fn state(&self) -> State {
+        todo!()
+    }
+
+    /// Override the per-connection padding policy.
+    pub fn set_padding_policy(&mut self, _padding_multiple: u32, _padding_minsize: u32) {
+        todo!()
+    }
+
+    /// Read the per-connection padding policy as `(multiple,
+    /// min-size)`.
+    pub fn padding_policy(&self) -> (u32, u32) {
+        todo!()
+    }
+
+    /// Set the per-connection crypto-epoch length.
+    pub fn set_crypto_epoch_length(&mut self, _crypto_epoch_length_max: u64) {
+        todo!()
+    }
+
+    /// Read the per-connection crypto-epoch length.
+    pub fn crypto_epoch_length(&self) -> u64 {
+        todo!()
+    }
+
+    /// Override the connection's PMTUD policy.
+    pub fn set_pmtud_policy(&mut self, _pmtud_policy: PmtudPolicy) {
+        todo!()
+    }
+
+    /// Obsolete; prefer [`Self::set_pmtud_policy`].  Kept for
+    /// source-level parity with the C API (`cnx_set_pmtud_required`).
+    pub fn set_pmtud_required(&mut self, _is_pmtud_required: bool) {
+        todo!()
+    }
+
+    /// Returns `true` when the handshake completed using a
+    /// pre-shared key (PSK).
+    pub fn tls_is_psk_handshake(&self) -> bool {
+        todo!()
+    }
+
+    /// Peer address of the default path.  C side returned an
+    /// aliasing `struct sockaddr*` into internal storage; the Rust
+    /// translation returns by value.
+    pub fn peer_addr(&self) -> SocketAddr {
+        todo!()
+    }
+
+    /// Local address of the default path.
+    pub fn local_addr(&self) -> SocketAddr {
+        todo!()
+    }
+
+    /// Local interface index for the default path.
+    pub fn local_if_index(&self) -> u32 {
+        todo!()
+    }
+
+    /// Set the local address for the default path.
+    pub fn set_local_addr(&mut self, _addr: &SocketAddr) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Local connection ID currently in use.
+    pub fn local_cnxid(&self) -> ConnectionId {
+        todo!()
+    }
+
+    /// Remote connection ID currently in use.
+    pub fn remote_cnxid(&self) -> ConnectionId {
+        todo!()
+    }
+
+    /// Initial connection ID picked at handshake start.
+    pub fn initial_cnxid(&self) -> ConnectionId {
+        todo!()
+    }
+
+    /// Client-side initial connection ID (mirrors C
+    /// `get_client_cnxid`).
+    pub fn client_cnxid(&self) -> ConnectionId {
+        todo!()
+    }
+
+    /// Server-side initial connection ID (mirrors C
+    /// `get_server_cnxid`).
+    pub fn server_cnxid(&self) -> ConnectionId {
+        todo!()
+    }
+
+    /// Connection ID used for log entries on this connection.
+    pub fn logging_cnxid(&self) -> ConnectionId {
+        todo!()
+    }
+
+    /// Wall-clock start time of this connection.
+    pub fn start_time(&self) -> u64 {
+        todo!()
+    }
+
+    /// Whether 0-RTT data may be sent on this connection.
+    pub fn is_0rtt_available(&self) -> bool {
+        todo!()
+    }
+
+    /// Whether the connection has any outstanding data still queued
+    /// for transmission.
+    pub fn is_backlog_empty(&self) -> bool {
+        todo!()
+    }
+
+    /// Install a per-connection stream/event callback (the
+    /// `callback_fn` + `callback_ctx` pair from C collapse to a
+    /// single trait object).  See [`Quic::set_default_callback`].
+    pub fn set_callback(&mut self, _callback: Option<Box<dyn StreamDataCb>>) {
+        todo!()
+    }
+
+    /// Borrow this connection's callback (`None` when none was
+    /// installed).
+    pub fn callback(&self) -> Option<&dyn StreamDataCb> {
+        todo!()
+    }
+
+    /// Queue a connection-level frame for transmission.
+    pub fn queue_misc_frame(
+        &mut self,
+        _bytes: &[u8],
+        _is_pure_ack: bool,
+        _pc: PacketContext,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Queue a datagram frame for transmission.
+    pub fn queue_datagram_frame(&mut self, _bytes: &[u8]) -> Result<(), Error> {
+        todo!()
+    }
+}
+
+impl Quic {
+    /// Borrow the first connection registered with this context.
+    pub fn first_cnx(&mut self) -> Option<&mut Cnx> {
+        todo!()
+    }
+
+    /// Compute the number of microseconds until *any* connection on
+    /// this context next needs attention, capped at `delay_max`.
+    pub fn next_wake_delay(&self, _current_time: u64, _delay_max: i64) -> i64 {
+        todo!()
+    }
+
+    /// Wall-clock time at which the next event is scheduled.
+    pub fn next_wake_time(&self, _current_time: u64) -> u64 {
+        todo!()
+    }
+
+    /// Borrow the connection currently advancing through its state
+    /// machine, if any (`get_cnx_in_progress` in C).
+    pub fn cnx_in_progress(&mut self) -> Option<&mut Cnx> {
+        todo!()
+    }
+
+    /// Default PMTUD policy applied to new connections.
+    pub fn set_default_pmtud_policy(&mut self, _pmtud_policy: PmtudPolicy) {
+        todo!()
+    }
+
+    /// Borrow the default stream callback installed on this context.
+    pub fn default_callback(&self) -> Option<&dyn StreamDataCb> {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Packet I/O.
 
-/// C: `incoming_packet`.  `addr_from` and `addr_to` are
-/// borrowed for the duration of the call.  `received_ecn` carries
-/// the IP-level ECN code-point byte.
-pub fn incoming_packet(
-    _quic: &mut quic_t,
-    _bytes: &mut [u8],
-    _addr_from: &SocketAddr,
-    _addr_to: &SocketAddr,
-    _if_index_to: i32,
-    _received_ecn: u8,
-    _current_time: u64,
-) -> Result<(), Error> {
-    todo!()
-}
+impl Quic {
+    /// Submit a received packet to the QUIC context for dispatch.
+    /// `addr_from` and `addr_to` are borrowed for the duration of
+    /// the call; `received_ecn` carries the IP-level ECN code-point
+    /// byte.
+    #[allow(clippy::too_many_arguments)]
+    pub fn incoming_packet(
+        &mut self,
+        _bytes: &mut [u8],
+        _addr_from: &SocketAddr,
+        _addr_to: &SocketAddr,
+        _if_index_to: i32,
+        _received_ecn: u8,
+        _current_time: u64,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-/// C: `incoming_packet_ex`.  Same as
-/// [`incoming_packet`] but additionally identifies the
-/// connection that consumed the packet.
-pub fn incoming_packet_ex<'a>(
-    _quic: &'a mut quic_t,
-    _bytes: &mut [u8],
-    _addr_from: &SocketAddr,
-    _addr_to: &SocketAddr,
-    _if_index_to: i32,
-    _received_ecn: u8,
-    _current_time: u64,
-) -> Result<Option<&'a mut cnx_t>, Error> {
-    todo!()
+    /// Same as [`Self::incoming_packet`] but additionally identifies
+    /// the connection that consumed the packet.
+    #[allow(clippy::too_many_arguments)]
+    pub fn incoming_packet_ex(
+        &mut self,
+        _bytes: &mut [u8],
+        _addr_from: &SocketAddr,
+        _addr_to: &SocketAddr,
+        _if_index_to: i32,
+        _received_ecn: u8,
+        _current_time: u64,
+    ) -> Result<Option<&mut Cnx>, Error> {
+        todo!()
+    }
 }
 
 /// Result of preparing a packet for transmission.  Folds the C
@@ -1862,35 +1985,36 @@ pub struct PreparedPacket<'a> {
     pub addr_from: SocketAddr,
     pub if_index: i32,
     /// Connection ID that should be logged for this packet.
-    pub log_cid: connection_id_t,
+    pub log_cid: ConnectionId,
     /// Connection that produced the packet (the C
     /// `p_last_cnx`).  `None` when the QUIC context had no work to
     /// do.
-    pub last_cnx: Option<&'a mut cnx_t>,
+    pub last_cnx: Option<&'a mut Cnx>,
     /// Optional GSO segment size when the packet is a coalesced
     /// train; `None` for a single-packet send.
     pub send_msg_size: Option<usize>,
 }
 
-/// C: `prepare_next_packet_ex`.  Folds the seven
-/// out-parameters of the C signature into a [`PreparedPacket`].
-pub fn prepare_next_packet_ex<'a>(
-    _quic: &'a mut quic_t,
-    _current_time: u64,
-    _send_buffer: &mut [u8],
-) -> Result<PreparedPacket<'a>, Error> {
-    todo!()
-}
+impl Quic {
+    /// Drive the next packet onto the wire.  Folds the seven
+    /// out-parameters of the C signature into a [`PreparedPacket`].
+    pub fn prepare_next_packet_ex(
+        &mut self,
+        _current_time: u64,
+        _send_buffer: &mut [u8],
+    ) -> Result<PreparedPacket<'_>, Error> {
+        todo!()
+    }
 
-/// C: `prepare_next_packet`.  Same shape as
-/// [`prepare_next_packet_ex`] but without GSO segment
-/// reporting.
-pub fn prepare_next_packet<'a>(
-    _quic: &'a mut quic_t,
-    _current_time: u64,
-    _send_buffer: &mut [u8],
-) -> Result<PreparedPacket<'a>, Error> {
-    todo!()
+    /// Same shape as [`Self::prepare_next_packet_ex`] but without
+    /// GSO segment reporting.
+    pub fn prepare_next_packet(
+        &mut self,
+        _current_time: u64,
+        _send_buffer: &mut [u8],
+    ) -> Result<PreparedPacket<'_>, Error> {
+        todo!()
+    }
 }
 
 /// Result of preparing a single connection's packet.  Subset of
@@ -1904,115 +2028,148 @@ pub struct PreparedCnxPacket {
     pub send_msg_size: Option<usize>,
 }
 
-pub fn prepare_packet_ex(
-    _cnx: &mut cnx_t,
-    _current_time: u64,
-    _send_buffer: &mut [u8],
-) -> Result<PreparedCnxPacket, Error> {
-    todo!()
+impl Cnx {
+    /// Prepare the next packet on this connection (the `_ex`
+    /// flavour reports GSO segment size when the packet is a
+    /// coalesced train).
+    pub fn prepare_packet_ex(
+        &mut self,
+        _current_time: u64,
+        _send_buffer: &mut [u8],
+    ) -> Result<PreparedCnxPacket, Error> {
+        todo!()
+    }
+
+    /// Same shape as [`Self::prepare_packet_ex`] without
+    /// GSO-segment reporting.
+    pub fn prepare_packet(
+        &mut self,
+        _current_time: u64,
+        _send_buffer: &mut [u8],
+    ) -> Result<PreparedCnxPacket, Error> {
+        todo!()
+    }
+
+    /// Notify this connection that a destination became
+    /// unreachable.
+    pub fn notify_destination_unreachable(
+        &mut self,
+        _current_time: u64,
+        _addr_peer: &SocketAddr,
+        _addr_local: &SocketAddr,
+        _if_index: i32,
+        _socket_err: i32,
+    ) {
+        todo!()
+    }
 }
 
-pub fn prepare_packet(
-    _cnx: &mut cnx_t,
-    _current_time: u64,
-    _send_buffer: &mut [u8],
-) -> Result<PreparedCnxPacket, Error> {
-    todo!()
-}
-
-pub fn notify_destination_unreachable(
-    _cnx: &mut cnx_t,
-    _current_time: u64,
-    _addr_peer: &SocketAddr,
-    _addr_local: &SocketAddr,
-    _if_index: i32,
-    _socket_err: i32,
-) {
-    todo!()
-}
-
-pub fn notify_destination_unreachable_by_cnxid(
-    _quic: &mut quic_t,
-    _cnxid: &connection_id_t,
-    _current_time: u64,
-    _addr_peer: &SocketAddr,
-    _addr_local: &SocketAddr,
-    _if_index: i32,
-    _socket_err: i32,
-) {
-    todo!()
+impl Quic {
+    /// Notify the connection identified by `cnxid` that a
+    /// destination became unreachable.
+    #[allow(clippy::too_many_arguments)]
+    pub fn notify_destination_unreachable_by_cnxid(
+        &mut self,
+        _cnxid: &ConnectionId,
+        _current_time: u64,
+        _addr_peer: &SocketAddr,
+        _addr_local: &SocketAddr,
+        _if_index: i32,
+        _socket_err: i32,
+    ) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Streams.
 
-pub fn mark_direct_receive_stream(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _direct_receive: Box<dyn StreamDirectReceive>,
-) -> Result<(), Error> {
-    todo!()
+impl Cnx {
+    /// Mark a stream as direct-receive: the stack hands incoming
+    /// stream payload straight to `direct_receive` instead of
+    /// queueing it for the application's regular callback.
+    pub fn mark_direct_receive_stream(
+        &mut self,
+        _stream_id: u64,
+        _direct_receive: Box<dyn StreamDirectReceive>,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Attach opaque application data to a stream.  `app_stream_ctx`
+    /// stays a raw pointer because it is produced and consumed by
+    /// the application without the stack interpreting it.
+    pub fn set_app_stream_ctx(
+        &mut self,
+        _stream_id: u64,
+        _app_stream_ctx: *mut c_void,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Detach the application data attached by
+    /// [`Self::set_app_stream_ctx`].
+    pub fn unlink_app_stream_ctx(&mut self, _stream_id: u64) {
+        todo!()
+    }
+
+    /// Toggle whether the stack should poll the application for
+    /// more data on this stream.
+    pub fn mark_active_stream(
+        &mut self,
+        _stream_id: u64,
+        _is_active: bool,
+        _v_stream_ctx: *mut c_void,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Toggle whether this stream is excluded from coalesced packet
+    /// trains.
+    pub fn set_stream_not_coalesced(
+        &mut self,
+        _stream_id: u64,
+        _is_not_coalesced: bool,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Set per-stream priority (smaller is higher).
+    pub fn set_stream_priority(
+        &mut self,
+        _stream_id: u64,
+        _stream_priority: u8,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Mark a stream as high-priority (skip ahead of normal
+    /// streams).
+    pub fn mark_high_priority_stream(
+        &mut self,
+        _stream_id: u64,
+        _is_high_priority: bool,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Override the priority used for outbound datagrams on this
+    /// connection.
+    pub fn set_datagram_priority(&mut self, _datagram_priority: u8) {
+        todo!()
+    }
 }
 
-/// C: `set_app_stream_ctx`.  `app_stream_ctx` is opaque
-/// application data, kept as a raw pointer.
-pub fn set_app_stream_ctx(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _app_stream_ctx: *mut c_void,
-) -> Result<(), Error> {
-    todo!()
-}
+impl Quic {
+    /// Default per-stream priority applied to new streams.
+    pub fn set_default_priority(&mut self, _default_stream_priority: u8) {
+        todo!()
+    }
 
-pub fn unlink_app_stream_ctx(_cnx: &mut cnx_t, _stream_id: u64) {
-    todo!()
-}
-
-/// C: `mark_active_stream`.  `is_active` was an `int`
-/// flag in C; promoted to `bool`.
-pub fn mark_active_stream(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _is_active: bool,
-    _v_stream_ctx: *mut c_void,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn set_stream_not_coalesced(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _is_not_coalesced: bool,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn set_default_priority(_quic: &mut quic_t, _default_stream_priority: u8) {
-    todo!()
-}
-
-pub fn set_stream_priority(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _stream_priority: u8,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn mark_high_priority_stream(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _is_high_priority: bool,
-) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn set_default_datagram_priority(_quic: &mut quic_t, _default_datagram_priority: u8) {
-    todo!()
-}
-
-pub fn set_datagram_priority(_cnx: &mut cnx_t, _datagram_priority: u8) {
-    todo!()
+    /// Default datagram priority applied to new connections.
+    pub fn set_default_datagram_priority(&mut self, _default_datagram_priority: u8) {
+        todo!()
+    }
 }
 
 /// C: `provide_stream_data_buffer`.  `context` is the
@@ -2032,95 +2189,103 @@ pub fn provide_stream_data_buffer(
     todo!()
 }
 
-pub fn add_to_stream(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _data: &[u8],
-    _set_fin: bool,
-) -> Result<(), Error> {
-    todo!()
-}
+impl Cnx {
+    /// Append `data` to a stream's send buffer (`set_fin` closes the
+    /// stream when the data is fully delivered).
+    pub fn add_to_stream(
+        &mut self,
+        _stream_id: u64,
+        _data: &[u8],
+        _set_fin: bool,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn reset_stream_ctx(_cnx: &mut cnx_t, _stream_id: u64) {
-    todo!()
-}
+    /// Reset just the per-stream application context.
+    pub fn reset_stream_ctx(&mut self, _stream_id: u64) {
+        todo!()
+    }
 
-pub fn add_to_stream_with_ctx(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _data: &[u8],
-    _set_fin: bool,
-    _app_stream_ctx: *mut c_void,
-) -> Result<(), Error> {
-    todo!()
-}
+    /// Same as [`Self::add_to_stream`] but also installs an
+    /// application-supplied stream context for callbacks.
+    pub fn add_to_stream_with_ctx(
+        &mut self,
+        _stream_id: u64,
+        _data: &[u8],
+        _set_fin: bool,
+        _app_stream_ctx: *mut c_void,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn reset_stream(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _local_stream_error: u64,
-) -> Result<(), Error> {
-    todo!()
-}
+    /// Send a STREAM_RESET frame for this stream.
+    pub fn reset_stream(&mut self, _stream_id: u64, _local_stream_error: u64) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn reset_stream_at(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _local_stream_error: u64,
-    _reliable_size: u64,
-) -> Result<(), Error> {
-    todo!()
-}
+    /// Send a STREAM_RESET_AT frame (per the reliable-stream-reset
+    /// draft) for this stream.
+    pub fn reset_stream_at(
+        &mut self,
+        _stream_id: u64,
+        _local_stream_error: u64,
+        _reliable_size: u64,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn open_flow_control(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _expected_data_size: u64,
-) -> Result<(), Error> {
-    todo!()
-}
+    /// Open the flow-control window for an inbound stream up to the
+    /// expected payload size.
+    pub fn open_flow_control(
+        &mut self,
+        _stream_id: u64,
+        _expected_data_size: u64,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn set_app_flow_control(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _use_app_flow_control: bool,
-) -> Result<(), Error> {
-    todo!()
-}
+    /// Toggle application-managed flow control on a stream.
+    pub fn set_app_flow_control(
+        &mut self,
+        _stream_id: u64,
+        _use_app_flow_control: bool,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn get_next_local_stream_id(_cnx: &mut cnx_t, _is_unidir: bool) -> u64 {
-    todo!()
-}
+    /// Allocate the next locally-initiated stream ID.
+    pub fn next_local_stream_id(&mut self, _is_unidir: bool) -> u64 {
+        todo!()
+    }
 
-pub fn stop_sending(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _local_stream_error: u64,
-) -> Result<(), Error> {
-    todo!()
-}
+    /// Send a STOP_SENDING frame for this stream.
+    pub fn stop_sending(&mut self, _stream_id: u64, _local_stream_error: u64) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn discard_stream(
-    _cnx: &mut cnx_t,
-    _stream_id: u64,
-    _local_stream_error: u16,
-) -> Result<(), Error> {
-    todo!()
-}
+    /// Drop a stream from local bookkeeping (rejecting further peer
+    /// frames).
+    pub fn discard_stream(
+        &mut self,
+        _stream_id: u64,
+        _local_stream_error: u16,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 
-// ---------------------------------------------------------------------------
-// Datagrams.
+    /// Toggle datagram readiness for this connection.
+    pub fn mark_datagram_ready(&mut self, _is_ready: bool) -> Result<(), Error> {
+        todo!()
+    }
 
-pub fn mark_datagram_ready(_cnx: &mut cnx_t, _is_ready: bool) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn mark_datagram_ready_path(
-    _cnx: &mut cnx_t,
-    _unique_path_id: u64,
-    _is_path_ready: bool,
-) -> Result<(), Error> {
-    todo!()
+    /// Per-path datagram readiness (multipath connections).
+    pub fn mark_datagram_ready_path(
+        &mut self,
+        _unique_path_id: u64,
+        _is_path_ready: bool,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 }
 
 /// C: `provide_datagram_buffer`.  Old API, prefer
@@ -2132,181 +2297,240 @@ pub fn provide_datagram_buffer(_context: *mut c_void, _length: usize) -> Option<
 pub fn provide_datagram_buffer_ex(
     _context: *mut c_void,
     _length: usize,
-    _is_active: datagram_active_enum,
+    _is_active: DatagramActive,
 ) -> Option<&'static mut [u8]> {
     todo!()
 }
 
 // ---------------------------------------------------------------------------
-// Misc per-context tunables.
+// Misc per-context tunables and per-connection accessors.
 
-pub fn set_optimistic_ack_policy(_quic: &mut quic_t, _sequence_hole_pseudo_period: u32) {
-    todo!()
+impl Quic {
+    /// Configure the optimistic-ACK throttling policy
+    /// (`sequence_hole_pseudo_period` is the period in packets
+    /// between intentional ACK gaps used to fingerprint optimistic
+    /// peers).
+    pub fn set_optimistic_ack_policy(&mut self, _sequence_hole_pseudo_period: u32) {
+        todo!()
+    }
+
+    /// Toggle preemptive-repeat at the context level.
+    pub fn set_preemptive_repeat_policy(&mut self, _do_repeat: bool) {
+        todo!()
+    }
 }
 
-pub fn set_preemptive_repeat_policy(_quic: &mut quic_t, _do_repeat: bool) {
-    todo!()
-}
+impl Cnx {
+    /// Override preemptive-repeat for this connection.
+    pub fn set_preemptive_repeat(&mut self, _do_repeat: bool) {
+        todo!()
+    }
 
-pub fn set_preemptive_repeat_per_cnx(_cnx: &mut cnx_t, _do_repeat: bool) {
-    todo!()
-}
+    /// Enable keep-alives at the given interval (microseconds).
+    pub fn enable_keep_alive(&mut self, _interval: u64) {
+        todo!()
+    }
 
-pub fn enable_keep_alive(_cnx: &mut cnx_t, _interval: u64) {
-    todo!()
-}
+    /// Disable any previously-enabled keep-alive.
+    pub fn disable_keep_alive(&mut self) {
+        todo!()
+    }
 
-pub fn disable_keep_alive(_cnx: &mut cnx_t) {
-    todo!()
-}
+    /// Returns `true` for client-initiated connections.
+    pub fn is_client(&self) -> bool {
+        todo!()
+    }
 
-pub fn is_client(_cnx: &cnx_t) -> bool {
-    todo!()
-}
+    /// Local error code reported on close (0 if none).
+    pub fn local_error(&self) -> u64 {
+        todo!()
+    }
 
-pub fn get_local_error(_cnx: &cnx_t) -> u64 {
-    todo!()
-}
+    /// Remote error code reported on close.
+    pub fn remote_error(&self) -> u64 {
+        todo!()
+    }
 
-pub fn get_remote_error(_cnx: &cnx_t) -> u64 {
-    todo!()
-}
+    /// Application-level error reported on close.
+    pub fn application_error(&self) -> u64 {
+        todo!()
+    }
 
-pub fn get_application_error(_cnx: &cnx_t) -> u64 {
-    todo!()
-}
+    /// Per-stream error reported by the peer.
+    pub fn remote_stream_error(&self, _stream_id: u64) -> u64 {
+        todo!()
+    }
 
-pub fn get_remote_stream_error(_cnx: &cnx_t, _stream_id: u64) -> u64 {
-    todo!()
-}
+    /// Total bytes of stream data sent on this connection.
+    pub fn data_sent(&self) -> u64 {
+        todo!()
+    }
 
-pub fn get_data_sent(_cnx: &cnx_t) -> u64 {
-    todo!()
-}
+    /// Total bytes of stream data received on this connection.
+    pub fn data_received(&self) -> u64 {
+        todo!()
+    }
 
-pub fn get_data_received(_cnx: &cnx_t) -> u64 {
-    todo!()
-}
-
-pub fn cnx_is_still_logging(_cnx: &cnx_t) -> bool {
-    todo!()
+    /// `true` while the connection still streams events into its
+    /// log (capped per [`Quic::set_max_simultaneous_logs`]).
+    pub fn is_still_logging(&self) -> bool {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Congestion-control registry.
+//
+// The registry itself is process-wide, so the entry points stay as
+// free functions; the per-context / per-connection setters fold
+// into methods.
 
-/// C: `register_congestion_control_algorithms`.  The C
-/// signature took `congestion_algorithm_t const**` plus a
-/// length; the Rust shape collapses both into a borrowed slice with
-/// `'static` element lifetime — algorithms are typically file-scope
-/// statics, mirroring how `register_all_cc_algorithms.c` builds the
-/// list.
-pub fn register_congestion_control_algorithms(_alg: &'static [&'static congestion_algorithm_t]) {
+/// Register a slice of congestion-control algorithms with the
+/// global registry.  The C signature took `CongestionAlgorithm
+/// const**` plus a length; the Rust shape collapses both into a
+/// borrowed slice with `'static` element lifetime — algorithms are
+/// typically file-scope statics, mirroring how
+/// `register_all_cc_algorithms.c` builds the list.
+pub fn register_congestion_control_algorithms(_alg: &'static [&'static CongestionAlgorithm]) {
     todo!()
 }
 
+/// Convenience wrapper around
+/// [`register_congestion_control_algorithms`] that pulls in every
+/// algorithm shipped with the crate.
 pub fn register_all_congestion_control_algorithms() {
     todo!()
 }
 
-pub fn get_congestion_algorithm(_alg_id: &str) -> Option<&'static congestion_algorithm_t> {
+/// Look up a registered algorithm by name (`alg_id`).
+pub fn get_congestion_algorithm(_alg_id: &str) -> Option<&'static CongestionAlgorithm> {
     todo!()
 }
 
-pub fn set_default_congestion_algorithm(
-    _quic: &mut quic_t,
-    _algo: &'static congestion_algorithm_t,
-) {
-    todo!()
+impl Quic {
+    /// Set the default congestion-control algorithm applied to new
+    /// connections on this context.
+    pub fn set_default_congestion_algorithm(&mut self, _algo: &'static CongestionAlgorithm) {
+        todo!()
+    }
+
+    /// Same as [`Self::set_default_congestion_algorithm`] but
+    /// passes through a per-algorithm options string.
+    pub fn set_default_congestion_algorithm_ex(
+        &mut self,
+        _alg: &'static CongestionAlgorithm,
+        _alg_option_string: Option<&str>,
+    ) {
+        todo!()
+    }
+
+    /// Convenience: select the default algorithm by name (looking up
+    /// in the registry).
+    pub fn set_default_congestion_algorithm_by_name(&mut self, _alg_name: &str) {
+        todo!()
+    }
 }
 
-pub fn set_default_congestion_algorithm_ex(
-    _quic: &mut quic_t,
-    _alg: &'static congestion_algorithm_t,
-    _alg_option_string: Option<&str>,
-) {
-    todo!()
-}
+impl Cnx {
+    /// Override the congestion-control algorithm for this
+    /// connection.
+    pub fn set_congestion_algorithm(&mut self, _algo: &'static CongestionAlgorithm) {
+        todo!()
+    }
 
-pub fn set_default_congestion_algorithm_by_name(_quic: &mut quic_t, _alg_name: &str) {
-    todo!()
-}
+    /// Same as [`Self::set_congestion_algorithm`] but passes
+    /// through a per-algorithm options string.
+    pub fn set_congestion_algorithm_ex(
+        &mut self,
+        _alg: &'static CongestionAlgorithm,
+        _alg_option_string: Option<&str>,
+    ) {
+        todo!()
+    }
 
-pub fn set_congestion_algorithm(_cnx: &mut cnx_t, _algo: &'static congestion_algorithm_t) {
-    todo!()
-}
+    /// Set the priority limit above which streams bypass congestion
+    /// control.
+    pub fn set_priority_limit_for_bypass(&mut self, _priority_limit: u8) {
+        todo!()
+    }
 
-pub fn set_congestion_algorithm_ex(
-    _cnx: &mut cnx_t,
-    _alg: &'static congestion_algorithm_t,
-    _alg_option_string: Option<&str>,
-) {
-    todo!()
-}
+    /// Toggle whether the application receives feedback-loss
+    /// notifications.
+    pub fn set_feedback_loss_notification(&mut self, _should_notify: bool) {
+        todo!()
+    }
 
-pub fn set_priority_limit_for_bypass(_cnx: &mut cnx_t, _priority_limit: u8) {
-    todo!()
-}
+    /// Force the next probe upward (BBR / Cubic probe-up).
+    pub fn request_forced_probe_up(&mut self, _request_forced_probe_up: bool) {
+        todo!()
+    }
 
-pub fn set_feedback_loss_notification(_cnx: &mut cnx_t, _should_notify: bool) {
-    todo!()
-}
+    /// Subscribe to pacing-rate change notifications, with the
+    /// given relative thresholds.
+    pub fn subscribe_pacing_rate_updates(
+        &mut self,
+        _decrease_threshold: u64,
+        _increase_threshold: u64,
+    ) {
+        todo!()
+    }
 
-pub fn request_forced_probe_up(_cnx: &mut cnx_t, _request_forced_probe_up: bool) {
-    todo!()
-}
+    /// Current pacing rate (bytes per second).
+    pub fn pacing_rate(&self) -> u64 {
+        todo!()
+    }
 
-pub fn subscribe_pacing_rate_updates(
-    _cnx: &mut cnx_t,
-    _decrease_threshold: u64,
-    _increase_threshold: u64,
-) {
-    todo!()
-}
+    /// Current congestion window (bytes).
+    pub fn cwin(&self) -> u64 {
+        todo!()
+    }
 
-pub fn get_pacing_rate(_cnx: &cnx_t) -> u64 {
-    todo!()
-}
-
-pub fn get_cwin(_cnx: &cnx_t) -> u64 {
-    todo!()
-}
-
-pub fn get_rtt(_cnx: &cnx_t) -> u64 {
-    todo!()
+    /// Smoothed round-trip-time estimate (microseconds).
+    pub fn rtt(&self) -> u64 {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // ECH / ESNI.
 
-pub fn ech_configure_quic_ctx(
-    _quic: &mut quic_t,
-    _ech_private_key_file_name: Option<&str>,
-    _ech_config_file_name: Option<&str>,
-) -> Result<(), Error> {
-    todo!()
+impl Quic {
+    /// Configure server-side Encrypted-ClientHello (ECH) by loading
+    /// the private key and config from disk.
+    pub fn ech_configure(
+        &mut self,
+        _ech_private_key_file_name: Option<&str>,
+        _ech_config_file_name: Option<&str>,
+    ) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Release any installed ECH context.
+    pub fn release_ech_ctx(&mut self) {
+        todo!()
+    }
 }
 
-pub fn release_quic_ech_ctx(_quic: &mut quic_t) {
-    todo!()
+impl Cnx {
+    /// Configure client-side ECH on this connection.
+    pub fn ech_configure_client(&mut self, _config_data: &[u8]) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Returns `true` when the handshake used ECH.
+    pub fn is_ech_handshake(&self) -> bool {
+        todo!()
+    }
+
+    /// Borrow the retry-config bytes the server returned (empty
+    /// when no retry config is available).  Two C `uint8_t**` /
+    /// `size_t*` output parameters fold into this single borrow.
+    pub fn ech_retry_config(&self) -> &[u8] {
+        todo!()
+    }
 }
 
-pub fn ech_configure_client(_cnx: &mut cnx_t, _config_data: &[u8]) -> Result<(), Error> {
-    todo!()
-}
-
-pub fn is_ech_handshake(_cnx: &cnx_t) -> bool {
-    todo!()
-}
-
-/// C: `ech_get_retry_config`.  Two `uint8_t**` /
-/// `size_t*` output parameters fold into a single returned
-/// `&[u8]` borrow into the connection's retry config buffer
-/// (empty when no retry config is available).
-pub fn ech_get_retry_config(_cnx: &cnx_t) -> &[u8] {
-    todo!()
-}
-
+/// Generate a fresh ECH config file on disk.
 pub fn ech_create_config_file(
     _public_name: &str,
     _private_key_file: &str,

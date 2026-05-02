@@ -1,14 +1,21 @@
 # claude -p (phase1a) for picoquic/picosplay.h
-# elapsed: 122.6s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 304.4s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picosplay.md)
 
 ## stdout
-Three targeted improvements applied, both gates clean:
+All hits are doc-comment C-traceability tags — those are intended. Both gates are green.
 
-1. **Tightened `#![allow(non_camel_case_types)]`** — removed the module-wide inner attribute and replaced it with item-level `#[allow(non_camel_case_types)]` on the two structs that actually need it (`picosplay_node_t`, `picosplay_tree_t`). The lint no longer silently suppresses any future non-camel-case type added to the module.
+## Summary
 
-2. **Fixed mutability on three read-only functions** — `picosplay_find_previous`, `picosplay_first`, and `picosplay_last` were incorrectly taking `&mut picosplay_tree_t`. Inspection of the C source confirms none of them splay or otherwise mutate the tree: `picosplay_find_previous` is a pure BST walk returning the predecessor without splaying, and `picosplay_first`/`picosplay_last` just delegate to `leftmost`/`rightmost`. All three now take `&picosplay_tree_t`, which is more accurate and less restrictive for Phase 3 callers.
+Refactored `rs/fq/src/splay.rs` so it reads as Rust, not C-with-Rust-syntax:
+
+- **Renamed types**: `splay_node_t` → `SplayNode`, `splay_tree_t` → `SplayTree`. Dropped the `_t` suffix and the `#[allow(non_camel_case_types)]` per-item suppressions; the trait `SplayOps` already had the right shape.
+- **Free functions → methods**: `splay_init_tree`, `splay_insert`, `splay_find`, `splay_find_previous`, `splay_first`, `splay_last`, `splay_delete`, `splay_delete_hint`, `splay_empty_tree` are now methods on `SplayTree` (`init`, `insert`, `find`, `find_previous`, `first`, `last`, `delete`, `delete_hint`, `clear`). `splay_new_tree` became `SplayTree::new_boxed`. The two node-only walkers `splay_previous`/`splay_next` became associated functions on `SplayNode`. The `_empty_tree` → `clear` rename matches Rust collection convention and avoids confusion with the `empty()` constructor.
+- **Updated the one consumer**, `internal.rs`: the import and 13 field/parameter usages now reference the renamed types.
+- **Doc-comment fidelity**: kept the `C: \`picosplay_*\`` traceability tags in each method doc, and refreshed the cross-doc-links (`[`SplayTree::init`]`, etc.).
+
+`cargo check` and `cargo clippy -- -D warnings` both pass cleanly.
 
 
 ## stderr

@@ -1,18 +1,24 @@
 # claude -p (phase1a) for picoquic/picoquic_packet_loop.h
-# elapsed: 477.6s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 296.6s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_packet_loop.md)
 
 ## stdout
-Both gates pass cleanly. Here's a summary of what changed and why:
+**Summary of changes to `rs/fq/src/packet_loop.rs`:**
 
-**Three improvements applied to `rs/fq/src/picoquic/picoquic_packet_loop.rs`:**
+Five idiomatic-Rust improvements on top of the prior Phase 1A pass:
 
-1. **Removed `#![allow(non_snake_case)]`** — this lint covers functions/methods/variables that aren't snake_case. Every identifier in this file was already snake_case, making the allowance both incorrect (it was suppressing the wrong lint for C-origin type names, which is `non_camel_case_types`) and unnecessarily broad.
+1. **OS-error type unification.** Replaced `i32` error payloads on `CustomThreadCreateFn::create`, `NetworkThreadCtx::spawn`, `NetworkThreadCtx::spawn_custom`, `NetworkThreadCtx::wake_up`, and `internal_thread_create` with the existing `crate::socks::OsError` newtype. The C `*ret` errno out-parameter now flows through a typed result instead of a bare integer status code, satisfying the "use Rust's error model" rule and aligning with how `socks::Socket::sendmsg` already surfaces `errno`.
 
-2. **Renamed four traits to PascalCase** — `picoquic_packet_loop_cb_fn` → `PicoquicPacketLoopCbFn`, `picoquic_custom_thread_create_fn` → `PicoquicCustomThreadCreateFn`, etc. This aligns with the convention already established in `picoquic_utils.rs` (`PicoquicThreadFn`, `PicoquictestAqmT`) and with the TRANSLATE_PLAN rule that Rust traits are PascalCase. C origin names are preserved verbatim in the backtick code spans of each trait's doc comment (`C: \`int (*picoquic_packet_loop_cb_fn)(...)\``), so the mapping is still traceable.
+2. **Free function → method on the primary self-type.** Moved `start_server_threads` from a free function in `packet_loop.rs` into `impl Config { fn start_server_threads(&mut self, …) }`. The first C parameter was `picoquic_quic_config_t* config`, which is the canonical Rust "self" target. Multi-block `impl Config` is fine across files. Updated three module-level doc cross-references that pointed at the old name.
 
-3. **Renamed `picoquic_packet_loop_cb_enum` variants to PascalCase** — `picoquic_packet_loop_ready = 0` → `Ready = 0`, `picoquic_packet_loop_after_receive` → `AfterReceive`, etc. This follows the precedent of `picoquic_jitter_mode::JitterGauss`/`JitterWifi` in `picoquic_utils.rs`. Each variant now carries a `C: \`original_c_name\`.` citation in its doc comment. All doc cross-references to the old variant paths (`picoquic_packet_loop_cb_enum::picoquic_packet_loop_wake_up`, etc.) were updated to the new names.
+3. **`# Safety` story for the raw pointer.** `NetworkThreadCtx::quic: *mut Quic` now carries a documented rationale (C source passes the same `picoquic_quic_t*` across the OS thread boundary, where lifetime-parameterized `&'a mut` does not survive) plus a `# Safety` block stating the standard aliasing/outliving invariants any future dereference must uphold.
+
+4. **Dropped a stale enum discriminant.** `LoopEvent::Ready = 0` no longer carries an explicit value — `repr(C)` was already removed in the prior pass, so the explicit `0` was dead consistency baggage that disagreed with every other variant.
+
+5. **Doc tidy.** Updated callback-trait doc comments to reference `OsError` and to be self-explanatory in Rust terms.
+
+`cargo check` and `cargo clippy -- -D warnings` both pass cleanly from `rs/fq/`.
 
 
 ## stderr

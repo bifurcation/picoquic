@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 The current branch is `c2rust`, which exists to translate the C library
 to safe, idiomatic Rust.  **v1 scope is `picoquic/` only** (the
-picoquic-core library).  `picoquictest/` is included in Phase 2.
+picoquic-core library).  `picoquictest/` is included in Phase 3.
 `loglib/` and `picohttp/` are explicitly out of scope.  Before making
 any change on this branch, read:
 
@@ -50,7 +50,7 @@ change, surface it instead of making the change.
 Inner loop, run from `rs/fq/`:
 
 ```sh
-cargo check                 # per-function gate during Phase 3
+cargo check                 # per-function gate during Phase 4
 cargo test                  # end-of-sub-tree gate (see TRANSLATE_PLAN.md)
 cargo fmt
 cargo clippy -- -D warnings

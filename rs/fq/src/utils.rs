@@ -23,11 +23,10 @@
 //!   debug-output stream installed by [`debug_set_stream`]
 //!   transfers ownership instead, so the global slot can keep the
 //!   writer alive between calls.
-//! * `file_open*` / `file_close` /
-//!   `file_delete` are real OS file primitives.  They are
-//!   stubbed here as opaque [`file_t`] handles; Phase 3
-//!   will wire them to `std::fs::File` behind the (not-yet-defined)
-//!   `std` Cargo feature.
+//! * `file_open*` / `file_close` / `file_delete` are real OS file
+//!   primitives.  They are stubbed here as opaque [`File`] handles;
+//!   Phase 3 will wire them to `std::fs::File` behind the
+//!   (not-yet-defined) `std` Cargo feature.
 //! * `struct sockaddr*` parameters and fields use
 //!   [`core::net::SocketAddr`] — same convention as
 //!   [`crate`].  `struct sockaddr_storage*`
@@ -41,12 +40,12 @@
 //! * `char*` strings: input strings borrow as `&str`; owned outputs
 //!   return `String`.  Buffer-supplying helpers (e.g.
 //!   [`addr_text`]) take a `&mut dyn core::fmt::Write`.
-//! * Threading primitives (`thread_t`, `mutex_t`,
-//!   `event_t`) are explicitly out of scope for v1
-//!   ("threading dropped, revisit in v2" per `TRANSLATE_PLAN.md`).
-//!   The types are kept as opaque placeholders so signatures can
-//!   land; the bodies stay `todo!()` and a Phase 3 review will
-//!   decide whether to drop them outright or feature-gate.
+//! * Threading primitives ([`Thread`], [`Mutex`], [`Event`]) are
+//!   explicitly out of scope for v1 ("threading dropped, revisit in
+//!   v2" per `TRANSLATE_PLAN.md`).  The types are kept as opaque
+//!   placeholders so signatures can land; the bodies stay `todo!()`
+//!   and a Phase 3 review will decide whether to drop them outright
+//!   or feature-gate.
 //! * The C macro `SET_LAST_WAKE(quic, file_id)` and the
 //!   `DBG_PRINTF` family are bodies-not-signatures: they expand at
 //!   the call site rather than being declared in the header.  They
@@ -55,18 +54,11 @@
 //!   `wake_line` fields yet, so the macro can't be expressed in
 //!   Rust without redesigning that type.
 
-// C-origin struct and opaque-type names are kept verbatim (snake_case);
-// covers `file_t`, the threading stubs, and the sim-link structs.
-#![allow(non_camel_case_types)]
-#![allow(non_upper_case_globals)]
-// Three-way comparator helpers return `Ordering`; result-as-`Result`
-// stand-ins are flagged for the missing top-level `Error` enum.
-
 use core::cmp::Ordering;
 use core::net::SocketAddr;
 
 use crate::Error;
-use crate::{MAX_PACKET_SIZE, connection_id_t, tp_preferred_address_t};
+use crate::{ConnectionId, MAX_PACKET_SIZE, TpPreferredAddress};
 
 // ---------------------------------------------------------------------------
 // Tracing / file-id constants.
@@ -183,38 +175,11 @@ pub fn debug_dump(_bytes: &[u8]) {
 // ---------------------------------------------------------------------------
 // String utilities.
 
-/// Allocate a new heap string with up to `len` bytes copied from
-/// `original` (or zero-filled for `len` bytes when `original` is
-/// `None`).  Returns `None` on allocation failure to match the C
-/// `NULL` return.
-///
-/// Pointer-shape choice: the C `original` is `const char*` and may be
-/// `NULL` (zero-fill `len` bytes) or a non-NUL-terminated buffer
-/// (copy up to `len` bytes).  `Option<&[u8]>` represents both cases;
-/// the slice carries the source length.  `len` is the desired output
-/// length independently of the source slice.  The C-style trailing NUL
-/// byte is dropped — Rust strings carry their length explicitly.
-pub fn string_create(_original: Option<&[u8]>, _len: usize) -> Option<String> {
-    todo!()
-}
-
-/// Duplicate a NUL-terminated C string.  Returns `None` if the
-/// input was `NULL` (mapped to `Option<&str>`) or if allocation
-/// failed.  C: `string_duplicate`.
-pub fn string_duplicate(_original: Option<&str>) -> Option<String> {
-    todo!()
-}
-
-/// Free the C string and return `NULL`.  In the C source this
-/// sentinel return makes `str = string_free(str)`
-/// idiomatic.  Rust uses ownership transfer instead — passing
-/// `String` by value drops it at end of scope, so the function
-/// is a no-op shim kept for API parity.  The unit return matches
-/// the "always-NULL" C semantics.
-#[allow(clippy::needless_pass_by_value)]
-pub fn string_free(_str: Option<String>) {
-    todo!()
-}
+// `picoquic_string_create`, `picoquic_string_duplicate`, and
+// `picoquic_string_free` are subsumed by Rust's owned `String`:
+// `String::from(s)` replaces the duplicate / create pair, and the
+// `Drop` impl replaces the `free` shim.  Phase 3 callers should use
+// owned `String` directly rather than going through helpers.
 
 /// Format `args` into the head of `buf` and report bytes written
 /// via `nb_chars`; truncation returns an `Err`.  C:
@@ -234,67 +199,65 @@ pub fn sprintf(_buf: &mut [u8], _msg: &str) -> Result<usize, Error> {
 // Connection-id helpers.
 
 /// All-zero connection id used as a sentinel for "unset" / "none".
-/// C: `extern const connection_id_t null_connection_id`.
-/// Uses `Default` because `connection_id_t` derives it as
-/// the all-zero, zero-length form.
-pub const null_connection_id: connection_id_t = connection_id_t {
+/// C: `extern const ConnectionId null_connection_id`.
+pub const NULL_CONNECTION_ID: ConnectionId = ConnectionId {
     id: [0; 20],
     id_len: 0,
 };
 
 /// Format the connection id into `bytes` and return the number of
 /// bytes written.  C: `uint8_t format_connection_id(uint8_t* bytes,
-/// size_t bytes_max, connection_id_t cnx_id)`.
+/// size_t bytes_max, ConnectionId cnx_id)`.
 ///
 /// Pointer-shape choice: the C body writes through `bytes` for
 /// `bytes_max` bytes and reports the populated prefix length, so
 /// `&mut [u8]` carries both pieces of information.  The connection
 /// id is `Copy`, kept by value as in C.
-pub fn format_connection_id(_bytes: &mut [u8], _cnx_id: connection_id_t) -> u8 {
+pub fn format_connection_id(_bytes: &mut [u8], _cnx_id: ConnectionId) -> u8 {
     todo!()
 }
 
 /// Parse a connection id of `len` bytes from `bytes` into `cnx_id`,
 /// returning the number of bytes consumed.  C:
 /// `uint8_t parse_connection_id(const uint8_t* bytes, uint8_t len,
-/// connection_id_t* cnx_id)`.
+/// ConnectionId* cnx_id)`.
 ///
 /// The C output parameter becomes the function return:
-/// `Result<connection_id_t, Error>` reports the parsed id on
+/// `Result<ConnectionId, Error>` reports the parsed id on
 /// success, `Err(())` on truncation.  The `len` parameter and the
 /// slice length are redundant in safe Rust; the slice carries it.
-pub fn parse_connection_id(_bytes: &[u8]) -> Result<connection_id_t, Error> {
+pub fn parse_connection_id(_bytes: &[u8]) -> Result<ConnectionId, Error> {
     todo!()
 }
 
 /// Test whether a connection id is the `null` sentinel.  C:
-/// `int is_connection_id_null(const connection_id_t* cnx_id)`
+/// `int is_connection_id_null(const ConnectionId* cnx_id)`
 /// returning a 0/1 flag, mapped to `bool`.
-pub fn is_connection_id_null(_cnx_id: &connection_id_t) -> bool {
+pub fn is_connection_id_null(_cnx_id: &ConnectionId) -> bool {
     todo!()
 }
 
 /// Three-way compare two connection ids.  C:
-/// `int compare_connection_id(const connection_id_t*,
-/// const connection_id_t*)` returning negative / zero /
+/// `int compare_connection_id(const ConnectionId*,
+/// const ConnectionId*)` returning negative / zero /
 /// positive.  Mapped to [`Ordering`].
-pub fn compare_connection_id(_cnx_id1: &connection_id_t, _cnx_id2: &connection_id_t) -> Ordering {
+pub fn compare_connection_id(_cnx_id1: &ConnectionId, _cnx_id2: &ConnectionId) -> Ordering {
     todo!()
 }
 
 /// Hash a connection id with a 16-byte seed.  C: `uint64_t
-/// connection_id_hash(const connection_id_t* cid,
+/// connection_id_hash(const ConnectionId* cid,
 /// const uint8_t* hash_seed)`.  The seed parameter is a fixed-size
 /// 16-byte buffer everywhere it is called — same as
 /// [`crate::iovec_t`]'s neighbour
 /// `hash_bytes`.
-pub fn connection_id_hash(_cid: &connection_id_t, _hash_seed: &[u8; 16]) -> u64 {
+pub fn connection_id_hash(_cid: &ConnectionId, _hash_seed: &[u8; 16]) -> u64 {
     todo!()
 }
 
 /// Fold the first up-to-8 bytes of a connection id into a `u64`.
-/// C: `uint64_t val64_connection_id(connection_id_t)`.
-pub fn val64_connection_id(_cnx_id: connection_id_t) -> u64 {
+/// C: `uint64_t val64_connection_id(ConnectionId)`.
+pub fn val64_connection_id(_cnx_id: ConnectionId) -> u64 {
     todo!()
 }
 
@@ -329,23 +292,23 @@ pub fn parse_hexa(_hex_input: &str, _bin_output: &mut [u8]) -> usize {
 
 /// Parse a hex-coded connection id.  C: `uint8_t
 /// parse_connection_id_hexa(char const* hex_input, size_t
-/// input_length, connection_id_t* cnx_id)` returning the
+/// input_length, ConnectionId* cnx_id)` returning the
 /// number of bytes decoded; the output parameter folds into the
 /// `Result` return.
-pub fn parse_connection_id_hexa(_hex_input: &str) -> Result<connection_id_t, Error> {
+pub fn parse_connection_id_hexa(_hex_input: &str) -> Result<ConnectionId, Error> {
     todo!()
 }
 
 /// Print a connection id to a hex string buffer.  C:
 /// `int print_connection_id_hexa(char* buf, size_t buf_len,
-/// const connection_id_t* cnxid)` returning 0 / -1.
+/// const ConnectionId* cnxid)` returning 0 / -1.
 ///
 /// The output buffer becomes a `&mut dyn core::fmt::Write` sink to
 /// keep the helper `no_std`-friendly (same convention as the
 /// logger module).  The 0 / -1 status maps to `Result<(), Error>`.
 pub fn print_connection_id_hexa(
     _w: &mut dyn core::fmt::Write,
-    _cnxid: &connection_id_t,
+    _cnxid: &ConnectionId,
 ) -> Result<(), Error> {
     todo!()
 }
@@ -441,7 +404,7 @@ pub fn store_loopback_addr(_addr_family: i32, _port: u16) -> Result<SocketAddr, 
 
 /// Fill a preferred-address transport parameter from textual IPv4
 /// and/or IPv6 addresses.  C: `int set_preferred_address(
-/// tp_preferred_address_t* preferred, char const* v4_text,
+/// TpPreferredAddress* preferred, char const* v4_text,
 /// char const* v6_text, uint16_t preferred_port)` returning 0 / -1.
 ///
 /// Either text argument may be `None` (the C `NULL` selector for
@@ -449,7 +412,7 @@ pub fn store_loopback_addr(_addr_family: i32, _port: u16) -> Result<SocketAddr, 
 /// place; on `Err(())` the partial state is unspecified, matching
 /// the C behaviour.
 pub fn set_preferred_address(
-    _preferred: &mut tp_preferred_address_t,
+    _preferred: &mut TpPreferredAddress,
     _v4_text: Option<&str>,
     _v6_text: Option<&str>,
     _preferred_port: u16,
@@ -492,41 +455,40 @@ pub fn get_input_path(
 //
 // The C wrappers paper over Windows's `fopen_s` quirk; the Rust
 // translation will eventually delegate to `std::fs::File`.  Phase 1
-// keeps the file handle as an opaque [`file_t`] so call
-// sites can compile against the right shape; the real
-// representation lands in Phase 3 once the `std` Cargo feature is
-// wired up.
+// keeps the file handle as an opaque [`File`] so call sites can
+// compile against the right shape; the real representation lands in
+// Phase 3 once the `std` Cargo feature is wired up.
 
 /// Opaque OS file handle.  Phase 3 will replace the body with
 /// `std::fs::File` (under the `std` feature) or an `embedded-io`
 /// equivalent for `no_std`.
-pub struct file_t {
+pub struct File {
     _opaque: [u8; 0],
 }
 
-/// Open a file with a `last_err` out-parameter.  C: `FILE*
-/// file_open_ex(char const* file_name, char const*
-/// flags, int* last_err)`.  Returns `Err(errno)` on failure
-/// (folding the C return-`NULL`-and-set-`*last_err` pattern into
-/// a `Result`); `flags` is the `fopen` mode string.
-pub fn file_open_ex(_file_name: &str, _flags: &str) -> Result<Box<file_t>, i32> {
-    todo!()
+impl File {
+    /// Open a file, returning the OS errno on failure.  C: `FILE*
+    /// picoquic_file_open_ex(char const* file_name, char const* flags,
+    /// int* last_err)`.  `flags` is the `fopen` mode string.  The C
+    /// `*last_err` out-parameter folds into the `Err` arm.
+    pub fn open_ex(_file_name: &str, _flags: &str) -> Result<Box<File>, i32> {
+        todo!()
+    }
+
+    /// Open a file, discarding the OS error code on failure.  C:
+    /// `FILE* picoquic_file_open(char const* file_name, char const*
+    /// flags)`.  Returns `None` on failure to match the C `NULL`.
+    pub fn open(_file_name: &str, _flags: &str) -> Option<Box<File>> {
+        todo!()
+    }
 }
 
-/// Open a file, discarding the OS error code on failure.  C:
-/// `FILE* file_open(char const* file_name, char const*
-/// flags)`.  Returns `None` on failure to match the C `NULL`.
-pub fn file_open(_file_name: &str, _flags: &str) -> Option<Box<file_t>> {
-    todo!()
-}
+// C: `FILE* picoquic_file_close(FILE* F)`.  Dropped from the Rust API:
+// `Box<File>` going out of scope will be the close hook (Drop in
+// Phase 3).
 
-// C: `FILE* file_close(FILE* F)`.  Dropped from the Rust API:
-// `Box<file_t>` going out of scope will be the close hook (Drop
-// in Phase 3).
-
-/// Delete a file by name with a `last_err` out-parameter.  C:
-/// `int file_delete(char const* file_name, int*
-/// last_err)`.  Returns `Err(errno)` on failure.
+/// Delete a file by name, returning the OS errno on failure.  C:
+/// `int picoquic_file_delete(char const* file_name, int* last_err)`.
 pub fn file_delete(_file_name: &str) -> Result<(), i32> {
     todo!()
 }
@@ -597,7 +559,7 @@ pub fn frames_length_data_skip(_bytes: &[u8]) -> Option<&[u8]> {
 /// Decode a connection id and return the suffix.  C:
 /// `frames_cid_decode`.  The output parameter folds into
 /// the tuple return.
-pub fn frames_cid_decode(_bytes: &[u8]) -> Option<(&[u8], connection_id_t)> {
+pub fn frames_cid_decode(_bytes: &[u8]) -> Option<(&[u8], ConnectionId)> {
     todo!()
 }
 
@@ -663,7 +625,7 @@ pub fn frames_length_data_encode<'a>(_bytes: &'a mut [u8], _v: &[u8]) -> Option<
 
 /// Encode a connection id as length-prefixed data.  C:
 /// `frames_cid_encode`.
-pub fn frames_cid_encode<'a>(_bytes: &'a mut [u8], _cid: &connection_id_t) -> Option<&'a mut [u8]> {
+pub fn frames_cid_encode<'a>(_bytes: &'a mut [u8], _cid: &ConnectionId) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -694,24 +656,24 @@ pub fn constant_time_memcmp(_x: &[u8], _y: &[u8]) -> Ordering {
 // route them through `std::thread` / `parking_lot` once v2 lands.
 
 /// Opaque thread handle.  Out-of-scope-for-v1 placeholder.
-pub struct thread_t {
+pub struct Thread {
     _opaque: [u8; 0],
 }
 
 /// Opaque mutex.  Out-of-scope-for-v1 placeholder.
-pub struct mutex_t {
+pub struct Mutex {
     _opaque: [u8; 0],
 }
 
 /// Opaque condition-variable wrapper.  Out-of-scope-for-v1
-/// placeholder.  C: `typedef struct st_event_t { ... }
-/// event_t;` — a `pthread_mutex_t` + `pthread_cond_t`
+/// placeholder.  C: `typedef struct st_picoquic_event_t { ... }
+/// picoquic_event_t;` — a `pthread_mutex_t` + `pthread_cond_t`
 /// pair on Linux.
-pub struct event_t {
+pub struct Event {
     _opaque: [u8; 0],
 }
 
-/// Trait counterpart of the C `thread_fn` typedef.  v1
+/// Trait counterpart of the C `picoquic_thread_fn` typedef.  v1
 /// keeps the trait shape so signatures land; the bodies are
 /// `todo!()` and the trait is unused in the single-threaded scope.
 pub trait ThreadFn {
@@ -719,60 +681,66 @@ pub trait ThreadFn {
     fn run(&mut self);
 }
 
-/// Spawn a thread.  Out-of-scope-for-v1 — see module docstring.
-pub fn create_thread(_thread: &mut thread_t, _thread_fn: Box<dyn ThreadFn>) -> Result<(), Error> {
-    todo!()
+impl Thread {
+    /// Spawn a thread.  Out-of-scope-for-v1 — see module docstring.
+    pub fn create(&mut self, _thread_fn: Box<dyn ThreadFn>) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Wait for a thread to exit.  Out-of-scope-for-v1.
+    pub fn wait(self) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Detach / release a thread handle.  Out-of-scope-for-v1.
+    pub fn delete(&mut self) {
+        todo!()
+    }
 }
 
-/// Wait for a thread to exit.  Out-of-scope-for-v1.
-pub fn wait_thread(_thread: thread_t) -> Result<(), Error> {
-    todo!()
+impl Mutex {
+    /// Initialize a mutex.  Out-of-scope-for-v1.
+    pub fn create(&mut self) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Tear down a mutex.  Out-of-scope-for-v1.
+    pub fn delete(&mut self) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Lock a mutex.  Out-of-scope-for-v1.
+    pub fn lock(&mut self) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Unlock a mutex.  Out-of-scope-for-v1.
+    pub fn unlock(&mut self) -> Result<(), Error> {
+        todo!()
+    }
 }
 
-/// Detach / release a thread handle.  Out-of-scope-for-v1.
-pub fn delete_thread(_thread: &mut thread_t) {
-    todo!()
-}
+impl Event {
+    /// Initialize an event.  Out-of-scope-for-v1.
+    pub fn create(&mut self) -> Result<(), Error> {
+        todo!()
+    }
 
-/// Initialize a mutex.  Out-of-scope-for-v1.
-pub fn create_mutex(_mutex: &mut mutex_t) -> Result<(), Error> {
-    todo!()
-}
+    /// Tear down an event.  Out-of-scope-for-v1.
+    pub fn delete(&mut self) {
+        todo!()
+    }
 
-/// Tear down a mutex.  Out-of-scope-for-v1.
-pub fn delete_mutex(_mutex: &mut mutex_t) -> Result<(), Error> {
-    todo!()
-}
+    /// Signal an event.  Out-of-scope-for-v1.
+    pub fn signal(&mut self) -> Result<(), Error> {
+        todo!()
+    }
 
-/// Lock a mutex.  Out-of-scope-for-v1.
-pub fn lock_mutex(_mutex: &mut mutex_t) -> Result<(), Error> {
-    todo!()
-}
-
-/// Unlock a mutex.  Out-of-scope-for-v1.
-pub fn unlock_mutex(_mutex: &mut mutex_t) -> Result<(), Error> {
-    todo!()
-}
-
-/// Initialize an event.  Out-of-scope-for-v1.
-pub fn create_event(_event: &mut event_t) -> Result<(), Error> {
-    todo!()
-}
-
-/// Tear down an event.  Out-of-scope-for-v1.
-pub fn delete_event(_event: &mut event_t) {
-    todo!()
-}
-
-/// Signal an event.  Out-of-scope-for-v1.
-pub fn signal_event(_event: &mut event_t) -> Result<(), Error> {
-    todo!()
-}
-
-/// Wait for an event to be signalled, with a timeout in
-/// microseconds.  Out-of-scope-for-v1.
-pub fn wait_for_event(_event: &mut event_t, _microsec_wait: u64) -> Result<(), Error> {
-    todo!()
+    /// Wait for an event to be signalled, with a timeout in
+    /// microseconds.  Out-of-scope-for-v1.
+    pub fn wait(&mut self, _microsec_wait: u64) -> Result<(), Error> {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -836,7 +804,7 @@ pub fn uint8_to_str<'a>(_text: &'a mut [u8], _data: &[u8]) -> &'a [u8] {
 // Network simulator (sim_link) — used by the test suite.
 
 /// One simulated packet flowing through a sim link.  C:
-/// `test_sim_packet_t`.
+/// `picoquictest_sim_packet_t`.
 ///
 /// Pointer-shape choices:
 ///
@@ -851,8 +819,8 @@ pub fn uint8_to_str<'a>(_text: &'a mut [u8], _data: &[u8]) -> &'a [u8] {
 /// * The flexible-array-style `bytes` is a fixed
 ///   `[u8; MAX_PACKET_SIZE]` because the C struct
 ///   declares it inline at that exact size.
-pub struct test_sim_packet_t {
-    pub next_packet: *mut test_sim_packet_t,
+pub struct TestSimPacket {
+    pub next_packet: *mut TestSimPacket,
     pub arrival_time: u64,
     pub length: usize,
     pub addr_from: Option<SocketAddr>,
@@ -861,30 +829,34 @@ pub struct test_sim_packet_t {
     pub bytes: [u8; MAX_PACKET_SIZE],
 }
 
-/// Active queue management vtable.  C: the `test_aqm_t`
+impl TestSimPacket {
+    /// Allocate a fresh, empty packet.  C:
+    /// `picoquictest_sim_link_create_packet`.  Returns `None` on
+    /// allocation failure.
+    pub fn create() -> Option<Box<TestSimPacket>> {
+        todo!()
+    }
+}
+
+/// Active queue management vtable.  C: the `picoquictest_aqm_t`
 /// struct of function pointers — folded into a single trait per
 /// the Phase 1 rule on function pointers.  The `self` parameter
 /// of each C method becomes the implicit `&mut self`; the
-/// `test_sim_link_t*` link pointer stays explicit because
+/// `picoquictest_sim_link_t*` link pointer stays explicit because
 /// the AQM lives inside the link (taking the link by `&mut` in
 /// each call would conflict with the `&mut self` borrow).  Phase 3
 /// will resolve the borrow with a take-replace pattern or an
 /// `unsafe` raw-pointer access.
 pub trait TestAqm {
     /// Submit a packet to the AQM.  C: `submit`.
-    fn submit(
-        &mut self,
-        link: &mut test_sim_link_t,
-        packet: Box<test_sim_packet_t>,
-        current_time: u64,
-    );
+    fn submit(&mut self, link: &mut TestSimLink, packet: Box<TestSimPacket>, current_time: u64);
 
     /// Reset the AQM state at `current_time`.  C: `reset`.
-    fn reset(&mut self, link: &mut test_sim_link_t, current_time: u64);
+    fn reset(&mut self, link: &mut TestSimLink, current_time: u64);
 
     /// Release any resources held by the AQM, e.g. when the link
     /// is being torn down.  C: `release`.
-    fn release(&mut self, link: &mut test_sim_link_t);
+    fn release(&mut self, link: &mut TestSimLink);
 
     /// Whether the AQM has at least one pending packet ready to
     /// admit.  C: `has_pending` returning a 0/1 flag, mapped to
@@ -893,29 +865,29 @@ pub trait TestAqm {
 
     /// Move any AQM-pending packets onto the link's main queue.
     /// C: `admit_pending`.
-    fn admit_pending(&mut self, link: &mut test_sim_link_t, current_time: u64);
+    fn admit_pending(&mut self, link: &mut TestSimLink, current_time: u64);
 }
 
-/// Jitter model used by the sim link.  C: `jitter_mode`.
+/// Jitter model used by the sim link.  C: `picoquic_jitter_mode`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-pub enum jitter_mode {
+pub enum JitterMode {
     /// Gaussian jitter.  C: `jitter_gauss`.
     #[default]
-    JitterGauss = 0,
+    Gauss = 0,
     /// Wi-Fi-style jitter.  C: `jitter_wifi`.
-    JitterWifi = 1,
+    Wifi = 1,
 }
 
 /// One simulated network link with an embedded queue plus AQM
-/// hook.  C: `test_sim_link_t`.
+/// hook.  C: `picoquictest_sim_link_t`.
 ///
 /// Pointer-shape choices, derived from the bodies in
-/// `test/sim_link.c`:
+/// `picoquictest/sim_link.c`:
 ///
 /// * `first_packet` / `last_packet` stay raw pointers — head/tail
 ///   of the intrusive linked list whose nodes are
-///   [`test_sim_packet_t`].  Phase 3 dereferences in
-///   `unsafe` blocks (or refactors to `VecDeque`).
+///   [`TestSimPacket`].  Phase 3 dereferences in `unsafe` blocks
+///   (or refactors to `VecDeque`).
 /// * `loss_mask: *mut u64` — the test owns a 64-bit error mask
 ///   and passes its address; staying raw mirrors the C contract
 ///   without forcing a struct lifetime.  `None`-equivalent is the
@@ -924,21 +896,21 @@ pub enum jitter_mode {
 ///   `None` matches the C `NULL` (no AQM installed).
 /// * `is_switched_off` / `is_unreachable` / `is_suspended` were
 ///   `int` flags in C; promoted to `bool`.
-pub struct test_sim_link_t {
+pub struct TestSimLink {
     pub next_send_time: u64,
     pub queue_time: u64,
     pub resume_time: u64,
     pub queue_delay_max: u64,
-    pub sec_per_byte: u64,
+    pub picosec_per_byte: u64,
     pub microsec_latency: u64,
     pub packets_dropped: u64,
     pub packets_sent: u64,
     pub jitter: u64,
-    pub jitter_mode: jitter_mode,
+    pub jitter_mode: JitterMode,
     pub jitter_seed: u64,
     pub path_mtu: usize,
-    pub first_packet: *mut test_sim_packet_t,
-    pub last_packet: *mut test_sim_packet_t,
+    pub first_packet: *mut TestSimPacket,
+    pub last_packet: *mut TestSimPacket,
     /// 64-bit error mask used in unit tests.  `null` ↔ "no mask".
     pub loss_mask: *mut u64,
     pub nb_loss_in_burst: u64,
@@ -952,124 +924,99 @@ pub struct test_sim_link_t {
     pub is_suspended: bool,
 }
 
-/// Create a sim link at `current_time`, with the given data rate
-/// (in gigabits per second) and one-way latency (in microseconds).
-/// C: `test_sim_link_create`.
-///
-/// `loss_mask` is the test's 64-bit error mask; `None` matches the
-/// C `NULL`.  The pointer is stored as-is in the link and read on
-/// every packet enqueue, so the caller must keep its `u64`
-/// allocation alive for the life of the link (C contract).
-pub fn test_sim_link_create(
-    _data_rate_in_gbps: f64,
-    _microsec_latency: u64,
-    _loss_mask: Option<*mut u64>,
-    _queue_delay_max: u64,
-    _current_time: u64,
-) -> Option<Box<test_sim_link_t>> {
-    todo!()
-}
+impl TestSimLink {
+    /// Create a sim link at `current_time`, with the given data
+    /// rate (in gigabits per second) and one-way latency (in
+    /// microseconds).  C: `picoquictest_sim_link_create`.
+    ///
+    /// `loss_mask` is the test's 64-bit error mask; the null
+    /// pointer matches the C `NULL` (no mask).  The pointer is
+    /// stored as-is in the link and read on every packet enqueue,
+    /// so the caller must keep its `u64` allocation alive for the
+    /// life of the link (C contract).
+    pub fn create(
+        _data_rate_in_gbps: f64,
+        _microsec_latency: u64,
+        _loss_mask: *mut u64,
+        _queue_delay_max: u64,
+        _current_time: u64,
+    ) -> Option<Box<TestSimLink>> {
+        todo!()
+    }
 
-// C: `test_sim_link_delete`.  Dropped from the Rust API:
-// `Box<test_sim_link_t>` going out of scope will free the link
-// and its queued packets via Drop in Phase 3.
+    // C: `picoquictest_sim_link_delete`.  Dropped from the Rust
+    // API: `Box<TestSimLink>` going out of scope will free the
+    // link and its queued packets via Drop in Phase 3.
 
-/// Allocate a fresh, empty packet.  C:
-/// `test_sim_link_create_packet`.  Returns `None` on
-/// allocation failure.
-pub fn test_sim_link_create_packet() -> Option<Box<test_sim_packet_t>> {
-    todo!()
-}
+    /// Time at which the next packet will arrive (or `current_time`
+    /// if the queue is empty).  C:
+    /// `picoquictest_sim_link_next_arrival`.
+    pub fn next_arrival(&mut self, _current_time: u64) -> u64 {
+        todo!()
+    }
 
-/// Time at which the next packet will arrive (or `current_time`
-/// if the queue is empty).  C: `test_sim_link_next_arrival`.
-pub fn test_sim_link_next_arrival(_link: &mut test_sim_link_t, _current_time: u64) -> u64 {
-    todo!()
-}
+    /// Drain any AQM-pending packets onto the main queue at
+    /// `current_time`.  C: `picoquictest_sim_link_admit_pending`.
+    pub fn admit_pending(&mut self, _current_time: u64) {
+        todo!()
+    }
 
-/// Drain any AQM-pending packets onto the link's main queue at
-/// `current_time`.  C: `test_sim_link_admit_pending`.
-pub fn test_sim_link_admit_pending(_link: &mut test_sim_link_t, _current_time: u64) {
-    todo!()
-}
+    /// Time at which the AQM will admit its next packet (or
+    /// `next_time` if nothing is pending).  C:
+    /// `picoquictest_sim_link_next_admission`.
+    pub fn next_admission(&mut self, _current_time: u64, _next_time: u64) -> u64 {
+        todo!()
+    }
 
-/// Time at which the AQM will admit its next packet (or
-/// `next_time` if nothing is pending).  C:
-/// `test_sim_link_next_admission`.
-pub fn test_sim_link_next_admission(
-    _link: &mut test_sim_link_t,
-    _current_time: u64,
-    _next_time: u64,
-) -> u64 {
-    todo!()
-}
+    /// Pop the next-due packet, if any.  C:
+    /// `picoquictest_sim_link_dequeue` returning `NULL` when
+    /// nothing is ready, mapped to `Option<Box<...>>`.
+    pub fn dequeue(&mut self, _current_time: u64) -> Option<Box<TestSimPacket>> {
+        todo!()
+    }
 
-/// Pop the next-due packet, if any.  C:
-/// `test_sim_link_dequeue` returning `NULL` when nothing
-/// is ready, mapped to `Option<Box<...>>`.
-pub fn test_sim_link_dequeue(
-    _link: &mut test_sim_link_t,
-    _current_time: u64,
-) -> Option<Box<test_sim_packet_t>> {
-    todo!()
-}
+    /// Submit a packet to the queue with normal AQM processing and
+    /// length check.  C: `picoquictest_sim_link_submit`.  Takes
+    /// ownership of the packet — the link is responsible for
+    /// either freeing it (drop) or returning it via
+    /// [`TestSimLink::dequeue`].
+    pub fn submit(&mut self, _packet: Box<TestSimPacket>, _current_time: u64) {
+        todo!()
+    }
 
-/// Submit a packet to the link's queue with normal AQM processing
-/// and length check.  C: `test_sim_link_submit`.  Takes
-/// ownership of the packet — the link is responsible for
-/// either freeing it (drop) or returning it via
-/// [`test_sim_link_dequeue`].
-pub fn test_sim_link_submit(
-    _link: &mut test_sim_link_t,
-    _packet: Box<test_sim_packet_t>,
-    _current_time: u64,
-) {
-    todo!()
-}
+    /// Submit a packet straight to the latency queue, bypassing the
+    /// AQM.  When `should_drop` is `true` the packet is dropped
+    /// instead of queued (and freed by the function).  C:
+    /// `picoquictest_sim_link_enqueue` with the C `int
+    /// should_drop` promoted to `bool`.
+    pub fn enqueue(&mut self, _packet: Box<TestSimPacket>, _current_time: u64, _should_drop: bool) {
+        todo!()
+    }
 
-/// Submit a packet straight to the link's "latency queue",
-/// bypassing the AQM.  When `should_drop` is `true` the packet is
-/// dropped instead of queued (and freed by the function).  C:
-/// `test_sim_link_enqueue` with the C `int should_drop`
-/// promoted to `bool`.
-pub fn test_sim_link_enqueue(
-    _link: &mut test_sim_link_t,
-    _packet: Box<test_sim_packet_t>,
-    _current_time: u64,
-    _should_drop: bool,
-) {
-    todo!()
-}
+    /// Compute the transmission time of `packet` (a function of
+    /// the link's data rate and the packet length).  C:
+    /// `picoquictest_sim_link_transmit_time`.
+    pub fn transmit_time(&mut self, _packet: &TestSimPacket) -> u64 {
+        todo!()
+    }
 
-/// Compute the transmission time of `packet` on `link` (a function
-/// of the link's data rate and the packet length).  C:
-/// `test_sim_link_transmit_time`.
-pub fn test_sim_link_transmit_time(
-    _link: &mut test_sim_link_t,
-    _packet: &test_sim_packet_t,
-) -> u64 {
-    todo!()
-}
+    /// Queueing delay of the next packet at `current_time`.  C:
+    /// `picoquictest_sim_link_queue_delay`.
+    pub fn queue_delay(&mut self, _current_time: u64) -> u64 {
+        todo!()
+    }
 
-/// Queueing delay of the next packet on `link` at `current_time`.
-/// C: `test_sim_link_queue_delay`.
-pub fn test_sim_link_queue_delay(_link: &mut test_sim_link_t, _current_time: u64) -> u64 {
-    todo!()
-}
-
-/// Simulate a transmission interruption on `link` until
-/// `time_end_of_interval`.  When `simulate_receive` is `true` the
-/// link suspends *reception* (pending packets are delivered at
-/// the end of the interval); when `false` it suspends transmission
-/// (packets are queued as if transmitted in sequence after the
-/// interval).  C: `test_simlink_suspend` with the C `int
-/// simulate_receive` promoted to `bool`.
-pub fn test_simlink_suspend(
-    _link: &mut test_sim_link_t,
-    _time_end_of_interval: u64,
-    _simulate_receive: bool,
-) {
-    todo!()
+    /// Simulate a transmission interruption until
+    /// `time_end_of_interval`.  When `simulate_receive` is `true`
+    /// the link suspends *reception* (pending packets are
+    /// delivered at the end of the interval); when `false` it
+    /// suspends transmission (packets are queued as if transmitted
+    /// in sequence after the interval).  C:
+    /// `picoquic_test_simlink_suspend` with the C `int
+    /// simulate_receive` promoted to `bool`.
+    pub fn suspend(&mut self, _time_end_of_interval: u64, _simulate_receive: bool) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------

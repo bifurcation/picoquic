@@ -1,12 +1,12 @@
 # claude -p (phase1a) for picoquic/picoquic_binlog.h
-# elapsed: 160.9s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 350.8s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_binlog.md)
 
 ## stdout
-The file is clean. Both `cargo check` and `cargo clippy -- -D warnings` pass.
+The refactor is complete and both gates pass.
 
-**Summary:** The only substantive changes were tightening three over-broad `#![allow]` attributes at file scope. `#![allow(non_snake_case)]` was unused — every function and parameter name in this file is already snake_case. `#![allow(non_upper_case_globals)]` was unused — the file defines no `static` or `const` items. `#![allow(non_camel_case_types)]` was moved from file-level to a single `#[allow(non_camel_case_types)]` on the `picoquic_log_event_type` enum, the only non-PascalCase type defined here. The two remaining file-level allows (`clippy::too_many_arguments` and `clippy::result_unit_err`) are genuinely needed and stay. All signatures, pointer shapes, type widths, and documentation are accurate against the C header — nothing else required improvement.
+**Summary**: I made the binlog module idiomatic Rust by (1) renaming the snake_case `log_event_type` enum to `LogEventType` with PascalCase variants (`PduSent`, `PacketRecv`, etc.) and dropping the `#[allow(non_camel_case_types)]` lint suppression, (2) converting the nine `Cnx`-first free functions (`binlog_dropped_packet`, `binlog_buffered_packet`, `binlog_outgoing_packet`, `binlog_packet_lost`, `binlog_negotiated_alpn`, `binlog_transport_extension`, `binlog_new_connection`, `binlog_close_connection`, `binlog_cc_dump`) into inherent methods on `Cnx` — keeping the `binlog_` prefix to namespace them apart from the `log_*` unified-log dispatchers on the same type, (3) converting `set_binlog`/`enable_binlog` into methods on `Quic` (matching the established pattern in `qlog.rs` and `logger.rs`), (4) shedding the redundant `binlog_` prefix on the three file-only writers so call sites read `binlog::pdu(...)` / `binlog::packet(...)` / `binlog::tls_ticket(...)`, and (5) refreshing the module docstring and removing a stale clippy comment that no longer reflected the code (the crate-wide `#![allow(clippy::too_many_arguments)]` in `lib.rs` already covers the long signatures). No callers needed updating — the binlog symbols aren't yet referenced by sibling modules.
 
 
 ## stderr

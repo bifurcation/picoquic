@@ -1,12 +1,12 @@
 # claude -p (phase1a) for picoquic/picoquic_logger.h
-# elapsed: 107.8s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 873.3s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_logger.md)
 
 ## stdout
-Both `cargo check` and `cargo clippy -- -D warnings` pass clean.
+Both gates pass cleanly. Summary:
 
-**Summary:** One change applied — removed the module-level `#![allow(non_camel_case_types)]` from `picoquic_logger.rs`. This module defines no types (no `struct`, `enum`, `type alias`, or `trait`), so the allow was dead lint suppression that would mislead a reader into expecting a C-style type alias somewhere in the file. All other aspects of the translation were already correct: `picoquic_connection_id_t` is `Copy` so pass-by-value is right, `Option<&str>` correctly captures the NULL-as-stop-sentinel C contract, `&mut dyn core::fmt::Write` is a sound `FILE*` replacement for `no_std` compatibility, `&[u8]` correctly collapses the `(uint8_t*, uint16_t)` pair, and `#[allow(clippy::result_unit_err)]` is properly scoped to just the single `Result<(),()>` function.
+Converted the four free functions in `logger.rs` to idiomatic Rust shapes per the project's "free functions on a primary `&T`/`&mut T` argument become methods" rule. `set_textlog` and `textlog_close` are now inherent methods on `Quic`; `log_fin_or_event_name` becomes `CallbackEvent::name(self) -> &'static str` (the C name's `log_fin_or_event_` prefix was redundant once the function lives on the enum). `textlog_tls_ticket` stays a free function because its primary argument is the writer, not a domain type — but the `textlog_` prefix was dropped (`write_tls_ticket`) since the `crate::logger` module path already conveys "this is the textlog backend's helper" and the function makes no internal reference to a textlog state. Also tidied the orphan trailing comment fragment after `set_textlog`'s former doc block, refreshed the module-level doc to point at the new method paths, and updated the cross-reference in `binlog.rs`. The `C:` traceability lines were updated to use the unaltered C symbol names (`picoquic_set_textlog`, etc.) rather than the post-translation Rust names.
 
 
 ## stderr

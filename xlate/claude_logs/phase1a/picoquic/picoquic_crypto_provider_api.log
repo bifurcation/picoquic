@@ -1,17 +1,14 @@
 # claude -p (phase1a) for picoquic/picoquic_crypto_provider_api.h
-# elapsed: 399.5s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 537.4s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_crypto_provider_api.md)
 
 ## stdout
-The type-shape pattern is internally consistent throughout: all 15 trait methods follow the rule correctly (pointer-return C → `Option<T>`, `int`-return C → `Result<T, ()>`, `void`-return C → no return type). The one apparent exception (`explain` uses `Option` despite an `int` C return) is intentional — it's a binary 0/-1 signal, making `Option` semantically equivalent to `Result<_, ()>` while better expressing the "present or absent" nature.
+Both `cargo check` and `cargo clippy -- -D warnings` pass cleanly.
 
-The translation is otherwise clean. The only substantive improvement applied was removing two module-wide lint allows that were wider than necessary:
+## Summary
 
-- **`#![allow(non_snake_case)]` removed** — every function, field, and trait method in this module is already `snake_case`; the allow was suppressing a lint with no violations to suppress.
-- **`#![allow(non_upper_case_globals)]` removed** — all nine constants in this module (`TLS_API_INIT_FLAGS_*`, `PTLS_MAX_DIGEST_SIZE`, `PICOQUIC_*_NB_MAX`) are already `SCREAMING_SNAKE_CASE`; there are no `static` items; the allow was similarly vacuous. (The sibling module `picoquic.rs` legitimately needs this allow for lower-snake constants like `picoquic_nb_packet_context` — but those don't exist here.)
-
-The remaining two allows (`non_camel_case_types` for the trait/struct names that mirror C typedef identifiers, and `clippy::result_unit_err` for the Phase 1 `Result<_, ()>` placeholder pattern) are both genuinely needed. `cargo check` and `cargo clippy -- -D warnings` pass cleanly after the change.
+Renamed every snake_case-with-`_t`-suffix type to PascalCase to match Rust naming convention (`ptls_cipher_suite_t` → `PtlsCipherSuite`, `ptls_t` → `Ptls`, `cipher_suites_t` → `CipherSuiteEntry`, `tls_ctx_t` → `TlsCtx`, etc.), which let me drop the module-level `#![allow(non_camel_case_types)]` lint allowance. Switched all 14 callback traits from `&mut self` to `&self` — none of the C typedefs carry a `void* ctx`, so the implementor has no required state, and this lets the registry accessors hand out plain `Option<&'static dyn Trait>` instead of the `Option<&'static mut dyn Trait>` aliasing smell. Dropped the `_fn` C-derived suffix from the `register_*` setter functions and from the corresponding registry accessor functions, and renamed the C-flavored `free_certificate_verifier_fn` field on `CertificateVerifier` to `dispose_verifier`. Tightened the docstrings: each public item now leads with what the Rust API does and ends with `C: \`name\`` for traceability rather than the inverted form. Updated the only sibling consumer (`tls_api.rs`) to import the renamed `PtlsCipherSuite`.
 
 
 ## stderr

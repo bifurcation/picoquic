@@ -1,0 +1,17 @@
+Phase 1A: 1 header(s) to review
+  run log: xlate/phase1a_runs/20260502T104222.log
+  state:   xlate/phase1a_state.json
+
+=== picoquic/picoquic.h ===
+  prompt  → xlate/prompts/phase1a/picoquic/picoquic.md
+  claude  → invoking (opus, max-turns=200) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase1a/picoquic/picoquic.log)
+
+Stopped at picoquic/picoquic.h (--stop-on-failure).  Re-run to retry.
+
+=== Phase 1A run summary ===
+  elapsed:   1519.3s
+  succeeded: 0
+  failed:    1
+    - picoquic/picoquic.h
+  log:       xlate/phase1a_runs/20260502T104222.log

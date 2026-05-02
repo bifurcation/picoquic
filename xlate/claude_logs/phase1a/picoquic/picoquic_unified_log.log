@@ -1,10 +1,14 @@
 # claude -p (phase1a) for picoquic/picoquic_unified_log.h
-# elapsed: 146.7s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 461.2s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_unified_log.md)
 
 ## stdout
-Both pass. The changes were minimal: two removals — `#![allow(non_snake_case)]` (which was suppressing a lint for a case that never exists in this module; `non_camel_case_types` is the right suppression for the `picoquic_unified_logging_t` trait name) and the empty `#[cfg(test)] mod test {}` block. Everything else in the translation was sound: type shapes match the C source precisely, nullability is correctly modelled with `Option`, slice pairs collapse `const uint8_t* + size_t` to `&[u8]`, `int` flags become `bool`, `va_list` collapses to `core::fmt::Arguments<'_>`, and documentation is thorough with the policy rationale clearly stated.
+The refactor is complete and both gates pass cleanly.
+
+## Summary
+
+I made the unified-log module idiomatic in three ways. **First**, the `UnifiedLogging` trait's sixteen methods dropped their `log_` prefix (`log_quic_pdu` → `quic_pdu`, `log_packet` → `packet`, …) — the trait name already conveys "logging", so the prefix was C-derived noise. **Second**, I converted every free function in the dispatch layer into an inherent method on its first-argument type: the three context-level dispatchers became `Quic::log_app_message` / `Quic::log_pdu` / `Quic::close_logs`, and the thirteen connection-level dispatchers became methods on `Cnx`. The `log_context_free_app_message` → `Quic::log_app_message` and `log_quic_pdu` → `Quic::log_pdu` renames work because the receiver type now disambiguates the context-level variant from the connection-level one. I also removed the duplicate `Cnx::log_app_message` stub that lived in `lib.rs` so unified_log.rs is now the canonical home. **Third**, smaller cleanups: dropped the unused `_raw_data: &[u8]` parameter from the dropped-packet wrapper (the C `UNUSED(raw_data)` never plumbs it through), removed the `#![allow(non_camel_case_types)]` lint suppression (the imported snake_case types from `internal` don't trigger it on use), and rewrote doc-comments to lead with what the Rust API does and keep `C: …` only as a trailing traceability note.
 
 
 ## stderr

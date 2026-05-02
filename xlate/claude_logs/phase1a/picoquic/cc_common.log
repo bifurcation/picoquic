@@ -1,22 +1,14 @@
 # claude -p (phase1a) for picoquic/cc_common.h
-# elapsed: 203.3s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 372.3s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/cc_common.md)
 
 ## stdout
-Good. The file looks correct. Both `cargo check` and `cargo clippy -- -D warnings` pass.
+All `_t` and `_enum` suffixes are gone for types defined in this module; `cnx_t`/`path_t` remain because they're owned by `internal.rs` and renaming them is out of scope for this pass. `cargo check` and `cargo clippy -- -D warnings` both pass cleanly from a fresh build.
 
----
+## Summary
 
-Four improvements applied to `rs/fq/src/picoquic/cc_common.rs`:
-
-1. **Removed `#![allow(non_snake_case)]`** — this suppressed nothing; every function and method in the file is already snake_case, so the allow was pure noise.
-
-2. **Moved `#![allow(non_camel_case_types)]` from module level to item level** on the three types that actually need it (`picoquic_min_max_rtt_t`, `picoquic_newreno_alg_state_t`, `picoquic_newreno_sim_state_t`) — tighter scope means future additions to the module don't accidentally inherit a naming dispensation.
-
-3. **Documented the `nb_rtt_excess` type deviation** in the struct doc comment — the previous comment explained the `is_init` and `sample_current` promotions but silently left `int → u32` unexplained, inconsistent with the stated rationale pattern.
-
-4. **Added C source citations** to `picoquic_newreno_alg_state_t` and `picoquic_newreno_sim_state_t` doc comments — both lacked the "C: `<name>` in `<header>`" line that every other public item had.
+I idiomized the Phase 1 stub of `rs/fq/src/cc_common.rs` along three axes. **Naming**: `min_max_rtt_t` → `MinMaxRtt`, `newreno_alg_state_t` → `NewRenoAlgState` (variants `SlowStart` / `CongestionAvoidance`), `newreno_sim_state_t` → `NewRenoSimState`; the `#[allow(non_camel_case_types)]` lint suppressions are gone, and `Default` is now derived where the C semantics imply zero-init. **API shape**: the nine `cc_*` free functions whose primary argument was a `cnx_t` or `path_t` collapse into inherent methods on those types (`impl cnx_t { fn cc_sequence_number(&self, …) }`, `impl path_t { fn cc_lowest_not_ack(&self) }`, etc.), so callers will write `cnx.cc_ack_number(path)` instead of `cc_get_ack_number(&cnx, &path)`. **Borrow shape**: every helper that the C source proves to be read-only — including `NewRenoSimState::notify`'s `cnx`/`path_x` arguments — now takes `&` instead of `&mut`, replacing the previous "be conservative until Phase 3" stance with the correct shape derivable from the C bodies. Doc comments were rewritten to lead with what the Rust API does and cite the `picoquic_*` C symbol for traceability rather than leaning on `C: …` as the only description. No callers in sibling modules referenced the renamed types, so the change is self-contained.
 
 
 ## stderr

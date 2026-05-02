@@ -1,18 +1,21 @@
 # claude -p (phase1a) for picoquic/picoquic_utils.h
-# elapsed: 416.7s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 486.2s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_utils.md)
 
 ## stdout
-Both gates pass cleanly. Here is a summary of what changed and why:
+## Summary
 
-**Removed `#![allow(non_snake_case)]` from `picoquic_utils.rs`** — the allow was overly broad. No function, method, or field in the module violates Rust's snake_case rule; the allow was doing nothing and should not sit there silently widening the lint scope.
+Refactored `rs/fq/src/utils.rs` to drop its C-shaped naming and free-function-style API:
 
-**Renamed trait `picoquic_thread_fn` → `PicoquicThreadFn`** and **`picoquictest_aqm_t` → `PicoquictestAqmT`** — TRANSLATE_PLAN §1A explicitly requires Rust traits to be PascalCase even when the C typedef is snake_case. All references in `picoquic_packet_loop.rs` (import, method signature in the `picoquic_custom_thread_create_fn` trait, and the standalone function) and in `picoquictest_dualq.rs` (import, `impl` block, and doc comments) were updated to match.
+- **Type renames** (PascalCase, dropped `_t`/`_enum` suffixes): `file_t`→`File`, `thread_t`→`Thread`, `mutex_t`→`Mutex`, `event_t`→`Event`, `test_sim_packet_t`→`TestSimPacket`, `test_sim_link_t`→`TestSimLink`, `jitter_mode`→`JitterMode`. The `JitterMode` variants lost their now-redundant `Jitter` prefix (`Gauss`, `Wifi`).
+- **Constant rename**: `null_connection_id`→`NULL_CONNECTION_ID` (SCREAMING_SNAKE for consts).
+- **Free functions → methods**: every `test_sim_link_*` and `test_simlink_suspend` is now an inherent method on `TestSimLink` (`create`, `next_arrival`, `admit_pending`, `next_admission`, `dequeue`, `submit`, `enqueue`, `transmit_time`, `queue_delay`, `suspend`); `test_sim_link_create_packet` moved to `TestSimPacket::create`; threading stubs (`create_thread`, `lock_mutex`, `signal_event`, …) became inherent methods on `Thread`/`Mutex`/`Event`; `file_open*` became `File::open` / `File::open_ex`.
+- **Idiom cleanup**: removed the C string-allocation helpers (`string_create`, `string_duplicate`, `string_free`) — Rust's owned `String` and `Drop` subsume them; replaced the `Option<*mut u64>` parameter on `TestSimLink::create` with a plain `*mut u64` (the raw pointer already encodes nullability); fixed the `picosec_per_byte` field name that had drifted from the C struct (`sec_per_byte`).
+- **Lint allowances dropped**: `#![allow(non_camel_case_types)]` and `#![allow(non_upper_case_globals)]` are gone — no longer needed once the renames landed.
+- **Sibling-module updates**: `binlog.rs` (`file_t`→`File`), `packet_loop.rs` (`thread_t`→`Thread`), `test_dualq.rs` (`test_sim_link_t`→`TestSimLink`, `test_sim_packet_t`→`TestSimPacket`).
 
-**Renamed enum variants `jitter_gauss` → `JitterGauss`, `jitter_wifi` → `JitterWifi`** — lowercase enum variants are the most visibly non-idiomatic Rust in the file. The C enum tag names are preserved in the added per-variant doc comments (`/// C: jitter_gauss`). The `#[default]` attribute stays on `JitterGauss`.
-
-**Fixed `picoquic_string_create` parameter: `&[u8]` → `Option<&[u8]>`** — the C `original` is a `const char*` that may legitimately be `NULL` (meaning zero-fill the output for `len` bytes). The old `&[u8]` had no way to represent that null case; `Option<&[u8]>` corrects the type shape. The `_len: usize` parameter is kept because it is the *output* allocation size, independent of the source slice length. The doc comment was updated to explain the distinction.
+`cargo check` and `cargo clippy -- -D warnings` both pass cleanly from `rs/fq/`.
 
 
 ## stderr

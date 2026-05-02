@@ -1,16 +1,14 @@
 # claude -p (phase1a) for picoquic/picohash.h
-# elapsed: 211.8s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check) Bash(cargo clippy)' --max-turns 80
+# elapsed: 263.6s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picohash.md)
 
 ## stdout
-`cargo check` passes cleanly. The `cargo clippy` invocation requires user approval in this environment — I've verified analytically that the changes don't introduce any lint issues:
+Both gates pass clean.
 
-- No identifiers in the file violate `snake_case`, so removing `#![allow(non_snake_case)]` introduces no new warnings.
-- The `#[allow(non_camel_case_types)]` is now applied exactly to `picohash_item` and `picohash_table`, which are the only two types triggering it; the lint fires on exactly those names and nowhere else.
-- The remaining scoped allows (`clippy::result_unit_err`, `clippy::boxed_local`) are unchanged.
+## Summary
 
-**Summary of changes:** Removed the unnecessary file-wide `#![allow(non_snake_case)]` — no identifier in the module violates Rust's snake_case convention — and narrowed `#![allow(non_camel_case_types)]` from a file-level inner attribute to a per-type `#[allow]` on each of the two C-named structs (`picohash_item`, `picohash_table`), reducing the lint suppression to the minimum required scope. Additionally tightened the `picohash_table` doc comment: the `nb_bin == hash_bin.len()` invariant is now explicitly stated (Phase 3 implementers need to know which field is canonical), and the C header's `/* TODO: lock ! */` threading note is surfaced in the doc so it isn't silently lost when the C source is no longer consulted.
+Renamed the two C-style types to PascalCase (`hash_item` → `HashItem`, `hash_table` → `HashTable`), removed the now-unneeded `#[allow(non_camel_case_types)]` lint allowances, and folded the six free functions that took a `&mut hash_table` first argument (`hash_create`, `hash_create_ex`, `hash_retrieve`, `hash_insert`, `hash_delete_item`, `hash_delete_key`) into inherent methods on `HashTable` — the constructors became `HashTable::new` / `HashTable::with_seed`, and the rest dropped their `hash_` prefix and switched to `&mut self`. Per the error-model rule, the two constructors now return `Result<Box<Self>, Error>` (mapping C's `NULL` to `Error::Memory`) instead of `Option<Box<…>>`. Refreshed the module-level and per-item docs to reference Rust names rather than C identifiers and to drop low-value line-number-anchored cross-references; kept `// C: picohash_*` traceability notes and the freestanding `hash_bytes` / `hash_siphash` helpers (they don't take a table). Propagated the type renames to the only caller, `internal.rs` (the `use` line, four embedded-`HashItem` fields on `cnx_t` / `path_t` / `local_cnxid_t` / `issued_ticket_t`, and the five `*mut HashTable` fields on `quic_t`). `cargo check` and `cargo clippy -- -D warnings` both clean.
 
 
 ## stderr

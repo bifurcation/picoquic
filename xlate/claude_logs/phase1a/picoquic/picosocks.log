@@ -1,18 +1,23 @@
 # claude -p (phase1a) for picoquic/picosocks.h
-# elapsed: 328.3s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 510.5s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picosocks.md)
 
 ## stdout
-The file looks correct. Both `cargo check` and `cargo clippy -- -D warnings` pass cleanly.
+Both gates pass cleanly.
 
-**Summary of changes to `rs/fq/src/picoquic/picosocks.rs`:**
+## Summary
 
-- **Removed two unused lint suppressions**: `#![allow(non_snake_case)]` and `#![allow(non_upper_case_globals)]` were suppressing nothing — all functions are already `snake_case` and all globals are `UPPER_SNAKE_CASE`. They were dead weight in the allowlist.
-- **Narrowed `non_camel_case_types` from module-wide to per-item**: Moved the allow to the three types that genuinely need to preserve their C names (`picoquic_socket_t`, `picoquic_server_sockets_t`, `picoquic_msghdr_t`).
-- **Renamed four Rust-invented result structs to PascalCase**: `picoquic_recv_info` → `RecvInfo`, `picoquic_select_info` → `SelectInfo`, `picoquic_select_ex_info` → `SelectExInfo`, `picoquic_server_address` → `ServerAddress`. These are purely Rust constructs (folded C out-parameters) with no C typedef identifiers to preserve, so Rust naming convention wins.
-- **Made `picoquic_socket_t::fd` private**: The doc comment stated "opaque newtype so the underlying integer doesn't leak out of the module" while the field was `pub`. Made it module-private; callers compare against the `INVALID_SOCKET` constant via the derived `PartialEq`.
-- **Added field-level doc comments to `SelectInfo` and `SelectExInfo`**: The fields on these structs had no documentation, inconsistent with `RecvInfo` which documented all fields.
+Made `picoquic/picosocks.h`'s translation more idiomatic without rewriting it. Key changes:
+
+- **Replaced the `INVALID_SOCKET = -1` sentinel with `Option<Socket>`** — `Socket` now always names a real fd, the "not-yet-open" state lives in `Option`. Removed the `INVALID_SOCKET` constant; `ServerSockets::sockets` is `[Option<Socket>; _]` and derives `Default`. Rippled the change to `packet_loop::SocketCtx::fd` and its `Default`.
+- **Consolidated `select` / `select_ex`** (and `SelectInfo` / `SelectExInfo`) into a single `select` returning `SelectInfo` with `socket_rank` as a field — the C `_ex` form was always the more general one.
+- **Folded `Msghdr::parse_cmsg`'s four `Option<&mut _>` out-params into a returned `CmsgInfo` struct**, matching the convention `RecvInfo` / `SelectInfo` already used.
+- **Converted free functions on a primary type into methods**: `get_server_address(...) -> ServerAddress` became `ServerAddress::resolve(...)`; `set_key_log_file_from_env(&mut Quic)` became `Quic::set_key_log_file_from_env` (in `lib.rs` next to `set_key_log_file`); `socket_error_implies_unreachable(i32) -> bool` became `OsError::is_unreachable(self) -> bool`.
+- **Replaced the bare-errno `Result<usize, i32>` from `sendmsg` / `send_through` with a typed `Result<usize, OsError>`**, so the path-abandon classification is reachable as a method on the error rather than a free function.
+- **Renamed `NB_SERVER_SOCKETS` → `SERVER_SOCKET_COUNT`** and the C-style `s_socket` field → `sockets`; collapsed `Msghdr`'s `_opaque: [u8; 0]` placeholder to `Msghdr(())`; dropped a stale "stand-in for not-yet-defined Error" comment.
+
+`cargo check` and `cargo clippy -- -D warnings` both pass clean.
 
 
 ## stderr

@@ -1,16 +1,20 @@
 # claude -p (phase1a) for picoquic/picoquic_lb.h
-# elapsed: 137.9s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 343.2s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquic_lb.md)
 
 ## stdout
-The translation was already in good shape. One targeted fix was applied:
+The translation passes both `cargo check` and `cargo clippy -- -D warnings`.
 
-- **Removed `#![allow(non_snake_case)]`** — nothing in this module is non-snake-case (all functions, methods, and fields are already `snake_case`; the only non-conventional names are the type/variant names, which are covered by the existing `non_camel_case_types` allow). The `non_snake_case` was a broader suppression than necessary.
+## Summary
 
-- **Added `#![allow(clippy::enum_variant_names)]`** — the three `picoquic_load_balancer_cid_*` variants all share a long common prefix. This mirrors the C enum tags verbatim, so the lint must be silenced module-wide. The reason comment makes the intent explicit, matching the pattern already used in `picoquic.rs` for the same situation.
+I refined `rs/fq/src/lb.rs` to look like Rust rather than thinly-disguised C:
 
-Both `cargo check` and `cargo clippy -- -D warnings` pass cleanly.
+- **PascalCase types and variants** — `load_balancer_cid_method_enum` → `LbCidMethod`, with variants `Clear`/`StreamCipher`/`BlockCipher`; `load_balancer_config_t` → `LbConfig`; `load_balancer_cid_context_t` → `LbCidContext`; `aes128_ecb_context_t` → `Aes128EcbContext`. This lets the `#![allow(non_camel_case_types)]` blanket suppression go.
+- **Free functions → methods on `Quic`** — `lb_compat_cid_config(quic, cfg)` and `lb_compat_cid_config_free(quic)` became `Quic::set_lb_cid_config(&mut self, &LbConfig)` and `Quic::clear_lb_cid_config(&mut self)` (placed in an `impl Quic` block in this module since `Quic` is the kitchen-sink type).
+- **Sentinel return → `Option`** — `LbCidContext::verify` now returns `Option<u64>` instead of leaking the C `UINT64_MAX` sentinel; took `&mut self` since the underlying AES context mutates cipher state on use.
+- **Trimmed dead arguments** — dropped the unused `cnx_id_local` / `cnx_id_remote` parameters from `generate`; documented that the trait adapter can reintroduce them. Tightened `quic` from `&mut Quic` to `&Quic` since `generate` only reads `local_cnxid_length`.
+- **Refreshed module docs** — reorganised the header into "API shape" and "Field-shape decisions" sections that document the Rust API first and use `C: \`name\`` only for traceability.
 
 
 ## stderr

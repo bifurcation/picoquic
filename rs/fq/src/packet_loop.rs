@@ -4,7 +4,7 @@
 //! reference event loop (`sockloop.c`) on top of the [`socks`]
 //! UDP shims.  The loop:
 //!
-//! * owns one or more [`socket_ctx_t`] per network family,
+//! * owns one or more [`SocketCtx`] per network family,
 //! * polls them with [`socks::select`] (or `select`/
 //!   `WSAWaitForMultipleEvents` in the C original),
 //! * routes received datagrams into quic, and
@@ -16,16 +16,14 @@
 //! Three layered entry points cover the same loop with different
 //! parameter shapes:
 //!
-//! * [`packet_loop`] — the original 1.x signature,
-//!   preserved for compatibility.  Builds a [`packet_loop_param_t`]
-//!   on the stack and forwards.
-//! * [`packet_loop_v2`] — takes a [`packet_loop_param_t`]
-//!   directly.
-//! * [`packet_loop_v3`] — takes a fully-populated
-//!   [`network_thread_ctx_t`]; the threaded entry point.
+//! * [`run`] — the original 1.x signature, preserved for
+//!   compatibility.  Builds a [`LoopParam`] on the stack and forwards.
+//! * [`run_v2`] — takes a [`LoopParam`] directly.
+//! * [`NetworkThreadCtx::run`] — takes a fully-populated
+//!   [`NetworkThreadCtx`]; the threaded entry point.
 //!
-//! Plus the threading helpers ([`start_network_thread`] et
-//! al.) that wrap `pthread_create` / `CreateThread`.
+//! Plus the threading helpers ([`NetworkThreadCtx::spawn`] et al.)
+//! that wrap `pthread_create` / `CreateThread`.
 //!
 //! Phase 1 contract: signatures only — every function body is
 //! `todo!()` and the empty `#[cfg(test)] mod test {}` lands at the
@@ -39,20 +37,20 @@
 //! the demo callers in `first/demo.c`,
 //! `sample/sample_*.c`, and `test/sockloop_test.c`:
 //!
-//! * `quic_t*` parameters are non-null in every observed
-//!   caller — they translate to `&mut quic_t`.
-//! * `packet_loop_param_t*` is *borrowed* by the loop
+//! * `Quic*` parameters are non-null in every observed
+//!   caller — they translate to `&mut Quic`.
+//! * `LoopParam*` is *borrowed* by the loop
 //!   helpers (the caller stack-allocates it in
-//!   `packet_loop_v2` / the demo apps) — `&mut` here.  Inside
-//!   [`network_thread_ctx_t`] the same pointer is *owned*
-//!   when `is_param_allocated == 1` (`start_server_threads`
+//!   `run_v2` / the demo apps) — `&mut` here.  Inside
+//!   [`NetworkThreadCtx`] the same pointer is *owned*
+//!   when `is_param_allocated == 1` ([`Config::start_server_threads`]
 //!   `malloc`s a copy and `delete_network_thread` `free`s
 //!   it).  Phase 1 keeps the field as `Option<Box<…>>` and folds
 //!   the C `is_param_allocated` flag away — the `Box` itself
 //!   carries ownership; borrowed-param call sites store `None`
 //!   plus a separate borrow at runtime.
-//! * `quic_config_t*` is borrowed-mut by
-//!   [`server_set_context`] and [`start_server_threads`]
+//! * `picoquic_quic_config_t*` is borrowed-mut by
+//!   [`Quic::create_server`] and [`Config::start_server_threads`]
 //!   (they read and may mutate fields like `ticket_encryption_key`).
 //! * Function-pointer typedefs (`packet_loop_cb_fn`,
 //!   `custom_thread_create_fn`, `_setname_fn`,
@@ -60,24 +58,23 @@
 //!   callback_ctx` companion folds into the trait implementor's
 //!   state.  Per-event `void* callback_argv` stays a raw pointer —
 //!   its concrete type depends on `cb_mode` (see
-//!   [`packet_loop_cb_enum`]) and a tagged enum would
+//!   [`LoopEvent`]) and a tagged enum would
 //!   diverge from C source structure; Phase 3 may revisit.
-//! * `socket_ctx_t* s_ctx` is used as both a single object
-//!   ([`packet_loop_close_socket`]) and a fixed-size array
-//!   ([`packet_loop_open_sockets`] writes up to
-//!   `PACKET_LOOP_SOCKETS_MAX` entries).  The single-object
-//!   path takes `&mut socket_ctx_t`; the array path takes
-//!   `&mut [socket_ctx_t]`, with the slice length subsuming
-//!   the C convention of "callee writes and returns the count".
-//! * `network_thread_ctx_t**` outputs from
-//!   [`start_server_threads`] become `&mut [Option<Box<…>>]`
+//! * `SocketCtx* s_ctx` is used as both a single object
+//!   ([`SocketCtx::close`]) and a fixed-size array
+//!   ([`open_sockets`] writes up to `PACKET_LOOP_SOCKETS_MAX`
+//!   entries).  The single-object path is a method on [`SocketCtx`];
+//!   the array path takes `&mut [SocketCtx]`, with the slice length
+//!   subsuming the C convention of "callee writes and returns the count".
+//! * `NetworkThreadCtx**` outputs from
+//!   [`Config::start_server_threads`] become `&mut [Option<Box<…>>]`
 //!   — the slice carries `nb_threads_max`; each slot is filled with
 //!   `Some` on success.
 //! * Bitfields collapse to `bool`s.  Single-bit C `int : 1` /
 //!   `unsigned int : 1` flag fields don't justify `bitflags!` on a
 //!   set of unrelated booleans (see `config.rs` for the
 //!   established convention).
-//! * `volatile int` fields in [`network_thread_ctx_t`]
+//! * `volatile int` fields in [`NetworkThreadCtx`]
 //!   become plain `i32` / `bool` — `Send`/`Sync` is out of v1 scope,
 //!   so the volatile semantics have nowhere to land.
 //! * `sockaddr_storage` fields fold into `Option<SocketAddr>`,
@@ -88,22 +85,20 @@
 //! * `recv_buffer: uint8_t* + recv_buffer_size: size_t` is an
 //!   owning pair (allocated in `packet_set_windows_socket`
 //!   on the Windows path, or `packet_loop_recv_buf_uring_init`
-//!   on io_uring; freed in [`packet_loop_close_socket`]).
+//!   on io_uring; freed in [`SocketCtx::close`]).
 //!   On the canonical Linux/`select` build neither is used — every
 //!   datagram lands in the shared loop buffer.  Phase 1 keeps the
-//!   field as `Option<Box<[u8]>>` so the unused state is just
-//!   `None`; Phase 3 will tighten once the loop is implemented.
-
-#![allow(non_camel_case_types)]
-#![allow(non_upper_case_globals)]
+//!   field as `Option<Box<[u8]>>` so the unused state is `None`;
+//!   Phase 3 will tighten once the loop is implemented.
 
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
 use crate::Error;
-use crate::config::quic_config_t;
-use crate::utils::{ThreadFn, thread_t};
-use crate::{AlpnSelectV2, StreamDataCb, quic_t};
+use crate::config::Config;
+use crate::socks::OsError;
+use crate::utils::{Thread, ThreadFn};
+use crate::{AlpnSelectV2, Quic, StreamDataCb};
 
 // ---------------------------------------------------------------------------
 // Compile-time limits.
@@ -128,17 +123,17 @@ pub const PACKET_LOOP_SEND_DELAY_MAX: u64 = 2500;
 // ---------------------------------------------------------------------------
 // Per-socket context.
 
-/// State the loop maintains per UDP socket.  C:
-/// `socket_ctx_t`.
+/// State the loop maintains per UDP socket.  C: `socket_ctx_t`.
 ///
 /// Trimmed to the canonical Linux build: the Windows
 /// (`WSAOVERLAPPED`, `WSARecvMsg`, …) and io_uring (`msghdr`,
 /// `iovec`, `ctrl_buffer`) fields are dropped per the v1
 /// single-target scope.  The four C bitfields collapse to plain
 /// `bool` flags.
-pub struct socket_ctx_t {
-    /// OS file descriptor.  C: `SOCKET_TYPE fd`.
-    pub fd: crate::socks::socket_t,
+pub struct SocketCtx {
+    /// OS file descriptor.  C: `SOCKET_TYPE fd` — `None` mirrors
+    /// the C `INVALID_SOCKET` sentinel for "not yet open".
+    pub fd: Option<crate::socks::Socket>,
     /// Address family the socket was opened in (`AF_INET`,
     /// `AF_INET6`).  Stays `i32` to match call sites that pass the
     /// libc `AF_*` constants directly.
@@ -156,8 +151,8 @@ pub struct socket_ctx_t {
     /// threads (e.g., port 443 across an H3 thread pool — uses
     /// `SO_REUSEPORT`).  C: `int is_port_shared : 1`.
     pub is_port_shared: bool,
-    /// Whether [`packet_loop_open_socket`]-equivalent setup
-    /// has completed for this socket.  C: `unsigned int is_started : 1`.
+    /// Whether [`open_sockets`]-equivalent setup has completed
+    /// for this socket.  C: `unsigned int is_started : 1`.
     pub is_started: bool,
     /// Whether the kernel honored `UDP_SEGMENT` (GSO) on this
     /// socket.  C: `unsigned int supports_udp_send_coalesced : 1`.
@@ -185,10 +180,11 @@ pub struct socket_ctx_t {
     /// `IP_TOS` / `IPV6_TCLASS` ECN code-point on the most recent
     /// datagram.  C: `unsigned char received_ecn`.
     pub received_ecn: u8,
-    /// Number of bytes read into the loop buffer.
-    /// C: `int bytes_recv` (`-1` on error; the Rust loop uses a
-    /// `Result` at the call site, so this stays a plain `i32`).
-    pub bytes_recv: i32,
+    /// Number of bytes read into the loop buffer on the most recent
+    /// recv.  C: `int bytes_recv` (C uses `-1` for error; the Rust
+    /// loop propagates errors through `Result` at the call site and
+    /// only writes a valid byte count here).
+    pub bytes_recv: usize,
     /// Scratch space for assembling outbound `cmsg` payloads
     /// (`IP_PKTINFO`, `IPV6_PKTINFO`, `UDP_SEGMENT`).
     /// C: `char cmsg_buffer[1024]`.
@@ -198,10 +194,10 @@ pub struct socket_ctx_t {
     pub udp_coalesced_size: usize,
 }
 
-impl Default for socket_ctx_t {
+impl Default for SocketCtx {
     fn default() -> Self {
-        socket_ctx_t {
-            fd: crate::socks::INVALID_SOCKET,
+        SocketCtx {
+            fd: None,
             af: 0,
             port: 0,
             n_port: 0,
@@ -233,11 +229,11 @@ impl Default for socket_ctx_t {
 /// `repr(C)` is dropped — variants are inspected only through Rust
 /// pattern matching, never through FFI.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum packet_loop_cb_enum {
+pub enum LoopEvent {
     /// Loop has finished initializing.  `callback_argv:
-    /// *mut packet_loop_options_t`.
+    /// *mut LoopOptions`.
     /// C: `packet_loop_ready`.
-    Ready = 0,
+    Ready,
     /// `callback_argv: *mut size_t` — number of packets received this
     /// iteration.  C: `packet_loop_after_receive`.
     AfterReceive,
@@ -248,17 +244,17 @@ pub enum packet_loop_cb_enum {
     /// by the application after a port update.
     /// C: `packet_loop_port_update`.
     PortUpdate,
-    /// `callback_argv: *mut packet_loop_time_check_arg_t`.  Optional;
+    /// `callback_argv: *mut TimeCheckArg`.  Optional;
     /// only fires when the application set
-    /// [`packet_loop_options_t::do_time_check`].
+    /// [`LoopOptions::do_time_check`].
     /// C: `packet_loop_time_check`.
     TimeCheck,
-    /// `callback_argv: *mut packet_loop_system_call_duration_t`.
+    /// `callback_argv: *mut SystemCallDuration`.
     /// Optional; only fires when the application set
-    /// [`packet_loop_options_t::do_system_call_duration`].
+    /// [`LoopOptions::do_system_call_duration`].
     /// C: `packet_loop_system_call_duration`.
     SystemCallDuration,
-    /// Wake-up event triggered by [`wake_up_network_thread`].
+    /// Wake-up event triggered by [`NetworkThreadCtx::wake_up`].
     /// `callback_argv: NULL`.
     /// C: `packet_loop_wake_up`.
     WakeUp,
@@ -269,10 +265,10 @@ pub enum packet_loop_cb_enum {
 }
 
 /// System-call duration statistics surfaced through the optional
-/// [`packet_loop_cb_enum::packet_loop_system_call_duration`]
-/// callback.  C: `packet_loop_system_call_duration_t`.
+/// [`LoopEvent::SystemCallDuration`] callback.
+/// C: `packet_loop_system_call_duration_t`.
 #[derive(Debug, Default, Copy, Clone)]
-pub struct packet_loop_system_call_duration_t {
+pub struct SystemCallDuration {
     /// Duration of the most recent zero-delay system call
     /// (microseconds).
     pub scd_last: u64,
@@ -284,14 +280,13 @@ pub struct packet_loop_system_call_duration_t {
     pub scd_dev: u64,
 }
 
-/// In/out argument for the
-/// [`packet_loop_cb_enum::packet_loop_time_check`]
-/// callback.  The loop fills `current_time` and a proposed
-/// `delta_t`; the application overwrites `delta_t` with a
-/// (possibly smaller) value if it has work to do sooner.
+/// In/out argument for the [`LoopEvent::TimeCheck`] callback.
+/// The loop fills `current_time` and a proposed `delta_t`;
+/// the application overwrites `delta_t` with a (possibly smaller)
+/// value if it has work to do sooner.
 /// C: `packet_loop_time_check_arg_t`.
 #[derive(Debug, Default, Copy, Clone)]
-pub struct packet_loop_time_check_arg_t {
+pub struct TimeCheckArg {
     /// Loop-time timestamp (microseconds since process start).
     pub current_time: u64,
     /// Proposed sleep, in microseconds — application may shrink.
@@ -299,16 +294,16 @@ pub struct packet_loop_time_check_arg_t {
 }
 
 /// Application callback fired at the lifecycle and per-iteration
-/// events listed in [`packet_loop_cb_enum`].
+/// events listed in [`LoopEvent`].
 ///
-/// C: `int (*packet_loop_cb_fn)(quic_t* quic,
+/// C: `int (*packet_loop_cb_fn)(picoquic_quic_t* quic,
 /// packet_loop_cb_enum cb_mode, void* callback_ctx, void*
 /// callback_argv)`.  The `void* callback_ctx` companion folds into
 /// the trait implementor's state per the Phase 1 rules.
 ///
 /// `callback_argv` keeps `*mut c_void` because its concrete type is
 /// selected by `cb_mode` at runtime; safer reinterpretation lands
-/// in Phase 3.  Implementors must consult [`packet_loop_cb_enum`]
+/// in Phase 3.  Implementors must consult [`LoopEvent`]
 /// to know what to cast it to.
 ///
 /// The return value is the C `int`: `0` for success, non-zero to
@@ -322,27 +317,22 @@ pub trait PacketLoopCbFn {
     ///
     /// The caller (the loop) must pass an `argv` pointer that is
     /// either null or points to a value of the type associated with
-    /// `cb_mode` per [`packet_loop_cb_enum`].
-    unsafe fn callback(
-        &mut self,
-        quic: &mut quic_t,
-        cb_mode: packet_loop_cb_enum,
-        argv: *mut c_void,
-    ) -> i32;
+    /// `cb_mode` per [`LoopEvent`].
+    unsafe fn callback(&mut self, quic: &mut Quic, cb_mode: LoopEvent, argv: *mut c_void) -> i32;
 }
 
 // ---------------------------------------------------------------------------
 // Loop options + parameters.
 
 /// Feature-flags the application advertises in response to the
-/// [`packet_loop_cb_enum::Ready`]
+/// [`LoopEvent::Ready`]
 /// callback.  C: `packet_loop_options_t`, three single-bit
 /// `unsigned int : 1` fields collapsed to `bool` per the
 /// established convention (see `config.rs`).
 #[derive(Debug, Default, Copy, Clone)]
-pub struct packet_loop_options_t {
+pub struct LoopOptions {
     /// Application wants the loop to call back with
-    /// [`packet_loop_cb_enum::TimeCheck`]
+    /// [`LoopEvent::TimeCheck`]
     /// before each select.
     pub do_time_check: bool,
     /// Application wants notifications when zero-delay system calls
@@ -357,7 +347,7 @@ pub struct packet_loop_options_t {
 /// C: `packet_loop_param_t`.  `repr(C)` is dropped — the
 /// struct never crosses an external boundary.
 #[derive(Debug, Default, Copy, Clone)]
-pub struct packet_loop_param_t {
+pub struct LoopParam {
     /// Default port for outgoing connections.  `0` ⇒ ephemeral.
     pub local_port: u16,
     /// `AF_INET` / `AF_INET6`, or `0` for "both".
@@ -400,15 +390,15 @@ pub struct packet_loop_param_t {
 /// hook reduces to "produce a thread handle from a `Box<dyn …>`".
 pub trait CustomThreadCreateFn {
     /// Create a thread that runs `thread_fn` to completion.  The
-    /// returned [`thread_t`] is opaque to quic and is
+    /// returned [`Thread`] is opaque to quic and is
     /// passed back through
     /// [`CustomThreadDeleteFn::delete`] at teardown.
     ///
     /// The C contract returns `0` for success / non-zero `errno`
-    /// otherwise; we keep the `i32` so call sites can surface the
-    /// raw OS error via the `*ret` out-parameter on
-    /// [`start_custom_network_thread`].
-    fn create(&mut self, thread_fn: Box<dyn ThreadFn>) -> Result<thread_t, i32>;
+    /// otherwise; the [`OsError`] payload carries the same value
+    /// that the C `*ret` out-parameter would on
+    /// [`NetworkThreadCtx::spawn_custom`].
+    fn create(&mut self, thread_fn: Box<dyn ThreadFn>) -> Result<Thread, OsError>;
 }
 
 /// Set-thread-name hook.  C:
@@ -427,8 +417,8 @@ pub trait CustomThreadSetnameFn {
 /// `void (*custom_thread_delete_fn)(void** thread_id)`.
 pub trait CustomThreadDeleteFn {
     /// Release any resources tied to `thread`.  Called from the
-    /// destruction path of [`network_thread_ctx_t`].
-    fn delete(&mut self, thread: thread_t);
+    /// destruction path of [`NetworkThreadCtx`].
+    fn delete(&mut self, thread: Thread);
 }
 
 // ---------------------------------------------------------------------------
@@ -439,14 +429,13 @@ pub trait CustomThreadDeleteFn {
 ///
 /// Two ownership modes coexist in C:
 ///
-/// * Foreground / blocking (`packet_loop_v2`): the caller
-///   stack-allocates a `network_thread_ctx_t = { 0 }` and
-///   passes its address to [`packet_loop_v3`].
-///   `is_threaded` stays `0`, no wake-up plumbing is created.
-/// * Background (`start_network_thread`): the helper
-///   `malloc`s the context, populates it, opens the wake-up
+/// * Foreground / blocking (`run_v2`): the caller stack-allocates a
+///   `NetworkThreadCtx` and calls [`NetworkThreadCtx::run`] on it.
+///   `is_threaded` stays `false`, no wake-up plumbing is created.
+/// * Background ([`NetworkThreadCtx::spawn`]): the helper
+///   allocates the context, populates it, opens the wake-up
 ///   pipe / event, and launches the OS thread; teardown via
-///   [`delete_network_thread`] frees everything.
+///   `Drop` (Phase 3) frees everything.
 ///
 /// Phase 1 keeps a single struct shape with optional fields so both
 /// modes fit; Phase 3 may split them or introduce a builder.
@@ -455,17 +444,31 @@ pub trait CustomThreadDeleteFn {
 /// is out of v1 scope and the thread-shutdown handshake uses these
 /// flags through the same single-threaded code path the rest of the
 /// crate assumes.
-pub struct network_thread_ctx_t {
-    /// QUIC context the loop drives.  Always set; `&mut` lifetime
-    /// is expressed by the caller passing `&mut` into v3 — the
-    /// owning case (background thread) keeps the QUIC context
-    /// alive externally.
-    pub quic: *mut quic_t,
+pub struct NetworkThreadCtx {
+    /// QUIC context the loop drives.  Always set; the lifetime is
+    /// owned by the caller — the foreground case borrows from a
+    /// `&mut Quic` on the spawning stack, and the background case
+    /// keeps the [`Quic`] alive externally for as long as the loop
+    /// runs.
+    ///
+    /// Stays a raw pointer because the C original passes the same
+    /// `picoquic_quic_t*` across the OS thread boundary, where
+    /// neither lifetime parameters nor `&'a mut` borrows survive.
+    /// Phase 3 will revisit when threading is re-introduced (see
+    /// `TRANSLATE_PLAN.md`).
+    ///
+    /// # Safety
+    ///
+    /// Any code that dereferences this pointer (Phase 3+) must
+    /// uphold the standard `&mut Quic` rules: no aliasing for the
+    /// duration of the borrow, and the pointee must outlive the
+    /// loop iteration.
+    pub quic: *mut Quic,
     /// Loop parameters, optionally owned (`is_param_allocated`).
     /// Phase 1 collapses the C borrowed-or-owned discriminant into
     /// a single `Option<Box<…>>`; the borrowed case stores `None`
     /// and the borrow lives outside this struct.
-    pub param: Option<Box<packet_loop_param_t>>,
+    pub param: Option<Box<LoopParam>>,
     /// Application loop callback.  `None` matches the C `NULL`
     /// (the loop runs without notifying the app on each event —
     /// used by the bench harness).
@@ -482,12 +485,12 @@ pub struct network_thread_ctx_t {
     pub thread_name: Option<String>,
     /// Underlying OS thread handle.  `None` for the foreground v2
     /// entry path (no thread is spawned).
-    pub pthread: Option<thread_t>,
+    pub pthread: Option<Thread>,
     /// Wake-up pipe (Linux: `pipe2`).  `[ -1, -1 ]` when no wake-up
     /// has been opened (`wake_up_defined == false`).  The Windows
     /// `HANDLE wake_up_event` variant is dropped per the v1 scope.
     pub wake_up_pipe_fd: [i32; 2],
-    /// Whether [`start_custom_network_thread`] actually
+    /// Whether [`NetworkThreadCtx::spawn_custom`] actually
     /// spawned a thread (vs. the foreground path that reuses the
     /// caller's stack).  C: `int is_threaded`.
     pub is_threaded: bool,
@@ -495,25 +498,25 @@ pub struct network_thread_ctx_t {
     /// C: `int wake_up_defined`.
     pub wake_up_defined: bool,
     /// Set by the loop once it finishes initialization (after the
-    /// first `packet_loop_ready` callback).
+    /// first [`LoopEvent::Ready`] callback).
     /// C: `volatile int thread_is_ready`.
     pub thread_is_ready: bool,
-    /// Set from the outside (typically by
-    /// [`delete_network_thread`]) to ask the loop to
-    /// exit.  C: `volatile int thread_should_close`.
+    /// Set from the outside to ask the loop to exit (the `Drop`
+    /// implementation will set this in Phase 3).
+    /// C: `volatile int thread_should_close`.
     pub thread_should_close: bool,
     /// Set by the loop on the way out, before returning from v3.
     /// C: `volatile int thread_is_closed`.
     pub thread_is_closed: bool,
     /// Final return code from the loop body.  Read by the caller
-    /// of [`packet_loop_v2`] after v3 returns.
+    /// of [`run_v2`] after [`NetworkThreadCtx::run`] returns.
     /// C: `int return_code`.
     pub return_code: i32,
 }
 
-impl Default for network_thread_ctx_t {
+impl Default for NetworkThreadCtx {
     fn default() -> Self {
-        network_thread_ctx_t {
+        NetworkThreadCtx {
             quic: core::ptr::null_mut(),
             param: None,
             loop_callback: None,
@@ -538,35 +541,22 @@ impl Default for network_thread_ctx_t {
 /// Drive the packet loop until the application or an error breaks
 /// it.  C: `int packet_loop_v2(…)`.
 ///
-/// Builds a transient [`network_thread_ctx_t`] on the stack
-/// and forwards to [`packet_loop_v3`].  The return code is
-/// what v3 stored in `thread_ctx.return_code`.
-pub fn packet_loop_v2(
-    _quic: &mut quic_t,
-    _param: &mut packet_loop_param_t,
+/// Builds a transient [`NetworkThreadCtx`] on the stack and calls
+/// [`NetworkThreadCtx::run`].  The return code is what `run` stored
+/// in `thread_ctx.return_code`.
+pub fn run_v2(
+    _quic: &mut Quic,
+    _param: &mut LoopParam,
     _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
 ) -> Result<(), Error> {
     todo!()
 }
 
-/// Run the packet loop using a fully-populated thread context.
-/// C: `void* packet_loop_v3(void* v_ctx)` (Linux) /
-/// `DWORD WINAPI packet_loop_v3(LPVOID v_ctx)` (Windows).
-///
-/// The C entry returns its `void*` exit code only to satisfy the
-/// thread-function prototype; callers always read the result back
-/// from `thread_ctx.return_code`.  We therefore drop the return and
-/// leave the result in [`network_thread_ctx_t::return_code`].
-pub fn packet_loop_v3(_thread_ctx: &mut network_thread_ctx_t) {
-    todo!()
-}
-
-/// Legacy single-call entry point; builds a
-/// [`packet_loop_param_t`] from positional arguments and
-/// forwards to [`packet_loop_v2`].  C:
-/// `int packet_loop(…)`.
-pub fn packet_loop(
-    _quic: &mut quic_t,
+/// Legacy single-call entry point; builds a [`LoopParam`] from
+/// positional arguments and forwards to [`run_v2`].
+/// C: `int packet_loop(…)`.
+pub fn run(
+    _quic: &mut Quic,
     _local_port: i32,
     _local_af: i32,
     _dest_if: i32,
@@ -578,56 +568,66 @@ pub fn packet_loop(
 }
 
 // ---------------------------------------------------------------------------
-// Background-thread management.
+// NetworkThreadCtx: background-thread management and the v3 entry point.
 
-/// Spawn a packet loop on its own OS thread using the platform
-/// default (`pthread_create` / `CreateThread`).  C:
-/// `network_thread_ctx_t* start_network_thread(…)`.
-///
-/// Returns `Ok(Box<…>)` on success — the box owns the heap-allocated
-/// thread context that C `malloc`'d.  `Err(i32)` carries the OS
-/// error from the wake-up pipe or thread-create syscall, matching
-/// the C `*ret` out-parameter (the `int* ret` argument folds into
-/// the result).
-pub fn start_network_thread(
-    _quic: &mut quic_t,
-    _param: packet_loop_param_t,
-    _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
-) -> Result<Box<network_thread_ctx_t>, i32> {
-    todo!()
+impl NetworkThreadCtx {
+    /// Run the packet loop using `self` as the fully-populated thread
+    /// context.  C: `void* packet_loop_v3(void* v_ctx)`.
+    ///
+    /// The C entry returns its `void*` exit code only to satisfy the
+    /// thread-function prototype; callers read the result back from
+    /// `return_code`.
+    pub fn run(&mut self) {
+        todo!()
+    }
+
+    /// Spawn a packet loop on its own OS thread using the platform
+    /// default (`pthread_create` / `CreateThread`).
+    /// C: `network_thread_ctx_t* start_network_thread(…)`.
+    ///
+    /// Returns `Ok(Box<Self>)` on success — the box owns the
+    /// heap-allocated context.  `Err(OsError)` carries the OS errno
+    /// from the wake-up pipe or thread-create syscall (the C `*ret`
+    /// out-parameter folds into the result).
+    pub fn spawn(
+        _quic: &mut Quic,
+        _param: LoopParam,
+        _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+    ) -> Result<Box<Self>, OsError> {
+        todo!()
+    }
+
+    /// Spawn the packet loop using application-supplied thread hooks.
+    /// `None` for any hook selects the platform default — same
+    /// semantics as the C `NULL` argument.
+    /// C: `network_thread_ctx_t* start_custom_network_thread(…)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_custom(
+        _quic: &mut Quic,
+        _param: LoopParam,
+        _thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
+        _thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
+        _thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
+        _thread_name: Option<&str>,
+        _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+    ) -> Result<Box<Self>, OsError> {
+        todo!()
+    }
+
+    /// Write to the wake-up pipe so the loop's next iteration runs
+    /// immediately and fires [`LoopEvent::WakeUp`].
+    /// C: `int wake_up_network_thread(network_thread_ctx_t*)`.
+    ///
+    /// Returns `Err(OsError)` with the OS errno on failure, `Ok(())`
+    /// otherwise.
+    pub fn wake_up(&mut self) -> Result<(), OsError> {
+        todo!()
+    }
 }
 
-/// Spawn the packet loop using application-supplied thread hooks.
-/// `None` for any of the hooks selects the platform default — same
-/// semantics as the C `NULL` argument.  C:
-/// `network_thread_ctx_t* start_custom_network_thread(…)`.
-pub fn start_custom_network_thread(
-    _quic: &mut quic_t,
-    _param: packet_loop_param_t,
-    _thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
-    _thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
-    _thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
-    _thread_name: Option<&str>,
-    _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
-) -> Result<Box<network_thread_ctx_t>, i32> {
-    todo!()
-}
-
-/// Wake the loop running in `thread_ctx` so its next iteration runs
-/// immediately and fires
-/// [`packet_loop_cb_enum::WakeUp`].
-/// C: `int wake_up_network_thread(network_thread_ctx_t*)`.
-///
-/// Returns the OS error on failure (the `errno` / `GetLastError`
-/// the C body propagates), `Ok(())` otherwise.
-pub fn wake_up_network_thread(_thread_ctx: &mut network_thread_ctx_t) -> Result<(), i32> {
-    todo!()
-}
-
-// C: `void delete_network_thread(network_thread_ctx_t*)`.
-// Dropped from the Rust API: `Box<network_thread_ctx_t>` going
-// out of scope signals shutdown, waits for the loop to exit, and
-// frees the context (Drop in Phase 3).
+// `delete_network_thread` is dropped from the Rust API:
+// `Box<NetworkThreadCtx>` going out of scope signals shutdown,
+// waits for the loop to exit, and frees the context (Drop in Phase 3).
 
 // ---------------------------------------------------------------------------
 // Built-in thread hooks (platform defaults).
@@ -637,17 +637,17 @@ pub fn wake_up_network_thread(_thread_ctx: &mut network_thread_ctx_t) -> Result<
 /// C: `int internal_thread_create(void**,
 /// thread_fn, void*)`.
 ///
-/// Returns `Ok(thread_t)` carrying the OS handle, or
-/// `Err(i32)` with the OS error code.  Threading is dropped from
-/// v1 (`TRANSLATE_PLAN.md`) so the body is a `todo!()` placeholder
+/// Returns `Ok(Thread)` carrying the OS handle, or `Err(OsError)`
+/// with the platform errno.  Threading is dropped from v1
+/// (`TRANSLATE_PLAN.md`) so the body is a `todo!()` placeholder
 /// that lands when v2 multi-threading work begins.
-pub fn internal_thread_create(_thread_fn: Box<dyn ThreadFn>) -> Result<thread_t, i32> {
+pub fn internal_thread_create(_thread_fn: Box<dyn ThreadFn>) -> Result<Thread, OsError> {
     todo!()
 }
 
 /// Default implementation of [`CustomThreadDeleteFn`].
 /// C: `void internal_thread_delete(void**)`.
-pub fn internal_thread_delete(_thread: thread_t) {
+pub fn internal_thread_delete(_thread: Thread) {
     todo!()
 }
 
@@ -658,82 +658,82 @@ pub fn internal_thread_setname(_thread_name: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// QUIC-context helpers wired into the demo apps.
+// Quic: context helpers wired into the demo apps.
 
-/// Look up the network-thread context attached to `quic` (set by
-/// [`start_custom_network_thread`] via
-/// `quic->v_thread_ctx`), or `None` if the QUIC context isn't
-/// driven by a packet-loop thread.  C:
-/// `struct st_network_thread_ctx_t* get_thread_ctx(quic_t*)`.
-pub fn get_thread_ctx(_quic: &mut quic_t) -> Option<&mut network_thread_ctx_t> {
-    todo!()
+impl Quic {
+    /// Look up the network-thread context attached to this QUIC
+    /// context (set by [`NetworkThreadCtx::spawn_custom`] via
+    /// `quic->v_thread_ctx`), or `None` if the QUIC context isn't
+    /// driven by a packet-loop thread.
+    /// C: `struct st_network_thread_ctx_t* get_thread_ctx(picoquic_quic_t*)`.
+    pub fn thread_ctx(&mut self) -> Option<&mut NetworkThreadCtx> {
+        todo!()
+    }
+
+    /// Build a server-side QUIC context with the extra hooks
+    /// (`alpn_select_fn`, key-log, qlog, perflog, LB-CID config) that
+    /// the demo server installs after [`Config::create_and_configure`].
+    /// C: `int server_set_context(picoquic_quic_t** qserver, …)`.
+    ///
+    /// The C `picoquic_quic_t** qserver` out-parameter folds into the
+    /// `Ok(Box<Quic>)` payload.
+    pub fn create_server(
+        _config: &mut Config,
+        _current_time: u64,
+        _default_callback: Option<Box<dyn StreamDataCb>>,
+        _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>,
+    ) -> Result<Box<Quic>, Error> {
+        todo!()
+    }
 }
 
-/// Build a server-side QUIC context with the extra hooks
-/// (`alpn_select_fn`, key-log, qlog, perflog, LB-CID config) that
-/// the demo `demo` server installs after
-/// `create_and_configure`.  C:
-/// `int server_set_context(quic_t** qserver, …)`.
-///
-/// The C `quic_t** qserver` out-parameter folds into the
-/// `Ok(Box<…>)` payload.
-pub fn server_set_context(
-    _config: &mut quic_config_t,
-    _current_time: u64,
-    _default_callback: Option<Box<dyn StreamDataCb>>,
-    _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>,
-) -> Result<Box<quic_t>, Error> {
-    todo!()
-}
-
-/// Spawn `nb_threads_max` server packet-loop threads, one QUIC
-/// context per thread, sharing the supplied callbacks.  C:
-/// `int start_server_threads(…)`.
-///
-/// The C `network_thread_ctx_t** thread_ctxs` out-array
-/// becomes a `&mut [Option<Box<…>>]` slice — the slot count carries
-/// `nb_threads_max`, and successful threads land in the slots; the
-/// number actually started is the `Ok` payload (replacing the C
-/// `int* nb_threads_created`).
-pub fn start_server_threads(
-    _config: &mut quic_config_t,
-    _current_time: u64,
-    _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>,
-    _default_callback: Option<Box<dyn StreamDataCb>>,
-    _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
-    _thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
-    _thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
-    _thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
-    _thread_ctxs: &mut [Option<Box<network_thread_ctx_t>>],
-) -> Result<usize, Error> {
-    todo!()
+impl Config {
+    /// Spawn `thread_ctxs.len()` server packet-loop threads, one
+    /// [`Quic`] per thread, sharing the supplied callbacks.  Each
+    /// QUIC context is created via [`Quic::create_server`].
+    /// C: `int start_server_threads(…)`.
+    ///
+    /// The C `network_thread_ctx_t** thread_ctxs` out-array becomes
+    /// a `&mut [Option<Box<…>>]` slice — the slot count carries the
+    /// C `nb_threads_max`, successful threads land in the slots,
+    /// and the number actually started is the `Ok` payload
+    /// (replacing the C `int* nb_threads_created`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_server_threads(
+        &mut self,
+        _current_time: u64,
+        _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>,
+        _default_callback: Option<Box<dyn StreamDataCb>>,
+        _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+        _thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
+        _thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
+        _thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
+        _thread_ctxs: &mut [Option<Box<NetworkThreadCtx>>],
+    ) -> Result<usize, Error> {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Exposed for unit tests.
+// SocketCtx: per-socket operations (exposed for unit tests).
 
-/// Close one socket and stamp [`socks::INVALID_SOCKET`][inv]
-/// over its slot.  C: `void packet_loop_close_socket
-/// (socket_ctx_t*)`.  Exposed so the unit tests in
-/// `sockloop_test.c` can reach it directly.
-///
-/// [inv]: crate::socks::INVALID_SOCKET
-pub fn packet_loop_close_socket(_s_ctx: &mut socket_ctx_t) {
-    todo!()
+impl SocketCtx {
+    /// Close the socket and reset the `fd` slot to `None`.
+    /// C: `void packet_loop_close_socket(socket_ctx_t*)`.
+    /// Exposed directly so `sockloop_test.c`-derived tests can reach it.
+    pub fn close(&mut self) {
+        todo!()
+    }
 }
 
 /// Open the per-thread socket pair(s) used by the loop.  C:
-/// `int packet_loop_open_sockets(uint16_t local_port, int
-/// local_af, uint16_t public_port, int is_shared, int
-/// socket_buffer_size, int extra_socket_required, int
-/// do_not_use_gso, socket_ctx_t* s_ctx, uint8_t ecn_value)`.
+/// `int packet_loop_open_sockets(…, socket_ctx_t* s_ctx, …)`.
 ///
-/// The slice subsumes the C "callee writes up to N entries"
-/// convention — `s_ctx` must hold at least
-/// [`PACKET_LOOP_SOCKETS_MAX`] elements.  Returns the number
-/// of sockets actually opened (the C return); `Err(())` matches a
+/// `s_ctx` must hold at least [`PACKET_LOOP_SOCKETS_MAX`] slots.
+/// Returns the number of sockets actually opened; `Err` on a
 /// non-recoverable open failure.
-pub fn packet_loop_open_sockets(
+#[allow(clippy::too_many_arguments)]
+pub fn open_sockets(
     _local_port: u16,
     _local_af: i32,
     _public_port: u16,
@@ -741,7 +741,7 @@ pub fn packet_loop_open_sockets(
     _socket_buffer_size: i32,
     _extra_socket_required: bool,
     _do_not_use_gso: bool,
-    _s_ctx: &mut [socket_ctx_t],
+    _s_ctx: &mut [SocketCtx],
     _ecn_value: u8,
 ) -> Result<usize, Error> {
     todo!()

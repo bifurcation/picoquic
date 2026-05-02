@@ -1,20 +1,20 @@
 # claude -p (phase1a) for picoquic/picoquictest_dualq.h
-# elapsed: 165.6s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 290.6s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/picoquictest_dualq.md)
 
 ## stdout
-The file looks correct. Both `cargo check` and `cargo clippy -- -D warnings` pass cleanly.
+Both gates pass cleanly.
 
----
+Summary of changes to `rs/fq/src/test_dualq.rs`:
 
-Three improvements applied to `picoquictest_dualq.rs`:
+- **Type renames**: `dualq_state_t` → `Dualq` and `dualq_queue_t` → `DualqQueue`, dropping the C `_t` suffix. The two `#![allow(non_camel_case_types)]` / `#![allow(non_snake_case)]` lint suppressions are gone — they were masking the C-style names that we just fixed properly.
+- **Field renames** to snake_case: `Tupdate` → `t_update`, `maxTh` → `max_th`, `minTh` → `min_th`, `p_Cmax` → `p_c_max`, `p_Lmax` → `p_l_max`, `pprime` → `p_prime`, `pprime_L` → `p_prime_l`, `p_L` → `p_l`, `p_CL` → `p_cl`, `p_C` → `p_c`. Each kept a `C: <orig>` line in the doc-comment for traceability.
+- **Free functions converted to associated functions / methods**: `dualq_configure(link, l4s_max)` → `Dualq::install(link, l4s_max)`; `dualq_enqueue_queue(xq, packet)` → `DualqQueue::enqueue(&mut self, packet)`; `dualq_dequeue_one(dualq, current_time)` → `Dualq::dequeue_one(&mut self, current_time)`.
+- **Error model cleanup**: dropped the stale "TODO: replace `Err(())` with `Error::Memory` once the enum lands" — the `Error` enum exists, so `Dualq::install` is documented as returning `Err(Error::Memory)` directly. The accompanying `// Status-code returns stand in...` file-level comment is gone.
+- Module docstring rewritten to use the new type/method names and to drop the `Err(())` reference.
 
-1. **Removed `#![allow(non_upper_case_globals)]`** — this module has exactly one constant (`DUALQ_MAX_LINK_RATE`) which is already upper-case, so the allowance was covering nothing and would silently absorb future lint violations.
-
-2. **`#[derive(Default)]` on `dualq_queue_t`** — `*mut T` implements `Default` (yielding `null_mut()`) in `core`, so the 23-line manual impl was pure boilerplate that `derive` handles identically.
-
-3. **`#[derive(Default)]` on `dualq_state_t`** — same reasoning: every field type (`u64`, `i32`, `i64`, `f64`, and `dualq_queue_t` after change 2) satisfies `Default` with zero-value semantics, making the 30-line manual impl unnecessary.
+No callers needed updating (no other module references these symbols; only `pub mod test_dualq;` in `lib.rs`).
 
 
 ## stderr

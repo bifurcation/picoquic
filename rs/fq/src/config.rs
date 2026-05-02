@@ -1,10 +1,10 @@
 //! Translation of `quic/config.h`.
 //!
 //! Demo-application–facing configuration plumbing for quic-core:
-//! the `quic_config_t` bag of CLI-derived options, the
-//! `option_enum_t` tag identifying each option, and the
-//! `create_and_configure` one-shot constructor that turns
-//! a populated config into a fully-wired `quic_t`.
+//! the [`Config`] bag of CLI-derived options, the [`OptionId`]
+//! tag identifying each option, and [`Config::create_and_configure`],
+//! the one-shot constructor that turns a populated config into a
+//! fully-wired [`Quic`].
 //!
 //! Phase 1: signatures only — every body is `todo!()`.
 //!
@@ -41,100 +41,98 @@
 //!   always present in Rust; a `cfg`-gated variant lands when the
 //!   build options are translated.
 
-#![allow(non_camel_case_types)]
-
 use crate::Error;
-use crate::{StreamDataCb, lossbit_version_enum, quic_t, spinbit_version_enum};
+use crate::{LossbitVersion, Quic, SpinbitVersion, StreamDataCb};
 
 // ---------------------------------------------------------------------------
 // Option identifiers.
 
-/// One identifier per CLI / API option understood by
-/// `quic_config_t`.  Mirrors the C
-/// `option_enum_t`; variant order is load-bearing — the
-/// option dispatch table in `quic/config.c` indexes by
-/// variant — so the enum does not get its discriminants reordered.
+/// One identifier per CLI / API option understood by [`Config`].
 ///
-/// `option_SSLKEYLOG` is unconditional here even though
-/// the C enum gates it on `#ifndef WITHOUT_SSLKEYLOG`,
-/// matching the canonical-build behavior; see the module-level
-/// docs for the rationale.
+/// Mirrors the C `picoquic_option_enum_t`; variant order is
+/// load-bearing — the option dispatch table in `quic/config.c`
+/// indexes by variant — so the discriminants do not get reordered.
+///
+/// [`OptionId::SslKeyLog`] is unconditional here even though the C
+/// enum gates it on `#ifndef WITHOUT_SSLKEYLOG`, matching the
+/// canonical-build behavior; see the module-level docs for the
+/// rationale.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum option_enum_t {
-    option_CERT,
-    option_KEY,
-    option_SERVER_PORT,
-    option_PROPOSED_VERSION,
-    option_OUTDIR,
-    option_WWWDIR,
-    option_MAX_CONNECTIONS,
-    option_DO_RETRY,
-    option_INITIAL_RANDOM,
-    option_RESET_SEED,
-    option_DisablePortBlocking,
-    option_SOLUTION_DIR,
-    option_CC_ALGO,
-    option_CC_OPTION,
-    option_SPINBIT,
-    option_LOSSBIT,
-    option_MULTIPATH,
-    option_DEST_IF,
-    option_CIPHER_SUITE,
-    option_INIT_CNXID,
-    option_LOG_FILE,
-    option_LONG_LOG,
-    option_BINLOG_DIR,
-    option_QLOG_DIR,
-    option_MTU_MAX,
-    option_SNI,
-    option_ALPN,
-    option_ROOT_TRUST_FILE,
-    option_FORCE_ZERO_SHARE,
-    option_CNXID_LENGTH,
-    option_NO_DISK,
-    option_Idle_Timeout,
-    option_LARGE_CLIENT_HELLO,
-    option_Ticket_File_Name,
-    option_Token_File_Name,
-    option_Socket_buffer_size,
-    option_Performance_Log,
-    option_Preemptive_Repeat,
-    option_Version_Upgrade,
-    option_No_GSO,
-    option_BDP_frame,
-    option_CWIN_MAX,
-    option_SSLKEYLOG,
-    option_AddressDiscovery,
-    option_ECH_server,
-    option_ECH_client,
-    option_ECH_init,
-    option_FLOW_CONTROL_MAX,
-    option_Preferred_V4,
-    option_Preferred_V6,
-    option_HELP,
+pub enum OptionId {
+    Cert,
+    Key,
+    ServerPort,
+    ProposedVersion,
+    OutDir,
+    WwwDir,
+    MaxConnections,
+    DoRetry,
+    InitialRandom,
+    ResetSeed,
+    DisablePortBlocking,
+    SolutionDir,
+    CcAlgo,
+    CcOption,
+    Spinbit,
+    Lossbit,
+    Multipath,
+    DestIf,
+    CipherSuite,
+    InitCnxId,
+    LogFile,
+    LongLog,
+    BinlogDir,
+    QlogDir,
+    MtuMax,
+    Sni,
+    Alpn,
+    RootTrustFile,
+    ForceZeroShare,
+    CnxIdLength,
+    NoDisk,
+    IdleTimeout,
+    LargeClientHello,
+    TicketFileName,
+    TokenFileName,
+    SocketBufferSize,
+    PerformanceLog,
+    PreemptiveRepeat,
+    VersionUpgrade,
+    NoGso,
+    BdpFrame,
+    CwinMax,
+    SslKeyLog,
+    AddressDiscovery,
+    EchServer,
+    EchClient,
+    EchInit,
+    FlowControlMax,
+    PreferredV4,
+    PreferredV6,
+    Help,
 }
 
 // ---------------------------------------------------------------------------
 // Configuration struct.
 
 /// Configuration bag for a QUIC context, populated from CLI flags
-/// (via [`quic_config_t::command_line`]) or directly
-/// (via [`quic_config_t::set_option`]) and consumed by
-/// [`create_and_configure`].
+/// (via [`Config::command_line`]) or directly (via
+/// [`Config::set_option`]) and consumed by
+/// [`Config::create_and_configure`].
 ///
-/// Mirrors the C `quic_config_t` field-for-field;
+/// Mirrors the C `picoquic_quic_config_t` field-for-field;
 /// `repr(C)` is dropped because the struct never crosses an
 /// external boundary.  See the module-level docs for the
 /// pointer-shape rationale.
 ///
 /// `Default` produces the all-zero / `None` shape that the C side
 /// reaches via `memset(config, 0, sizeof(...))` at the top of
-/// `config_init`.  Callers should follow that with
-/// [`quic_config_t::init`] to pick up the documented
-/// non-zero defaults (`nb_connections = 256`, `cnx_id_length =
-/// -1`, `cwin_max = u64::MAX`, …).
+/// `config_init`.  Callers should follow that with [`Config::init`]
+/// to pick up the documented non-zero defaults
+/// (`nb_connections = 256`, `cnx_id_length = -1`,
+/// `cwin_max = u64::MAX`, …).
 #[derive(Debug, Default)]
-pub struct quic_config_t {
+pub struct Config {
     pub nb_connections: u32,
     pub solution_dir: Option<String>,
     pub server_cert_file: Option<String>,
@@ -145,24 +143,25 @@ pub struct quic_config_t {
     pub performance_log: Option<String>,
     pub server_port: u16,
     pub local_port: u16,
-    pub is_port_shared: i32,
+    /// Whether the public port is shared with sibling threads
+    /// (`SO_REUSEPORT`).  C: `int is_port_shared`, used as a
+    /// Boolean flag.
+    pub is_port_shared: bool,
     pub nb_threads: i32,
     pub dest_if: i32,
     pub mtu_max: i32,
-    /// `-1` is the C "unset" sentinel applied by `init`; values
-    /// `>= 0` set the connection-ID length explicitly.  Kept as
-    /// `i32` rather than `Option<u8>` for source-level parity with
-    /// the C body.
+    /// `-1` is the C "unset" sentinel applied by [`Self::init`];
+    /// values `>= 0` set the connection-ID length explicitly.  Kept
+    /// as `i32` rather than `Option<u8>` for source-level parity
+    /// with the C body.
     pub cnx_id_length: i32,
     pub idle_timeout: i32,
     pub socket_buffer_size: i32,
     pub cc_algo_id: Option<String>,
     pub cc_algo_option_string: Option<String>,
     pub cnx_id_cbdata: Option<String>,
-    /// C: `spinbit_version_enum spinbit_policy`.
-    pub spinbit_policy: spinbit_version_enum,
-    /// C: `lossbit_version_enum lossbit_policy`.
-    pub lossbit_policy: lossbit_version_enum,
+    pub spinbit_policy: SpinbitVersion,
+    pub lossbit_policy: LossbitVersion,
     pub multipath_option: i32,
     pub multipath_alt_config: Option<String>,
     pub bdp_frame_option: i32,
@@ -183,9 +182,10 @@ pub struct quic_config_t {
     // Server only.
     pub www_dir: Option<String>,
     pub reset_seed: [u8; 16],
-    /// Borrowed in C (`config_clear` does not free it);
-    /// owned `Vec<u8>` here for safety.  The C `ticket_encryption_key_length`
-    /// field is dropped — its value is always `ticket_encryption_key.as_ref().map_or(0, Vec::len)`.
+    /// Borrowed in C (`config_clear` does not free it); owned
+    /// `Vec<u8>` here for safety.  The C
+    /// `ticket_encryption_key_length` field is dropped — its value
+    /// is always `ticket_encryption_key.as_ref().map_or(0, Vec::len)`.
     pub ticket_encryption_key: Option<Vec<u8>>,
 
     // Server flags.
@@ -223,60 +223,58 @@ pub struct quic_config_t {
     pub preferred_address_v6: Option<String>,
 }
 
-impl quic_config_t {
-    /// C: `config_init`.  Initialise the struct to the
-    /// documented defaults (256 connections, `cnx_id_length = -1`,
+impl Config {
+    /// Initialise the struct to the documented defaults
+    /// (256 connections, `cnx_id_length = -1`,
     /// `cwin_max = u64::MAX`, idle timeout from
-    /// `MICROSEC_HANDSHAKE_MAX`, etc.).  The C body first
-    /// `memset`s the struct to zero; in Rust we expect the caller
-    /// to start from `Self::default()` so this method only needs
-    /// to layer the non-zero defaults on top.
+    /// `MICROSEC_HANDSHAKE_MAX`, etc.).  C: `picoquic_config_init`.
+    ///
+    /// The C body first `memset`s the struct to zero; in Rust we
+    /// expect the caller to start from `Self::default()` so this
+    /// method only needs to layer the non-zero defaults on top.
     pub fn init(&mut self) {
         todo!()
     }
 
-    /// C: `config_clear`.  Release every owned
-    /// allocation in the struct (C `free`s each `char const*`
-    /// that was set via `config_set_string_param`) and then
-    /// re-initialise via [`Self::init`].  In Rust the `Option`
-    /// fields drop their backing buffers automatically when
-    /// reassigned to `None`, so the body collapses to `*self =
-    /// Self::default()` followed by `self.init()`.
+    /// Release every owned allocation in the struct and re-initialise
+    /// to the documented defaults.  C: `picoquic_config_clear`.
+    ///
+    /// In C this `free`s every `char const*` set via
+    /// `config_set_string_param`; in Rust the `Option` fields drop
+    /// their backing buffers automatically when reassigned, so the
+    /// body collapses to `*self = Self::default()` followed by
+    /// `self.init()`.
     pub fn clear(&mut self) {
         todo!()
     }
 
-    /// C: `config_set_option`.  Apply one option,
-    /// selected by `option_num`, to the config.  `opt_val` is
-    /// optional — flag-style options (`option_DO_RETRY`,
-    /// `option_LONG_LOG`, …) ignore it; value-style
-    /// options require it and return `Err` when it is missing
-    /// or malformed.
+    /// Apply one option, selected by `option`, to the config.
+    /// C: `picoquic_config_set_option`.
+    ///
+    /// `value` is optional — flag-style options ([`OptionId::DoRetry`],
+    /// [`OptionId::LongLog`], …) ignore it; value-style options
+    /// require it and return `Err` when it is missing or malformed.
     ///
     /// The C signature returned `int` (`0` ↔ `Ok`, `-1` ↔ `Err`);
     /// mapped to `Result<(), Error>`.
-    pub fn set_option(
-        &mut self,
-        _option_num: option_enum_t,
-        _opt_val: Option<&str>,
-    ) -> Result<(), Error> {
+    pub fn set_option(&mut self, _option: OptionId, _value: Option<&str>) -> Result<(), Error> {
         todo!()
     }
 
-    /// C: `config_command_line`.  Dispatch one option
-    /// from a single-character flag (`-x`).  `p_optind` advances
-    /// past any extra arguments consumed beyond the inline
-    /// `optarg`, mirroring the C in/out parameter so that an
-    /// outer getopt-style loop stays in sync.
+    /// Dispatch one option from a single-character flag (`-x`).
+    /// C: `picoquic_config_command_line`.
     ///
-    /// `argv` is a borrowed slice of borrowed strings — the C
-    /// caller (`first` etc.) owns the argument vector for
-    /// the program lifetime, so a borrow is safe.  `argc` is
-    /// implicit in `argv.len()` and the `int argc` parameter is
-    /// dropped.
+    /// `p_optind` advances past any extra arguments consumed beyond
+    /// the inline `optarg`, mirroring the C in/out parameter so that
+    /// an outer getopt-style loop stays in sync.
+    ///
+    /// `argv` is a borrowed slice of borrowed strings — the C caller
+    /// (`first` etc.) owns the argument vector for the program
+    /// lifetime, so a borrow is safe.  The C `int argc` parameter is
+    /// dropped (implicit in `argv.len()`).
     pub fn command_line(
         &mut self,
-        _opt: i32,
+        _opt: char,
         _p_optind: &mut usize,
         _argv: &[&str],
         _optarg: Option<&str>,
@@ -284,10 +282,10 @@ impl quic_config_t {
         todo!()
     }
 
-    /// C: `config_command_line_ex`.  Like
-    /// [`Self::command_line`] but accepts both single-character
+    /// Like [`Self::command_line`] but accepts both single-character
     /// (`-x`) and long-form (`--name`) option strings; the leading
     /// dashes are part of `opt_string`, matching the C contract.
+    /// C: `picoquic_config_command_line_ex`.
     pub fn command_line_ex(
         &mut self,
         _opt_string: &str,
@@ -297,72 +295,73 @@ impl quic_config_t {
     ) -> Result<(), Error> {
         todo!()
     }
-}
 
-// ---------------------------------------------------------------------------
-// Free functions.
+    /// Build the getopt-style option string from the dispatch table
+    /// in `config.c` — one letter per option, with `:` after each
+    /// option that takes an argument.  C:
+    /// `picoquic_config_option_letters`.
+    ///
+    /// The C signature wrote into a caller-supplied buffer
+    /// (`option_string`, `string_max`) and reported the populated
+    /// length via `*string_length`.  The Rust wrapper owns the
+    /// buffer and returns it directly, so the buffer-too-small
+    /// failure mode disappears.
+    pub fn option_letters() -> String {
+        todo!()
+    }
 
-/// C: `config_option_letters`.  Build the getopt-style
-/// option string from the dispatch table in `config.c` — one
-/// letter per option, with `:` after each option that takes an
-/// argument.
-///
-/// The C signature wrote into a caller-supplied buffer
-/// (`option_string`, `string_max`) and reported the populated
-/// length via `*string_length`; the Rust wrapper owns the buffer
-/// and returns it directly, so the buffer-too-small failure mode
-/// disappears.  The `Result<String, Error>` shape is kept for
-/// signature stability with the rest of the API.
-pub fn config_option_letters() -> Result<String, Error> {
-    todo!()
-}
+    /// Write the option help to a [`core::fmt::Write`] sink.
+    /// C: `picoquic_config_usage_file`.
+    ///
+    /// The C parameter was `FILE*`; the Rust translation accepts
+    /// any sink (a `String` buffer, the stdout/stderr handles under
+    /// the `std` feature, or a custom writer) so the function
+    /// stays `no_std`-friendly.
+    pub fn write_usage(_w: &mut dyn core::fmt::Write) {
+        todo!()
+    }
 
-/// C: `config_usage_file` — write the option help to a
-/// `core::fmt::Write` sink.  The C parameter was `FILE*`; the
-/// Rust translation accepts any sink (a `String` buffer, the
-/// stdout/stderr handles under the `std` feature, or a custom
-/// writer) so the function stays `no_std`-friendly.
-pub fn config_usage_file(_w: &mut dyn core::fmt::Write) {
-    todo!()
-}
+    /// Print the option help to stderr.  C: `picoquic_config_usage`.
+    ///
+    /// Phase 3 will route this through `eprintln!` (std-only); for
+    /// now it is just a `todo!()`.
+    pub fn print_usage() {
+        todo!()
+    }
 
-/// C: `config_usage` — convenience wrapper that prints
-/// the option help to stderr.  Phase 3 will route this through
-/// `eprintln!` (std-only); for now it is just a `todo!()`.
-pub fn config_usage() {
-    todo!()
-}
-
-/// C: `create_and_configure`.  Build a fully-configured
-/// QUIC context from `config` plus an application-supplied
-/// callback.  Returns `None` when context creation fails (the C
-/// side returned `NULL`).
-///
-/// Pointer-shape choices, derived from the C signature and the
-/// body in `config.c`:
-///
-/// * `config: *mut quic_config_t` is consumed-borrowed
-///   (`&mut`): the body reads every field and may set up
-///   downstream owned state, but it does not free the struct
-///   itself — ownership stays with the caller.
-/// * `default_callback_fn` + `default_callback_ctx` collapse to
-///   one `Option<Box<dyn StreamDataCb>>` per the
-///   function-pointers-map-to-traits rule, with the `void*`
-///   context folded into the trait implementor's state.  `None`
-///   matches the C "no default callback" case where the function
-///   pointer was `NULL`.
-/// * `p_simulated_time: *mut u64` carries simulated wall time for
-///   tests; the C QUIC context retains the pointer across calls,
-///   so an `&'a mut u64` borrow expresses the contract directly.
-///   Phase 3 may revisit (e.g. with a clock trait) once the QUIC
-///   context type is real.
-pub fn create_and_configure(
-    _config: &mut quic_config_t,
-    _default_callback: Option<Box<dyn StreamDataCb>>,
-    _current_time: u64,
-    _p_simulated_time: Option<&mut u64>,
-) -> Option<Box<quic_t>> {
-    todo!()
+    /// Build a fully-configured QUIC context from this config plus
+    /// an application-supplied callback.  C:
+    /// `picoquic_create_and_configure`.
+    ///
+    /// Returns `None` when context creation fails (the C side
+    /// returned `NULL`).
+    ///
+    /// Pointer-shape choices, derived from the C signature and the
+    /// body in `config.c`:
+    ///
+    /// * `picoquic_quic_config_t* config` is consumed-borrowed
+    ///   (`&mut self`): the body reads every field and may set up
+    ///   downstream owned state, but it does not free the struct
+    ///   itself — ownership stays with the caller.
+    /// * `default_callback_fn` + `default_callback_ctx` collapse to
+    ///   one `Option<Box<dyn StreamDataCb>>` per the
+    ///   function-pointers-map-to-traits rule, with the `void*`
+    ///   context folded into the trait implementor's state.  `None`
+    ///   matches the C "no default callback" case where the function
+    ///   pointer was `NULL`.
+    /// * `p_simulated_time: *mut u64` carries simulated wall time for
+    ///   tests; the C QUIC context retains the pointer across calls,
+    ///   so an `&mut u64` borrow expresses the contract directly.
+    ///   Phase 3 may revisit (e.g. with a clock trait) once the QUIC
+    ///   context type is real.
+    pub fn create_and_configure(
+        &mut self,
+        _default_callback: Option<Box<dyn StreamDataCb>>,
+        _current_time: u64,
+        _p_simulated_time: Option<&mut u64>,
+    ) -> Option<Box<Quic>> {
+        todo!()
+    }
 }
 
 #[cfg(test)]

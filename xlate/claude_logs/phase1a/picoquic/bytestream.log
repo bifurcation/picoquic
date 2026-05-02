@@ -1,12 +1,12 @@
 # claude -p (phase1a) for picoquic/bytestream.h
-# elapsed: 310.7s, exit: 0
-# command: claude --model sonnet --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 80
+# elapsed: 317.1s, exit: 0
+# command: claude --model opus --allowedTools 'Read Edit Glob Grep Bash(cargo check:*) Bash(cargo clippy:*)' --max-turns 200
 # (prompt omitted; see xlate/prompts/phase1a/picoquic/bytestream.md)
 
 ## stdout
-Both pass cleanly. The only applied change is removing `#![allow(non_snake_case)]`.
+Both `cargo check` and `cargo clippy -- -D warnings` pass cleanly.
 
-**Summary:** One targeted improvement was applied. All function names (`bytewrite_int8`, `byteread_vint`, `bytestream_ref_init`, etc.), struct fields (`data`, `ptr`, `buf`), and parameters in this module are already snake_case — the `#![allow(non_snake_case)]` suppressed a lint category with no actual violations. Removing it tightens the lint allowances as the review criteria require, without changing behaviour. The `#[derive(Default)]` idiom improvement for `bytestream_buf` was tested but reverted — the toolchain's `Default` blanket impl for arrays larger than 32 elements isn't available, so the explicit `impl Default` is retained. Everything else in the translation is clean: no raw-pointer safety holes (all unsafe-free, all `todo!()`), type shapes are consistent across functions, lifetime annotations on `bytestream_data`/`bytestream_ptr` are correct for the Phase 1 stub, doc comments cover every public item with C-source citations, and the `clippy::result_unit_err` allow is narrow and intentional.
+**Summary of changes**: Renamed all types from snake_case (`bytestream`, `bytestream_data`, `bytestream_buf`) to PascalCase (`ByteStream`, `ByteStreamData`, `ByteStreamBuf`) and dropped the module-level `#![allow(non_camel_case_types)]`. Converted all 28 free functions into methods on `ByteStream` (plus `ByteStreamBuf::stream` for the inline-buffer constructor and `ByteStream::with_capacity` for the owned-allocation constructor in a dedicated `impl ByteStream<'static>`), and renamed them to idiomatic Rust (`bytewrite_int8` → `write_u8`, `byteread_int8` → `read_u8`, `byteshow_int8` → `peek_u8`, `bytestream_finished` → `is_finished`, `bytestream_length` → `position`, `bytestream_remain` → `remaining`, `bytestream_data` → `as_bytes`, `bytestream_ptr` → `tail`, etc.). Made the `data`, `ptr`, and `buf` fields private (encapsulated) — accessors like `as_bytes()`, `position()`, `tail()` are the public surface — with a targeted `#[allow(dead_code)]` carrying a comment explaining it disappears once Phase 3 fills in the `todo!()` bodies. Dropped the `bytestream_delete` shim entirely (Drop handles freeing) and updated the module doc to reflect the new shape.
 
 
 ## stderr

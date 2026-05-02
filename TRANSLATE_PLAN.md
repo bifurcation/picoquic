@@ -16,7 +16,7 @@ In scope for v1:
 
 * **Only the `picoquic/` directory** — the picoquic-core library.  This
   is CMake's `picoquic-core` target.  `picoquictest/` is translated in
-  Phase 2 (just the tests for picoquic-core, i.e., the files in CMake's
+  Phase 3 (just the tests for picoquic-core, i.e., the files in CMake's
   `PICOQUIC_TEST_LIBRARY_FILES` list).  Single target
   (`x86_64-unknown-linux-gnu`).
 * `no_std` + `alloc`, with an `std` feature gate.
@@ -168,7 +168,7 @@ substantively.
    pointers where statically resolvable.  Compute height per function
    (BFS from leaves: leaves are height 0; every other node's height is
    the shortest path to a leaf).  Identify mutually recursive function
-   pairs — these will be translated as a unit in Phase 3.  Output:
+   pairs — these will be translated as a unit in Phase 4.  Output:
    `xlate/call_graph.json`.
 5. Build a progress dashboard at `xlate/dashboard.html`.  Inputs: the
    call/include graph from step 3 plus a scan of the (initially empty)
@@ -223,7 +223,7 @@ work parallelizable across translators (human or AI).
    * Map external dependencies to crates.io / `core` / `alloc` / sys
      crates — never reimplement.
 3. **Bodies are `todo!()`.**  Signatures may be wrong; we'll find out in
-   Phase 3 and refine.
+   Phase 4 and refine.
 4. **Add an empty `#[cfg(test)] mod test {}`** at the end of the module.
 5. **Per-file gate:** `cargo fmt`, `cargo clippy -- -D warnings`,
    `cargo check` all pass.
@@ -446,7 +446,180 @@ Phase 1 is complete when:
 5. No plain `// REVIEW: ` comments remain (only `// REVIEW(open):`,
    each with a human-actionable reason recorded).
 
-## Phase 2 — Translate tests
+## Phase 2 — Dependency abstraction
+
+Phase 1 stubs the *library's* surface; Phase 2 stubs the surface
+between the library and everything outside it.  The Rust port has
+**no fixed external dependencies** — every capability the library
+borrows from the outside world is reached through a trait.  A
+concrete implementation (picotls, OpenSSL, the OS sockets layer)
+satisfies that trait, but is interchangeable.  This is what lets v2
+swap picotls for rustls, swap OpenSSL for `ring`, or run on an
+embedded target with no allocator changes.
+
+This phase runs after the per-module Phase 1 work has settled
+(1A → 1B → 1C) and before Phase 3 brings tests into the picture —
+tests need a concrete dependency wiring to link, and that wiring
+should be the abstraction layer's first consumer, not an ad-hoc
+shim.
+
+### Top-level rules
+
+* **Two-direction traits.**  For each capability boundary, define
+  *both* directions explicitly:
+  * **Provider trait** — calls that flow *from* the library *into*
+    the dependency.  The dependency implements this trait.
+    Naming convention: capability noun, no suffix (`TlsStack`,
+    `AeadCipher`, `RandomSource`, `Clock`).  These traits live
+    next to the module that consumes them.
+  * **Callback trait** — calls that flow *from* the dependency
+    back *into* the library.  The library implements this trait
+    (or supplies a struct that does).  Naming convention:
+    capability noun + role (`TlsCallbacks`, `PacketSink`).  These
+    traits also live next to the consuming module, even though
+    the *implementation* is on a library type.
+* **No concrete dependency types in the library's public API.**
+  No `picotls::ptls_t` in a function signature, no `openssl::EVP_*`
+  in a struct field.  If the C source exposed one, the Rust port
+  hides it behind the relevant trait and the trait's associated
+  types.
+* **Prefer `core` / `alloc` / `std` over external dependencies.**
+  Where the C source borrows from a library only because C lacks
+  the facility (file I/O, string formatting, integer parsing, byte
+  buffer manipulation, sorted maps), the Rust port uses the
+  standard library directly:
+  * `FILE*` + `fprintf` → `core::fmt::Write` for formatting,
+    `std::io::Write` (gated on the `std` feature) for byte sinks.
+  * `printf`-style formatting → `write!` / `format!`.
+  * `qsort` → `slice::sort_by`.
+  * `memcpy` / `memmove` → slice assignment / `copy_from_slice`.
+  * `strtoul` / `atoi` → `str::parse`.
+  * Sorted maps / sets → `BTreeMap` / `BTreeSet` from `alloc`.
+
+  The trait abstraction is reserved for genuinely external
+  capabilities (TLS, crypto, sockets, RNG, system clock), not
+  for facilities the language already provides.
+* **`std`-only capabilities are gated.**  Anything that pulls in
+  `std::io`, `std::net`, `std::time::Instant`, etc., lives behind
+  the `std` Cargo feature.  The trait itself is `no_std`-clean;
+  the *default implementation* using `std` is feature-gated.
+
+### What gets abstracted (initial inventory)
+
+The list below is the starting point — Phase 2 begins by
+re-deriving it from the current Rust source, but these are the
+capability boundaries already visible:
+
+* **TLS stack** — currently picotls.  Provider trait covers the
+  TLS state machine, key schedule output, and certificate
+  verification hooks.  Callback trait covers picoquic's
+  ticket store, ALPN negotiation, and transport-parameter
+  exchange.
+* **Crypto provider** — currently OpenSSL or mbedtls.  Provider
+  traits per primitive: `AeadCipher`, `Hash`, `Hkdf`, `Signer`,
+  `Verifier`.  Already partially scaffolded as
+  `crypto_provider_api.rs` from the C header.
+* **Random source** — currently OpenSSL's `RAND_bytes`.
+  `RandomSource` provider trait (`fn fill(&mut self, buf: &mut [u8])`).
+  A `std`-feature default backed by `getrandom` is acceptable.
+* **Clock** — the C library already takes "now" as a parameter,
+  so this is purely the *application's* clock.  Define a `Clock`
+  trait so applications can inject a virtual clock for the test
+  simulator without going through the public `current_time`
+  parameter for every call.
+* **Sockets / packet I/O** — already abstract in the C library
+  (the application feeds packets in and polls them out).  The
+  Rust equivalent is a `PacketIo` provider trait plus a
+  `PacketSink` callback trait, both `std`-gated for the default
+  UDP-socket implementation.
+* **Logging output** — `FILE*` in the C source becomes
+  `core::fmt::Write` for the formatted-text path and the `log`
+  crate's facade for level-filtered events.  No new trait
+  needed — these *are* the standard abstractions.
+
+### Per-capability procedure
+
+For each capability:
+
+1. **Locate the boundary.**  Find every place in `rs/fq/src/`
+   where the current translation references a concrete external
+   type (a stub `extern crate` symbol, an opaque type name lifted
+   from a C dependency header, a free function whose only purpose
+   is to call into the dependency).
+2. **Define the provider trait** in the module that owns the
+   capability.  Methods follow the C call patterns observed in
+   step 1, with C signatures translated per the Phase 1 pointer
+   rules.
+3. **Define the callback trait** if the C dependency calls back
+   into the library.  Same module.
+4. **Refactor library code** to take a `&mut impl Provider` (or
+   a generic type parameter, or a `&mut dyn Provider` if dynamic
+   dispatch is preferable for object-safety reasons).  Concrete
+   dependency types disappear from the library's surface.
+5. **Provide a default implementation** for the dependency the
+   C library currently uses.  Default implementations live in a
+   sibling module (`tls_picotls.rs`, `crypto_openssl.rs`,
+   `clock_std.rs`) and are feature-gated where appropriate
+   (`#[cfg(feature = "std")]` for OS-backed implementations,
+   per-backend Cargo features for swappable backends).
+6. **Run the gate.**  `cargo check` for every meaningful feature
+   combination: default features, `--no-default-features`,
+   `--no-default-features --features alloc`.  `cargo clippy
+   -- -D warnings` for the default build.
+
+### Cargo feature layout
+
+After Phase 2, `Cargo.toml` looks roughly like:
+
+```toml
+[features]
+default      = ["std", "tls-picotls", "crypto-openssl"]
+std          = []
+tls-picotls  = ["dep:picotls-sys"]
+tls-rustls   = ["dep:rustls"]                      # v2 backend
+crypto-openssl = ["dep:openssl"]
+crypto-mbedtls = ["dep:mbedtls"]                   # v1 alternate
+crypto-ring  = ["dep:ring"]                        # v2 backend
+```
+
+The library compiles with **any one** TLS backend and **any one**
+crypto backend selected, or with neither (consumers supply their
+own implementations).  The traits are the contract; the backends
+are interchangeable.
+
+### Scripting
+
+`scripts/phase2.py` (to be written) drives the pass per
+capability rather than per file:
+
+* Iterates a manually-curated capability list (initially the
+  inventory above, refined as the work progresses).
+* Per capability: composes a prompt naming the trait to define,
+  the C reference(s), and the Rust modules that should consume
+  the trait.
+* Same `claude -p` allowlist as 1A — Read/Edit/Glob/Grep plus
+  cargo gates.
+* State at `xlate/phase2_state.json`, keyed by capability name.
+
+### Phase 2 acceptance gate
+
+Phase 2 is complete when:
+
+1. No public function or type in `rs/fq/src/` mentions a concrete
+   external dependency.  (Greppable check: no `picotls::`,
+   `openssl::`, `mbedtls::`, `getrandom::` outside the
+   feature-gated default-implementation modules.)
+2. Every capability has a provider trait and, where applicable,
+   a callback trait, both documented.
+3. A default implementation exists for each dependency the C
+   library currently uses, behind the matching Cargo feature.
+4. `cargo check --no-default-features --features alloc` passes
+   (the library compiles with no backends selected — consumers
+   wire their own).
+5. `cargo check` and `cargo clippy -- -D warnings` pass with
+   default features.
+
+## Phase 3 — Translate tests
 
 For each C test:
 
@@ -475,13 +648,13 @@ For each C test:
 * A script reads each C test file, extracts API symbols, looks them up
   in the Phase 1 module map, and picks the destination module.
 
-### Phase 2 acceptance gate
+### Phase 3 acceptance gate
 
 `cargo test` runs to completion.  Every test fails by panicking on a
 `todo!()` (or matching panic message).  No segfault, no abort, no
 compile error.  The panic *is* the clean fail.
 
-## Phase 3 — Translate implementations
+## Phase 4 — Translate implementations
 
 ### Order
 
@@ -522,7 +695,7 @@ function the call graph called a leaf, the translator implements the
 required trait method and moves on — no need to regenerate the call
 graph.
 
-### Tooling for Phase 3
+### Tooling for Phase 4
 
 * `scripts/next_todo.py` — prints remaining `todo!()`s with file/line and
   which still-failing tests need them, surfaces the next function to
@@ -539,7 +712,7 @@ graph.
 * libclang + Python — Phase 0 AST analysis, call graph, dashboard.
 * `bindgen` — per-file allowlisted reference output (never shipped).
 * Python scripts — driver for Phase 1 module skeletons; `next_todo.py`
-  for Phase 3.
+  for Phase 4.
 * `cargo check` and `cargo test` — inner loop, manually invoked.
 * `cargo fmt` and `cargo clippy` — style and lint gates.
 
