@@ -50,11 +50,6 @@
 // C `#define` / enum tag names verbatim — Rust's `non_upper_case_globals`
 // lint disagrees with that style, so silence it module-wide.
 #![allow(non_upper_case_globals)]
-// Many enums share a common prefix that mirrors the C enum tags
-// one-to-one (`state_*`, `callback_*`, …).
-// Renaming would break the source-level parity required by the
-// translation plan.
-#![allow(clippy::enum_variant_names)]
 // Phase 1 stubs return `Result<T, ()>` until the crate-level `Error`
 // type lands; clippy's `result_unit_err` is silenced module-wide.
 #![allow(clippy::result_unit_err)]

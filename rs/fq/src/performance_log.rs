@@ -38,9 +38,6 @@ pub const PERF_LOG_MAX_ITEMS: usize = 27;
 /// CSV column identifiers for the per-connection metric vector.
 /// Mirrors the C enum of the same name; discriminants match the C
 /// values 0..=26.
-// Variant names mirror the C enum tags one-to-one and all share the
-// `perflog_` prefix; renaming would break source-level parity.
-#[allow(non_camel_case_types, clippy::enum_variant_names)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u32)]
 pub enum perflog_column_enum {

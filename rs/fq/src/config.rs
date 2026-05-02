@@ -42,10 +42,6 @@
 //!   build options are translated.
 
 #![allow(non_camel_case_types)]
-// Variant names mirror the C enum tags one-to-one and all share
-// the `option_` prefix.  Renaming would break source-level
-// parity required by the translation plan.
-#![allow(clippy::enum_variant_names)]
 
 use crate::{StreamDataCb, lossbit_version_enum, quic_t, spinbit_version_enum};
 
