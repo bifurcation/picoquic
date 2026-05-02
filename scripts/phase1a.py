@@ -131,8 +131,25 @@ def topological_order(headers: list[str]) -> list[str]:
 # Path helpers (mirror Phase 1)
 
 def rust_path_for(header: str) -> Path:
-    p = Path(header).with_suffix(".rs")
-    return RS_SRC / p
+    """Map `picoquic/<x>.h` to its Rust translation path.
+
+    Reflects the Stage 1 flatten + pico-prefix strip:
+    - `picoquic/picoquic.h` (kitchen-sink) lives in `lib.rs`.
+    - `picoquic/picoquic_<X>.h` → `rs/fq/src/<X>.rs`.
+    - `picoquic/picoquictest_<X>.h` → `rs/fq/src/test_<X>.rs`.
+    - `picoquic/pico<X>.h` → `rs/fq/src/<X>.rs` (hash, socks, splay).
+    - Everything else (no pico prefix) keeps its name.
+    """
+    name = Path(header).stem
+    if name == "picoquic":
+        return RS_SRC / "lib.rs"
+    if name.startswith("picoquictest_"):
+        name = "test_" + name[len("picoquictest_"):]
+    elif name.startswith("picoquic_"):
+        name = name[len("picoquic_"):]
+    elif name.startswith("pico"):
+        name = name[len("pico"):]
+    return RS_SRC / f"{name}.rs"
 
 
 def prompt_path(header: str) -> Path:
