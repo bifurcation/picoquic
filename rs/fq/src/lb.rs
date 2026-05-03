@@ -2,23 +2,23 @@
 //!
 //! Server-side support for the QUIC load-balancer draft
 //! (<https://datatracker.ietf.org/doc/draft-ietf-quic-load-balancers/>):
-//! parse the LB-supplied configuration string into an [`LbConfig`],
+//! parse the LB-supplied configuration string into a [`Config`],
 //! then install a per-server CID-generation / -verification context
-//! ([`LbCidContext`]) on a [`Quic`] via the connection-ID callback
-//! hook.
+//! ([`ConnectionIdContext`]) on a [`Quic`] via the connection-ID
+//! callback hook.
 //!
 //! ## API shape
 //!
-//! * [`LbConfig::parse`] takes the LB string as `&str` and returns
+//! * [`Config::parse`] takes the LB string as `&str` and returns
 //!   the populated config; the C `(char const* txt, size_t
 //!   txt_length)` pair plus zeroed out-parameter collapse to a
 //!   normal Rust constructor.
-//! * [`Quic::set_lb_cid_config`] applies an `LbConfig` to the QUIC
+//! * [`Quic::set_lb_cid_config`] applies a `Config` to the QUIC
 //!   context, installing the per-server CID context.
 //! * [`Quic::clear_lb_cid_config`] tears the installed context back
 //!   down (no-op when none is installed).
-//! * [`LbCidContext::generate`] / [`LbCidContext::verify`] are the
-//!   per-CID callback bodies.  They are exposed as inherent methods
+//! * [`ConnectionIdContext::generate`] / [`ConnectionIdContext::verify`]
+//!   are the per-CID callback bodies.  They are exposed as inherent methods
 //!   so the eventual [`crate::ConnectionIdCb`] trait impl can
 //!   delegate to them; the C `void* cnx_id_cb_data` parameter is
 //!   recovered as `&mut self`.
@@ -85,13 +85,11 @@ pub enum RotationBits {
 /// `repr(C)` is dropped — the struct is purely an internal shape,
 /// never inspected by an LB or another process.
 ///
-/// REVIEW(open): the user wanted this renamed to `Config` to drop
-/// the duplicative `Lb` prefix, but that collides with
-/// [`crate::config::Config`].  Decide whether to rename the demo-app
-/// config first (it is a much wider surface) or keep this one
-/// distinct.
+/// Lives in `crate::lb`; consumers that also import the demo-app
+/// [`crate::config::Config`] should rename one at the import
+/// site (`use crate::lb::Config as LbConfig;`).
 #[derive(Debug, Default)]
-pub struct LbConfig {
+pub struct Config {
     pub method: ConnectionIdMethod,
     pub rotation_bits: RotationBits,
     /// 1-bit field in C; promoted to `bool` to match call-site usage.
@@ -107,9 +105,9 @@ pub struct LbConfig {
     pub cid_encryption_key: [u8; 16],
 }
 
-impl LbConfig {
+impl Config {
     /// Parse an LB-format configuration string into a fresh
-    /// [`LbConfig`].  Returns `Err` when the string is malformed,
+    /// [`Config`].  Returns `Err` when the string is malformed,
     /// the embedded server ID overflows 8 bytes, or the encoded CID
     /// length is incompatible with the chosen method.
     /// C: `lb_compat_cid_config_parse`.
@@ -127,7 +125,7 @@ impl LbConfig {
 // Per-server CID context.
 
 /// Per-server context attached to a [`Quic`] once a load-balancer
-/// config has been applied.  Built from an [`LbConfig`] by
+/// config has been applied.  Built from a [`Config`] by
 /// [`Quic::set_lb_cid_config`] and consumed by the
 /// [`crate::ConnectionIdCb`] hook.
 /// C: `load_balancer_cid_context_t`.
@@ -199,7 +197,7 @@ impl Quic {
     /// callback configured, when the requested CID length doesn't
     /// fit the chosen method, or when the AES context allocation
     /// fails.
-    pub fn set_lb_cid_config(&mut self, _lb_config: &LbConfig) -> Result<(), Error> {
+    pub fn set_lb_cid_config(&mut self, _lb_config: &Config) -> Result<(), Error> {
         todo!()
     }
 
