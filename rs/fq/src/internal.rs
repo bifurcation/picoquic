@@ -53,6 +53,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 
+use core::any::Any;
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
@@ -840,8 +841,14 @@ pub trait MemLogHook {
 pub struct Quic {
     pub tls_master_ctx: *mut c_void,
     pub default_callback_fn: Option<Box<dyn StreamDataCb>>,
-    pub default_callback_ctx: *mut c_void,
-    pub mask_ctx: *mut c_void,
+    /// Application-supplied state forwarded to the default
+    /// stream-data callback.  Opaque to the library (the C side
+    /// passed it through as `void*`).  Phase 4 may push the state
+    /// into the `StreamDataCb` impl itself, at which point this
+    /// field disappears.
+    pub default_callback_ctx: Option<Box<dyn Any>>,
+    /// State for the DCID-mask callbacks; opaque to the library.
+    pub mask_ctx: Option<Box<dyn Any>>,
     pub mask_fns: Option<Box<dyn MaskOps>>,
     pub default_alpn: Option<String>,
     pub alpn_select_fn: Option<Box<dyn AlpnSelect>>,
@@ -978,7 +985,9 @@ pub struct Quic {
     pub nb_data_nodes_allocated_max: i32,
 
     pub cnx_id_callback_fn: Option<Box<dyn ConnectionIdCb>>,
-    pub cnx_id_callback_ctx: *mut c_void,
+    /// Application-supplied state for the CID callback.  Opaque
+    /// to the library.
+    pub cnx_id_callback_ctx: Option<Box<dyn Any>>,
 
     pub aead_encrypt_ticket_ctx: *mut c_void,
     pub aead_decrypt_ticket_ctx: *mut c_void,
@@ -990,7 +999,8 @@ pub struct Quic {
     pub default_tp: TransportParameters,
 
     pub fuzz_fn: Option<Box<dyn Fuzz>>,
-    pub fuzz_ctx: *mut c_void,
+    /// Application state for the fuzz callback.
+    pub fuzz_ctx: Option<Box<dyn Any>>,
     pub wake_file: i32,
     pub wake_line: i32,
 
@@ -1007,8 +1017,10 @@ pub struct Quic {
     pub bin_log_fns: Option<Box<dyn Logger>>,
     pub qlog_fns: Option<Box<dyn Logger>>,
     pub perflog_fn: Option<Box<dyn PerformanceLog>>,
-    pub v_perflog_ctx: *mut c_void,
-    pub v_thread_ctx: *mut c_void,
+    /// Application state for the performance-log callback.
+    pub v_perflog_ctx: Option<Box<dyn Any>>,
+    /// Application state for the thread callbacks.
+    pub v_thread_ctx: Option<Box<dyn Any>>,
 }
 
 pub fn context_from_epoch(_epoch: i32) -> PacketContext {
@@ -1098,9 +1110,11 @@ pub struct StreamHead {
     /// Outbound send queue.  Replaces the C `send_queue` head +
     /// per-node `next_stream_data` chain.
     pub send_queue: VecDeque<StreamQueueNode>,
-    pub app_stream_ctx: *mut c_void,
+    /// Application-supplied state attached to this stream.
+    pub app_stream_ctx: Option<Box<dyn Any>>,
     pub direct_receive_fn: Option<Box<dyn StreamDirectReceive>>,
-    pub direct_receive_ctx: *mut c_void,
+    /// Application-supplied state for the direct-receive callback.
+    pub direct_receive_ctx: Option<Box<dyn Any>>,
     pub sack_list: SackList,
     pub stream_priority: u8,
 
@@ -1339,7 +1353,8 @@ pub struct Path {
     /// O(1) removal on path teardown / migration.
     pub cnx_by_net_membership: Option<HashToken>,
     pub unique_path_id: u64,
-    pub app_path_ctx: *mut c_void,
+    /// Application-supplied state attached to this path.
+    pub app_path_ctx: Option<Box<dyn Any>>,
     pub ack_ctx: AckContext,
     pub pkt_ctx: PacketContextState,
     /// Tuples (peer-addr × local-addr × if-index) currently bound
@@ -1569,7 +1584,8 @@ pub struct Connection {
     pub max_early_data_size: usize,
 
     pub callback_fn: Option<Box<dyn StreamDataCb>>,
-    pub callback_ctx: *mut c_void,
+    /// Application-supplied state for the per-connection callback.
+    pub callback_ctx: Option<Box<dyn Any>>,
 
     pub cnx_state: State,
     pub initial_cnxid: ConnectionId,
@@ -1761,8 +1777,10 @@ pub struct Connection {
     pub f_binlog: *mut c_void,
     pub binlog_file_name: Option<PathBuf>,
     pub memlog_call_back: Option<Box<dyn MemLogHook>>,
-    pub memlog_ctx: *mut c_void,
-    pub qlog_ctx: *mut c_void,
+    /// Application-supplied state for the memory-log hook.
+    pub memlog_ctx: Option<Box<dyn Any>>,
+    /// Application-supplied state for the qlog backend.
+    pub qlog_ctx: Option<Box<dyn Any>>,
 }
 
 // `Connection` carries `Box<dyn Trait>` and raw pointers, so a
@@ -1939,17 +1957,16 @@ pub fn prepare_path_control_packet(
     todo!()
 }
 
-pub fn prepare_path_challenge_frames(
+pub fn prepare_path_challenge_frames<'a>(
     _cnx: &mut Connection,
     _path_x: &mut Path,
-    _bytes_next: &mut [u8],
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _is_challenge_padding_needed: &mut i32,
     _current_time: u64,
     _next_wake_time: &mut u64,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3022,26 +3039,24 @@ pub fn next_stream(_stream: *mut StreamHead) -> *mut StreamHead {
     todo!()
 }
 
-pub fn decode_stream_frame(
+pub fn decode_stream_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *const u8,
-    _bytes_max: *const u8,
+    _bytes: &'a [u8],
     _received_data: &mut StreamDataNode,
     _current_time: u64,
-) -> *const u8 {
+) -> Option<&'a [u8]> {
     todo!()
 }
 
-pub fn format_stream_frame(
+pub fn format_stream_frame<'a>(
     _cnx: &mut Connection,
     _stream: &mut StreamHead,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _is_still_active: &mut i32,
     _ret: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3064,17 +3079,16 @@ pub fn check_frame_needs_repeat(
     todo!()
 }
 
-pub fn format_available_stream_frames(
+pub fn format_available_stream_frames<'a>(
     _cnx: &mut Connection,
     _path_x: &mut Path,
-    _bytes_next: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _current_priority: u64,
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _stream_tried_and_failed: &mut i32,
     _ret: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3094,23 +3108,21 @@ pub fn first_data_repeat_packet(_cnx: &mut Connection) -> *mut Packet {
     todo!()
 }
 
-pub fn copy_stream_frame_for_retransmit(
+pub fn copy_stream_frame_for_retransmit<'a>(
     _cnx: &mut Connection,
     _packet: &mut Packet,
-    _bytes_next: *mut u8,
-    _bytes_max: *mut u8,
-) -> *mut u8 {
+    _bytes: &'a mut [u8],
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn copy_stream_frames_for_retransmit(
+pub fn copy_stream_frames_for_retransmit<'a>(
     _cnx: &mut Connection,
-    _bytes_next: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _current_priority: u64,
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3180,11 +3192,10 @@ pub fn is_stream_frame_unlimited(_bytes: &[u8]) -> bool {
 }
 
 pub fn format_stream_frame_header(
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &mut [u8],
     _stream_id: u64,
     _offset: u64,
-) -> *mut u8 {
+) -> Option<&mut [u8]> {
     todo!()
 }
 
@@ -3213,88 +3224,80 @@ pub fn parse_ack_header(
     todo!()
 }
 
-pub fn decode_crypto_hs_frame(
+pub fn decode_crypto_hs_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *const u8,
-    _bytes_max: *const u8,
+    _bytes: &'a [u8],
     _received_data: &mut StreamDataNode,
     _epoch: i32,
-) -> *const u8 {
+) -> Option<&'a [u8]> {
     todo!()
 }
 
-pub fn format_crypto_hs_frame(
+pub fn format_crypto_hs_frame<'a>(
     _stream: &mut StreamHead,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_ack_frame(
+pub fn format_ack_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _current_time: u64,
     _pc: PacketContext,
     _is_opportunistic: i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_connection_close_frame(
+pub fn format_connection_close_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_application_close_frame(
+pub fn format_application_close_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_required_max_stream_data_frames(
+pub fn format_required_max_stream_data_frames<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_max_data_frame(
+pub fn format_max_data_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _maxdata_increase: u64,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_max_stream_data_frame(
+pub fn format_max_stream_data_frame<'a>(
     _cnx: &mut Connection,
     _stream: &mut StreamHead,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _new_max_data: u64,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3302,13 +3305,12 @@ pub fn cc_increased_window(_cnx: &mut Connection, _previous_window: u64) -> u64 
     todo!()
 }
 
-pub fn format_max_streams_frame_if_needed(
+pub fn format_max_streams_frame_if_needed<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3382,23 +3384,21 @@ pub fn find_local_cnxid(
     todo!()
 }
 
-pub fn format_path_challenge_frame(
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+pub fn format_path_challenge_frame<'a>(
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _challenge: u64,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_path_response_frame(
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+pub fn format_path_response_frame<'a>(
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _challenge: u64,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3410,34 +3410,31 @@ pub fn should_repeat_path_response_frame(
     todo!()
 }
 
-pub fn format_new_connection_id_frame(
+pub fn format_new_connection_id_frame<'a>(
     _cnx: &mut Connection,
     _local_cnxid_list: &mut LocalCnxidList,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _l_cid: *mut LocalCnxid,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_max_path_id_frame(
-    _bytes: *mut u8,
-    _bytes_max: *const u8,
+pub fn format_max_path_id_frame<'a>(
+    _bytes: &'a mut [u8],
     _max_path_id: u64,
     _more_data: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_blocked_frames(
+pub fn format_blocked_frames<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3462,26 +3459,24 @@ impl Connection {
     }
 }
 
-pub fn format_one_blocked_frame(
+pub fn format_one_blocked_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _stream: &mut StreamHead,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_first_misc_or_dg_frame(
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+pub fn format_first_misc_or_dg_frame<'a>(
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _misc_frame: *mut MiscFrameHeader,
     _first: &mut *mut MiscFrameHeader,
     _last: &mut *mut MiscFrameHeader,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3489,14 +3484,13 @@ pub fn find_first_misc_frame(_cnx: &mut Connection, _pc: PacketContext) -> *mut 
     todo!()
 }
 
-pub fn format_misc_frames_in_context(
+pub fn format_misc_frames_in_context<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _pc: PacketContext,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3539,74 +3533,67 @@ impl Connection {
     }
 }
 
-pub fn format_first_datagram_frame(
+pub fn format_first_datagram_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _is_first_in_packet: i32,
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_ready_datagram_frame(
+pub fn format_ready_datagram_frame<'a>(
     _cnx: &mut Connection,
     _path_x: &mut Path,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _ret: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn decode_datagram_frame_header(
-    _bytes: *const u8,
-    _bytes_max: *const u8,
+pub fn decode_datagram_frame_header<'a>(
+    _bytes: &'a [u8],
     _frame_id: &mut u8,
     _length: &mut u64,
-) -> *const u8 {
+) -> Option<&'a [u8]> {
     todo!()
 }
 
-pub fn parse_ack_frequency_frame(
-    _bytes: *const u8,
-    _bytes_max: *const u8,
+pub fn parse_ack_frequency_frame<'a>(
+    _bytes: &'a [u8],
     _seq: &mut u64,
     _packets: &mut u64,
     _microsec: &mut u64,
     _ignore_order: &mut u8,
     _reordering_threshold: &mut u64,
-) -> *const u8 {
+) -> Option<&'a [u8]> {
     todo!()
 }
 
-pub fn format_ack_frequency_frame(
+pub fn format_ack_frequency_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_immediate_ack_frame(
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+pub fn format_immediate_ack_frame<'a>(
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_time_stamp_frame(
+pub fn format_time_stamp_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _current_time: u64,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3614,24 +3601,22 @@ pub fn encode_time_stamp_length(_cnx: &mut Connection, _current_time: u64) -> us
     todo!()
 }
 
-pub fn format_bdp_frame(
+pub fn format_bdp_frame<'a>(
     _cnx: &mut Connection,
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+    _bytes: &'a mut [u8],
     _path_x: &mut Path,
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn format_path_abandon_frame(
-    _bytes: *mut u8,
-    _bytes_max: *mut u8,
+pub fn format_path_abandon_frame<'a>(
+    _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _path_id: u64,
     _reason: u64,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3663,39 +3648,36 @@ pub fn decode_frames(
     todo!()
 }
 
-pub fn parse_observed_address_frame(
-    _bytes: *const u8,
-    _bytes_max: *const u8,
+pub fn parse_observed_address_frame<'a>(
+    _bytes: &'a [u8],
     _ftype: u64,
     _sequence: &mut u64,
     _addr: &mut *const u8,
     _port: &mut u16,
-) -> *const u8 {
+) -> Option<&'a [u8]> {
     todo!()
 }
 
-pub fn format_observed_address_frame(
-    _bytes: *mut u8,
-    _bytes_max: *const u8,
+pub fn format_observed_address_frame<'a>(
+    _bytes: &'a mut [u8],
     _ftype: u64,
     _sequence_number: u64,
-    _addr: *mut u8,
+    _addr: &[u8],
     _port: u16,
     _more_data: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn prepare_observed_address_frame(
-    _bytes: *mut u8,
-    _bytes_max: *const u8,
+pub fn prepare_observed_address_frame<'a>(
+    _bytes: &'a mut [u8],
     _path_x: &mut Path,
     _tuple: &mut Tuple,
     _current_time: u64,
     _next_wake_time: &mut u64,
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-) -> *mut u8 {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -3712,11 +3694,11 @@ pub fn skip_frame(
     todo!()
 }
 
-pub fn skip_path_abandon_frame(_bytes: *const u8, _bytes_max: *const u8) -> *const u8 {
+pub fn skip_path_abandon_frame(_bytes: &[u8]) -> Option<&[u8]> {
     todo!()
 }
 
-pub fn skip_path_available_or_backup_frame(_bytes: *const u8, _bytes_max: *const u8) -> *const u8 {
+pub fn skip_path_available_or_backup_frame(_bytes: &[u8]) -> Option<&[u8]> {
     todo!()
 }
 
@@ -3759,15 +3741,14 @@ pub fn delete_sooner_packets(_cnx: &mut Connection) {
 // ---------------------------------------------------------------------------
 // Transport extensions and version upgrade.
 
-pub fn process_tp_version_negotiation(
-    _bytes: *const u8,
-    _bytes_max: *const u8,
+pub fn process_tp_version_negotiation<'a>(
+    _bytes: &'a [u8],
     _extension_mode: i32,
     _envelop_vn: u32,
     _negotiated_vn: &mut u32,
     _negotiated_index: &mut i32,
     _vn_error: &mut u64,
-) -> *const u8 {
+) -> Option<&'a [u8]> {
     todo!()
 }
 
