@@ -6,7 +6,9 @@
 //! for v1); this module is the picoquic-core stub that links
 //! against it on demand.
 
-use crate::{Error, Quic};
+use std::path::Path;
+
+use crate::{Quic, Result};
 
 impl Quic {
     /// Enable qlog tracing on this context, writing one qlog file per
@@ -15,12 +17,12 @@ impl Quic {
     /// qlog records until the context is dropped.
     ///
     /// Both observed call sites guard on the directory being set
-    /// before calling, so the parameter is `&str` rather than
-    /// `Option<&str>`; the C `int` status (0 / -1) becomes
-    /// `Result<(), Error>`.
+    /// before calling, so the parameter is borrowed (no
+    /// `Option<…>`); the C `int` status (0 / -1) becomes
+    /// `Result<()>`.
     ///
     /// C: `int set_qlog(Quic*, char const*)`.
-    pub fn set_qlog(&mut self, _qlog_dir: &str) -> Result<(), Error> {
+    pub fn set_qlog(&mut self, _qlog_dir: &(impl AsRef<Path> + ?Sized)) -> Result<()> {
         todo!()
     }
 }

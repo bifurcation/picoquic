@@ -38,9 +38,6 @@
 //!
 //! Phase 1 contract: signatures only; every body is `todo!()`.
 
-extern crate alloc;
-
-use alloc::boxed::Box;
 use core::net::SocketAddr;
 
 use crate::ConnectionId;
@@ -62,9 +59,9 @@ pub enum ByteStreamData<'a> {
     Borrowed(&'a mut [u8]),
     /// Heap-allocated buffer owned by the bytestream.  Used by
     /// [`ByteStream::with_capacity`].  Freed by the [`Drop`] impl
-    /// on the boxed slice — replaces the explicit
-    /// `bytestream_delete` call in C.
-    Owned(Box<[u8]>),
+    /// on the vector — replaces the explicit `bytestream_delete`
+    /// call in C.
+    Owned(Vec<u8>),
 }
 
 /// Cursor over a byte buffer.  C: `bytestream`.
@@ -141,22 +138,32 @@ impl<'a> ByteStream<'a> {
     }
 
     /// Slice from the cursor to the end of the buffer (offsets
-    /// `position..size`).  C: `bytestream_ptr` returning
+    /// `len()..capacity()`).  C: `bytestream_ptr` returning
     /// `const uint8_t*`.
+    ///
+    /// REVIEW(open): only the encrypt/decrypt helpers in
+    /// `quic/quicctx.c` use this — they want a writable tail to
+    /// hand to the AEAD layer.  Keep until those callers are
+    /// translated; if Phase 4 finds no users, drop it.
     pub fn tail(&self) -> &[u8] {
         todo!()
     }
 
     /// Total active capacity (the C `size` field).  C:
     /// `bytestream_size`.
-    pub fn size(&self) -> usize {
+    pub fn capacity(&self) -> usize {
         todo!()
     }
 
     /// Bytes consumed so far (the C `ptr` field).  C:
     /// `bytestream_length`.
-    pub fn position(&self) -> usize {
+    pub fn len(&self) -> usize {
         todo!()
+    }
+
+    /// `true` when no bytes have been consumed yet.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Bytes left between the cursor and the end of the buffer.
@@ -243,18 +250,18 @@ impl<'a> ByteStream<'a> {
 
     /// Write a QUIC variable-length integer (RFC 9000 §16).  C:
     /// `bytewrite_vint`.
-    pub fn write_vint(&mut self, _value: u64) -> Result<(), Error> {
+    pub fn write_varint(&mut self, _value: u64) -> Result<(), Error> {
         todo!()
     }
 
-    /// Read a QUIC variable-length integer.  C: `byteread_vint`.
-    pub fn read_vint(&mut self) -> Result<u64, Error> {
+    /// Read a QUIC variable-length integer.  C: `byteread_varint`.
+    pub fn read_varint(&mut self) -> Result<u64, Error> {
         todo!()
     }
 
     /// Skip past a QUIC variable-length integer without decoding
-    /// it.  C: `byteread_skip_vint`.
-    pub fn skip_vint(&mut self) -> Result<(), Error> {
+    /// it.  C: `byteread_skip_varint`.
+    pub fn skip_varint(&mut self) -> Result<(), Error> {
         todo!()
     }
 
@@ -359,8 +366,8 @@ impl ByteStream<'static> {
 
 impl ByteStream<'_> {
     /// Encoded byte-length of `value` as a QUIC varint (1, 2, 4,
-    /// or 8 bytes).  C: `bytestream_vint_len`.
-    pub fn vint_encoded_len(_value: u64) -> usize {
+    /// or 8 bytes).  C: `bytestream_varint_len`.
+    pub fn varint_encoded_len(_value: u64) -> usize {
         todo!()
     }
 }

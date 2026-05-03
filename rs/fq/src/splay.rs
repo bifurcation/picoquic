@@ -1,239 +1,224 @@
-//! Translation of `quic/splay.h`.
+//! Token-based splay tree.
 //!
-//! An intrusive top-down splay tree.  [`SplayNode`] is a
-//! three-pointer header that callers embed inside their own value
-//! struct (see `sack_item_t.node`,
-//! `stream_data_node_t.stream_data_node`, etc.).  The four
-//! function-pointer fields on the tree (comparator, create,
-//! delete_node, node_value) tell the tree how to compare keys,
-//! allocate fresh nodes, free them, and project a node pointer
-//! back to its key.
+//! Replaces the C `picosplay_tree_t` (top-down splay with intrusive
+//! `picosplay_node_t`s embedded in the caller's structs and four
+//! function pointers — `comparator`, `create`, `delete_node`,
+//! `node_value` — plumbed through the API).
 //!
-//! Translation choices:
+//! ## API shape
 //!
-//! * The four function pointers fold into one [`SplayOps`]
-//!   trait per the "function pointers map to traits" rule.
-//! * [`SplayNode`]'s `parent`/`left`/`right` and
-//!   [`SplayTree::root`] stay as raw `*mut SplayNode`.
-//!   The chain is intrusive — the tree does not own the nodes, the
-//!   user struct that wraps each node does — and no safe Rust
-//!   container expresses that ownership pattern.  Phase 3 will
-//!   dereference these inside `unsafe { … }` blocks with
-//!   `// SAFETY:` notes.
-//! * `value`/`key` parameters stay as `*mut c_void` (type-erased
-//!   key pointers, mirroring the C signature).  The Phase 3 caller
-//!   knows the real type via its [`SplayOps`] impl.
-//! * The boxed constructor returns `Option<Box<SplayTree>>`
-//!   so allocation failure surfaces in the type rather than as a
-//!   null pointer.
-//! * [`SplayTree::init`] is kept (rather than collapsed into
-//!   [`SplayTree::empty`]) because every in-tree caller embeds a
-//!   `SplayTree` inside a larger struct that gets zeroed and then
-//!   run through `init` — see `quic/sacks.c:435`,
-//!   `quic/quicctx.c:1501`, etc.  The `Option<Box<dyn SplayOps>>`
-//!   field expresses that "uninitialised intermediate" state.
+//! `SplayTree<K, V>` is a slotmap-backed ordered map.  `K: Ord`
+//! provides comparison; `V` is the stored value (typically a
+//! token into another arena).  Callers handle [`SplayToken`]s
+//! returned by `insert`/`find`; the parent/left/right linkage
+//! lives inside the slot, never inside the caller's struct.
 //!
-//! Phase 1 contract: signatures only; every body is `todo!()`.
+//! Tokens are stable across operations on *other* keys.  A splay
+//! rotation that lifts node A to the root rewrites the linkage of
+//! the rotation path, but slot indices don't move and tokens for
+//! those nodes stay valid.  Removal bumps the slot's generation
+//! and frees the slot for reuse — old tokens then return `None`
+//! from [`SplayTree::get`].
 //!
-//! Adapted from <https://github.com/lrem/splay> (MIT, © 2014
-//! Remigiusz Modrzejewski).
+//! ## Phase 4 plan — implementation
+//!
+//! Bodies are `todo!()`.  Phase 4 picks one of:
+//!
+//! 1. **Hand-roll the slotmap.**  Internal layout:
+//!
+//!    ```ignore
+//!    struct Slot<K, V> {
+//!        generation: u32,
+//!        state: SlotState<K, V>,
+//!    }
+//!    enum SlotState<K, V> {
+//!        Free   { next_free: Option<u32> },
+//!        Filled {
+//!            key:    K,
+//!            value:  V,
+//!            parent: Option<u32>,
+//!            left:   Option<u32>,
+//!            right:  Option<u32>,
+//!        },
+//!    }
+//!    pub struct SplayTree<K, V> {
+//!        slots: Vec<Slot<K, V>>,
+//!        free:  Option<u32>,
+//!        root:  Option<u32>,
+//!        len:   usize,
+//!    }
+//!    ```
+//!
+//!    Standard top-down splay over `u32` indices.  Every "follow a
+//!    pointer" in the C body becomes "index into `self.slots`."
+//!
+//! 2. **Replace with a third-party crate.**  `splay_tree`,
+//!    `splay-tree`, or BTreeMap (if log-N is fine and we don't
+//!    actually need access locality).  picoquic uses splay
+//!    specifically for the access-locality property in
+//!    `cnx_wake_tree` (the next-to-fire connection is usually the
+//!    one we just touched).  `BTreeMap` is the safe-default
+//!    fallback; a real splay crate is the performance-preserving
+//!    choice.
+//!
+//! ## Phase 4 plan — call sites
+//!
+//! Same pattern as the hash table.  Every C site of the form
+//!
+//! ```c
+//! struct Foo { …; picosplay_node_t node; …; };
+//! picosplay_init_tree(&tree, foo_compare, foo_create, foo_delete, foo_value);
+//! picosplay_insert(&tree, &foo);     // value = pointer to parent
+//! ```
+//!
+//! becomes
+//!
+//! ```ignore
+//! struct Foo {
+//!     // … real fields …
+//!     wake_tree_membership: Option<SplayToken>,   // for fast O(1) removal
+//! }
+//! let tok = tree.insert(key, foo_arena_token);
+//! foo.wake_tree_membership = Some(tok);
+//! // …
+//! tree.remove(foo.wake_tree_membership.take().unwrap());
+//! ```
+//!
+//! In particular, every C `_create` callback (which just projected
+//! the embedded `SplayNode` out of a parent pointer) disappears —
+//! the parent already lives in its own arena, the splay tree only
+//! stores a token to it.
 
-use core::ffi::c_void;
-use core::ptr::{self, NonNull};
+use core::marker::PhantomData;
 
-// ---------------------------------------------------------------------------
-// Operations vtable.
+use crate::Error;
 
-/// Bundle of the four function pointers attached to a
-/// `picosplay_tree_t` in C.  Per the translation rules,
-/// function-pointer typedefs that travel together collapse to one
-/// trait; the four splay callbacks are always installed as a unit
-/// by [`SplayTree::init`], so they live in one trait here.
-pub trait SplayOps {
-    /// Compare two keys: negative when `left < right`, zero on
-    /// equal, positive when `left > right`.  Mirrors
-    /// `int64_t (*picosplay_comparator)(void*, void*)`.
-    fn compare(&self, left: *mut c_void, right: *mut c_void) -> i64;
-
-    /// Allocate a fresh node carrying `value` and return a pointer
-    /// to its embedded [`SplayNode`].  `None` mirrors a `NULL`
-    /// return from the C callback (allocation failure).  Mirrors
-    /// `picosplay_node_t* (*picosplay_create)(void*)`.
-    fn create(&self, value: *mut c_void) -> Option<NonNull<SplayNode>>;
-
-    /// Free the node previously produced by [`create`].  In C the
-    /// first argument is `void* tree`, opaque to the splay code and
-    /// passed straight through from [`SplayTree::delete_hint`];
-    /// keep the same type-erased pointer here so Phase 3 can wire
-    /// it through unchanged.
-    ///
-    /// [`create`]: SplayOps::create
-    fn delete_node(&self, tree: *mut c_void, node: NonNull<SplayNode>);
-
-    /// Project an embedded node pointer back to its key.  Mirrors
-    /// `void* (*picosplay_node_value)(picosplay_node_t*)`.
-    fn node_value(&self, node: NonNull<SplayNode>) -> *mut c_void;
-}
-
-// ---------------------------------------------------------------------------
-// Node: the intrusive header embedded in each user value struct.
-
-/// One node header in the splay tree.  C: `picosplay_node_t`.
+/// Opaque handle into a [`SplayTree`]'s slot vector.
 ///
-/// All three pointers stay raw because the nodes form an intrusive
-/// in-tree chain whose endpoints are owned by the surrounding user
-/// struct, not by this module.
-#[derive(Debug)]
-pub struct SplayNode {
-    pub parent: *mut SplayNode,
-    pub left: *mut SplayNode,
-    pub right: *mut SplayNode,
+/// `idx` selects a slot; `generation` is incremented on every
+/// removal so an old token comparing against a recycled slot
+/// returns `None` from [`SplayTree::get`].
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub struct SplayToken {
+    idx: u32,
+    generation: u32,
 }
 
-impl SplayNode {
-    /// Build a fresh, unlinked node header.  Useful for embedding
-    /// in larger user structs at construction time.
+/// Splay tree mapping `K` to `V`, addressable by [`SplayToken`].
+///
+/// Operations rotate the touched node to the root for access
+/// locality — that's the whole reason picoquic uses splay rather
+/// than red-black or AVL.  `K: Ord` provides comparison; `V` is
+/// typically a token into some other arena.
+pub struct SplayTree<K, V> {
+    /// Phase 4 fills the body — see module docs.
+    _slots: PhantomData<(K, V)>,
+}
+
+impl<K: Ord, V> SplayTree<K, V> {
+    /// Build an empty tree.
     pub const fn new() -> Self {
         Self {
-            parent: ptr::null_mut(),
-            left: ptr::null_mut(),
-            right: ptr::null_mut(),
+            _slots: PhantomData,
         }
     }
 
-    /// In-order predecessor of `node`, or `None` if `node` is the
-    /// minimum.  Walks the intrusive parent/child links; takes the
-    /// node by `NonNull` because the chain is not owned by this
-    /// module.  C: `picosplay_previous`.
-    pub fn previous(_node: NonNull<SplayNode>) -> Option<NonNull<SplayNode>> {
+    /// Insert `(key, value)`, splay it to the root, and return its
+    /// token.  If `key` was already present, the previous value is
+    /// replaced and returned in the `Ok` payload.
+    ///
+    /// Returns [`Error::Memory`] on slot-vector allocation failure.
+    pub fn insert(&mut self, _key: K, _value: V) -> Result<(SplayToken, Option<V>), Error> {
         todo!()
     }
 
-    /// In-order successor of `node`, or `None` if `node` is the
+    /// Look up `key`, splaying the matching node to the root.
+    /// Returns its token, or `None` on miss.  C: `picosplay_find`.
+    pub fn find(&mut self, _key: &K) -> Option<SplayToken> {
+        todo!()
+    }
+
+    /// Locate the largest node whose key is `<= key`, without
+    /// splaying.  C: `picosplay_find_previous`.  Returns `None`
+    /// when no node is small enough.
+    pub fn find_previous(&self, _key: &K) -> Option<SplayToken> {
+        todo!()
+    }
+
+    /// Smallest (left-most) node, or `None` for an empty tree.
+    /// C: `picosplay_first`.
+    pub fn first(&self) -> Option<SplayToken> {
+        todo!()
+    }
+
+    /// Largest (right-most) node, or `None` for an empty tree.
+    /// C: `picosplay_last`.
+    pub fn last(&self) -> Option<SplayToken> {
+        todo!()
+    }
+
+    /// In-order predecessor of `token`, or `None` if it is the
+    /// minimum.  C: `picosplay_previous`.
+    pub fn previous(&self, _token: SplayToken) -> Option<SplayToken> {
+        todo!()
+    }
+
+    /// In-order successor of `token`, or `None` if it is the
     /// maximum.  C: `picosplay_next`.
-    pub fn next(_node: NonNull<SplayNode>) -> Option<NonNull<SplayNode>> {
-        todo!()
-    }
-}
-
-impl Default for SplayNode {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Tree.
-
-/// Splay-tree handle.  C: `picosplay_tree_t`.
-///
-/// * `root` stays raw for the same reason as the node pointers.
-/// * `ops` is `Option<Box<dyn SplayOps>>` so the type has a
-///   sensible default — every in-tree caller embeds the tree inside
-///   a larger struct that gets zeroed and then run through
-///   [`SplayTree::init`], so the "uninitialised intermediate"
-///   state has to be expressible.  After [`SplayTree::init`] the
-///   field is always `Some`.
-/// * `size` mirrors the C field directly (kept signed).
-pub struct SplayTree {
-    pub root: *mut SplayNode,
-    pub ops: Option<Box<dyn SplayOps>>,
-    pub size: i32,
-}
-
-impl SplayTree {
-    /// Build an empty, uninitialised tree.  Equivalent to
-    /// `memset(&tree, 0, sizeof tree)` in C; the caller follows up
-    /// with [`SplayTree::init`] before use.
-    pub const fn empty() -> Self {
-        Self {
-            root: ptr::null_mut(),
-            ops: None,
-            size: 0,
-        }
-    }
-
-    /// Initialise an empty tree in place, attaching its
-    /// [`SplayOps`] vtable.  C: `picosplay_init_tree`.
-    pub fn init(&mut self, _ops: Box<dyn SplayOps>) {
+    pub fn next(&self, _token: SplayToken) -> Option<SplayToken> {
         todo!()
     }
 
-    /// Allocate a new tree on the heap and initialise it.  `None`
-    /// mirrors a `malloc` failure (the C version returns `NULL`).
-    /// C: `picosplay_new_tree`.
-    pub fn new_boxed(_ops: Box<dyn SplayOps>) -> Option<Box<Self>> {
+    /// Borrow the value at `token`, or `None` if stale or out of
+    /// bounds.
+    pub fn get(&self, _token: SplayToken) -> Option<&V> {
         todo!()
     }
 
-    /// Insert a new node carrying `value`, then splay it to the
-    /// root.  Returns the freshly inserted node, or `None` if the
-    /// create callback returned `NULL` (allocation failure on the
-    /// user side).  C: `picosplay_insert`.
-    pub fn insert(&mut self, _value: *mut c_void) -> Option<NonNull<SplayNode>> {
+    /// Mutably borrow the value at `token`, or `None` if stale.
+    pub fn get_mut(&mut self, _token: SplayToken) -> Option<&mut V> {
         todo!()
     }
 
-    /// Locate the node whose key compares equal to `value` and
-    /// splay it to the root.  Returns `None` on miss.
-    /// C: `picosplay_find`.
-    pub fn find(&mut self, _value: *mut c_void) -> Option<NonNull<SplayNode>> {
+    /// Borrow the `(key, value)` pair at `token`.
+    pub fn get_key_value(&self, _token: SplayToken) -> Option<(&K, &V)> {
         todo!()
     }
 
-    /// Locate the largest node whose key is less than or equal to
-    /// `value`.  Unlike [`SplayTree::find`] this does *not* splay
-    /// the tree.  C: `picosplay_find_previous`.
-    pub fn find_previous(&self, _value: *mut c_void) -> Option<NonNull<SplayNode>> {
+    /// Remove the entry at `token` (O(1) once located via the
+    /// stored membership token).  Bumps the slot's generation.
+    /// Returns `None` for stale tokens.  C: `picosplay_delete_hint`.
+    pub fn remove(&mut self, _token: SplayToken) -> Option<(K, V)> {
         todo!()
     }
 
-    /// Return the smallest (left-most) node, or `None` for an
-    /// empty tree.  C: `picosplay_first`.
-    pub fn first(&self) -> Option<NonNull<SplayNode>> {
+    /// Remove the entry matching `key` (locating it via the tree
+    /// first — splay walk, then unlink).  Prefer [`SplayTree::remove`]
+    /// when a token is on hand.  C: `picosplay_delete`.
+    pub fn remove_by_key(&mut self, _key: &K) -> Option<V> {
         todo!()
     }
 
-    /// Return the largest (right-most) node, or `None` for an
-    /// empty tree.  C: `picosplay_last`.
-    pub fn last(&self) -> Option<NonNull<SplayNode>> {
+    /// Number of live entries.
+    pub fn len(&self) -> usize {
         todo!()
     }
 
-    /// Locate `value` and remove the matching node.  No-op when
-    /// `value` is absent.  C: `picosplay_delete`.
-    pub fn delete(&mut self, _value: *mut c_void) {
-        todo!()
+    /// `true` when the tree is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
-    /// Remove a previously-located `node`.  `None` mirrors the C
-    /// `if (node == NULL) return` early exit; the caller commonly
-    /// passes the result of [`SplayTree::find`] (which itself may
-    /// be `None`) straight into this function.
-    /// C: `picosplay_delete_hint`.
-    pub fn delete_hint(&mut self, _node: Option<NonNull<SplayNode>>) {
-        todo!()
-    }
-
-    /// Drop every node, leaving the tree empty.
-    /// C: `picosplay_empty_tree`.
+    /// Drop every entry.  Tokens issued before the call are stale
+    /// after it.  C: `picosplay_empty_tree`.
     pub fn clear(&mut self) {
         todo!()
     }
 }
 
-impl Default for SplayTree {
+impl<K: Ord, V> Default for SplayTree<K, V> {
     fn default() -> Self {
-        Self::empty()
-    }
-}
-
-impl core::fmt::Debug for SplayTree {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SplayTree")
-            .field("root", &self.root)
-            .field("size", &self.size)
-            .finish_non_exhaustive()
+        Self::new()
     }
 }
 

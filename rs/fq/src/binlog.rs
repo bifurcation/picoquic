@@ -14,7 +14,7 @@
 //!    `FILE*` or `cnx->f_binlog` pulled from the connection.  The
 //!    Rust split mirrors that: the three file-only writers ([`pdu`],
 //!    [`packet`], [`tls_ticket`]) are free functions on a [`File`]
-//!    sink, and the rest hang as inherent methods on [`Cnx`] (they
+//!    sink, and the rest hang as inherent methods on [`Connection`] (they
 //!    pull the file handle from `cnx.f_binlog` themselves).
 //!
 //! Phase 1 contract: signatures only — every body is `todo!()`.
@@ -22,16 +22,13 @@
 //!
 //! Pointer-shape and translation policy notes for this module:
 //!
-//! * `FILE*` (the three low-level writers) → `&mut File`,
-//!   re-using the opaque file handle introduced in
-//!   [`crate::utils`].  These calls borrow the
-//!   handle for the duration of one record write — ownership stays
-//!   with the connection (`cnx->f_binlog`) or the caller.  Note that
-//!   the binlog stream is *binary*, so the text-side
-//!   `&mut dyn core::fmt::Write` convention used by
-//!   [`crate::logger::write_tls_ticket`]
-//!   does not apply here.
-//! * `Quic*` / `Cnx*` — every observed caller passes a non-NULL
+//! * `FILE*` (the three low-level writers) → `&mut std::fs::File`.
+//!   These calls borrow the handle for the duration of one record
+//!   write — ownership stays with the connection (`cnx->f_binlog`)
+//!   or the caller.  The binlog stream is *binary*, so the text-side
+//!   `&mut impl core::fmt::Write` convention used by
+//!   [`crate::logger::write_tls_ticket`] does not apply here.
+//! * `Quic*` / `Connection*` — every observed caller passes a non-NULL
 //!   handle and the body mutates internal state (`quic->bin_log_fns`,
 //!   `cnx->f_binlog`, `quic->binlog_dir`).  Free functions whose
 //!   first argument was one of these become inherent methods on the
@@ -45,19 +42,19 @@
 //! * `const ConnectionId*` (in [`pdu`] / [`packet`]) →
 //!   `&ConnectionId`.  The C contract is "must be non-NULL"; every
 //!   caller passes `&cnx->initial_cnxid`.
-//! * `ConnectionId* dcid` (in [`Cnx::binlog_packet_lost`]) is
+//! * `ConnectionId* dcid` (in [`Connection::binlog_packet_lost`]) is
 //!   nullable per `loss_recovery.c` — when no remote CID is known
 //!   the C call site passes NULL and the body emits a single zero
 //!   length byte.  Maps to `Option<&ConnectionId>`.  The C signature
 //!   drops `const` but the body only reads through the pointer, so
 //!   the Rust equivalent stays a shared borrow.
-//! * `packet_header* ph` (in [`Cnx::binlog_dropped_packet`],
-//!   [`Cnx::binlog_outgoing_packet`]) — the body only *reads*
+//! * `packet_header* ph` (in [`Connection::binlog_dropped_packet`],
+//!   [`Connection::binlog_outgoing_packet`]) — the body only *reads*
 //!   `ph->ptype` in the dropped path and reconstructs a fresh header
-//!   in the outgoing path.  In [`Cnx::binlog_outgoing_packet`] the
+//!   in the outgoing path.  In [`Connection::binlog_outgoing_packet`] the
 //!   parsed-header buffer is constructed locally, so no pointer
 //!   crosses the API boundary.  In [`packet`] /
-//!   [`Cnx::binlog_dropped_packet`] we map `ph` to `&PacketHeader`
+//!   [`Connection::binlog_dropped_packet`] we map `ph` to `&PacketHeader`
 //!   (immutable borrow) — matching the unified-log trait shape.
 //! * `ConnectionId cnx_id` (in [`tls_ticket`]) is `Copy` and
 //!   pass-by-value, mirroring the C ABI.
@@ -66,18 +63,18 @@
 //!   established in [`crate::unified_log`].
 //! * `const uint8_t* + size_t` argument pairs collapse to `&[u8]`
 //!   (`bytes`/`bytes_max` in [`packet`], `params`/`param_length` in
-//!   [`Cnx::binlog_transport_extension`], `ticket`/`ticket_length`
+//!   [`Connection::binlog_transport_extension`], `ticket`/`ticket_length`
 //!   in [`tls_ticket`], `sni`/`sni_len` and `alpn`/`alpn_len` in
-//!   [`Cnx::binlog_negotiated_alpn`]).  An empty slice models the C
+//!   [`Connection::binlog_negotiated_alpn`]).  An empty slice models the C
 //!   `(NULL, 0)` callers cleanly.
-//! * [`Cnx::binlog_outgoing_packet`] carries *two* buffers: the
+//! * [`Connection::binlog_outgoing_packet`] carries *two* buffers: the
 //!   unencrypted `bytes` (length passed separately as `length`) and
 //!   the encrypted `send_buffer` (length passed separately as
 //!   `send_length`).  Each pair collapses to one `&[u8]`.  The
 //!   `pn_length` parameter — the offset of the packet-number field
 //!   inside `bytes` — survives as a separate `usize`.
 //! * `const PtlsIovec* alpn_list, size_t alpn_count` →
-//!   `&[PtlsIovec]`, mirroring the unified-log trait shape.
+//!   `&[&[u8]]`, mirroring the unified-log trait shape.
 //! * `int receiving` / `int is_local` are pure 0/1 flags promoted to
 //!   `bool`; `int err` is a real signed status code so it stays
 //!   `i32`.
@@ -87,7 +84,7 @@
 //!   `Some(path)` installs the vtable and copies the directory name
 //!   into the QUIC context; `None` leaves the directory cleared
 //!   while still wiring up the vtable.
-//! * `char const* trigger` (in [`Cnx::binlog_packet_lost`]) is
+//! * `char const* trigger` (in [`Connection::binlog_packet_lost`]) is
 //!   always a non-NULL static string literal at the call sites
 //!   grepped in `loss_recovery.c`, so it maps to `&str`.
 //!
@@ -95,12 +92,14 @@
 //! (always `0` today, but reserved for future failure modes) as
 //! `Result<(), Error>` per the project's error-handling convention.
 
+use std::fs::File;
+use std::path::Path as FsPath;
+
 use core::net::SocketAddr;
 
 use crate::Error;
-use crate::internal::{Cnx, PacketHeader, PacketType, Path};
-use crate::utils::File;
-use crate::{ConnectionId, PtlsIovec, Quic};
+use crate::internal::{Connection, PacketHeader, PacketType, Path};
+use crate::{ConnectionId, Quic};
 
 // ---------------------------------------------------------------------------
 // Event-tag enum.
@@ -149,14 +148,14 @@ pub enum LogEventType {
 // ---------------------------------------------------------------------------
 // Low-level per-event writers.
 //
-// Free functions on a [`File`] sink — these don't carry a `Cnx`
+// Free functions on a [`File`] sink — these don't carry a `Connection`
 // handle, so calls are namespaced through the module path
 // (`binlog::pdu(...)`, `binlog::packet(...)`,
 // `binlog::tls_ticket(...)`).  Callers usually go through the
-// [`Cnx`] methods below, which thread through `cnx.f_binlog`; the
+// [`Connection`] methods below, which thread through `cnx.f_binlog`; the
 // file-only writers are kept public for the contexts where the
 // caller already owns the handle (e.g., the binlog backend's
-// implementation of [`crate::unified_log::UnifiedLogging`]).
+// implementation of [`crate::unified_log::Logger`]).
 
 /// Write a PDU arrival/departure record to `f`.
 ///
@@ -206,7 +205,7 @@ pub fn tls_ticket(_f: &mut File, _cnx_id: ConnectionId, _ticket: &[u8]) {
 }
 
 // ---------------------------------------------------------------------------
-// High-level per-event writers — methods on [`Cnx`].
+// High-level per-event writers — methods on [`Connection`].
 //
 // Each method pulls the file handle from `cnx.f_binlog` and
 // delegates to one of the low-level writers above (or composes
@@ -214,10 +213,16 @@ pub fn tls_ticket(_f: &mut File, _cnx_id: ConnectionId, _ticket: &[u8]) {
 // keeps the binary-trace API distinct from the unified-log
 // dispatch methods (`cnx.log_*`) on the same type.
 
-impl Cnx {
+// REVIEW(open): replace these `impl Connection` blocks with a local
+// trait (`Binlog`) implemented on `Connection`, so callers can opt into
+// the capability and the `binlog_` prefix can drop.  Same shape
+// applies to the per-Connection blocks in `unified_log`, `qlog`, and the
+// `cc_*` accessors in `cc_common`.  Land it once Phase 2 has
+// settled the dependency-trait conventions.
+impl Connection {
     /// Report that a packet was dropped due to some error.
     ///
-    /// C: `void binlog_dropped_packet(Cnx*, Path*,
+    /// C: `void binlog_dropped_packet(Connection*, Path*,
     /// packet_header*, size_t, int, uint64_t)`.
     pub fn binlog_dropped_packet(
         &mut self,
@@ -232,7 +237,7 @@ impl Cnx {
 
     /// Report that a packet was buffered waiting for decryption.
     ///
-    /// C: `void binlog_buffered_packet(Cnx*, Path*,
+    /// C: `void binlog_buffered_packet(Connection*, Path*,
     /// packet_type_enum, uint64_t)`.
     pub fn binlog_buffered_packet(
         &mut self,
@@ -249,7 +254,7 @@ impl Cnx {
     /// padded wire form.  `pn_length` is the offset of the
     /// packet-number field inside `bytes`.
     ///
-    /// C: `void binlog_outgoing_packet(Cnx*, Path*,
+    /// C: `void binlog_outgoing_packet(Connection*, Path*,
     /// uint8_t*, uint64_t, size_t, size_t, uint8_t*, size_t,
     /// uint64_t)`.
     pub fn binlog_outgoing_packet(
@@ -268,7 +273,7 @@ impl Cnx {
     /// connection ID is unknown — the C body emits a single zero
     /// byte in that case.
     ///
-    /// C: `void binlog_packet_lost(Cnx*, Path*,
+    /// C: `void binlog_packet_lost(Connection*, Path*,
     /// packet_type_enum, uint64_t, char const*,
     /// ConnectionId*, size_t, uint64_t)`.
     pub fn binlog_packet_lost(
@@ -287,7 +292,7 @@ impl Cnx {
     /// Log negotiated SNI / ALPN.  Empty `sni`/`alpn` slices stand
     /// in for the C `(NULL, 0)` callers.
     ///
-    /// C: `void binlog_negotiated_alpn(Cnx*, int,
+    /// C: `void binlog_negotiated_alpn(Connection*, int,
     /// uint8_t const*, size_t, uint8_t const*, size_t,
     /// const PtlsIovec*, size_t)`.
     pub fn binlog_negotiated_alpn(
@@ -295,14 +300,14 @@ impl Cnx {
         _is_local: bool,
         _sni: &[u8],
         _alpn: &[u8],
-        _alpn_list: &[PtlsIovec],
+        _alpn_list: &[&[u8]],
     ) {
         todo!()
     }
 
     /// Binary alternative to `log_transport_extension()`.
     ///
-    /// C: `void binlog_transport_extension(Cnx*, int, size_t,
+    /// C: `void binlog_transport_extension(Connection*, int, size_t,
     /// uint8_t*)`.
     pub fn binlog_transport_extension(&mut self, _is_local: bool, _params: &[u8]) {
         todo!()
@@ -313,7 +318,7 @@ impl Cnx {
     /// when neither `quic->binlog_dir` nor `quic->qlog_dir` are
     /// set, or when `quic->bin_log_fns` is `NULL`.
     ///
-    /// C: `void binlog_new_connection(Cnx*)`.
+    /// C: `void binlog_new_connection(Connection*)`.
     pub fn binlog_new_connection(&mut self) {
         todo!()
     }
@@ -323,7 +328,7 @@ impl Cnx {
     /// currently open (the C body guards on `cnx->f_binlog !=
     /// NULL`).
     ///
-    /// C: `void binlog_close_connection(Cnx*)`.
+    /// C: `void binlog_close_connection(Connection*)`.
     pub fn binlog_close_connection(&mut self) {
         todo!()
     }
@@ -332,7 +337,7 @@ impl Cnx {
     /// queues, etc.  Called either just after processing an
     /// incoming packet or just after sending one.
     ///
-    /// C: `void binlog_cc_dump(Cnx*, Path*, uint64_t)`.
+    /// C: `void binlog_cc_dump(Connection*, Path*, uint64_t)`.
     pub fn binlog_cc_dump(&mut self, _path_x: &mut Path, _current_time: u64) {
         todo!()
     }
@@ -351,7 +356,10 @@ impl Quic {
     /// — the return is `0` today but reserved for failure modes;
     /// mapped to `Result<(), Error>` per the project's
     /// error-handling convention.
-    pub fn set_binlog(&mut self, _binlog_dir: Option<&str>) -> Result<(), Error> {
+    pub fn set_binlog(
+        &mut self,
+        _binlog_dir: Option<&(impl AsRef<FsPath> + ?Sized)>,
+    ) -> Result<(), Error> {
         todo!()
     }
 

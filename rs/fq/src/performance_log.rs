@@ -12,11 +12,10 @@
 //! defined in `performance_log.c` are private to that translation
 //! unit and will land alongside their bodies in Phase 3.
 
+use std::path::Path;
+
 use crate::Error;
 use crate::Quic;
-
-// ---------------------------------------------------------------------------
-// Tunable constants (`#define`s in the header).
 
 /// Schema version stamped at the start of every CSV row.  Bumped if
 /// the column layout changes incompatibly.
@@ -28,9 +27,6 @@ pub const PER_LOG_VERSION: u32 = 1;
 /// dimension and as a loop bound, hence `usize`.
 /// C: `PICOQUIC_PERF_LOG_MAX_ITEMS`.
 pub const PERF_LOG_MAX_ITEMS: usize = 27;
-
-// ---------------------------------------------------------------------------
-// Column index for the metric vector.
 
 /// CSV column identifiers for the per-connection metric vector.
 /// Each variant names one slot in the metric vector and its position
@@ -83,9 +79,6 @@ impl PerflogColumn {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public API on the QUIC context.
-
 impl Quic {
     /// Attach a performance log to this QUIC context, writing CSV
     /// rows to `perflog_file_name` whenever the connection list
@@ -104,7 +97,10 @@ impl Quic {
     /// The C `int` return is a 0/-1 status, mapped to
     /// `Result<(), Error>`.
     /// C: `picoquic_perflog_setup`.
-    pub fn perflog_setup(&mut self, _perflog_file_name: &str) -> Result<(), Error> {
+    pub fn perflog_setup(
+        &mut self,
+        _perflog_file_name: &(impl AsRef<Path> + ?Sized),
+    ) -> Result<(), Error> {
         todo!()
     }
 }

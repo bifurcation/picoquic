@@ -7,16 +7,22 @@
 //!
 //! Phase 1: signatures only — every function body is `todo!()`.
 
-use crate::internal::{Cnx, Path};
+use crate::internal::{Connection, Path};
 use crate::{CongestionNotification, PerAckState};
 
 // ---------------------------------------------------------------------------
 // Tunable constants (`#define`s in the header).
 
-/// Window size (in samples) of the min/max RTT filter.  Also the
-/// threshold of consecutive RTT-excess samples that trigger
-/// slow-start exit.  Used as an array dimension below, hence
-/// `usize`.
+/// Window size of the min/max RTT filter, counted in RTT
+/// measurements (one "sample" = one observed RTT, microseconds in
+/// the C source).  Doubles as the threshold of consecutive
+/// RTT-excess measurements that trigger slow-start exit.  Used as
+/// an array dimension below, hence `usize`.
+///
+/// REVIEW(open): the RTT values themselves are still raw `u64`
+/// microseconds for source-level parity with the C body.  Phase 2
+/// (the clock-trait abstraction) introduces a typed Duration
+/// (`fugit::Duration` or equivalent) and these fields move with it.
 pub const MIN_MAX_RTT_SCOPE: usize = 7;
 
 /// Lookback window for the smoothed packet-loss filter, in packets.
@@ -52,13 +58,20 @@ pub const HYSTART_PP_CSS_ROUNDS: u64 = 5;
 /// `nb_rtt_excess` (`int` → `u32`, always non-negative; safety wins).
 #[derive(Debug, Clone, Default)]
 pub struct MinMaxRtt {
+    // REVIEW(open): Phase 2's clock trait should turn this into a
+    // typed `Instant` once the time abstraction lands.
     pub last_rtt_sample_time: u64,
     pub rtt_filtered_min: u64,
     pub nb_rtt_excess: u32,
     pub sample_current: usize,
     pub is_init: bool,
     pub smoothed_drop_rate: f64,
+    /// Smoothed byte-count EMA stored in fixed-point with an
+    /// implicit ×16 multiplier (each step is `prev - prev/16 + new`,
+    /// see `picoquic_cc_hystart_loss_volume_test`); the extra range
+    /// avoids precision loss in integer EMA arithmetic.
     pub smoothed_bytes_sent_16: u64,
+    /// Same fixed-point convention as [`Self::smoothed_bytes_sent_16`].
     pub smoothed_bytes_lost_16: u64,
     pub last_lost_packet_number: u64,
     pub sample_min: u64,
@@ -120,12 +133,12 @@ impl MinMaxRtt {
 // These are pure reads in the C source, so the receivers are `&self`
 // rather than `&mut self`.  Each was a free function whose primary
 // argument is a connection or path; per the Phase 1A rules they fold
-// into inherent methods on `Cnx` / `Path`.  Inherent impls land in
+// into inherent methods on `Connection` / `Path`.  Inherent impls land in
 // this module because the methods belong with the rest of the
 // congestion-control surface; the structs themselves stay in
 // `crate::internal`.
 
-impl Cnx {
+impl Connection {
     /// Next-to-send packet sequence number for the relevant packet
     /// context — per-path under multipath, otherwise the connection's
     /// application context.  C: `picoquic_cc_get_sequence_number`.
@@ -250,7 +263,7 @@ impl NewRenoSimState {
     /// `picoquic_newreno_sim_notify`.
     pub fn notify(
         &mut self,
-        _cnx: &Cnx,
+        _cnx: &Connection,
         _path_x: &Path,
         _notification: CongestionNotification,
         _ack_state: &PerAckState,

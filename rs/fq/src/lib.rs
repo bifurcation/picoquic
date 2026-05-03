@@ -13,7 +13,7 @@
 //! Pointer-shape and translation policy notes that apply throughout
 //! this module:
 //!
-//! * `Quic`, `Cnx`, `Path` are
+//! * `Quic`, `Connection`, `Path` are
 //!   opaque types defined in `internal.h`.  Phase 1 declares
 //!   them as empty structs here so the public API can refer to them;
 //!   the real layout lands when the internal header is translated.
@@ -49,6 +49,7 @@
 // Builder patterns or shape changes are out of scope for Phase 1.
 #![allow(clippy::too_many_arguments)]
 
+pub mod arena;
 pub mod binlog;
 pub mod bytestream;
 pub mod cc_common;
@@ -64,7 +65,8 @@ pub mod qlog;
 pub mod siphash;
 pub mod socks;
 pub mod splay;
-pub mod test_dualq;
+#[cfg(test)]
+pub mod tests;
 pub mod tls_api;
 pub mod unified_log;
 pub mod utils;
@@ -127,6 +129,9 @@ impl core::fmt::Display for Error {
 }
 
 impl core::error::Error for Error {}
+
+/// Crate-wide `Result` alias defaulting the error type to [`Error`].
+pub type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// Base offset for quic's internal error codes.  Allocated in
 /// the `0x400`+ range so they never collide with QUIC transport or
@@ -277,7 +282,7 @@ pub const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
 // Connection state.
 
 /// Connection-state machine, listing the QUIC connection states a
-/// `Cnx` walks through from initial handshake to teardown.
+/// `Connection` walks through from initial handshake to teardown.
 /// Discriminants follow the declaration order of the C `state_enum`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum State {
@@ -444,41 +449,16 @@ pub struct ConnectionId {
 // ---------------------------------------------------------------------------
 // IO vectors.
 //
-// `PtlsIovec` is forward-declared from the tls library, which
-// is an external dependency that hasn't been translated yet.
-// `Iovec` is quic's matching shape, intended for
-// applications that don't want a hard dependency on tls.h.  The
-// two are layout-compatible; in C the application can cast a
-// `PtlsIovec*` to a `Iovec*`.  Phase 1 keeps both as
-// distinct opaque/struct types; Phase 3 may revisit if a true
-// shared layout is needed at the FFI boundary.
-
-/// Forward declaration of `PtlsIovec` from tls.  The real
-/// definition lands when tls bindings are introduced.
-pub struct PtlsIovec {
-    _opaque: [u8; 0],
-}
-
-/// quic-defined IO vector, layout-compatible with
-/// `PtlsIovec` so applications can cast between the two without
-/// pulling in `tls.h`.  C: `Iovec`.
-///
-/// `repr(C)` is kept because C code aliases this with
-/// `PtlsIovec*` — the layout *is* the contract.  `base` stays a
-/// raw pointer rather than `&[u8]` because the buffer's lifetime is
-/// not tied to the iovec; Phase 3 may revisit at specific call
-/// sites.
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct Iovec {
-    pub base: *mut u8,
-    pub len: usize,
-}
+// The C `picoquic_iovec_t` (and the picotls-side `PtlsIovec*` that
+// aliased it) are gone — every place that used to take an iovec
+// pair now takes a `&[u8]` (single buffer) or `&[&[u8]]` /
+// `Vec<Vec<u8>>` (list of buffers), per the project's
+// "use Rust's slice/vec types" policy.
 
 // ---------------------------------------------------------------------------
 // Opaque types (forward declarations).
 //
-// `Quic`, `Cnx`, and `Path` are
+// `Quic`, `Connection`, and `Path` are
 // defined in `internal.h`.  Phase 1 declares them as empty
 // structs so callers can refer to them; the real layout lands when
 // the internal header is translated.  The `_opaque` field prevents
@@ -488,7 +468,7 @@ pub struct Iovec {
 // Full bodies live in `crate::internal`; pull them in for use within
 // this module's signatures (no re-export — callers reach them as
 // `crate::internal::*`).
-use crate::internal::{Cnx, Path, Quic};
+use crate::internal::{Connection, Path, Quic};
 
 // ---------------------------------------------------------------------------
 // Application callback events.
@@ -678,7 +658,7 @@ impl Quic {
 pub trait StreamDataCb {
     fn callback(
         &mut self,
-        cnx: &mut Cnx,
+        cnx: &mut Connection,
         stream_id: u64,
         bytes: &[u8],
         fin_or_event: CallbackEvent,
@@ -688,15 +668,11 @@ pub trait StreamDataCb {
 
 /// ALPN-selection callback.  Returns the index of the chosen ALPN
 /// in `list`, or any value `>= list.len()` to signal "none of the
-/// proposed ALPNs is supported".  C: `AlpnSelect`.
+/// proposed ALPNs is supported".  C: `AlpnSelect` (the C `_v2`
+/// flavour is folded in — it only differed in the iovec type, which
+/// is now just `&[u8]`).
 pub trait AlpnSelect {
-    fn select(&mut self, quic: &mut Quic, list: &[PtlsIovec]) -> usize;
-}
-
-/// V2 ALPN-selection callback using `Iovec` instead of
-/// `PtlsIovec`.  C: `AlpnSelectV2`.
-pub trait AlpnSelectV2 {
-    fn select(&mut self, quic: &mut Quic, list: &[Iovec]) -> usize;
+    fn select(&mut self, quic: &mut Quic, list: &[&[u8]]) -> usize;
 }
 
 /// Callback that produces a server-environment-compatible CID.
@@ -715,41 +691,13 @@ pub trait ConnectionIdCb {
 /// implementor.  Returns the new packet length (which may equal
 /// the input).  C: `Fuzz`.
 pub trait Fuzz {
-    fn fuzz(&mut self, cnx: &mut Cnx, bytes: &mut [u8], length: usize, header_length: usize)
-    -> u32;
-}
-
-/// Forward declaration of `PtlsVerifyCertificate` from tls.
-pub struct PtlsVerifyCertificate {
-    _opaque: [u8; 0],
-}
-
-/// Signature-verification callback installed by a certificate
-/// verifier.  C: `VerifySignCb`.  Returns 0 on
-/// match.
-pub trait VerifySignCb {
-    fn verify(&mut self, data: &[u8], signature: &[u8]) -> i32;
-}
-
-/// Certificate-chain verification callback.  C:
-/// `VerifyCertificateCb`.  Returns 0 when the chain
-/// validates and populates `verify_sign` with a signature
-/// verifier for subsequent handshake messages.
-pub trait VerifyCertificateCb {
-    fn verify(
+    fn fuzz(
         &mut self,
-        cnx: &mut Cnx,
-        certs: &[PtlsIovec],
-        verify_sign: &mut Option<Box<dyn VerifySignCb>>,
-    ) -> i32;
-}
-
-/// Free hook for the verifier context.  C:
-/// `FreeVerifyCertificateCtx`.  In Rust this normally
-/// folds into `Drop`, but the trait is kept for source-level parity
-/// with the C API surface.
-pub trait FreeVerifyCertificateCtx {
-    fn free(&mut self, ctx: &mut PtlsVerifyCertificate);
+        cnx: &mut Connection,
+        bytes: &mut [u8],
+        length: usize,
+        header_length: usize,
+    ) -> u32;
 }
 
 /// Direct-receive callback for streams marked with
@@ -759,7 +707,7 @@ pub trait FreeVerifyCertificateCtx {
 pub trait StreamDirectReceive {
     fn receive(
         &mut self,
-        cnx: &mut Cnx,
+        cnx: &mut Connection,
         stream_id: u64,
         fin: bool,
         bytes: &[u8],
@@ -898,7 +846,7 @@ pub trait CongestionControl {
 
     fn alg_notify(
         &self,
-        cnx: &mut Cnx,
+        cnx: &mut Connection,
         path_x: &mut Path,
         notification: CongestionNotification,
         ack_state: &PerAckState,
@@ -1029,7 +977,7 @@ pub fn add_proposed_alpn(_tls_context: *mut c_void, _alpn: &str) -> Result<(), E
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Negotiated ALPN value (borrowed), or `None` when none was
     /// selected.
     pub fn tls_negotiated_alpn(&self) -> Option<&str> {
@@ -1169,7 +1117,7 @@ pub fn check_addr_blocked(_addr_from: &SocketAddr) -> bool {
 //
 // `picoquic_create` is the canonical constructor in the C source;
 // here it is `Quic::new`.  The setters that follow are all on the
-// QUIC context; per-connection siblings live in `impl Cnx` further
+// QUIC context; per-connection siblings live in `impl Connection` further
 // down.
 
 impl Quic {
@@ -1256,16 +1204,17 @@ impl Quic {
     }
 
     /// Install the TLS certificate chain.  The context takes
-    /// ownership of `certs`.
-    pub fn set_tls_certificate_chain(&mut self, _certs: Vec<PtlsIovec>) {
+    /// ownership of `certs` (each entry is one DER-encoded
+    /// certificate).
+    pub fn set_tls_certificate_chain(&mut self, _certs: Vec<Vec<u8>>) {
         todo!()
     }
 
     /// Install the TLS root certificate set.  The C `int` return
     /// distinguished load vs. store failure (`-1` / `-2`); Phase 1
     /// collapses both into [`Error::Generic`] pending refinement in
-    /// Phase 3.
-    pub fn set_tls_root_certificates(&mut self, _certs: Vec<PtlsIovec>) -> Result<(), Error> {
+    /// Phase 4.
+    pub fn set_tls_root_certificates(&mut self, _certs: Vec<Vec<u8>>) -> Result<(), Error> {
         todo!()
     }
 
@@ -1281,13 +1230,11 @@ impl Quic {
     }
 
     /// Install a custom certificate-verification callback.  The
-    /// verifier context is owned by the QUIC context after this call
-    /// (the C side stashes the pointer and later runs `free_fn` on
-    /// it); `free_fn` mirrors that custodial role.
+    /// QUIC context takes ownership of the verifier; `Drop` on the
+    /// box subsumes the C `free_fn` custodial hook.
     pub fn set_verify_certificate_callback(
         &mut self,
-        _cb: PtlsVerifyCertificate,
-        _free_fn: Box<dyn FreeVerifyCertificateCtx>,
+        _cb: Box<dyn crate::crypto_provider_api::VerifyCertificate>,
     ) {
         todo!()
     }
@@ -1359,7 +1306,7 @@ impl Quic {
     }
 }
 
-impl Cnx {
+impl Connection {
     /// Replace the local transport parameters for this connection
     /// before the handshake completes.
     pub fn set_transport_parameters(&mut self, _tp: &TransportParameters) {
@@ -1456,13 +1403,9 @@ impl Quic {
     }
 
     /// Install (or remove, with `None`) the ALPN-selection callback.
+    /// The C `_v2` flavour (which differed only in iovec type) is
+    /// gone — both call sites land on this single entry point.
     pub fn set_alpn_select_fn(&mut self, _alpn_select_fn: Option<Box<dyn AlpnSelect>>) {
-        todo!()
-    }
-
-    /// Install (or remove, with `None`) the V2 ALPN-selection
-    /// callback (uses [`Iovec`] rather than [`PtlsIovec`]).
-    pub fn set_alpn_select_fn_v2(&mut self, _alpn_select_fn: Option<Box<dyn AlpnSelectV2>>) {
         todo!()
     }
 
@@ -1499,7 +1442,7 @@ impl Quic {
     /// `client_mode` selects between the client and server roles
     /// (`char` flag in C, promoted to `bool` here).
     ///
-    /// The returned `&mut Cnx` borrows from the context because the
+    /// The returned `&mut Connection` borrows from the context because the
     /// C side stores the new connection in the context's hash
     /// tables.
     #[allow(clippy::too_many_arguments)]
@@ -1513,7 +1456,7 @@ impl Quic {
         _sni: Option<&str>,
         _alpn: Option<&str>,
         _client_mode: bool,
-    ) -> Option<&mut Cnx> {
+    ) -> Option<&mut Connection> {
         todo!()
     }
 
@@ -1527,7 +1470,7 @@ impl Quic {
         _sni: Option<&str>,
         _alpn: Option<&str>,
         _callback: Option<Box<dyn StreamDataCb>>,
-    ) -> Option<&mut Cnx> {
+    ) -> Option<&mut Connection> {
         todo!()
     }
 
@@ -1543,7 +1486,7 @@ impl Quic {
     }
 }
 
-impl Cnx {
+impl Connection {
     /// Begin the client-side handshake on this connection.
     pub fn start_client(&mut self) -> Result<(), Error> {
         todo!()
@@ -1572,7 +1515,7 @@ impl Cnx {
 
     /// Delete the connection.  In the C API this releases the
     /// connection's slot inside its QUIC context; in Rust the
-    /// resources drop when `Cnx` itself does, so this remains a
+    /// resources drop when `Connection` itself does, so this remains a
     /// `todo!()` until Phase 3 wires up the deletion semantics.
     pub fn delete(&mut self) {
         todo!()
@@ -1734,7 +1677,7 @@ impl Cnx {
 // ---------------------------------------------------------------------------
 // Connection iteration, timing, accessors, and frame queueing.
 
-impl Cnx {
+impl Connection {
     /// Trigger the next TLS key rotation.
     pub fn start_key_rotation(&mut self) -> Result<(), Error> {
         todo!()
@@ -1749,7 +1692,7 @@ impl Cnx {
     /// any.  (Named `next_in_list` rather than `next` to avoid
     /// confusion with the `Iterator::next` shape — Phase 3 may
     /// turn this into a proper `Iterator` impl on `Quic`.)
-    pub fn next_in_list(&mut self) -> Option<&mut Cnx> {
+    pub fn next_in_list(&mut self) -> Option<&mut Connection> {
         todo!()
     }
 
@@ -1903,7 +1846,7 @@ impl Cnx {
 
 impl Quic {
     /// Borrow the first connection registered with this context.
-    pub fn first_cnx(&mut self) -> Option<&mut Cnx> {
+    pub fn first_cnx(&mut self) -> Option<&mut Connection> {
         todo!()
     }
 
@@ -1920,7 +1863,7 @@ impl Quic {
 
     /// Borrow the connection currently advancing through its state
     /// machine, if any (`get_cnx_in_progress` in C).
-    pub fn cnx_in_progress(&mut self) -> Option<&mut Cnx> {
+    pub fn cnx_in_progress(&mut self) -> Option<&mut Connection> {
         todo!()
     }
 
@@ -1967,7 +1910,7 @@ impl Quic {
         _if_index_to: i32,
         _received_ecn: u8,
         _current_time: u64,
-    ) -> Result<Option<&mut Cnx>, Error> {
+    ) -> Result<Option<&mut Connection>, Error> {
         todo!()
     }
 }
@@ -1989,7 +1932,7 @@ pub struct PreparedPacket<'a> {
     /// Connection that produced the packet (the C
     /// `p_last_cnx`).  `None` when the QUIC context had no work to
     /// do.
-    pub last_cnx: Option<&'a mut Cnx>,
+    pub last_cnx: Option<&'a mut Connection>,
     /// Optional GSO segment size when the packet is a coalesced
     /// train; `None` for a single-packet send.
     pub send_msg_size: Option<usize>,
@@ -2028,7 +1971,7 @@ pub struct PreparedCnxPacket {
     pub send_msg_size: Option<usize>,
 }
 
-impl Cnx {
+impl Connection {
     /// Prepare the next packet on this connection (the `_ex`
     /// flavour reports GSO segment size when the packet is a
     /// coalesced train).
@@ -2084,7 +2027,7 @@ impl Quic {
 // ---------------------------------------------------------------------------
 // Streams.
 
-impl Cnx {
+impl Connection {
     /// Mark a stream as direct-receive: the stack hands incoming
     /// stream payload straight to `direct_receive` instead of
     /// queueing it for the application's regular callback.
@@ -2189,7 +2132,7 @@ pub fn provide_stream_data_buffer(
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Append `data` to a stream's send buffer (`set_fin` closes the
     /// stream when the data is fully delivered).
     pub fn add_to_stream(
@@ -2320,7 +2263,7 @@ impl Quic {
     }
 }
 
-impl Cnx {
+impl Connection {
     /// Override preemptive-repeat for this connection.
     pub fn set_preemptive_repeat(&mut self, _do_repeat: bool) {
         todo!()
@@ -2431,7 +2374,7 @@ impl Quic {
     }
 }
 
-impl Cnx {
+impl Connection {
     /// Override the congestion-control algorithm for this
     /// connection.
     pub fn set_congestion_algorithm(&mut self, _algo: &'static CongestionAlgorithm) {
@@ -2511,7 +2454,7 @@ impl Quic {
     }
 }
 
-impl Cnx {
+impl Connection {
     /// Configure client-side ECH on this connection.
     pub fn ech_configure_client(&mut self, _config_data: &[u8]) -> Result<(), Error> {
         todo!()

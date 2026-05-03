@@ -45,20 +45,14 @@
 //!   arrays and the algorithms are AES-128, so the capacity *is*
 //!   part of the contract.
 
-extern crate alloc;
-
-use alloc::boxed::Box;
-
 use crate::Error;
+use crate::tls_api::Aes128EcbContext;
 use crate::{ConnectionId, Quic};
-
-// ---------------------------------------------------------------------------
-// CID-encoding methods.
 
 /// CID-encoding method selected by the load-balancer config.
 /// C: `load_balancer_cid_method_enum`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-pub enum LbCidMethod {
+pub enum ConnectionIdMethod {
     /// Server ID copied in clear after the first byte.
     /// C: `load_balancer_cid_clear`.
     #[default]
@@ -72,23 +66,17 @@ pub enum LbCidMethod {
     BlockCipher,
 }
 
-// ---------------------------------------------------------------------------
-// Forward declarations.
-
-/// Forward declaration of the AES-128-ECB context produced by the
-/// (not-yet-translated) `tls_api` module — `void*` in C, a
-/// crypto-provider-specific opaque type at runtime.  Phase 3
-/// replaces this opaque struct with whatever shape `tls_api.rs`
-/// settles on (typically a trait object) and gives it a `Drop` impl
-/// so the explicit `aes128_ecb_free` in
-/// [`Quic::clear_lb_cid_config`] collapses into RAII.
-#[derive(Debug)]
-pub struct Aes128EcbContext {
-    _opaque: [u8; 0],
+/// Number of low bits of the first CID byte that select between
+/// short-lived configurations.  C: `unsigned int rotation_bits : 2`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum RotationBits {
+    #[default]
+    Zero = 0,
+    One = 1,
+    Two = 2,
+    Three = 3,
 }
-
-// ---------------------------------------------------------------------------
-// Configuration record.
 
 /// Configuration parsed from an LB-supplied string and applied to
 /// a [`Quic`] via [`Quic::set_lb_cid_config`].
@@ -96,18 +84,26 @@ pub struct Aes128EcbContext {
 ///
 /// `repr(C)` is dropped — the struct is purely an internal shape,
 /// never inspected by an LB or another process.
+///
+/// REVIEW(open): the user wanted this renamed to `Config` to drop
+/// the duplicative `Lb` prefix, but that collides with
+/// [`crate::config::Config`].  Decide whether to rename the demo-app
+/// config first (it is a much wider surface) or keep this one
+/// distinct.
 #[derive(Debug, Default)]
 pub struct LbConfig {
-    pub method: LbCidMethod,
-    /// 2-bit field in C; legal values `0..=3`.
-    pub rotation_bits: u8,
+    pub method: ConnectionIdMethod,
+    pub rotation_bits: RotationBits,
     /// 1-bit field in C; promoted to `bool` to match call-site usage.
     pub first_byte_encodes_length: bool,
-    pub server_id_length: u8,
+    pub server_id_length: usize,
     /// Used in stream-cipher mode.
-    pub nonce_length: u8,
-    pub connection_id_length: u8,
-    pub server_id64: u64,
+    pub nonce_length: usize,
+    pub connection_id_length: usize,
+    pub server_id: u64,
+    // REVIEW(open): the encryption key naturally belongs inside the AES context (newtype around
+    // `[u8; 16]` exposed as an associated type of `Aes128EcbContext`).  Land that when the
+    // crypto provider abstraction (Phase 2) defines the AES wrapper for real.
     pub cid_encryption_key: [u8; 16],
 }
 
@@ -135,21 +131,26 @@ impl LbConfig {
 /// [`Quic::set_lb_cid_config`] and consumed by the
 /// [`crate::ConnectionIdCb`] hook.
 /// C: `load_balancer_cid_context_t`.
+///
+/// REVIEW(open): the AES contexts below are `Option` to match the C
+/// "uninitialised" intermediate state during parsing.  Once the
+/// crypto provider abstraction (Phase 2) lands, switch construction
+/// to a builder so the contexts are always set on a finished
+/// `ConnectionIdContext` and drop the `Option` wrapper.
 #[derive(Debug, Default)]
-pub struct LbCidContext {
-    pub method: LbCidMethod,
-    /// 2-bit field in C; legal values `0..=3`.
-    pub rotation_bits: u8,
+pub struct ConnectionIdContext {
+    pub method: ConnectionIdMethod,
+    pub rotation_bits: RotationBits,
     /// 1-bit field in C; promoted to `bool`.
     pub first_byte_encodes_length: bool,
-    pub server_id_length: u8,
+    pub server_id_length: usize,
     /// Used in stream-cipher mode.
-    pub nonce_length: u8,
-    pub connection_id_length: u8,
-    pub server_id64: u64,
-    /// Big-endian encoding of `server_id64`, padded to
+    pub nonce_length: usize,
+    pub connection_id_length: usize,
+    pub server_id: u64,
+    /// Big-endian encoding of `server_id`, padded to
     /// `server_id_length` bytes.
-    pub server_id: [u8; 16],
+    pub server_id_encoded: [u8; 16],
     /// Used in stream- and block-cipher modes.  Owned by this
     /// struct: the C clear path calls `aes128_ecb_free` on it.
     pub cid_encryption_context: Option<Box<Aes128EcbContext>>,
@@ -158,20 +159,21 @@ pub struct LbCidContext {
     pub cid_decryption_context: Option<Box<Aes128EcbContext>>,
 }
 
-impl LbCidContext {
-    /// Fill `cnx_id_returned` with a CID encoded per `self.method`.
+impl ConnectionIdContext {
+    /// Encode a CID from `nonce` per `self.method` and return it.
     /// C: `lb_compat_cid_generate`.
     ///
-    /// The body assumes the caller has pre-filled `cnx_id_returned`
-    /// with the expected nonce / "for-server use" bytes — the
-    /// parameter is read AND written, so it stays `&mut` rather
-    /// than collapsing to a return value.  `quic` is read for
-    /// `local_cnxid_length`; the unused `cnx_id_local` /
+    /// The C signature took a `cnx_id_returned` out parameter that
+    /// the body both read (for the nonce / "for-server use" bytes)
+    /// and wrote (for the encoded CID); the Rust signature splits
+    /// those two roles — the input nonce comes in by reference and
+    /// the encoded CID is the return value.  `&mut self` because the
+    /// underlying AES contexts mutate cipher state in place.  `quic`
+    /// is read for `local_cnxid_length`; the unused `cnx_id_local` /
     /// `cnx_id_remote` parameters of the C signature are dropped
     /// here and reintroduced (if needed) by the
-    /// [`crate::ConnectionIdCb`] adapter.  `&mut self` because the
-    /// underlying AES contexts mutate cipher state in place.
-    pub fn generate(&mut self, _quic: &Quic, _cnx_id_returned: &mut ConnectionId) {
+    /// [`crate::ConnectionIdCb`] adapter.
+    pub fn generate(&mut self, _quic: &Quic, _nonce: &ConnectionId) -> ConnectionId {
         todo!()
     }
 
@@ -188,11 +190,8 @@ impl LbCidContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Quic-context glue.
-
 impl Quic {
-    /// Apply `lb_config` to `self`, installing an [`LbCidContext`]
+    /// Apply `lb_config` to `self`, installing a [`ConnectionIdContext`]
     /// as the connection-ID callback context.
     /// C: `lb_compat_cid_config`.
     ///
@@ -204,7 +203,7 @@ impl Quic {
         todo!()
     }
 
-    /// Tear down the [`LbCidContext`] previously installed by
+    /// Tear down the [`ConnectionIdContext`] previously installed by
     /// [`Quic::set_lb_cid_config`], releasing the AES-ECB
     /// encryption contexts and clearing the callback slot on
     /// `self`.  No-op when no LB CID context is installed.

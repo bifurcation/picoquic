@@ -13,14 +13,14 @@
 //!
 //! ## Shape conventions
 //!
-//! * Free C functions whose first argument is a `Quic*` or `Cnx*`
-//!   become inherent methods on [`Quic`] / [`Cnx`].  The remaining
+//! * Free C functions whose first argument is a `Quic*` or `Connection*`
+//!   become inherent methods on [`Quic`] / [`Connection`].  The remaining
 //!   free functions either operate on opaque tls handles
 //!   (`*mut c_void` — see below) or have no obvious receiver
 //!   (global RNG, hash factories, cipher-suite lookups, the
 //!   `tls_api_init` lifecycle).
 //! * Tls types this header references but does not define
-//!   (`PtlsCipherSuite`, `PtlsVerifyCertificate`, …) are
+//!   (`PtlsCipherSuite`, …) are
 //!   already forward-declared in [`crate::crypto_provider_api`] and
 //!   [`crate`]; this module re-uses those declarations rather than
 //!   duplicating them.
@@ -40,7 +40,7 @@
 //!   by `aead_decrypt_*` becomes `Err(Error::AeadCheck)` instead of
 //!   leaking the sentinel through the success arm.
 //! * Owning `PtlsIovec* get_certs_from_file(…, size_t* count)`
-//!   collapses to `Option<Vec<PtlsIovec>>`: the C callee `malloc`s
+//!   collapses to `Option<Vec<Vec<u8>>>`: the C callee `malloc`s
 //!   the slot array and writes its length through the out-pointer,
 //!   and the caller `free`s.  A Rust `Vec` carries both ownership
 //!   and length, with `Drop` taking the place of the manual free.
@@ -95,11 +95,9 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
+use crate::crypto_provider_api::VerifyCertificate;
 use crate::internal::CryptoContext;
-use crate::{
-    Cnx, ConnectionId, Error, FreeVerifyCertificateCtx, PtlsIovec, PtlsVerifyCertificate, Quic,
-    RESET_SECRET_SIZE,
-};
+use crate::{Connection, ConnectionId, Error, Quic, RESET_SECRET_SIZE};
 
 // ---------------------------------------------------------------------------
 // Label constants (C `#define` → `&str`).
@@ -206,7 +204,7 @@ impl Quic {
 // `tls_ctx_t` itself lives in `crypto_provider_api.rs`; this module
 // just exposes the API surface that quic-core uses to drive it.
 
-impl Cnx {
+impl Connection {
     /// Allocate a per-connection TLS context, attach it to this
     /// connection, and initialize the tls handshake-property slots.
     /// C: `tlscontext_create`.  C side returns 0 on success,
@@ -235,7 +233,7 @@ impl Cnx {
 /// `client_mode` flag toggles the ECH-config cleanup path.
 ///
 /// Phase 1 keeps the `*mut c_void` shape: `tls_ctx` is `*mut c_void`
-/// in [`Cnx`] (see `internal.rs`), and the cast back to `tls_ctx_t*`
+/// in [`Connection`] (see `internal.rs`), and the cast back to `tls_ctx_t*`
 /// happens inside the body.  The eventual safe shape (an owning
 /// `Box`, drop-managed) lands once `tls_ctx`'s storage is reshaped.
 /// C: `tlscontext_free`.
@@ -243,7 +241,7 @@ impl Cnx {
 /// # Safety
 ///
 /// `ctx` must be a non-null pointer to a `tls_ctx_t` previously
-/// returned by [`Cnx::create_tls_context`] and not yet freed.  After
+/// returned by [`Connection::create_tls_context`] and not yet freed.  After
 /// the call the pointer is dangling.
 pub unsafe fn tls_context_free(_ctx: *mut c_void, _client_mode: bool) {
     todo!()
@@ -252,7 +250,7 @@ pub unsafe fn tls_context_free(_ctx: *mut c_void, _client_mode: bool) {
 // ---------------------------------------------------------------------------
 // TLS stream processing.
 
-impl Cnx {
+impl Connection {
     /// Drive the TLS handshake by feeding in any data buffered on
     /// the crypto streams and pushing produced data back out.
     /// Returns the number of bytes consumed (the C `int*
@@ -530,7 +528,7 @@ pub unsafe fn pn_encrypt(_pn_enc: *mut c_void, _iv: &[u8], _output: &mut [u8], _
 /// `setup_initial_master_secret`.
 pub fn setup_initial_master_secret(
     _cipher: &PtlsCipherSuite,
-    _salt: PtlsIovec,
+    _salt: &[u8],
     _initial_cnxid: ConnectionId,
     _master_secret: &mut [u8],
 ) -> Result<(), Error> {
@@ -549,7 +547,7 @@ pub fn setup_initial_secrets(
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Set up this connection's per-epoch initial AEAD / PN
     /// encryption contexts from the connection's initial CID.  C:
     /// `setup_initial_traffic_keys`.
@@ -597,7 +595,7 @@ impl Quic {
 // today, which is redundant once the borrow encodes it).  Phase 3
 // may collapse the size accessor.
 
-impl Cnx {
+impl Connection {
     /// Return a borrow of the app-data traffic secret stored in
     /// this connection's TLS context for the chosen direction.  C:
     /// `get_app_secret`.
@@ -608,7 +606,7 @@ impl Cnx {
     /// Length (bytes) of the app-data traffic secret — the digest
     /// size of the negotiated cipher's hash.  C:
     /// `get_app_secret_size`.  Phase 3 may collapse this accessor
-    /// since [`Cnx::app_secret`] already returns a sized slice.
+    /// since [`Connection::app_secret`] already returns a sized slice.
     pub fn app_secret_size(&self) -> usize {
         todo!()
     }
@@ -642,7 +640,7 @@ impl CryptoContext {
     /// Free every AEAD / PN-encryption slot held by this crypto
     /// context.  Called from key-rotation paths to recycle the
     /// underlying tls handles without dropping the parent
-    /// [`Cnx`], so this is *not* an `impl Drop` — Phase 3 may
+    /// [`Connection`], so this is *not* an `impl Drop` — Phase 3 may
     /// still install one for the parent-drop path.  C:
     /// `crypto_context_free`.
     pub fn free_handles(&mut self) {
@@ -703,11 +701,7 @@ impl Quic {
     /// (declared in `picoquic.h`) calls
     /// [`Quic::dispose_verify_certificate_callback`] first; this
     /// internal entry point does not.
-    pub fn tls_set_verify_certificate_callback(
-        &mut self,
-        _cb: PtlsVerifyCertificate,
-        _free_fn: Option<Box<dyn FreeVerifyCertificateCtx>>,
-    ) {
+    pub fn tls_set_verify_certificate_callback(&mut self, _cb: Box<dyn VerifyCertificate>) {
         todo!()
     }
 
@@ -883,15 +877,12 @@ impl Quic {
 }
 
 /// Load a PEM-encoded certificate chain from `file_name` and
-/// return it as an owned vector.  C:
-/// `get_certs_from_file`.  The C side allocated both the
-/// outer `PtlsIovec*` array and each `base` slot; the Rust
-/// shape is `Option<Vec<PtlsIovec>>` because the iovec slot
-/// type is still opaque (its `base`/`len` fields aren't surfaced
-/// through `PtlsIovec` in `quic.rs`).  Callers free by
-/// dropping the vector.  Returns `None` when the loader callback
-/// is unset or the file fails to parse.
-pub fn get_certs_from_file(_file_name: &str) -> Option<Vec<PtlsIovec>> {
+/// return it as an owned vector of DER-encoded certificate byte
+/// strings.  C: `get_certs_from_file` (which allocated both the
+/// outer iovec array and each `base` slot — the Rust shape owns
+/// both via the nested `Vec<Vec<u8>>`).  Returns `None` when the
+/// loader callback is unset or the file fails to parse.
+pub fn get_certs_from_file(_file_name: &str) -> Option<Vec<Vec<u8>>> {
     todo!()
 }
 
@@ -996,32 +987,38 @@ pub fn ecb_create_by_name(_is_enc: bool, _ecb_key: &[u8], _alg_name: &str) -> *m
     todo!()
 }
 
-/// Convenience wrapper for AES-128-ECB.  C:
-/// `aes128_ecb_create`.
-pub fn aes128_ecb_create(_is_enc: bool, _ecb_key: &[u8]) -> *mut c_void {
-    todo!()
+/// AES-128-ECB cipher context.  C: the `ptls_cipher_context_t`
+/// produced by `picoquic_aes128_ecb_create`, behind a typed wrapper
+/// here so callers don't see a raw `*mut c_void`.
+///
+/// REVIEW(open): the inner pointer becomes a real owned cipher
+/// context (or a trait object over the crypto provider) once Phase 2
+/// lands the dependency abstraction.  `Drop` will replace the
+/// explicit `aes128_ecb_free` once the body is wired up.
+pub struct Aes128EcbContext {
+    #[allow(dead_code)] // Phase 4 wires this through to the crypto provider.
+    pub(crate) inner: *mut c_void,
 }
 
-/// Free an ECB cipher context allocated by
-/// [`aes128_ecb_create`] / [`ecb_create_by_name`].
-/// C: `aes128_ecb_free`.
-///
-/// # Safety
-///
-/// `v_aesecb` must point to a `ptls_cipher_context_t` previously
-/// allocated by an ECB-cipher constructor and not yet freed.
-pub unsafe fn aes128_ecb_free(_v_aesecb: *mut c_void) {
-    todo!()
+impl core::fmt::Debug for Aes128EcbContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Aes128EcbContext").finish_non_exhaustive()
+    }
 }
 
-/// Encrypt `input` (length `len`) into `output` using the ECB
-/// cipher context.  C: `aes128_ecb_encrypt`.
-///
-/// # Safety
-///
-/// `v_aesecb` must point to a valid encrypting `ptls_cipher_context_t`.
-pub unsafe fn aes128_ecb_encrypt(_v_aesecb: *mut c_void, _output: &mut [u8], _input: &[u8]) {
-    todo!()
+impl Aes128EcbContext {
+    /// Construct an AES-128-ECB context (encrypt or decrypt) keyed
+    /// by `ecb_key`.  Returns [`None`] when the underlying
+    /// allocation fails.  C: `aes128_ecb_create`.
+    pub fn new(_is_enc: bool, _ecb_key: &[u8]) -> Option<Self> {
+        todo!()
+    }
+
+    /// Encrypt `input` into `output` (both same length) using this
+    /// ECB cipher.  C: `aes128_ecb_encrypt`.
+    pub fn encrypt(&mut self, _output: &mut [u8], _input: &[u8]) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,7 +1048,7 @@ pub fn tls_api_reset(_init_flags: u64) {
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Log the loaded provider versions to this connection's
     /// app-message stream.  C: `tls_api_log_versions`.
     pub fn log_tls_api_versions(&mut self) {

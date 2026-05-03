@@ -4,7 +4,7 @@
 //! part of the published `quic.h` API but is shared between
 //! `.c` files of the core library lives here: connection /
 //! path / stream / packet structures, frame and packet-type
-//! enums, the giant `Quic` and `Cnx`
+//! enums, the giant `Quic` and `Connection`
 //! structures that pin the rest of the library together, and
 //! the long internal-only function surface (~200 functions).
 //!
@@ -31,7 +31,7 @@
 //! * `struct sockaddr_storage` fields fold into
 //!   [`core::net::SocketAddr`].  Fields that the C code zeros out
 //!   to mean "address not yet set" become `Option<SocketAddr>`.
-//! * `Quic`, `Cnx`, `Path` were
+//! * `Quic`, `Connection`, `Path` were
 //!   forward-declared as opaque stubs in
 //!   [`crate`] (the public header).  Their
 //!   real bodies live here; the public module re-exports the
@@ -53,13 +53,37 @@
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
-use crate::hash::{HashItem, HashTable};
-use crate::splay::{SplayNode, SplayTree};
-use crate::unified_log::UnifiedLogging;
+use crate::arena::{Arena, Token};
+use crate::crypto_provider_api::VerifyCertificate;
+use crate::hash::{HashTable, HashToken};
+use crate::splay::{SplayToken, SplayTree};
+
+/// Token into the per-`Quic` connection arena.
+///
+/// Phase 4 plan: every C `*mut picoquic_cnx_t` becomes a
+/// [`ConnectionToken`].  Following it requires `quic.connections.get(tok)`
+/// — one indirection through the arena, plus a generation check.
+/// Stable across operations on other connections.
+pub type ConnectionToken = Token<Connection>;
+
+/// Token into the per-`Quic` registered-token replay-protection arena.
+pub type RegisteredTokenToken = Token<RegisteredToken>;
+
+/// Token into the per-`Quic` issued-tickets arena (server-side replay state).
+pub type IssuedTicketToken = Token<IssuedTicket>;
+
+/// Token into the per-`Connection` (or per-`StreamHead`) stream-related
+/// arenas.  Phase 4 may further split these into per-collection types.
+pub type StreamToken = Token<StreamHead>;
+pub type StreamDataToken = Token<StreamDataNode>;
+pub type PacketToken = Token<Packet>;
+pub type SackItemToken = Token<SackItem>;
+pub type LocalCnxidToken = Token<LocalCnxid>;
+pub type PathToken = Token<Path>;
+use crate::unified_log::Logger;
 use crate::{
-    AlpnSelect, AlpnSelectV2, CongestionAlgorithm, ConnectionId, ConnectionIdCb,
-    FreeVerifyCertificateCtx, Fuzz, LossbitVersion, PacketContext, PathStatus, PmtudPolicy,
-    PtlsVerifyCertificate, RESET_SECRET_SIZE, SpinbitVersion, State, StreamDataCb,
+    AlpnSelect, CongestionAlgorithm, ConnectionId, ConnectionIdCb, Fuzz, LossbitVersion,
+    PacketContext, PathStatus, PmtudPolicy, RESET_SECRET_SIZE, SpinbitVersion, State, StreamDataCb,
     StreamDirectReceive, TransportParameters,
 };
 
@@ -368,10 +392,10 @@ pub struct PacketHeader {
 /// together so they share one Rust trait.
 pub trait SpinBitPolicy {
     /// C: `spinbit_incoming_fn`.
-    fn incoming(&self, cnx: &mut Cnx, path_x: &mut Path, ph: &PacketHeader);
+    fn incoming(&self, cnx: &mut Connection, path_x: &mut Path, ph: &PacketHeader);
 
     /// C: `spinbit_outgoing_fn`.
-    fn outgoing(&self, cnx: &mut Cnx) -> u8;
+    fn outgoing(&self, cnx: &mut Connection) -> u8;
 }
 
 /// One row of the spin-bit policy dispatch table.  C:
@@ -434,7 +458,10 @@ pub fn delete_stateless_packet(_sp: *mut StatelessPacket) {
 // Stream data nodes (received) and queue nodes (queued for send).
 
 pub struct StreamDataNode {
-    pub stream_data_node: SplayNode,
+    /// Membership in the parent stream's `stream_data_tree`.
+    /// `Some(token)` while in the tree; `None` otherwise.  Phase 4
+    /// uses this for O(1) removal.
+    pub stream_data_membership: Option<SplayToken>,
     pub quic: *mut Quic,
     pub next_stream_data: *mut StreamDataNode,
     pub offset: u64,
@@ -458,7 +485,9 @@ pub struct Packet {
     pub packet_next: *mut Packet,
     pub packet_previous: *mut Packet,
     pub send_path: *mut Path,
-    pub queue_data_repeat_node: SplayNode,
+    /// Membership in the owning connection's
+    /// `queue_data_repeat_tree`.  Phase 4 uses this for O(1) removal.
+    pub queue_data_repeat_membership: Option<SplayToken>,
     pub sequence_number: u64,
     pub send_time: u64,
     pub delivered_prior: u64,
@@ -510,7 +539,7 @@ impl Quic {
     }
 }
 
-impl Cnx {
+impl Connection {
     /// Pad `bytes[length..]` up to whatever the connection's padding
     /// policy mandates (or up to `max_length`, whichever is smaller).
     /// Returns the new buffered length.
@@ -523,7 +552,9 @@ impl Cnx {
 // Token register (replay protection for new tokens / retry tokens / tickets).
 
 pub struct RegisteredToken {
-    pub registered_token_node: SplayNode,
+    /// Membership in `Quic::token_reuse_tree`.  Phase 4 uses this
+    /// for O(1) removal when the token expires.
+    pub registered_token_membership: Option<SplayToken>,
     pub token_time: u64,
     pub token_hash: u64,
     pub count: i32,
@@ -661,7 +692,7 @@ pub fn free_tickets(_pp_first_ticket: &mut *mut StoredTicket) {
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Stash this connection's RTT and CWIN into the issued-ticket
     /// table so a future resumption can seed bandwidth estimates.
     pub fn seed_ticket(&mut self, _path_x: &mut Path) {
@@ -737,7 +768,9 @@ pub fn free_tokens(_pp_first_token: &mut *mut StoredToken) {
 pub struct IssuedTicket {
     pub next_ticket: *mut IssuedTicket,
     pub previous_ticket: *mut IssuedTicket,
-    pub hash_item: HashItem,
+    /// Membership in `Quic::issued_tickets_by_id`.  Phase 4 uses
+    /// this for O(1) removal when the ticket is purged.
+    pub issued_tickets_membership: Option<HashToken>,
     pub ticket_id: u64,
     pub creation_time: u64,
     pub rtt: u64,
@@ -774,24 +807,24 @@ impl Quic {
 /// turn the binlog into a qlog file.  Returns 0 on success, an
 /// errno-style negative on failure.
 pub trait AutoQlog {
-    fn run(&mut self, cnx: &mut Cnx) -> i32;
+    fn run(&mut self, cnx: &mut Connection) -> i32;
 }
 
 /// C: `performance_log_fn` — emit a per-connection
 /// performance log row.  `should_delete` is `true` on connection
 /// teardown.
 pub trait PerformanceLog {
-    fn emit(&mut self, quic: &mut Quic, cnx: &mut Cnx, should_delete: bool) -> i32;
+    fn emit(&mut self, quic: &mut Quic, cnx: &mut Connection, should_delete: bool) -> i32;
 }
 
 // ---------------------------------------------------------------------------
-// Memlog hook (per-connection memory-log callback on `Cnx`).
+// Memlog hook (per-connection memory-log callback on `Connection`).
 
-/// C: `void (*memlog_call_back)(Cnx*, Path*,
+/// C: `void (*memlog_call_back)(Connection*, Path*,
 /// void* v_memlog, int op_code, uint64_t current_time)` field on
-/// `Cnx`.
+/// `Connection`.
 pub trait MemLogHook {
-    fn callback(&mut self, cnx: &mut Cnx, path: &mut Path, op_code: i32, current_time: u64);
+    fn callback(&mut self, cnx: &mut Connection, path: &mut Path, op_code: i32, current_time: u64);
 }
 
 // ---------------------------------------------------------------------------
@@ -807,7 +840,6 @@ pub struct Quic {
     pub mask_fns: Option<Box<dyn MaskOps>>,
     pub default_alpn: *const core::ffi::c_char,
     pub alpn_select_fn: Option<Box<dyn AlpnSelect>>,
-    pub alpn_select_fn_v2: Option<Box<dyn AlpnSelectV2>>,
     pub reset_seed: [u8; RESET_SECRET_SIZE],
     pub retry_seed: [u8; RETRY_SECRET_SIZE],
     pub p_simulated_time: *mut u64,
@@ -816,7 +848,13 @@ pub struct Quic {
     pub token_file_name: *const core::ffi::c_char,
     pub p_first_ticket: *mut StoredTicket,
     pub p_first_token: *mut StoredToken,
-    pub token_reuse_tree: SplayTree,
+    /// Replay-protection register for new-tokens / retry-tokens.
+    /// Keyed by `token_hash`; values are tokens into the
+    /// per-`Quic` `RegisteredToken` arena.  C: `token_reuse_tree`.
+    pub token_reuse_tree: SplayTree<u64, RegisteredTokenToken>,
+    /// Owning arena for [`RegisteredToken`] entries reachable
+    /// through [`Self::token_reuse_tree`].
+    pub registered_tokens: Arena<RegisteredToken>,
     pub local_cnxid_length: u8,
     pub default_stream_priority: u8,
     pub default_datagram_priority: u8,
@@ -874,18 +912,55 @@ pub struct Quic {
     pub default_congestion_alg: *const CongestionAlgorithm,
     pub default_congestion_alg_option_string: *const core::ffi::c_char,
 
-    pub cnx_list: *mut Cnx,
-    pub cnx_last: *mut Cnx,
-    pub cnx_wake_tree: SplayTree,
+    /// Owning arena for every live [`Connection`] on this `Quic`.
+    /// Every C `*mut picoquic_cnx_t` becomes a [`ConnectionToken`]
+    /// indexing into here; the doubly-linked list (`cnx_list` /
+    /// `cnx_last` in C) becomes iteration over the arena, or a
+    /// separate ordered structure if order matters.
+    pub connections: Arena<Connection>,
+    /// Phase 4 plan: drop `cnx_list` / `cnx_last` entirely.
+    /// `Arena::iter()` plus a sort by some Connection field handles
+    /// every place the C source walked the list.  Kept here only
+    /// while older code still references the head/tail pointers.
+    pub cnx_list: *mut Connection,
+    pub cnx_last: *mut Connection,
 
-    pub cnx_in_progress: *mut Cnx,
+    /// Per-connection wake-up scheduler keyed by `next_wake_time`.
+    /// Splay-tree access locality matters here — the next-to-fire
+    /// connection is usually adjacent to the one we just touched.
+    /// C: `cnx_wake_tree`.
+    pub cnx_wake_tree: SplayTree<u64, ConnectionToken>,
 
-    pub table_cnx_by_id: *mut HashTable,
-    pub table_cnx_by_net: *mut HashTable,
-    pub table_cnx_by_icid: *mut HashTable,
-    pub table_cnx_by_secret: *mut HashTable,
+    /// In-progress (currently being serviced) connection.  Stays a
+    /// raw pointer because the C source pokes it during reentrant
+    /// callbacks; Phase 4 will likely replace with `Option<ConnectionToken>`.
+    pub cnx_in_progress: *mut Connection,
 
-    pub table_issued_tickets: *mut HashTable,
+    /// Lookup by local CID (each connection registers one CID per
+    /// active path).  Phase 4 plan: the value type may end up as
+    /// `LocalCnxidToken` rather than `ConnectionToken` once the
+    /// per-path CID arena is wired up; a CID does not uniquely
+    /// identify a connection — paths within a connection have
+    /// distinct CIDs.  Stub assumes the simpler shape for now.
+    pub cnx_by_id: HashTable<ConnectionId, ConnectionToken>,
+    /// Lookup by network 5-tuple.  Phase 4 plan: value is more
+    /// likely `PathToken`, since the C side stored a `*mut Path`
+    /// here (paths back-point to their connection).
+    pub cnx_by_net: HashTable<core::net::SocketAddr, ConnectionToken>,
+    /// Lookup by initial connection ID (server only).
+    pub cnx_by_icid: HashTable<ConnectionId, ConnectionToken>,
+    /// Lookup by stateless-reset secret.
+    pub cnx_by_secret: HashTable<[u8; RESET_SECRET_SIZE], ConnectionToken>,
+
+    /// Server-side: index of issued session tickets by ticket id.
+    /// Replaces the C `table_issued_tickets` hashtable plus the
+    /// embedded `hash_item` field on `IssuedTicket`.  Phase 4 plan:
+    /// the doubly-linked list (first/last/nb fields below) is
+    /// captured by `Arena::iter()` if order isn't load-bearing, or
+    /// becomes an explicit `VecDeque<IssuedTicketToken>` otherwise.
+    pub issued_tickets_by_id: HashTable<u64, IssuedTicketToken>,
+    /// Owning arena for [`IssuedTicket`] entries.
+    pub issued_tickets: Arena<IssuedTicket>,
     pub table_issued_tickets_first: *mut IssuedTicket,
     pub table_issued_tickets_last: *mut IssuedTicket,
     pub table_issued_tickets_nb: usize,
@@ -908,8 +983,7 @@ pub struct Quic {
     pub retry_integrity_sign_ctx: *mut *mut c_void,
     pub retry_integrity_verify_ctx: *mut *mut c_void,
 
-    pub verify_certificate_callback: *mut PtlsVerifyCertificate,
-    pub free_verify_certificate_callback_fn: Option<Box<dyn FreeVerifyCertificateCtx>>,
+    pub verify_certificate_callback: Option<Box<dyn VerifyCertificate>>,
 
     pub default_tp: TransportParameters,
 
@@ -927,9 +1001,9 @@ pub struct Quic {
     pub binlog_dir: *mut core::ffi::c_char,
     pub qlog_dir: *mut core::ffi::c_char,
     pub autoqlog_fn: Option<Box<dyn AutoQlog>>,
-    pub text_log_fns: Option<Box<dyn UnifiedLogging>>,
-    pub bin_log_fns: Option<Box<dyn UnifiedLogging>>,
-    pub qlog_fns: Option<Box<dyn UnifiedLogging>>,
+    pub text_log_fns: Option<Box<dyn Logger>>,
+    pub bin_log_fns: Option<Box<dyn Logger>>,
+    pub qlog_fns: Option<Box<dyn Logger>>,
     pub perflog_fn: Option<Box<dyn PerformanceLog>>,
     pub v_perflog_ctx: *mut c_void,
     pub v_thread_ctx: *mut c_void,
@@ -962,7 +1036,9 @@ impl Quic {
 // SACK list (used for both packet-number and stream-byte ranges).
 
 pub struct SackItem {
-    pub node: SplayNode,
+    /// Membership in the parent [`SackList::ack_tree`].  Phase 4
+    /// uses this for O(1) removal once a range is acknowledged.
+    pub ack_tree_membership: Option<SplayToken>,
     pub start_of_sack_range: u64,
     pub end_of_sack_range: u64,
     pub time_created: u64,
@@ -974,7 +1050,12 @@ pub struct SackRangeCount {
 }
 
 pub struct SackList {
-    pub ack_tree: SplayTree,
+    /// SACK ranges sorted by start of range.  Splay-tree access
+    /// locality matters: incoming acks tend to merge adjacent ranges.
+    pub ack_tree: SplayTree<u64, SackItemToken>,
+    /// Owning arena for [`SackItem`] entries reachable through
+    /// [`Self::ack_tree`].
+    pub sack_items: Arena<SackItem>,
     pub ack_horizon: u64,
     pub horizon_delay: i64,
     pub rc: [SackRangeCount; 2],
@@ -984,10 +1065,12 @@ pub struct SackList {
 // Stream head.
 
 pub struct StreamHead {
-    pub stream_node: SplayNode,
+    /// Membership in the owning connection's `stream_tree`.
+    /// Phase 4 uses this for O(1) removal when the stream closes.
+    pub stream_tree_membership: Option<SplayToken>,
     pub next_output_stream: *mut StreamHead,
     pub previous_output_stream: *mut StreamHead,
-    pub cnx: *mut Cnx,
+    pub cnx: *mut Connection,
     pub stream_id: u64,
     pub affinity_path: *mut Path,
     pub consumed_offset: u64,
@@ -1001,7 +1084,14 @@ pub struct StreamHead {
     pub local_stop_error: u64,
     pub remote_stop_error: u64,
     pub last_time_data_sent: u64,
-    pub stream_data_tree: SplayTree,
+    /// Per-stream tree of received but not-yet-consumed data
+    /// fragments, keyed by byte offset.  Phase 4 uses splay
+    /// because the next-to-consume fragment is usually right after
+    /// the one we just consumed.
+    pub stream_data_tree: SplayTree<u64, StreamDataToken>,
+    /// Owning arena for [`StreamDataNode`] entries reachable
+    /// through [`Self::stream_data_tree`].
+    pub stream_data_nodes: Arena<StreamDataNode>,
     pub sent_offset: u64,
     pub reliable_size: u64,
     pub send_queue: *mut StreamQueueNode,
@@ -1148,8 +1238,10 @@ pub struct AckContext {
 
 pub struct LocalCnxid {
     pub next: *mut LocalCnxid,
-    pub registered_cnx: *mut Cnx,
-    pub hash_item: HashItem,
+    pub registered_cnx: *mut Connection,
+    /// Membership in `Quic::cnx_by_id`.  Phase 4 uses this for
+    /// O(1) removal when a CID is retired.
+    pub cnx_by_id_membership: Option<HashToken>,
     pub path_id: u64,
     pub sequence: u64,
     pub create_time: u64,
@@ -1233,8 +1325,10 @@ pub struct Tuple {
 
 pub struct Path {
     pub registered_peer_addr: SocketAddr,
-    pub net_id_hash_item: HashItem,
-    pub cnx: *mut Cnx,
+    /// Membership in `Quic::cnx_by_net`.  Phase 4 uses this for
+    /// O(1) removal on path teardown / migration.
+    pub cnx_by_net_membership: Option<HashToken>,
+    pub cnx: *mut Connection,
     pub unique_path_id: u64,
     pub app_path_ctx: *mut c_void,
     pub ack_ctx: AckContext,
@@ -1376,14 +1470,14 @@ pub struct CryptoContext {
 // ---------------------------------------------------------------------------
 // Connection context.
 
-/// Per-connection state.  C: `Cnx`.  This is the
+/// Per-connection state.  C: `Connection`.  This is the
 /// largest and longest-lived structure in the library; almost
 /// every internal function takes `cnx` as its first argument.
-pub struct Cnx {
+pub struct Connection {
     pub quic: *mut Quic,
 
-    pub next_in_table: *mut Cnx,
-    pub previous_in_table: *mut Cnx,
+    pub next_in_table: *mut Connection,
+    pub previous_in_table: *mut Connection,
 
     pub proposed_version: u32,
     pub rejected_version: u32,
@@ -1474,10 +1568,13 @@ pub struct Cnx {
     pub initial_cnxid: ConnectionId,
     pub original_cnxid: ConnectionId,
     pub registered_icid_addr: SocketAddr,
-    pub registered_icid_item: HashItem,
+    /// Membership in `Quic::cnx_by_icid` (server-side initial CID
+    /// index).  Phase 4 uses this for O(1) removal on connection close.
+    pub cnx_by_icid_membership: Option<HashToken>,
     pub registered_secret_addr: SocketAddr,
     pub registered_reset_secret: [u8; RESET_SECRET_SIZE],
-    pub registered_reset_secret_item: HashItem,
+    /// Membership in `Quic::cnx_by_secret` (stateless-reset secret index).
+    pub cnx_by_secret_membership: Option<HashToken>,
 
     pub start_time: u64,
     pub phase_delay: i64,
@@ -1492,7 +1589,9 @@ pub struct Cnx {
     pub retry_token: *mut u8,
 
     pub next_wake_time: u64,
-    pub cnx_wake_node: SplayNode,
+    /// Membership in `Quic::cnx_wake_tree`.  Phase 4 uses this for
+    /// O(1) reschedule (remove + reinsert at the new key).
+    pub cnx_wake_membership: Option<SplayToken>,
     pub app_wake_time: u64,
 
     pub tls_ctx: *mut c_void,
@@ -1577,14 +1676,25 @@ pub struct Cnx {
     pub first_misc_frame: *mut MiscFrameHeader,
     pub last_misc_frame: *mut MiscFrameHeader,
 
-    pub stream_tree: SplayTree,
+    /// Per-connection tree of streams keyed by stream id.  Splay
+    /// gives access locality for the common "process a few streams
+    /// in succession" pattern.
+    pub stream_tree: SplayTree<u64, StreamToken>,
+    /// Owning arena for [`StreamHead`] entries reachable through
+    /// [`Self::stream_tree`].
+    pub streams: Arena<StreamHead>,
     pub first_output_stream: *mut StreamHead,
     pub last_output_stream: *mut StreamHead,
     pub high_priority_stream_id: u64,
     pub next_stream_id: [u64; 4],
     pub priority_limit_for_bypass: u64,
 
-    pub queue_data_repeat_tree: SplayTree,
+    /// Per-connection tree of packets queued for re-transmission,
+    /// keyed by sequence number.  C: `queue_data_repeat_tree`.
+    pub queue_data_repeat_tree: SplayTree<u64, PacketToken>,
+    /// Owning arena for [`Packet`] entries reachable through
+    /// [`Self::queue_data_repeat_tree`].
+    pub queued_packets: Arena<Packet>,
 
     pub first_datagram: *mut MiscFrameHeader,
     pub last_datagram: *mut MiscFrameHeader,
@@ -1632,13 +1742,13 @@ pub struct Cnx {
     pub qlog_ctx: *mut c_void,
 }
 
-// `Cnx` carries `Box<dyn Trait>` and raw pointers, so a
+// `Connection` carries `Box<dyn Trait>` and raw pointers, so a
 // derived `Debug` is impossible.  Hand-roll a marker impl so
-// containers that store `Cnx` references can still
+// containers that store `Connection` references can still
 // derive `Debug`.
-impl core::fmt::Debug for Cnx {
+impl core::fmt::Debug for Connection {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Cnx").finish_non_exhaustive()
+        f.debug_struct("Connection").finish_non_exhaustive()
     }
 }
 
@@ -1693,7 +1803,7 @@ pub fn create_cnx_internal(
     _client_mode: bool,
     _initial_aead_dec: *mut c_void,
     _initial_pn_dec: *mut c_void,
-) -> *mut Cnx {
+) -> *mut Connection {
     todo!()
 }
 
@@ -1713,13 +1823,13 @@ pub fn init_transport_parameters(_tp: &mut TransportParameters) {
 /// future packets carrying it route to `cnx`.
 pub fn register_cnx_id(
     _quic: &mut Quic,
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _l_cid: &mut LocalCnxid,
 ) -> Result<(), crate::Error> {
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Insert this connection's reset-secret hash entry into the
     /// QUIC context's lookup table.
     pub fn register_net_secret(&mut self) -> Result<(), crate::Error> {
@@ -1753,7 +1863,7 @@ pub fn create_tuple(
     todo!()
 }
 
-pub fn delete_demoted_tuples(_cnx: &mut Cnx, _current_time: u64, _next_wake_time: &mut u64) {
+pub fn delete_demoted_tuples(_cnx: &mut Connection, _current_time: u64, _next_wake_time: &mut u64) {
     todo!()
 }
 
@@ -1766,7 +1876,7 @@ pub fn set_first_tuple(_path_x: &mut Path, _tuple: *mut Tuple) {
 }
 
 pub fn create_path(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _start_time: u64,
     _local_addr: Option<&SocketAddr>,
     _peer_addr: Option<&SocketAddr>,
@@ -1776,12 +1886,12 @@ pub fn create_path(
     todo!()
 }
 
-pub fn register_path(_cnx: &mut Cnx, _path_x: &mut Path) {
+pub fn register_path(_cnx: &mut Connection, _path_x: &mut Path) {
     todo!()
 }
 
 pub fn find_incoming_path(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _ph: &mut PacketHeader,
     _addr_from: &mut SocketAddr,
     _addr_to: &mut SocketAddr,
@@ -1793,7 +1903,7 @@ pub fn find_incoming_path(
 }
 
 pub fn prepare_path_control_packet(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _path_x: &mut Path,
     _tuple: &mut Tuple,
     _packet: &mut Packet,
@@ -1807,7 +1917,7 @@ pub fn prepare_path_control_packet(
 }
 
 pub fn prepare_path_challenge_frames(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _path_x: &mut Path,
     _bytes_next: &mut [u8],
     _bytes_max: *mut u8,
@@ -1821,7 +1931,7 @@ pub fn prepare_path_challenge_frames(
 }
 
 pub fn select_next_path_tuple(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _current_time: u64,
     _next_wake_time: &mut u64,
     _next_path: &mut *mut Path,
@@ -1830,7 +1940,7 @@ pub fn select_next_path_tuple(
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Allocate a fresh remote CID for path `path_id` and migrate the
     /// path's tuples onto it.
     pub fn renew_connection_id(&mut self, _path_id: i32) -> Result<(), crate::Error> {
@@ -1870,7 +1980,7 @@ pub fn set_tuple_challenge(_tuple: &mut Tuple, _current_time: u64, _use_constant
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Force a fresh PATH_CHALLENGE on path `path_id`.
     pub fn set_path_challenge(&mut self, _path_id: i32, _current_time: u64) {
         todo!()
@@ -1914,12 +2024,12 @@ pub fn reset_path_mtu(_path_x: &mut Path) {
     todo!()
 }
 
-pub fn get_path_id_from_unique(_cnx: &mut Cnx, _unique_path_id: u64) -> i32 {
+pub fn get_path_id_from_unique(_cnx: &mut Connection, _unique_path_id: u64) -> i32 {
     todo!()
 }
 
 pub fn find_or_create_remote_cnxid_stash(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _unique_path_id: u64,
     _do_create: i32,
 ) -> *mut RemoteCnxidStash {
@@ -1929,7 +2039,7 @@ pub fn find_or_create_remote_cnxid_stash(
 // ---------------------------------------------------------------------------
 // Remote CID stash management.
 
-impl Cnx {
+impl Connection {
     /// Initialize the per-connection remote-CID stash.
     pub fn init_cnxid_stash(&mut self) -> Result<(), crate::Error> {
         todo!()
@@ -1937,7 +2047,7 @@ impl Cnx {
 }
 
 pub fn add_remote_cnxid_to_stash(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _remote_cnxid_stash: &mut RemoteCnxidStash,
     _retire_before_next: u64,
     _sequence: u64,
@@ -1950,7 +2060,7 @@ pub fn add_remote_cnxid_to_stash(
 }
 
 pub fn stash_remote_cnxid(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _retire_before_next: u64,
     _unique_path_id: u64,
     _sequence: u64,
@@ -1963,7 +2073,7 @@ pub fn stash_remote_cnxid(
 }
 
 pub fn remove_cnxid_from_stash(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _remote_cnxid_stash: &mut RemoteCnxidStash,
     _removed: *mut RemoteCnxid,
     _previous: *mut RemoteCnxid,
@@ -1972,7 +2082,7 @@ pub fn remove_cnxid_from_stash(
 }
 
 pub fn remove_stashed_cnxid(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _unique_path_id: u64,
     _removed: *mut RemoteCnxid,
     _previous: *mut RemoteCnxid,
@@ -1984,16 +2094,16 @@ pub fn get_cnxid_from_stash(_stash: &mut RemoteCnxidStash) -> *mut RemoteCnxid {
     todo!()
 }
 
-pub fn obtain_stashed_cnxid(_cnx: &mut Cnx, _unique_path_id: u64) -> *mut RemoteCnxid {
+pub fn obtain_stashed_cnxid(_cnx: &mut Connection, _unique_path_id: u64) -> *mut RemoteCnxid {
     todo!()
 }
 
-pub fn dereference_stashed_cnxid(_cnx: &mut Cnx, _path_x: &mut Path, _is_deleting_cnx: i32) {
+pub fn dereference_stashed_cnxid(_cnx: &mut Connection, _path_x: &mut Path, _is_deleting_cnx: i32) {
     todo!()
 }
 
 pub fn dereference_stashed_cnxid_tuple(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _path_x: &mut Path,
     _tuple: &mut Tuple,
     _is_deleting_cnx: i32,
@@ -2002,7 +2112,7 @@ pub fn dereference_stashed_cnxid_tuple(
 }
 
 pub fn remove_not_before_from_stash(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _cnxid_stash: &mut RemoteCnxidStash,
     _not_before: u64,
     _current_time: u64,
@@ -2010,12 +2120,12 @@ pub fn remove_not_before_from_stash(
     todo!()
 }
 
-pub fn delete_remote_cnxid_stash(_cnx: &mut Cnx, _cnxid_stash: *mut RemoteCnxidStash) {
+pub fn delete_remote_cnxid_stash(_cnx: &mut Connection, _cnxid_stash: *mut RemoteCnxidStash) {
     todo!()
 }
 
 pub fn remove_not_before_cid(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _unique_path_id: u64,
     _not_before: u64,
     _current_time: u64,
@@ -2023,7 +2133,7 @@ pub fn remove_not_before_cid(
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Force a CID rotation on `path_x` (allocate a new local CID
     /// and retire the previous one).
     pub fn renew_path_connection_id(&mut self, _path_x: &mut Path) -> Result<(), crate::Error> {
@@ -2035,7 +2145,7 @@ impl Cnx {
 // Retransmission queue management.
 
 pub fn queue_for_retransmit(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _path_x: &mut Path,
     _packet: &mut Packet,
     _length: usize,
@@ -2045,7 +2155,7 @@ pub fn queue_for_retransmit(
 }
 
 pub fn dequeue_retransmit_packet(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _pkt_ctx: &mut PacketContextState,
     _p: *mut Packet,
     _should_free: i32,
@@ -2055,14 +2165,14 @@ pub fn dequeue_retransmit_packet(
 }
 
 pub fn dequeue_retransmitted_packet(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _pkt_ctx: &mut PacketContextState,
     _p: *mut Packet,
 ) {
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Tear down all in-flight state and prepare the connection for
     /// a fresh handshake.
     pub fn reset(&mut self, _current_time: u64) -> Result<(), crate::Error> {
@@ -2112,25 +2222,33 @@ impl Quic {
         &mut self,
         _cnx_id: ConnectionId,
         _l_cid_sequence: &mut *mut LocalCnxid,
-    ) -> *mut Cnx {
+    ) -> *mut Connection {
         todo!()
     }
 
     /// Look up a connection by peer address.  Returns null when
     /// nothing matches.
-    pub fn cnx_by_net(&mut self, _addr: Option<&SocketAddr>) -> *mut Cnx {
+    pub fn cnx_by_net(&mut self, _addr: Option<&SocketAddr>) -> *mut Connection {
         todo!()
     }
 
     /// Look up a connection by initial CID and peer address.  Returns
     /// null when nothing matches.
-    pub fn cnx_by_icid(&mut self, _icid: &ConnectionId, _addr: Option<&SocketAddr>) -> *mut Cnx {
+    pub fn cnx_by_icid(
+        &mut self,
+        _icid: &ConnectionId,
+        _addr: Option<&SocketAddr>,
+    ) -> *mut Connection {
         todo!()
     }
 
     /// Look up a connection by stateless-reset secret and peer
     /// address.  Returns null when nothing matches.
-    pub fn cnx_by_secret(&mut self, _reset_secret: &[u8], _addr: Option<&SocketAddr>) -> *mut Cnx {
+    pub fn cnx_by_secret(
+        &mut self,
+        _reset_secret: &[u8],
+        _addr: Option<&SocketAddr>,
+    ) -> *mut Connection {
         todo!()
     }
 }
@@ -2200,7 +2318,7 @@ pub fn update_pacing_after_send(_path_x: &mut Path, _length: usize, _current_tim
 }
 
 pub fn is_sending_authorized_by_pacing(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _path_x: &mut Path,
     _current_time: u64,
     _next_time: &mut u64,
@@ -2216,11 +2334,11 @@ pub fn refresh_path_quality_thresholds(_path_x: &mut Path) {
     todo!()
 }
 
-pub fn issue_path_quality_update(_cnx: &mut Cnx, _path_x: &mut Path) -> i32 {
+pub fn issue_path_quality_update(_cnx: &mut Connection, _path_x: &mut Path) -> i32 {
     todo!()
 }
 
-pub fn reinsert_by_wake_time(_quic: &mut Quic, _cnx: &mut Cnx, _next_time: u64) {
+pub fn reinsert_by_wake_time(_quic: &mut Quic, _cnx: &mut Connection, _next_time: u64) {
     todo!()
 }
 
@@ -2314,7 +2432,7 @@ pub fn parse_packet_header(
     _length: usize,
     _addr_from: Option<&SocketAddr>,
     _ph: &mut PacketHeader,
-    _pcnx: &mut *mut Cnx,
+    _pcnx: &mut *mut Connection,
     _receiving: i32,
 ) -> i32 {
     todo!()
@@ -2338,7 +2456,7 @@ pub fn create_long_header(
 }
 
 pub fn create_packet_header(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _packet_type: PacketType,
     _sequence_number: u64,
     _path_x: &mut Path,
@@ -2352,7 +2470,7 @@ pub fn create_packet_header(
 }
 
 pub fn predict_packet_header_length(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _packet_type: PacketType,
     _pkt_ctx: &mut PacketContextState,
 ) -> usize {
@@ -2368,7 +2486,7 @@ pub fn update_payload_length(
     todo!()
 }
 
-pub fn get_checksum_length(_cnx: &mut Cnx, _is_cleartext_mode: Epoch) -> usize {
+pub fn get_checksum_length(_cnx: &mut Connection, _is_cleartext_mode: Epoch) -> usize {
     todo!()
 }
 
@@ -2382,7 +2500,7 @@ pub fn protect_packet_header(
 }
 
 pub fn protect_packet(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _ptype: PacketType,
     _bytes: &mut [u8],
     _sequence_number: u64,
@@ -2420,7 +2538,7 @@ pub fn pad_to_target_length(_bytes: &mut [u8], _length: usize, _target: usize) -
 }
 
 pub fn finalize_and_protect_packet_tuple(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _packet: &mut Packet,
     _ret: i32,
     _length: usize,
@@ -2437,7 +2555,7 @@ pub fn finalize_and_protect_packet_tuple(
 }
 
 pub fn finalize_and_protect_packet(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _packet: &mut Packet,
     _ret: i32,
     _length: usize,
@@ -2452,19 +2570,19 @@ pub fn finalize_and_protect_packet(
     todo!()
 }
 
-pub fn implicit_handshake_ack(_cnx: &mut Cnx, _pc: PacketContext, _current_time: u64) {
+pub fn implicit_handshake_ack(_cnx: &mut Connection, _pc: PacketContext, _current_time: u64) {
     todo!()
 }
 
-pub fn false_start_transition(_cnx: &mut Cnx, _current_time: u64) {
+pub fn false_start_transition(_cnx: &mut Connection, _current_time: u64) {
     todo!()
 }
 
-pub fn client_almost_ready_transition(_cnx: &mut Cnx) {
+pub fn client_almost_ready_transition(_cnx: &mut Connection) {
     todo!()
 }
 
-pub fn ready_state_transition(_cnx: &mut Cnx, _current_time: u64) {
+pub fn ready_state_transition(_cnx: &mut Connection, _current_time: u64) {
     todo!()
 }
 
@@ -2477,7 +2595,7 @@ pub fn parse_header_and_decrypt(
     _current_time: u64,
     _decrypted_data: &mut StreamDataNode,
     _ph: &mut PacketHeader,
-    _pcnx: &mut *mut Cnx,
+    _pcnx: &mut *mut Connection,
     _consumed: &mut usize,
     _new_context_created: &mut i32,
 ) -> i32 {
@@ -2487,27 +2605,31 @@ pub fn parse_header_and_decrypt(
 // ---------------------------------------------------------------------------
 // Packet number / ACK shortcuts.
 
-pub fn get_sequence_number(_cnx: &mut Cnx, _path_x: &mut Path, _pc: PacketContext) -> u64 {
+pub fn get_sequence_number(_cnx: &mut Connection, _path_x: &mut Path, _pc: PacketContext) -> u64 {
     todo!()
 }
 
-pub fn get_ack_number(_cnx: &mut Cnx, _path_x: &mut Path, _pc: PacketContext) -> u64 {
+pub fn get_ack_number(_cnx: &mut Connection, _path_x: &mut Path, _pc: PacketContext) -> u64 {
     todo!()
 }
 
-pub fn get_last_packet(_cnx: &mut Cnx, _path_x: &mut Path, _pc: PacketContext) -> *mut Packet {
+pub fn get_last_packet(
+    _cnx: &mut Connection,
+    _path_x: &mut Path,
+    _pc: PacketContext,
+) -> *mut Packet {
     todo!()
 }
 
 // ---------------------------------------------------------------------------
 // ACK logic.
 
-pub fn init_ack_ctx(_cnx: &mut Cnx, _ack_ctx: &mut AckContext) {
+pub fn init_ack_ctx(_cnx: &mut Connection, _ack_ctx: &mut AckContext) {
     todo!()
 }
 
 pub fn is_ack_needed(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _current_time: u64,
     _next_wake_time: &mut u64,
     _pc: PacketContext,
@@ -2517,7 +2639,7 @@ pub fn is_ack_needed(
 }
 
 pub fn is_pn_already_received(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _pc: PacketContext,
     _l_cid: *mut LocalCnxid,
     _pn64: u64,
@@ -2526,7 +2648,7 @@ pub fn is_pn_already_received(
 }
 
 pub fn record_pn_received(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _pc: PacketContext,
     _l_cid: *mut LocalCnxid,
     _pn64: u64,
@@ -2619,7 +2741,7 @@ pub fn sack_previous_item(_sack: *mut SackItem) -> *mut SackItem {
 }
 
 pub fn ack_ctx_from_cnx_context(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _pc: PacketContext,
     _l_cid: *mut LocalCnxid,
 ) -> *mut AckContext {
@@ -2627,7 +2749,7 @@ pub fn ack_ctx_from_cnx_context(
 }
 
 pub fn sack_list_from_cnx_context(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _pc: PacketContext,
     _l_cid: *mut LocalCnxid,
 ) -> *mut SackList {
@@ -2704,7 +2826,11 @@ pub fn record_ack_packet_data(_packet_data: &mut PacketData, _acked_packet: &mut
     todo!()
 }
 
-pub fn init_packet_ctx(_cnx: &mut Cnx, _pkt_ctx: &mut PacketContextState, _pc: PacketContext) {
+pub fn init_packet_ctx(
+    _cnx: &mut Connection,
+    _pkt_ctx: &mut PacketContextState,
+    _pc: PacketContext,
+) {
     todo!()
 }
 
@@ -2719,7 +2845,7 @@ pub fn process_ack_of_ack_frame(
 }
 
 pub fn compute_ack_gap_and_delay(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _rtt: u64,
     _remote_min_ack_delay: u64,
     _data_rate: u64,
@@ -2730,7 +2856,7 @@ pub fn compute_ack_gap_and_delay(
 }
 
 pub fn seed_bandwidth(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _rtt_min: u64,
     _cwin: u64,
     _ip_addr: &[u8],
@@ -2739,12 +2865,12 @@ pub fn seed_bandwidth(
     todo!()
 }
 
-pub fn current_retransmit_timer(_cnx: &mut Cnx, _path_x: &mut Path) -> u64 {
+pub fn current_retransmit_timer(_cnx: &mut Connection, _path_x: &mut Path) -> u64 {
     todo!()
 }
 
 pub fn update_path_rtt(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _old_path: &mut Path,
     _epoch: i32,
     _send_time: u64,
@@ -2758,7 +2884,7 @@ pub fn update_path_rtt(
 // ---------------------------------------------------------------------------
 // Stream management.
 
-impl Cnx {
+impl Connection {
     /// Create and register a new application stream with the given
     /// id.  Returns a borrowed pointer (the stream lives in the
     /// connection's stream tree).
@@ -2848,10 +2974,11 @@ pub fn is_stream_closed(_stream: &mut StreamHead, _client_mode: i32) -> bool {
     todo!()
 }
 
-/// Recover a `*mut StreamHead` from a splay-tree node pointer.
-pub fn stream_from_node(_node: *mut SplayNode) -> *mut StreamHead {
-    todo!()
-}
+// `stream_from_node` is gone — the C version recovered the parent
+// pointer from an embedded `picosplay_node_t*` via `offsetof`.  In
+// the Rust port the splay tree stores `StreamToken` directly, so
+// the `Connection::stream_tree.get(token)` path is one indirection
+// rather than offset arithmetic.
 
 /// Splay-tree successor of `stream`.
 pub fn next_stream(_stream: *mut StreamHead) -> *mut StreamHead {
@@ -2859,7 +2986,7 @@ pub fn next_stream(_stream: *mut StreamHead) -> *mut StreamHead {
 }
 
 pub fn decode_stream_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *const u8,
     _bytes_max: *const u8,
     _received_data: &mut StreamDataNode,
@@ -2869,7 +2996,7 @@ pub fn decode_stream_frame(
 }
 
 pub fn format_stream_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _stream: &mut StreamHead,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
@@ -2881,7 +3008,7 @@ pub fn format_stream_frame(
     todo!()
 }
 
-pub fn update_max_stream_id_local(_cnx: &mut Cnx, _stream: &mut StreamHead) {
+pub fn update_max_stream_id_local(_cnx: &mut Connection, _stream: &mut StreamHead) {
     todo!()
 }
 
@@ -2889,7 +3016,7 @@ pub fn update_max_stream_id_local(_cnx: &mut Cnx, _stream: &mut StreamHead) {
 // Frame retransmission.
 
 pub fn check_frame_needs_repeat(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: &[u8],
     _bytes_max: usize,
     _p_type: PacketType,
@@ -2901,7 +3028,7 @@ pub fn check_frame_needs_repeat(
 }
 
 pub fn format_available_stream_frames(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _path_x: &mut Path,
     _bytes_next: *mut u8,
     _bytes_max: *mut u8,
@@ -2914,24 +3041,24 @@ pub fn format_available_stream_frames(
     todo!()
 }
 
-pub fn queue_data_repeat_init(_cnx: &mut Cnx) {
+pub fn queue_data_repeat_init(_cnx: &mut Connection) {
     todo!()
 }
 
-pub fn queue_data_repeat_packet(_cnx: &mut Cnx, _packet: &mut Packet) {
+pub fn queue_data_repeat_packet(_cnx: &mut Connection, _packet: &mut Packet) {
     todo!()
 }
 
-pub fn dequeue_data_repeat_packet(_cnx: &mut Cnx, _packet: &mut Packet) {
+pub fn dequeue_data_repeat_packet(_cnx: &mut Connection, _packet: &mut Packet) {
     todo!()
 }
 
-pub fn first_data_repeat_packet(_cnx: &mut Cnx) -> *mut Packet {
+pub fn first_data_repeat_packet(_cnx: &mut Connection) -> *mut Packet {
     todo!()
 }
 
 pub fn copy_stream_frame_for_retransmit(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _packet: &mut Packet,
     _bytes_next: *mut u8,
     _bytes_max: *mut u8,
@@ -2940,7 +3067,7 @@ pub fn copy_stream_frame_for_retransmit(
 }
 
 pub fn copy_stream_frames_for_retransmit(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes_next: *mut u8,
     _bytes_max: *mut u8,
     _current_priority: u64,
@@ -2952,7 +3079,7 @@ pub fn copy_stream_frames_for_retransmit(
 
 pub fn copy_before_retransmit(
     _old_p: &mut Packet,
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _new_bytes: &mut [u8],
     _send_buffer_max_minus_checksum: usize,
     _packet_is_pure_ack: &mut i32,
@@ -2965,7 +3092,7 @@ pub fn copy_before_retransmit(
 }
 
 pub fn retransmit_needed(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _pc: PacketContext,
     _path_x: &mut Path,
     _current_time: u64,
@@ -2978,7 +3105,7 @@ pub fn retransmit_needed(
 }
 
 pub fn set_ack_needed(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _current_time: u64,
     _pc: PacketContext,
     _path_x: &mut Path,
@@ -2987,7 +3114,7 @@ pub fn set_ack_needed(
     todo!()
 }
 
-pub fn process_ack_of_frames(_cnx: &mut Cnx, _p: &mut Packet, _is_spurious: i32) {
+pub fn process_ack_of_frames(_cnx: &mut Connection, _p: &mut Packet, _is_spurious: i32) {
     todo!()
 }
 
@@ -3044,7 +3171,7 @@ pub fn parse_ack_header(
 }
 
 pub fn decode_crypto_hs_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *const u8,
     _bytes_max: *const u8,
     _received_data: &mut StreamDataNode,
@@ -3064,7 +3191,7 @@ pub fn format_crypto_hs_frame(
 }
 
 pub fn format_ack_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3076,7 +3203,7 @@ pub fn format_ack_frame(
 }
 
 pub fn format_connection_close_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3086,7 +3213,7 @@ pub fn format_connection_close_frame(
 }
 
 pub fn format_application_close_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3096,7 +3223,7 @@ pub fn format_application_close_frame(
 }
 
 pub fn format_required_max_stream_data_frames(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3106,7 +3233,7 @@ pub fn format_required_max_stream_data_frames(
 }
 
 pub fn format_max_data_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3117,7 +3244,7 @@ pub fn format_max_data_frame(
 }
 
 pub fn format_max_stream_data_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _stream: &mut StreamHead,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
@@ -3128,12 +3255,12 @@ pub fn format_max_stream_data_frame(
     todo!()
 }
 
-pub fn cc_increased_window(_cnx: &mut Cnx, _previous_window: u64) -> u64 {
+pub fn cc_increased_window(_cnx: &mut Connection, _previous_window: u64) -> u64 {
     todo!()
 }
 
 pub fn format_max_streams_frame_if_needed(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3154,12 +3281,12 @@ pub fn clear_stream(_stream: &mut StreamHead) {
     todo!()
 }
 
-pub fn delete_stream(_cnx: &mut Cnx, _stream: &mut StreamHead) {
+pub fn delete_stream(_cnx: &mut Connection, _stream: &mut StreamHead) {
     todo!()
 }
 
 pub fn find_or_create_local_cnxid_list(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _unique_path_id: u64,
     _do_create: i32,
 ) -> *mut LocalCnxidList {
@@ -3167,7 +3294,7 @@ pub fn find_or_create_local_cnxid_list(
 }
 
 pub fn create_local_cnxid(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _unique_path_id: u64,
     _suggested_value: *const ConnectionId,
     _current_time: u64,
@@ -3175,28 +3302,28 @@ pub fn create_local_cnxid(
     todo!()
 }
 
-pub fn demote_local_cnxid_list(_cnx: &mut Cnx, _unique_path_id: u64, _reason: u64) -> i32 {
+pub fn demote_local_cnxid_list(_cnx: &mut Connection, _unique_path_id: u64, _reason: u64) -> i32 {
     todo!()
 }
 
-pub fn delete_local_cnxid(_cnx: &mut Cnx, _l_cid: *mut LocalCnxid) {
+pub fn delete_local_cnxid(_cnx: &mut Connection, _l_cid: *mut LocalCnxid) {
     todo!()
 }
 
-pub fn delete_local_cnxid_list(_cnx: &mut Cnx, _local_cnxid_list: *mut LocalCnxidList) {
+pub fn delete_local_cnxid_list(_cnx: &mut Connection, _local_cnxid_list: *mut LocalCnxidList) {
     todo!()
 }
 
-pub fn delete_local_cnxid_lists(_cnx: &mut Cnx) {
+pub fn delete_local_cnxid_lists(_cnx: &mut Connection) {
     todo!()
 }
 
-pub fn retire_local_cnxid(_cnx: &mut Cnx, _unique_path_id: u64, _sequence: u64) {
+pub fn retire_local_cnxid(_cnx: &mut Connection, _unique_path_id: u64, _sequence: u64) {
     todo!()
 }
 
 pub fn check_local_cnxid_ttl(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _local_cnxid_list: &mut LocalCnxidList,
     _current_time: u64,
     _next_wake_time: &mut u64,
@@ -3205,7 +3332,7 @@ pub fn check_local_cnxid_ttl(
 }
 
 pub fn find_local_cnxid(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _unique_path_id: u64,
     _cnxid: &ConnectionId,
 ) -> *mut LocalCnxid {
@@ -3232,12 +3359,16 @@ pub fn format_path_response_frame(
     todo!()
 }
 
-pub fn should_repeat_path_response_frame(_cnx: &mut Cnx, _bytes: &[u8], _bytes_max: usize) -> bool {
+pub fn should_repeat_path_response_frame(
+    _cnx: &mut Connection,
+    _bytes: &[u8],
+    _bytes_max: usize,
+) -> bool {
     todo!()
 }
 
 pub fn format_new_connection_id_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _local_cnxid_list: &mut LocalCnxidList,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
@@ -3258,7 +3389,7 @@ pub fn format_max_path_id_frame(
 }
 
 pub fn format_blocked_frames(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3267,7 +3398,7 @@ pub fn format_blocked_frames(
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Enqueue a RETIRE_CONNECTION_ID frame for `(unique_path_id,
     /// sequence)` to be sent on the next outgoing packet.
     pub fn queue_retire_connection_id_frame(
@@ -3289,7 +3420,7 @@ impl Cnx {
 }
 
 pub fn format_one_blocked_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3311,12 +3442,12 @@ pub fn format_first_misc_or_dg_frame(
     todo!()
 }
 
-pub fn find_first_misc_frame(_cnx: &mut Cnx, _pc: PacketContext) -> *mut MiscFrameHeader {
+pub fn find_first_misc_frame(_cnx: &mut Connection, _pc: PacketContext) -> *mut MiscFrameHeader {
     todo!()
 }
 
 pub fn format_misc_frames_in_context(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3327,7 +3458,7 @@ pub fn format_misc_frames_in_context(
 }
 
 pub fn queue_misc_or_dg_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _first: &mut *mut MiscFrameHeader,
     _last: &mut *mut MiscFrameHeader,
     _bytes: &[u8],
@@ -3338,7 +3469,7 @@ pub fn queue_misc_or_dg_frame(
     todo!()
 }
 
-pub fn purge_misc_frames_after_ready(_cnx: &mut Cnx) {
+pub fn purge_misc_frames_after_ready(_cnx: &mut Connection) {
     todo!()
 }
 
@@ -3358,7 +3489,7 @@ pub fn reset_ack_context(_ack_ctx: &mut AckContext) {
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Enqueue a HANDSHAKE_DONE frame.
     pub fn queue_handshake_done_frame(&mut self) -> Result<(), crate::Error> {
         todo!()
@@ -3366,7 +3497,7 @@ impl Cnx {
 }
 
 pub fn format_first_datagram_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _is_first_in_packet: i32,
@@ -3377,7 +3508,7 @@ pub fn format_first_datagram_frame(
 }
 
 pub fn format_ready_datagram_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _path_x: &mut Path,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
@@ -3410,7 +3541,7 @@ pub fn parse_ack_frequency_frame(
 }
 
 pub fn format_ack_frequency_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3427,7 +3558,7 @@ pub fn format_immediate_ack_frame(
 }
 
 pub fn format_time_stamp_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _more_data: &mut i32,
@@ -3436,12 +3567,12 @@ pub fn format_time_stamp_frame(
     todo!()
 }
 
-pub fn encode_time_stamp_length(_cnx: &mut Cnx, _current_time: u64) -> usize {
+pub fn encode_time_stamp_length(_cnx: &mut Connection, _current_time: u64) -> usize {
     todo!()
 }
 
 pub fn format_bdp_frame(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _bytes: *mut u8,
     _bytes_max: *mut u8,
     _path_x: &mut Path,
@@ -3461,7 +3592,7 @@ pub fn format_path_abandon_frame(
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Enqueue a PATH_ABANDON frame for `unique_path_id` carrying
     /// the close `reason`.
     pub fn queue_path_abandon_frame(
@@ -3474,7 +3605,7 @@ impl Cnx {
 }
 
 pub fn decode_frames(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _path_x: &mut Path,
     _bytes: &[u8],
     _bytes_max: usize,
@@ -3550,7 +3681,7 @@ pub fn is_path_challenging_packet(_bytes: &[u8], _bytes_maxsize: usize) -> bool 
     todo!()
 }
 
-impl Cnx {
+impl Connection {
     /// Enqueue a PATH_AVAILABLE or PATH_BACKUP frame on `path_x`,
     /// determined by `status`.
     pub fn queue_path_available_or_backup_frame(
@@ -3562,7 +3693,7 @@ impl Cnx {
     }
 }
 
-pub fn test_and_signal_new_path_allowed(_cnx: &mut Cnx) {
+pub fn test_and_signal_new_path_allowed(_cnx: &mut Connection) {
     todo!()
 }
 
@@ -3574,11 +3705,11 @@ pub fn decode_closing_frames(
     todo!()
 }
 
-pub fn process_sooner_packets(_cnx: &mut Cnx, _current_time: u64) {
+pub fn process_sooner_packets(_cnx: &mut Connection, _current_time: u64) {
     todo!()
 }
 
-pub fn delete_sooner_packets(_cnx: &mut Cnx) {
+pub fn delete_sooner_packets(_cnx: &mut Connection) {
     todo!()
 }
 
@@ -3598,7 +3729,7 @@ pub fn process_tp_version_negotiation(
 }
 
 pub fn prepare_transport_extensions(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _extension_mode: i32,
     _bytes: &mut [u8],
     _bytes_max: usize,
@@ -3608,7 +3739,7 @@ pub fn prepare_transport_extensions(
 }
 
 pub fn receive_transport_extensions(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _extension_mode: i32,
     _bytes: &mut [u8],
     _bytes_max: usize,
@@ -3627,7 +3758,7 @@ pub fn create_misc_frame(
 }
 
 pub fn process_version_upgrade(
-    _cnx: &mut Cnx,
+    _cnx: &mut Connection,
     _old_version_index: i32,
     _new_version_index: i32,
 ) -> i32 {

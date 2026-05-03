@@ -52,13 +52,13 @@
 //!   `NULL` sentinel ("opt out") maps to `None` and the registered
 //!   impl is owned by the registry.
 
-extern crate alloc;
+// REVIEW(open): the `Ptls*` opaque structs below stand in for tls
+// types that the v1 port hasn't yet bound.  Phase 2 (dependency
+// abstraction) replaces them with provider traits — until then the
+// surface compiles but the types carry no information.
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-
+use crate::Connection;
 use crate::Error;
-use crate::{Cnx, PtlsIovec, PtlsVerifyCertificate};
 
 // ---------------------------------------------------------------------------
 // `tls_api_init` flag bits.
@@ -242,35 +242,53 @@ pub trait DisposeSignCertificate {
 }
 
 /// Reads a PEM bundle and returns the certificate chain as a
-/// sequence of iovecs.  The C `(PtlsIovec*, size_t* count)` owning
-/// out-pair collapses to `Vec<PtlsIovec>`.  C:
-/// `picoquic_get_certs_from_file_t`.
+/// sequence of DER-encoded byte vectors (one per certificate).  The
+/// C `(PtlsIovec*, size_t* count)` owning out-pair collapses to
+/// `Vec<Vec<u8>>`.  C: `picoquic_get_certs_from_file_t`.
 pub trait GetCertsFromFile {
-    fn get(&self, file_name: &str) -> Option<Vec<PtlsIovec>>;
+    fn get(&self, file_name: &str) -> Option<Vec<Vec<u8>>>;
 }
 
-/// Provider-specific teardown for a certificate-verifier vtable.
-/// C: `picoquic_dispose_certificate_verifier_t`.
-pub trait DisposeCertificateVerifier {
-    fn dispose(&self, verifier: &mut PtlsVerifyCertificate);
+/// Per-connection certificate verifier.  Collapses the C trio
+/// `(picoquic_verify_certificate_cb_fn, picoquic_verify_sign_cb_fn,
+/// picoquic_free_verify_certificate_ctx_fn)` plus the opaque
+/// `picoquic_verify_certificate_t` context into a single trait.
+/// Drop replaces the explicit free hook.
+pub trait VerifyCertificate {
+    /// Validate `certs` against the configured trust roots and, on
+    /// success, return a signature verifier for subsequent handshake
+    /// messages.  Implementations return `Err` to fail the
+    /// handshake; the contained [`Error`] is reported to the peer.
+    fn verify_chain(
+        &mut self,
+        cnx: &mut Connection,
+        certs: &[&[u8]],
+    ) -> Result<Box<dyn VerifySignature>, Error>;
+}
+
+/// Signature verifier returned by
+/// [`VerifyCertificate::verify_chain`].  Drop matches the C
+/// `verify_sign` hook's "free" follow-up.
+pub trait VerifySignature {
+    /// Check that `signature` is a valid signature of `data` under
+    /// the certificate chain validated earlier.  Returns `Ok(())` on
+    /// match.
+    fn verify(&mut self, data: &[u8], signature: &[u8]) -> Result<(), Error>;
 }
 
 /// Output bundle from [`GetCertificateVerifier::get`].  The C
-/// signature returned a verifier and filled two separate
-/// out-parameters; grouping them in one struct keeps the trait
-/// method's signature single-output.
+/// signature returned a verifier and filled an out-parameter for
+/// store status; grouping them keeps the trait method's signature
+/// single-output.
 pub struct CertificateVerifier {
-    /// Owned verifier vtable.  Replaces the C
-    /// `PtlsVerifyCertificate*` return value.
-    pub verifier: Box<PtlsVerifyCertificate>,
+    /// Owned verifier.  Replaces the C `PtlsVerifyCertificate*`
+    /// return.  Drop subsumes the C `dispose_certificate_verifier`
+    /// hook.
+    pub verifier: Box<dyn VerifyCertificate>,
     /// `true` when the underlying certificate store has at least one
     /// trust anchor loaded.  Mirrors the C
     /// `unsigned int* is_cert_store_not_empty` out-parameter.
     pub is_cert_store_not_empty: bool,
-    /// Optional disposer to call when the verifier is no longer
-    /// needed.  `None` matches the C sentinel where the provider has
-    /// no teardown hook to register.
-    pub dispose_verifier: Option<Box<dyn DisposeCertificateVerifier>>,
 }
 
 /// Constructs a verifier from a CA-bundle file path.  Returns the
@@ -283,9 +301,9 @@ pub trait GetCertificateVerifier {
 
 /// Installs a root-CA bundle in `ctx`.  The C
 /// `(PtlsIovec* certs, size_t count)` pair collapses to a borrowed
-/// slice.  C: `picoquic_set_tls_root_certificates_t`.
+/// slice of byte slices.  C: `picoquic_set_tls_root_certificates_t`.
 pub trait SetTlsRootCertificates {
-    fn set(&self, ctx: &mut PtlsContext, certs: &[PtlsIovec]) -> Result<(), Error>;
+    fn set(&self, ctx: &mut PtlsContext, certs: &[&[u8]]) -> Result<(), Error>;
 }
 
 /// Reports the source location of the most recent crypto error.  The
@@ -350,11 +368,12 @@ pub fn register_tls_key_provider(
     todo!()
 }
 
-/// Installs the three-function certificate-verifier bundle.  C:
-/// `picoquic_register_verify_certificate_fn`.
+/// Installs the certificate-verifier bundle.  C:
+/// `picoquic_register_verify_certificate_fn`.  The C
+/// `dispose_certificate_verifier` slot is gone — `Drop` on the
+/// boxed verifier subsumes it.
 pub fn register_verify_certificate(
     _certificate_verifier: Option<Box<dyn GetCertificateVerifier>>,
-    _dispose_certificate_verifier: Option<Box<dyn DisposeCertificateVerifier>>,
     _set_tls_root_certificates: Option<Box<dyn SetTlsRootCertificates>>,
 ) {
     todo!()
@@ -482,12 +501,6 @@ pub fn get_certificate_verifier() -> Option<&'static dyn GetCertificateVerifier>
     todo!()
 }
 
-/// The currently registered certificate-verifier disposer, if any.
-/// C: `picoquic_dispose_certificate_verifier_fn`.
-pub fn dispose_certificate_verifier() -> Option<&'static dyn DisposeCertificateVerifier> {
-    todo!()
-}
-
 /// The currently registered root-CA installer, if any.  C:
 /// `picoquic_set_tls_root_certificates_fn`.
 pub fn set_tls_root_certificates() -> Option<&'static dyn SetTlsRootCertificates> {
@@ -538,33 +551,30 @@ pub fn keyex_dispose() -> Option<&'static dyn KeyexDispose> {
 /// extension array stay as their forward-declared shapes; phase 3
 /// will pick `Box` vs. `&mut` once the tls bindings settle.
 ///
-/// `Debug` is intentionally not derived: `PtlsIovec`
-/// (forward-declared in `quic.rs`) is opaque and does not
-/// implement `Debug`, and adding it there is out of scope for this
-/// header's translation.
+#[derive(Debug)]
 pub struct TlsCtx {
     /// Owned tls connection state.  C allocated this with
-    /// `ptls_new`; phase 3 will model the ownership transfer.
+    /// `ptls_new`; phase 4 will model the ownership transfer.
     pub tls: Option<Box<Ptls>>,
     /// Back-pointer to the connection that owns this context.  Not
     /// owned — the connection outlives the TLS context.  Borrows
-    /// will be sorted out in phase 3 when the surrounding
+    /// will be sorted out in phase 4 when the surrounding
     /// connection lifetime is mapped.
-    pub cnx: Option<*mut Cnx>,
+    pub cnx: Option<*mut Connection>,
     /// `int client_mode` in C is a 0/1 flag — promoted to `bool`.
     pub client_mode: bool,
     /// QUIC-transport-parameter raw extensions buffer.  C declared
     /// a fixed two-element array; preserved verbatim.
     pub ext: [PtlsRawExtension; 2],
     /// Retry-config opaque blob handed to tls.
-    pub retry_configs: PtlsIovec,
+    pub retry_configs: Vec<u8>,
     /// tls handshake-properties slot.  Embedded by value as in C.
     pub handshake_properties: PtlsHandshakeProperties,
-    /// ALPN list passed to tls during handshake.  C kept the
-    /// owned buffer pointer plus a max size and a current count;
-    /// the Rust `Vec` collapses both length tracks into its `len()`,
-    /// while `capacity()` covers the C `alpn_vec_size` invariant.
-    pub alpn_vec: Vec<PtlsIovec>,
+    /// ALPN list passed to tls during handshake.  Each entry is one
+    /// owned ALPN identifier byte string.  C kept the owned buffer
+    /// pointer plus a max size and a current count; the Rust shape
+    /// collapses both length tracks into the outer vector's `len()`.
+    pub alpn_vec: Vec<Vec<u8>>,
     /// QUIC transport-parameter encode/decode scratch buffer.  C
     /// allocated `ext_data_size` bytes and stored that size
     /// alongside; the Rust shape uses the vector's capacity.

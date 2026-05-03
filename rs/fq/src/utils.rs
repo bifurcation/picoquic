@@ -453,43 +453,18 @@ pub fn get_input_path(
 // ---------------------------------------------------------------------------
 // Portable file open / close.
 //
-// The C wrappers paper over Windows's `fopen_s` quirk; the Rust
-// translation will eventually delegate to `std::fs::File`.  Phase 1
-// keeps the file handle as an opaque [`File`] so call sites can
-// compile against the right shape; the real representation lands in
-// Phase 3 once the `std` Cargo feature is wired up.
-
-/// Opaque OS file handle.  Phase 3 will replace the body with
-/// `std::fs::File` (under the `std` feature) or an `embedded-io`
-/// equivalent for `no_std`.
-pub struct File {
-    _opaque: [u8; 0],
-}
-
-impl File {
-    /// Open a file, returning the OS errno on failure.  C: `FILE*
-    /// picoquic_file_open_ex(char const* file_name, char const* flags,
-    /// int* last_err)`.  `flags` is the `fopen` mode string.  The C
-    /// `*last_err` out-parameter folds into the `Err` arm.
-    pub fn open_ex(_file_name: &str, _flags: &str) -> Result<Box<File>, i32> {
-        todo!()
-    }
-
-    /// Open a file, discarding the OS error code on failure.  C:
-    /// `FILE* picoquic_file_open(char const* file_name, char const*
-    /// flags)`.  Returns `None` on failure to match the C `NULL`.
-    pub fn open(_file_name: &str, _flags: &str) -> Option<Box<File>> {
-        todo!()
-    }
-}
-
-// C: `FILE* picoquic_file_close(FILE* F)`.  Dropped from the Rust API:
-// `Box<File>` going out of scope will be the close hook (Drop in
-// Phase 3).
+// `picoquic_file_open*` / `picoquic_file_close` only existed to
+// paper over Windows's `fopen_s` quirk; the Rust translation uses
+// `std::fs::File` directly at every call site (close = Drop).
+//
+// `picoquic_file_delete` survives because callers want a stable
+// no_std-friendly façade for "remove this file by name".  Phase 4
+// routes the body through `std::fs::remove_file` under the `std`
+// feature.
 
 /// Delete a file by name, returning the OS errno on failure.  C:
 /// `int picoquic_file_delete(char const* file_name, int* last_err)`.
-pub fn file_delete(_file_name: &str) -> Result<(), i32> {
+pub fn file_delete(_file_name: &(impl AsRef<std::path::Path> + ?Sized)) -> Result<(), i32> {
     todo!()
 }
 
@@ -808,11 +783,11 @@ pub fn uint8_to_str<'a>(_text: &'a mut [u8], _data: &[u8]) -> &'a [u8] {
 ///
 /// Pointer-shape choices:
 ///
-/// * `next_packet` stays a raw pointer — same intrusive-list
-///   pattern as `hash_item.next_in_bin` in
-///   [`crate::hash`].  Phase 3 dereferences in
-///   `unsafe` blocks; refactoring to `VecDeque<Box<...>>` on the
-///   link side is a candidate follow-up.
+/// * `next_packet` is the head of an intrusive linked list owned
+///   by the parent sim link.  Phase 4 either replaces this pattern
+///   with `VecDeque<Box<TestSimPacket>>` on the link side, or
+///   keeps the raw pointer behind `unsafe` if benchmarks demand
+///   it.  See `tests/dualq.rs` for the related cleanup.
 /// * The two `sockaddr_storage` fields fold into
 ///   `Option<SocketAddr>` (the C zero-initialised storage maps to
 ///   `None`).

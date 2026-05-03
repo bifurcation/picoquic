@@ -26,7 +26,7 @@
 //!   [`crate::utils`].  Output sockaddr_storage slots fold into
 //!   `Option<SocketAddr>` (`AF_UNSPEC` ↔ `None`).
 //! * `void* vmsg` is the platform `struct msghdr*`; kept as an
-//!   opaque [`Msghdr`] for now.  Phase 3 will replace it with a
+//!   opaque [`MessageHeader`] for now.  Phase 3 will replace it with a
 //!   libc `msghdr` wrapper under the `std` feature.
 //! * Receive metadata that the C surface exposes through several
 //!   nullable out-parameters folds into result structs
@@ -59,10 +59,17 @@ pub const SERVER_SOCKET_COUNT: usize = 2;
 /// Windows `SOCKET` aliasing is dropped per the v1 scope).
 ///
 /// Kept as an opaque newtype so the underlying integer doesn't
-/// leak out of the module.  Phase 3 will swap the inner field for
+/// leak out of the module.  Phase 4 will swap the inner field for
 /// `std::os::fd::OwnedFd` (under the `std` feature).  The "not
 /// yet open" state is modelled by `Option<Socket>` rather than an
 /// in-band sentinel — a [`Socket`] value always names a real fd.
+///
+/// REVIEW(open): Phase 2 (dependency abstraction) replaces this
+/// with a `Socket` trait that the host platform implements
+/// (libc on Unix, `WSARecv`/`WSASend` on Windows).
+/// [`MessageHeader`] gets the same treatment, probably as an
+/// associated type of `Socket` so each backend can pick its own
+/// representation.  [`ServerSockets`] becomes generic over `S: Socket`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Socket {
     fd: i32,
@@ -80,11 +87,11 @@ pub struct ServerSockets {
 }
 
 /// Opaque platform `msghdr` wrapper.  C: `void* vmsg` cast to
-/// `struct msghdr*` inside the cmsg helpers.  Phase 3 will replace
+/// `struct msghdr*` inside the cmsg helpers.  Phase 4 will replace
 /// this placeholder with a libc-bound `msghdr` (under the `std`
 /// feature) — keeping the type opaque here so the public surface
 /// doesn't pin a concrete representation prematurely.
-pub struct Msghdr(());
+pub struct MessageHeader(());
 
 /// OS error code surfaced by [`Socket::sendmsg`] and the
 /// `send_through` helpers when the underlying syscall fails.
@@ -104,9 +111,6 @@ impl OsError {
         todo!()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Socket operations.
 
 impl Socket {
     /// Open a UDP client socket on address family `af`
@@ -323,9 +327,9 @@ impl ServerAddress {
 }
 
 // ---------------------------------------------------------------------------
-// Msghdr control-message helpers.
+// MessageHeader control-message helpers.
 
-/// Result of [`Msghdr::parse_cmsg`].  Folds the four nullable
+/// Result of [`MessageHeader::parse_cmsg`].  Folds the four nullable
 /// out-parameters of the C helper into one struct.
 #[derive(Debug, Default, Copy, Clone)]
 pub struct CmsgInfo {
@@ -333,19 +337,34 @@ pub struct CmsgInfo {
     /// `None` when no pktinfo was attached (matches the C
     /// `AF_UNSPEC` sentinel).
     pub addr_dest: Option<SocketAddr>,
-    /// Receiving interface index from the same cmsg, or `0` when
-    /// no pktinfo was attached.
-    pub dest_if: i32,
-    /// `IP_TOS` / `IPV6_TCLASS` ECN code-point byte, or `0` when
-    /// the kernel didn't attach one.
-    pub received_ecn: u8,
+    /// Receiving interface index from the same cmsg.
+    pub dest_if: Option<i32>,
+    /// `IP_TOS` / `IPV6_TCLASS` ECN code-point, or `None` when the
+    /// kernel didn't attach one.
+    pub received_ecn: Option<EcnCodepoint>,
     /// `UDP_GRO` segment size; always `0` on Linux (the
     /// `UDP_COALESCED_INFO` cmsg the C source reads is
     /// Windows-only).
     pub udp_coalesced_size: usize,
 }
 
-impl Msghdr {
+/// IP/IPv6 ECN code-point reported by the kernel on receive.
+/// Mirrors the two-bit `IP_TOS` / `IPV6_TCLASS` ECN field.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+#[repr(u8)]
+pub enum EcnCodepoint {
+    /// `Not-ECT` — not ECN-capable.
+    #[default]
+    NotEct = 0b00,
+    /// `ECT(1)` — ECN-capable, L4S nominal mark.
+    Ect1 = 0b01,
+    /// `ECT(0)` — ECN-capable, classic.
+    Ect0 = 0b10,
+    /// `CE` — congestion experienced.
+    Ce = 0b11,
+}
+
+impl MessageHeader {
     /// Parse the control-message ancillary data attached to a
     /// received `msghdr`.  C: `picoquic_socks_cmsg_parse`.
     pub fn parse_cmsg(&self) -> CmsgInfo {

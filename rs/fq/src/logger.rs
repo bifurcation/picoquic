@@ -3,13 +3,12 @@
 //! Public surface of the quic *text* logger backend.  Once a text
 //! log file is installed on a [`Quic`] context, the context's
 //! text-log slot points at the textlog implementation of
-//! [`crate::unified_log::UnifiedLogging`] and every per-event log
+//! [`crate::unified_log::Logger`] and every per-event log
 //! call fans out through that vtable.  The install/teardown entry
 //! points hang as inherent methods on [`Quic`]
-//! ([`Quic::set_textlog`] / [`Quic::textlog_close`]); the
-//! callback-event name lookup is exposed as
-//! [`CallbackEvent::name`]; and the textlog's TLS-ticket pretty
-//! printer is the free function [`write_tls_ticket`].
+//! ([`Quic::set_textlog`] / [`Quic::textlog_close`]); the textlog's
+//! TLS-ticket pretty printer is the free function
+//! [`write_tls_ticket`].
 //!
 //! Phase 1 contract: signatures only — every body is `todo!()`.
 //!
@@ -37,14 +36,13 @@
 //! * `uint8_t* ticket` + `uint16_t ticket_length` collapse to a
 //!   single `&[u8]` — the body only reads the buffer and the slice
 //!   length subsumes the explicit length argument.
-//! * `picoquic_log_fin_or_event_name` returns a static C string
-//!   in the header but is not defined or referenced anywhere under
-//!   `quic/`.  Mapped to [`CallbackEvent::name`] returning
-//!   `&'static str`; Phase 3 either supplies the lookup table or
-//!   removes the orphan declaration upstream.
+//! * `picoquic_log_fin_or_event_name` is declared in the C header
+//!   but never defined or referenced — dropped from the Rust API.
+
+use std::path::Path;
 
 use crate::Error;
-use crate::{CallbackEvent, ConnectionId, Quic};
+use crate::{ConnectionId, Quic};
 
 impl Quic {
     /// Set the text log file and start tracing into it.
@@ -55,7 +53,10 @@ impl Quic {
     /// `logger.c::set_textlog`.
     ///
     /// C: `int picoquic_set_textlog(picoquic_quic_t*, char const*)`.
-    pub fn set_textlog(&mut self, _textlog_file: Option<&str>) -> Result<(), Error> {
+    pub fn set_textlog(
+        &mut self,
+        _textlog_file: Option<&(impl AsRef<Path> + ?Sized)>,
+    ) -> Result<(), Error> {
         todo!()
     }
 
@@ -81,27 +82,14 @@ impl Quic {
 /// the function's job is writing the ticket, not anything
 /// `ConnectionId`-specific.
 ///
+/// REVIEW(open): only one in-tree caller (the textlog backend);
+/// likely fold into that backend's body in Phase 4 and delete from
+/// the public API.
+///
 /// C: `void picoquic_textlog_picotls_ticket(FILE*,
 /// picoquic_connection_id_t, uint8_t*, uint16_t)`.
-pub fn write_tls_ticket(_f: &mut dyn core::fmt::Write, _cnx_id: ConnectionId, _ticket: &[u8]) {
+pub fn write_tls_ticket(_f: &mut impl core::fmt::Write, _cnx_id: ConnectionId, _ticket: &[u8]) {
     todo!()
-}
-
-impl CallbackEvent {
-    /// Printable name for this callback event, suitable for log
-    /// output.  Matches the C `picoquic_log_fin_or_event_name`,
-    /// which returns a `static const char[]` literal selected by a
-    /// switch on the event tag.
-    ///
-    /// The C header declares this symbol but no `.c` file under
-    /// `quic/` defines or calls it — kept for header parity.  Phase
-    /// 3 either supplies the lookup table (a `match` over every
-    /// variant) or removes the orphan declaration upstream.
-    ///
-    /// C: `const char* picoquic_log_fin_or_event_name(picoquic_call_back_event_t)`.
-    pub fn name(self) -> &'static str {
-        todo!()
-    }
 }
 
 #[cfg(test)]

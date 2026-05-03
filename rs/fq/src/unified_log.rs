@@ -4,9 +4,9 @@
 //! complementary logs per QUIC context — a textual trace, a
 //! structured binary trace, and a qlog — but most applications only
 //! enable a subset.  Each backend is described by a single
-//! [`UnifiedLogging`] trait object that the application optionally
+//! [`Logger`] trait object that the application optionally
 //! installs on the QUIC context.  The inherent methods on [`Quic`]
-//! and [`Cnx`] in this module are the dispatch layer: they fan a
+//! and [`Connection`] in this module are the dispatch layer: they fan a
 //! single log event out to whichever backends are registered.
 //!
 //! Phase 1 contract: signatures only — every body is `todo!()`.
@@ -15,25 +15,25 @@
 //!
 //! * The C `picoquic_unified_logging_t` is a 16-slot vtable.  Per
 //!   the Phase 1 rule "function pointers map to traits" we collapse
-//!   the whole vtable into a single trait, [`UnifiedLogging`],
+//!   the whole vtable into a single trait, [`Logger`],
 //!   because every backend installs all sixteen entries together.
 //!   A QUIC context will eventually hold three optional
-//!   `Box<dyn UnifiedLogging>` slots (`text_log_fns` / `bin_log_fns`
+//!   `Box<dyn Logger>` slots (`text_log_fns` / `bin_log_fns`
 //!   / `qlog_fns`); that restructuring lands when `internal.h` is
 //!   translated.
-//! * `Quic*` / `Cnx*` — every observed caller passes a non-NULL
+//! * `Quic*` / `Connection*` — every observed caller passes a non-NULL
 //!   pointer and the logger callbacks may mutate internal state.
 //!   Free functions whose first argument is one of these become
-//!   inherent methods on [`Quic`] / [`Cnx`].
+//!   inherent methods on [`Quic`] / [`Connection`].
 //! * `Path*` — non-NULL for every per-path log event except
-//!   [`UnifiedLogging::dropped_packet`] and
-//!   [`UnifiedLogging::packet`], where `packet.c` may pass NULL when
+//!   [`Logger::dropped_packet`] and
+//!   [`Logger::packet`], where `packet.c` may pass NULL when
 //!   the path lookup failed.  Those two get `Option<&mut Path>`; the
 //!   rest get `&mut Path`.
-//! * `ConnectionId*` — `dcid` in [`UnifiedLogging::packet_lost`] is
+//! * `ConnectionId*` — `dcid` in [`Logger::packet_lost`] is
 //!   nullable per `loss_recovery.c` (the call site explicitly
 //!   substitutes NULL when no remote CID is known); the `cid`
-//!   parameter to [`UnifiedLogging::quic_app_message`] is always
+//!   parameter to [`Logger::quic_app_message`] is always
 //!   non-NULL and read-only.  `Option<&ConnectionId>` and
 //!   `&ConnectionId` respectively.
 //! * `struct sockaddr*` → `&core::net::SocketAddr`, matching the
@@ -53,7 +53,7 @@
 use core::net::SocketAddr;
 
 use crate::internal::{PacketHeader, PacketType};
-use crate::{Cnx, ConnectionId, Path, PtlsIovec, Quic};
+use crate::{Connection, ConnectionId, Path, Quic};
 
 // ---------------------------------------------------------------------------
 // Unified-logger vtable.
@@ -71,9 +71,9 @@ use crate::{Cnx, ConnectionId, Path, PtlsIovec, Quic};
 /// One installable logging backend.  Each method emits one record
 /// of the named kind into whatever sink the backend owns (text
 /// file, binary trace, qlog).
-pub trait UnifiedLogging {
+pub trait Logger {
     /// Emit a free-form application message routed by a connection-id
-    /// hint rather than a live `Cnx` handle.  C:
+    /// hint rather than a live `Connection` handle.  C:
     /// `picoquic_log_quic_app_message_fn`.
     fn quic_app_message(
         &mut self,
@@ -103,13 +103,13 @@ pub trait UnifiedLogging {
     /// Emit a free-form application message attached to a live
     /// connection.  C: `picoquic_log_app_message_fn` — the `va_list`
     /// flavour collapses to [`core::fmt::Arguments`].
-    fn app_message(&mut self, cnx: &mut Cnx, args: core::fmt::Arguments<'_>);
+    fn app_message(&mut self, cnx: &mut Connection, args: core::fmt::Arguments<'_>);
 
     /// Emit a per-connection UDP-datagram arrival or departure
     /// record.  C: `picoquic_log_pdu_fn`.
     fn pdu(
         &mut self,
-        cnx: &mut Cnx,
+        cnx: &mut Connection,
         receiving: bool,
         current_time: u64,
         addr_peer: &SocketAddr,
@@ -123,7 +123,7 @@ pub trait UnifiedLogging {
     /// arrivals.  C: `picoquic_log_packet_fn`.
     fn packet(
         &mut self,
-        cnx: &mut Cnx,
+        cnx: &mut Connection,
         path_x: Option<&mut Path>,
         receiving: bool,
         current_time: u64,
@@ -135,7 +135,7 @@ pub trait UnifiedLogging {
     /// C: `picoquic_log_dropped_packet_fn`.
     fn dropped_packet(
         &mut self,
-        cnx: &mut Cnx,
+        cnx: &mut Connection,
         path_x: Option<&mut Path>,
         ph: &PacketHeader,
         packet_size: usize,
@@ -147,7 +147,7 @@ pub trait UnifiedLogging {
     /// decryption.  C: `picoquic_log_buffered_packet_fn`.
     fn buffered_packet(
         &mut self,
-        cnx: &mut Cnx,
+        cnx: &mut Connection,
         path_x: &mut Path,
         ptype: PacketType,
         current_time: u64,
@@ -160,7 +160,7 @@ pub trait UnifiedLogging {
     /// `bytes`.  C: `picoquic_log_outgoing_packet_fn`.
     fn outgoing_packet(
         &mut self,
-        cnx: &mut Cnx,
+        cnx: &mut Connection,
         path_x: &mut Path,
         bytes: &[u8],
         sequence_number: u64,
@@ -174,7 +174,7 @@ pub trait UnifiedLogging {
     /// C: `picoquic_log_packet_lost_fn`.
     fn packet_lost(
         &mut self,
-        cnx: &mut Cnx,
+        cnx: &mut Connection,
         path_x: &mut Path,
         ptype: PacketType,
         sequence_number: u64,
@@ -189,35 +189,35 @@ pub trait UnifiedLogging {
     /// `picoquic_log_negotiated_alpn_fn`.
     fn negotiated_alpn(
         &mut self,
-        cnx: &mut Cnx,
+        cnx: &mut Connection,
         is_local: bool,
         sni: &[u8],
         alpn: &[u8],
-        alpn_list: &[PtlsIovec],
+        alpn_list: &[&[u8]],
     );
 
     /// Emit a transport-extension record formatted by the local peer
     /// (`is_local == true`) or received from the remote peer.  C:
     /// `picoquic_log_transport_extension_fn`.
-    fn transport_extension(&mut self, cnx: &mut Cnx, is_local: bool, params: &[u8]);
+    fn transport_extension(&mut self, cnx: &mut Connection, is_local: bool, params: &[u8]);
 
     /// Emit a TLS session-ticket record.  C:
     /// `picoquic_log_tls_ticket_fn`.
-    fn tls_ticket(&mut self, cnx: &mut Cnx, ticket: &[u8]);
+    fn tls_ticket(&mut self, cnx: &mut Connection, ticket: &[u8]);
 
     /// Emit a connection-start record.  C:
     /// `picoquic_log_new_connection_fn`.
-    fn new_connection(&mut self, cnx: &mut Cnx);
+    fn new_connection(&mut self, cnx: &mut Connection);
 
     /// Emit a connection-end record.  C:
     /// `picoquic_log_close_connection_fn`.
-    fn close_connection(&mut self, cnx: &mut Cnx);
+    fn close_connection(&mut self, cnx: &mut Connection);
 
     /// Emit a snapshot of congestion-control parameters for one
     /// path.  C: `picoquic_log_cc_dump_fn` — the public dispatcher
-    /// [`Cnx::log_cc_dump`] iterates the connection's paths and
+    /// [`Connection::log_cc_dump`] iterates the connection's paths and
     /// invokes this method per-path.
-    fn cc_dump(&mut self, cnx: &mut Cnx, path_x: &mut Path, current_time: u64);
+    fn cc_dump(&mut self, cnx: &mut Connection, path_x: &mut Path, current_time: u64);
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +266,7 @@ impl Quic {
     }
 }
 
-impl Cnx {
+impl Connection {
     /// Append `args` to the connection's text log.  In C this exists
     /// in two flavours (`picoquic_log_app_message` and a `_v`/
     /// `va_list` twin); Rust folds them into one entry point — the
@@ -384,7 +384,7 @@ impl Cnx {
         _is_local: bool,
         _sni: &[u8],
         _alpn: &[u8],
-        _alpn_list: &[PtlsIovec],
+        _alpn_list: &[&[u8]],
     ) {
         todo!()
     }
@@ -422,7 +422,7 @@ impl Cnx {
     /// Log a snapshot of congestion-control parameters across every
     /// path on the connection.  Iterates `cnx->path[…]` internally
     /// and dispatches per-path through
-    /// [`UnifiedLogging::cc_dump`].
+    /// [`Logger::cc_dump`].
     ///
     /// C: `picoquic_log_cc_dump`.
     pub fn log_cc_dump(&mut self, _current_time: u64) {

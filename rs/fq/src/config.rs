@@ -125,13 +125,14 @@ pub enum OptionId {
 /// external boundary.  See the module-level docs for the
 /// pointer-shape rationale.
 ///
-/// `Default` produces the all-zero / `None` shape that the C side
-/// reaches via `memset(config, 0, sizeof(...))` at the top of
-/// `config_init`.  Callers should follow that with [`Config::init`]
-/// to pick up the documented non-zero defaults
-/// (`nb_connections = 256`, `cnx_id_length = -1`,
-/// `cwin_max = u64::MAX`, …).
-#[derive(Debug, Default)]
+/// `Default` produces the documented C defaults:
+/// `nb_connections = 256`, `cnx_id_length = -1`, `cwin_max =
+/// u64::MAX`, idle timeout from `MICROSEC_HANDSHAKE_MAX`, etc.  This
+/// folds the C `picoquic_config_init` step into the constructor —
+/// the C `config_clear` (which `free`s every owned string) collapses
+/// to `Drop`, and resetting a config to defaults is just
+/// `*config = Config::default()`.
+#[derive(Debug)]
 pub struct Config {
     pub nb_connections: u32,
     pub solution_dir: Option<String>,
@@ -223,31 +224,16 @@ pub struct Config {
     pub preferred_address_v6: Option<String>,
 }
 
+impl Default for Config {
+    /// Build a fresh config with the documented C defaults.  C:
+    /// `picoquic_config_init` (which the C body invoked after a
+    /// zero-initialising `memset`).
+    fn default() -> Self {
+        todo!()
+    }
+}
+
 impl Config {
-    /// Initialise the struct to the documented defaults
-    /// (256 connections, `cnx_id_length = -1`,
-    /// `cwin_max = u64::MAX`, idle timeout from
-    /// `MICROSEC_HANDSHAKE_MAX`, etc.).  C: `picoquic_config_init`.
-    ///
-    /// The C body first `memset`s the struct to zero; in Rust we
-    /// expect the caller to start from `Self::default()` so this
-    /// method only needs to layer the non-zero defaults on top.
-    pub fn init(&mut self) {
-        todo!()
-    }
-
-    /// Release every owned allocation in the struct and re-initialise
-    /// to the documented defaults.  C: `picoquic_config_clear`.
-    ///
-    /// In C this `free`s every `char const*` set via
-    /// `config_set_string_param`; in Rust the `Option` fields drop
-    /// their backing buffers automatically when reassigned, so the
-    /// body collapses to `*self = Self::default()` followed by
-    /// `self.init()`.
-    pub fn clear(&mut self) {
-        todo!()
-    }
-
     /// Apply one option, selected by `option`, to the config.
     /// C: `picoquic_config_set_option`.
     ///

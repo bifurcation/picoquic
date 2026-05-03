@@ -68,6 +68,9 @@ pub struct DualqQueue {
     /// `dualq_recur` helper "fires" and the head packet is
     /// dropped/marked.  C: `double sum_p`.
     pub sum_p: f64,
+    // REVIEW(open): replace these intrusive heads with `LinkedList<Box<TestSimPacket>>` once
+    // `TestSimPacket::next_packet` has been removed from `crate::utils` (the sim-link types
+    // share that pointer chain).
     pub queue_first: *mut TestSimPacket,
     pub queue_last: *mut TestSimPacket,
 }
