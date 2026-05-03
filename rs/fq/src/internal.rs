@@ -83,7 +83,7 @@ pub type PacketToken = Token<Packet>;
 pub type SackItemToken = Token<SackItem>;
 pub type LocalCnxidToken = Token<LocalCnxid>;
 pub type PathToken = Token<Path>;
-use crate::unified_log::Logger;
+use crate::logger::Logger;
 use crate::{
     AlpnSelect, CongestionAlgorithm, ConnectionId, ConnectionIdCb, Fuzz, LossbitVersion,
     PacketContext, PathStatus, PmtudPolicy, RESET_SECRET_SIZE, SpinbitVersion, State, StreamDataCb,

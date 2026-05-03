@@ -27,7 +27,7 @@
 //!   write — ownership stays with the connection (`cnx->f_binlog`)
 //!   or the caller.  The binlog stream is *binary*, so the text-side
 //!   `&mut impl core::fmt::Write` convention used by
-//!   [`crate::logger::write_tls_ticket`] does not apply here.
+//!   [`crate::textlog`] does not apply here.
 //! * `Quic*` / `Connection*` — every observed caller passes a non-NULL
 //!   handle and the body mutates internal state (`quic->bin_log_fns`,
 //!   `cnx->f_binlog`, `quic->binlog_dir`).  Free functions whose
@@ -60,7 +60,7 @@
 //!   pass-by-value, mirroring the C ABI.
 //! * `const struct sockaddr*` pairs (`addr_peer`, `addr_local` in
 //!   [`pdu`]) → `&core::net::SocketAddr`, matching the convention
-//!   established in [`crate::unified_log`].
+//!   established in [`crate::logger`].
 //! * `const uint8_t* + size_t` argument pairs collapse to `&[u8]`
 //!   (`bytes`/`bytes_max` in [`packet`], `params`/`param_length` in
 //!   [`Connection::binlog_transport_extension`], `ticket`/`ticket_length`
@@ -155,7 +155,7 @@ pub enum LogEventType {
 // [`Connection`] methods below, which thread through `cnx.f_binlog`; the
 // file-only writers are kept public for the contexts where the
 // caller already owns the handle (e.g., the binlog backend's
-// implementation of [`crate::unified_log::Logger`]).
+// implementation of [`crate::logger::Logger`]).
 
 /// Write a PDU arrival/departure record to `f`.
 ///
@@ -216,7 +216,7 @@ pub fn tls_ticket(_f: &mut File, _cnx_id: ConnectionId, _ticket: &[u8]) {
 // REVIEW(open): replace these `impl Connection` blocks with a local
 // trait (`Binlog`) implemented on `Connection`, so callers can opt into
 // the capability and the `binlog_` prefix can drop.  Same shape
-// applies to the per-Connection blocks in `unified_log`, `qlog`, and the
+// applies to the per-Connection blocks in `logger`, `qlog`, and the
 // `cc_*` accessors in `cc_common`.  Land it once Phase 2 has
 // settled the dependency-trait conventions.
 impl Connection {

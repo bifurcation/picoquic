@@ -67,8 +67,8 @@ pub mod socks;
 pub mod splay;
 #[cfg(test)]
 pub mod tests;
+pub mod textlog;
 pub mod tls_api;
-pub mod unified_log;
 pub mod utils;
 
 use core::ffi::c_void;

@@ -1,8 +1,8 @@
 # Cross-module consistency report
 
-Generated: 2026-05-03T14:15:40
+Generated: 2026-05-03T14:25:17
 Files scanned: 22
-Total lines: 13273
+Total lines: 13272
 
 **How to use this report.**  Read each section.  Where you
 see inconsistency that should be reconciled, decide a
@@ -47,11 +47,11 @@ else is a refactor candidate.
 | `Fuzz` | `rs/fq/src/lib.rs` | 693 |
 | `StreamDirectReceive` | `rs/fq/src/lib.rs` | 707 |
 | `CongestionControl` | `rs/fq/src/lib.rs` | 844 |
+| `Logger` | `rs/fq/src/logger.rs` | 75 |
 | `PacketLoopCbFn` | `rs/fq/src/packet_loop.rs` | 312 |
 | `CustomThreadCreateFn` | `rs/fq/src/packet_loop.rs` | 391 |
 | `CustomThreadSetnameFn` | `rs/fq/src/packet_loop.rs` | 410 |
 | `CustomThreadDeleteFn` | `rs/fq/src/packet_loop.rs` | 418 |
-| `Logger` | `rs/fq/src/unified_log.rs` | 76 |
 | `ThreadFn` | `rs/fq/src/utils.rs` | 654 |
 | `TestAqm` | `rs/fq/src/utils.rs` | 825 |
 
@@ -229,18 +229,18 @@ two different source paths is a smell.
 | `Connection` | `*` | 1: crypto_provider_api.rs |
 | `ConnectionId` | `*` | 1: bytestream.rs |
 | `Error` | `*` | 14: arena.rs, binlog.rs, bytestream.rs, config.rs, crypto_provider_api.rs, … (9 more) |
-| `Quic` | `*` | 2: logger.rs, performance_log.rs |
+| `Quic` | `*` | 2: performance_log.rs, textlog.rs |
 | `arena` | `Arena`, `Token` | 1: internal.rs |
 | `config::Config` | `*` | 1: packet_loop.rs |
 | `crypto_provider_api::PtlsCipherSuite` | `*` | 1: tls_api.rs |
 | `crypto_provider_api::VerifyCertificate` | `*` | 2: internal.rs, tls_api.rs |
 | `hash` | `HashTable`, `HashToken` | 1: internal.rs |
-| `internal` | `Connection`, `PacketHeader`, `PacketType`, `Path`, `Quic` | 4: binlog.rs, cc_common.rs, lib.rs, unified_log.rs |
+| `internal` | `Connection`, `PacketHeader`, `PacketType`, `Path`, `Quic` | 4: binlog.rs, cc_common.rs, lib.rs, logger.rs |
 | `internal::CryptoContext` | `*` | 1: tls_api.rs |
+| `logger::Logger` | `*` | 1: internal.rs |
 | `socks::OsError` | `*` | 1: packet_loop.rs |
 | `splay` | `SplayToken`, `SplayTree` | 1: internal.rs |
 | `tls_api::Aes128EcbContext` | `*` | 1: lb.rs |
-| `unified_log::Logger` | `*` | 1: internal.rs |
 | `utils` | `TestAqm`, `TestSimLink`, `TestSimPacket`, `Thread`, `ThreadFn` | 2: packet_loop.rs, dualq.rs |
 
 ## Per-file summary
@@ -257,7 +257,7 @@ two different source paths is a smell.
 | `rs/fq/src/internal.rs` | 3845 | 5 | 32 | 5 | 9 | 274 | 0 |
 | `rs/fq/src/lb.rs` | 215 | 0 | 2 | 2 | 0 | 5 | 0 |
 | `rs/fq/src/lib.rs` | 2504 | 6 | 10 | 12 | 1 | 206 | 1 |
-| `rs/fq/src/logger.rs` | 67 | 0 | 0 | 0 | 0 | 2 | 0 |
+| `rs/fq/src/logger.rs` | 432 | 1 | 0 | 0 | 0 | 16 | 0 |
 | `rs/fq/src/packet_loop.rs` | 751 | 4 | 6 | 1 | 0 | 14 | 0 |
 | `rs/fq/src/performance_log.rs` | 109 | 0 | 0 | 1 | 0 | 2 | 0 |
 | `rs/fq/src/qlog.rs` | 31 | 0 | 0 | 0 | 0 | 1 | 0 |
@@ -266,7 +266,7 @@ two different source paths is a smell.
 | `rs/fq/src/splay.rs` | 226 | 0 | 2 | 0 | 0 | 15 | 0 |
 | `rs/fq/src/tests/dualq.rs` | 243 | 0 | 2 | 0 | 0 | 3 | 0 |
 | `rs/fq/src/tests/mod.rs` | 14 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `rs/fq/src/textlog.rs` | 67 | 0 | 0 | 0 | 0 | 2 | 0 |
 | `rs/fq/src/tls_api.rs` | 1060 | 0 | 4 | 0 | 0 | 54 | 0 |
-| `rs/fq/src/unified_log.rs` | 433 | 1 | 0 | 0 | 0 | 16 | 0 |
 | `rs/fq/src/utils.rs` | 1025 | 2 | 5 | 1 | 0 | 86 | 0 |
 
