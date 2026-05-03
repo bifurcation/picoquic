@@ -1,3 +1,5 @@
+// REVIEW: Given the name change here, should we just call this module `logger.rs`?
+
 //! Translation of `quic/unified_log.h`.
 //!
 //! Unified logging API.  The quic library can produce three

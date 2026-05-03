@@ -50,6 +50,9 @@
 //!   header inlines as preprocessor macros are translated to
 //!   `pub const fn` helpers.
 
+use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
+
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
@@ -376,10 +379,15 @@ pub struct PacketHeader {
     pub loss_bit_l: bool,
     pub quic_bit_is_zero: bool,
 
-    pub token_length: usize,
-    pub token_bytes: *const u8,
+    /// Borrowed token bytes (length implicit in the slice).  Phase
+    /// 4 plan: `IncomingPacket` decoders carry a lifetime; the
+    /// `token_length` field is gone (it lived only as the slice's
+    /// length).
+    pub token_bytes: Vec<u8>,
     pub pl_val: usize,
-    pub l_cid: *mut LocalCnxid,
+    /// Token into [`Quic`]'s arena for the local CID this packet
+    /// targets, if any.  C: `*mut LocalCnxid` back-pointer.
+    pub l_cid: Option<LocalCnxidToken>,
 }
 
 // ---------------------------------------------------------------------------
@@ -415,7 +423,6 @@ pub fn spin_function_table() -> &'static [SpinbitDef] {
 // Stateless packet, queued at the QUIC context until sendable.
 
 pub struct StatelessPacket {
-    pub next_packet: *mut StatelessPacket,
     pub addr_to: SocketAddr,
     pub addr_local: SocketAddr,
     pub if_index_local: i32,
@@ -462,32 +469,31 @@ pub struct StreamDataNode {
     /// `Some(token)` while in the tree; `None` otherwise.  Phase 4
     /// uses this for O(1) removal.
     pub stream_data_membership: Option<SplayToken>,
-    pub quic: *mut Quic,
-    pub next_stream_data: *mut StreamDataNode,
     pub offset: u64,
-    pub length: usize,
-    pub bytes: *const u8,
+    /// Inline buffer of payload bytes.  C kept a parallel
+    /// `bytes: *const u8` aliasing into `data` plus a `length`
+    /// field; in Rust the slice subsumes both — `data[..len]` is
+    /// the live payload and `len` is `length`.
     pub data: [u8; MAX_PACKET_SIZE],
+    pub length: usize,
 }
 
 pub struct StreamQueueNode {
-    pub quic: *mut Quic,
-    pub next_stream_data: *mut StreamQueueNode,
     pub offset: u64,
-    pub length: usize,
-    pub bytes: *mut u8,
+    /// Owned send-queue payload.  C: `bytes: *mut u8` plus paired
+    /// `length: size_t`; both collapse into the vector.
+    pub bytes: Vec<u8>,
 }
 
 // ---------------------------------------------------------------------------
 // Sent packet (kept on retransmit queues until acked).
 
 pub struct Packet {
-    pub packet_next: *mut Packet,
-    pub packet_previous: *mut Packet,
-    pub send_path: *mut Path,
     /// Membership in the owning connection's
     /// `queue_data_repeat_tree`.  Phase 4 uses this for O(1) removal.
     pub queue_data_repeat_membership: Option<SplayToken>,
+    /// Path the packet was sent on.  C: `*mut Path` back-pointer.
+    pub send_path: Option<PathToken>,
     pub sequence_number: u64,
     pub send_time: u64,
     pub delivered_prior: u64,
@@ -579,20 +585,20 @@ pub enum Tp0rttKind {
 }
 
 pub struct StoredTicket {
-    pub next_ticket: *mut StoredTicket,
-    pub sni: *mut core::ffi::c_char,
-    pub alpn: *mut core::ffi::c_char,
-    pub ip_addr: *mut u8,
+    /// Owned SNI string (C: `sni: *mut c_char` plus `sni_length`).
+    pub sni: Option<String>,
+    /// Owned ALPN string (C: `alpn: *mut c_char` plus `alpn_length`).
+    pub alpn: Option<String>,
+    /// Owned server IP bytes (C: `ip_addr: *mut u8` plus `ip_addr_length`).
+    pub ip_addr: Vec<u8>,
+    /// Owned client IP bytes (C: `ip_addr_client: *mut u8` plus
+    /// `ip_addr_client_length`).
+    pub ip_addr_client: Vec<u8>,
     pub tp_0rtt: [u64; NB_TP_0RTT],
-    pub ticket: *mut u8,
+    /// Owned session ticket (C: `ticket: *mut u8` plus `ticket_length`).
+    pub ticket: Vec<u8>,
     pub time_valid_until: u64,
-    pub sni_length: u16,
-    pub alpn_length: u16,
     pub version: u32,
-    pub ticket_length: u16,
-    pub ip_addr_length: u8,
-    pub ip_addr_client_length: u8,
-    pub ip_addr_client: *mut u8,
     pub was_used: bool,
 }
 
@@ -704,14 +710,15 @@ impl Connection {
 // Stored retry-token (for client side, indexed by SNI + IP).
 
 pub struct StoredToken {
-    pub next_token: *mut StoredToken,
-    pub sni: *const core::ffi::c_char,
-    pub token: *const u8,
-    pub ip_addr: *const u8,
+    /// Owned SNI string (C: `sni: *const c_char` plus `sni_length`).
+    pub sni: Option<String>,
+    /// Owned retry-token bytes (C: `token: *const u8` plus
+    /// `token_length`).
+    pub token: Vec<u8>,
+    /// Owned server IP bytes (C: `ip_addr: *const u8` plus
+    /// `ip_addr_length`).
+    pub ip_addr: Vec<u8>,
     pub time_valid_until: u64,
-    pub sni_length: u16,
-    pub token_length: u16,
-    pub ip_addr_length: u8,
     pub was_used: bool,
 }
 
@@ -766,8 +773,6 @@ pub fn free_tokens(_pp_first_token: &mut *mut StoredToken) {
 // Issued-tickets bookkeeping (server side, per ticket-id index).
 
 pub struct IssuedTicket {
-    pub next_ticket: *mut IssuedTicket,
-    pub previous_ticket: *mut IssuedTicket,
     /// Membership in `Quic::issued_tickets_by_id`.  Phase 4 uses
     /// this for O(1) removal when the ticket is purged.
     pub issued_tickets_membership: Option<HashToken>,
@@ -775,8 +780,8 @@ pub struct IssuedTicket {
     pub creation_time: u64,
     pub rtt: u64,
     pub cwin: u64,
-    pub ip_addr: [u8; 16],
-    pub ip_addr_length: u8,
+    /// 4 bytes for IPv4, 16 for IPv6.
+    pub ip_addr: Vec<u8>,
 }
 
 impl Quic {
@@ -838,16 +843,20 @@ pub struct Quic {
     pub default_callback_ctx: *mut c_void,
     pub mask_ctx: *mut c_void,
     pub mask_fns: Option<Box<dyn MaskOps>>,
-    pub default_alpn: *const core::ffi::c_char,
+    pub default_alpn: Option<String>,
     pub alpn_select_fn: Option<Box<dyn AlpnSelect>>,
     pub reset_seed: [u8; RESET_SECRET_SIZE],
     pub retry_seed: [u8; RETRY_SECRET_SIZE],
     pub p_simulated_time: *mut u64,
     pub hash_seed: [u8; 16],
-    pub ticket_file_name: *const core::ffi::c_char,
-    pub token_file_name: *const core::ffi::c_char,
-    pub p_first_ticket: *mut StoredTicket,
-    pub p_first_token: *mut StoredToken,
+    pub ticket_file_name: Option<PathBuf>,
+    pub token_file_name: Option<PathBuf>,
+    /// Cached session tickets (replaces the C `p_first_ticket`
+    /// head + per-node `next_ticket` chain).
+    pub stored_tickets: Vec<StoredTicket>,
+    /// Cached retry tokens (replaces the C `p_first_token`
+    /// head + per-node `next_token` chain).
+    pub stored_tokens: Vec<StoredToken>,
     /// Replay-protection register for new-tokens / retry-tokens.
     /// Keyed by `token_hash`; values are tokens into the
     /// per-`Quic` `RegisteredToken` arena.  C: `token_reuse_tree`.
@@ -907,23 +916,21 @@ pub struct Quic {
     pub are_path_callbacks_enabled: bool,
     pub use_predictable_random: bool,
 
-    pub pending_stateless_packet: *mut StatelessPacket,
+    /// Stateless packets queued for send.  Replaces the C
+    /// `pending_stateless_packet` head + per-packet `next_packet`
+    /// chain.
+    pub pending_stateless_packets: VecDeque<StatelessPacket>,
 
     pub default_congestion_alg: *const CongestionAlgorithm,
-    pub default_congestion_alg_option_string: *const core::ffi::c_char,
+    pub default_congestion_alg_option_string: Option<String>,
 
     /// Owning arena for every live [`Connection`] on this `Quic`.
     /// Every C `*mut picoquic_cnx_t` becomes a [`ConnectionToken`]
-    /// indexing into here; the doubly-linked list (`cnx_list` /
-    /// `cnx_last` in C) becomes iteration over the arena, or a
-    /// separate ordered structure if order matters.
+    /// indexing into here; the C `cnx_list` / `cnx_last` /
+    /// `next_in_table` / `previous_in_table` doubly-linked list is
+    /// gone — iterate the arena and sort on demand if order
+    /// matters.
     pub connections: Arena<Connection>,
-    /// Phase 4 plan: drop `cnx_list` / `cnx_last` entirely.
-    /// `Arena::iter()` plus a sort by some Connection field handles
-    /// every place the C source walked the list.  Kept here only
-    /// while older code still references the head/tail pointers.
-    pub cnx_list: *mut Connection,
-    pub cnx_last: *mut Connection,
 
     /// Per-connection wake-up scheduler keyed by `next_wake_time`.
     /// Splay-tree access locality matters here — the next-to-fire
@@ -931,10 +938,9 @@ pub struct Quic {
     /// C: `cnx_wake_tree`.
     pub cnx_wake_tree: SplayTree<u64, ConnectionToken>,
 
-    /// In-progress (currently being serviced) connection.  Stays a
-    /// raw pointer because the C source pokes it during reentrant
-    /// callbacks; Phase 4 will likely replace with `Option<ConnectionToken>`.
-    pub cnx_in_progress: *mut Connection,
+    /// In-progress (currently being serviced) connection.  C:
+    /// `*mut Connection` re-entrancy slot.
+    pub cnx_in_progress: Option<ConnectionToken>,
 
     /// Lookup by local CID (each connection registers one CID per
     /// active path).  Phase 4 plan: the value type may end up as
@@ -959,19 +965,15 @@ pub struct Quic {
     /// captured by `Arena::iter()` if order isn't load-bearing, or
     /// becomes an explicit `VecDeque<IssuedTicketToken>` otherwise.
     pub issued_tickets_by_id: HashTable<u64, IssuedTicketToken>,
-    /// Owning arena for [`IssuedTicket`] entries.
+    /// Owning arena for [`IssuedTicket`] entries.  The C
+    /// `table_issued_tickets_first` / `_last` / `_nb` doubly-linked
+    /// list is gone — iterate the arena and sort on demand if
+    /// order matters.
     pub issued_tickets: Arena<IssuedTicket>,
-    pub table_issued_tickets_first: *mut IssuedTicket,
-    pub table_issued_tickets_last: *mut IssuedTicket,
-    pub table_issued_tickets_nb: usize,
 
-    pub p_first_packet: *mut Packet,
-    pub nb_packets_in_pool: i32,
     pub nb_packets_allocated: i32,
     pub nb_packets_allocated_max: i32,
 
-    pub p_first_data_node: *mut StreamDataNode,
-    pub nb_data_nodes_in_pool: i32,
     pub nb_data_nodes_allocated: i32,
     pub nb_data_nodes_allocated_max: i32,
 
@@ -998,8 +1000,8 @@ pub struct Quic {
     pub pacing_rate_update_delta: u64,
 
     pub f_log: *mut c_void,
-    pub binlog_dir: *mut core::ffi::c_char,
-    pub qlog_dir: *mut core::ffi::c_char,
+    pub binlog_dir: Option<PathBuf>,
+    pub qlog_dir: Option<PathBuf>,
     pub autoqlog_fn: Option<Box<dyn AutoQlog>>,
     pub text_log_fns: Option<Box<dyn Logger>>,
     pub bin_log_fns: Option<Box<dyn Logger>>,
@@ -1068,11 +1070,10 @@ pub struct StreamHead {
     /// Membership in the owning connection's `stream_tree`.
     /// Phase 4 uses this for O(1) removal when the stream closes.
     pub stream_tree_membership: Option<SplayToken>,
-    pub next_output_stream: *mut StreamHead,
-    pub previous_output_stream: *mut StreamHead,
-    pub cnx: *mut Connection,
     pub stream_id: u64,
-    pub affinity_path: *mut Path,
+    /// Path this stream is pinned to, if any.  C: `*mut Path`
+    /// back-pointer (`affinity_path`).
+    pub affinity_path: Option<PathToken>,
     pub consumed_offset: u64,
     pub fin_offset: u64,
     pub reset_offset: u64,
@@ -1094,7 +1095,9 @@ pub struct StreamHead {
     pub stream_data_nodes: Arena<StreamDataNode>,
     pub sent_offset: u64,
     pub reliable_size: u64,
-    pub send_queue: *mut StreamQueueNode,
+    /// Outbound send queue.  Replaces the C `send_queue` head +
+    /// per-node `next_stream_data` chain.
+    pub send_queue: VecDeque<StreamQueueNode>,
     pub app_stream_ctx: *mut c_void,
     pub direct_receive_fn: Option<Box<dyn StreamDirectReceive>>,
     pub direct_receive_ctx: *mut c_void,
@@ -1181,9 +1184,10 @@ pub const fn next_stream_id_for_type(id: u64) -> u64 {
 /// Phase 1 the field is omitted; the layout question is part of
 /// the body translation and out of scope here.
 pub struct MiscFrameHeader {
-    pub next_misc_frame: *mut MiscFrameHeader,
-    pub previous_misc_frame: *mut MiscFrameHeader,
-    pub length: usize,
+    /// Encoded frame bytes (C: header + appended payload in the
+    /// same allocation; Rust owns the bytes inline).  `length` is
+    /// implicit in `bytes.len()`.
+    pub bytes: Vec<u8>,
     pub pc: PacketContext,
     pub is_pure_ack: i32,
 }
@@ -1198,11 +1202,19 @@ pub struct PacketContextState {
     pub highest_acknowledged: u64,
     pub latest_time_acknowledged: u64,
     pub highest_acknowledged_time: u64,
-    pub pending_last: *mut Packet,
-    pub pending_first: *mut Packet,
-    pub retransmitted_newest: *mut Packet,
-    pub retransmitted_oldest: *mut Packet,
-    pub preemptive_repeat_ptr: *mut Packet,
+    /// Packets in flight, keyed by sequence number.  Replaces the
+    /// C `pending_first/pending_last` doubly-linked list; the map
+    /// gives O(log N) middle removal on ACK (the dominant op) and
+    /// O(1) for FIFO drain via `iter`.  Values are
+    /// [`PacketToken`]s into the connection's `queued_packets`
+    /// arena.
+    pub pending: BTreeMap<u64, PacketToken>,
+    /// Packets that have been retransmitted, keyed by sequence
+    /// number.  Replaces `retransmitted_newest/oldest`.
+    pub retransmitted: BTreeMap<u64, PacketToken>,
+    /// Cursor into `pending` used by the preemptive-repeat scan.
+    /// `None` when the scan is between passes.
+    pub preemptive_repeat_seq: Option<u64>,
     pub retransmitted_queue_size: u64,
     pub ecn_ect0_total_remote: u64,
     pub ecn_ect1_total_remote: u64,
@@ -1237,8 +1249,6 @@ pub struct AckContext {
 // CID state — local and remote.
 
 pub struct LocalCnxid {
-    pub next: *mut LocalCnxid,
-    pub registered_cnx: *mut Connection,
     /// Membership in `Quic::cnx_by_id`.  Phase 4 uses this for
     /// O(1) removal when a CID is retired.
     pub cnx_by_id_membership: Option<HashToken>,
@@ -1250,20 +1260,20 @@ pub struct LocalCnxid {
 }
 
 pub struct LocalCnxidList {
-    pub next_list: *mut LocalCnxidList,
     pub unique_path_id: u64,
     pub local_cnxid_sequence_next: u64,
     pub local_cnxid_retire_before: u64,
     pub local_cnxid_oldest_created: u64,
-    pub nb_local_cnxid: i32,
     pub nb_local_cnxid_expired: i32,
     pub is_demoted: bool,
     pub demotion_time: u64,
-    pub local_cnxid_first: *mut LocalCnxid,
+    /// Local CIDs registered for this path (replaces the C
+    /// `local_cnxid_first` head + per-node `next` chain plus the
+    /// redundant `nb_local_cnxid` count, which is now `len()`).
+    pub cnxids: Vec<LocalCnxidToken>,
 }
 
 pub struct RemoteCnxid {
-    pub next: *mut RemoteCnxid,
     pub sequence: u64,
     pub cnx_id: ConnectionId,
     pub reset_secret: [u8; RESET_SECRET_SIZE],
@@ -1275,10 +1285,11 @@ pub struct RemoteCnxid {
 }
 
 pub struct RemoteCnxidStash {
-    pub next_stash: *mut RemoteCnxidStash,
     pub unique_path_id: u64,
     pub retire_cnxid_before: u64,
-    pub cnxid_stash_first: *mut RemoteCnxid,
+    /// Remote CIDs stashed for this path.  Replaces the C
+    /// `cnxid_stash_first` head + per-node `next` chain.
+    pub cnxids: Vec<RemoteCnxid>,
     pub is_in_use: bool,
 }
 
@@ -1299,13 +1310,12 @@ pub struct Pacing {
 
 pub struct Tuple {
     pub unique_path_id: u64,
-    pub next_tuple: *mut Tuple,
     pub peer_addr: SocketAddr,
     pub local_addr: SocketAddr,
     pub if_index: core::ffi::c_ulong,
     pub observed_addr: SocketAddr,
-    pub p_remote_cnxid: *mut RemoteCnxid,
-    pub p_local_cnxid: *mut LocalCnxid,
+    pub remote_cnxid_index: Option<usize>,
+    pub local_cnxid: Option<LocalCnxidToken>,
     pub nb_observed_repeat: i32,
     pub observed_time: u64,
     pub challenge_response: u64,
@@ -1328,12 +1338,14 @@ pub struct Path {
     /// Membership in `Quic::cnx_by_net`.  Phase 4 uses this for
     /// O(1) removal on path teardown / migration.
     pub cnx_by_net_membership: Option<HashToken>,
-    pub cnx: *mut Connection,
     pub unique_path_id: u64,
     pub app_path_ctx: *mut c_void,
     pub ack_ctx: AckContext,
     pub pkt_ctx: PacketContextState,
-    pub first_tuple: *mut Tuple,
+    /// Tuples (peer-addr × local-addr × if-index) currently bound
+    /// to this path.  Replaces the C `first_tuple` head + per-node
+    /// `next_tuple` chain.
+    pub tuples: Vec<Tuple>,
     pub observed_address_received: u64,
     pub observed_sequence_sent: u64,
     pub observed_addr_acked: bool,
@@ -1474,11 +1486,6 @@ pub struct CryptoContext {
 /// largest and longest-lived structure in the library; almost
 /// every internal function takes `cnx` as its first argument.
 pub struct Connection {
-    pub quic: *mut Quic,
-
-    pub next_in_table: *mut Connection,
-    pub previous_in_table: *mut Connection,
-
     pub proposed_version: u32,
     pub rejected_version: u32,
     pub desired_version: u32,
@@ -1557,8 +1564,8 @@ pub struct Connection {
     pub issued_ticket_id: u64,
     pub resumed_ticket_id: u64,
 
-    pub sni: *const core::ffi::c_char,
-    pub alpn: *const core::ffi::c_char,
+    pub sni: Option<String>,
+    pub alpn: Option<String>,
     pub max_early_data_size: usize,
 
     pub callback_fn: Option<Box<dyn StreamDataCb>>,
@@ -1580,13 +1587,14 @@ pub struct Connection {
     pub phase_delay: i64,
     pub application_error: u64,
     pub local_error: u64,
-    pub local_error_reason: *const core::ffi::c_char,
+    pub local_error_reason: Option<String>,
     pub remote_application_error: u64,
     pub remote_error: u64,
     pub offending_frame_type: u64,
-    pub remote_error_reason: *mut core::ffi::c_char,
-    pub retry_token_length: u16,
-    pub retry_token: *mut u8,
+    pub remote_error_reason: Option<String>,
+    /// Owned retry token (C: `retry_token: *mut u8` plus
+    /// `retry_token_length: u16`).
+    pub retry_token: Vec<u8>,
 
     pub next_wake_time: u64,
     /// Membership in `Quic::cnx_wake_tree`.  Phase 4 uses this for
@@ -1644,7 +1652,7 @@ pub struct Connection {
     pub stream_blocked: bool,
 
     pub congestion_alg: *const CongestionAlgorithm,
-    pub congestion_alg_option_string: *const core::ffi::c_char,
+    pub congestion_alg_option_string: Option<String>,
 
     pub rtt_update_delta: u64,
     pub pacing_rate_update_delta: u64,
@@ -1673,8 +1681,9 @@ pub struct Connection {
     pub max_stream_id_unidir_local_computed: u64,
     pub max_stream_id_unidir_remote: u64,
 
-    pub first_misc_frame: *mut MiscFrameHeader,
-    pub last_misc_frame: *mut MiscFrameHeader,
+    /// Misc-frame queue.  Replaces the C `first_misc_frame` /
+    /// `last_misc_frame` doubly-linked list head pair.
+    pub misc_frames: VecDeque<MiscFrameHeader>,
 
     /// Per-connection tree of streams keyed by stream id.  Splay
     /// gives access locality for the common "process a few streams
@@ -1683,8 +1692,11 @@ pub struct Connection {
     /// Owning arena for [`StreamHead`] entries reachable through
     /// [`Self::stream_tree`].
     pub streams: Arena<StreamHead>,
-    pub first_output_stream: *mut StreamHead,
-    pub last_output_stream: *mut StreamHead,
+    /// Output queue of streams ready to send.  Replaces the C
+    /// `first_output_stream` / `last_output_stream` doubly-linked
+    /// list head pair plus the per-`StreamHead`
+    /// `next_output_stream` / `previous_output_stream` chain.
+    pub output_streams: VecDeque<StreamToken>,
     pub high_priority_stream_id: u64,
     pub next_stream_id: [u64; 4],
     pub priority_limit_for_bypass: u64,
@@ -1696,32 +1708,41 @@ pub struct Connection {
     /// [`Self::queue_data_repeat_tree`].
     pub queued_packets: Arena<Packet>,
 
-    pub first_datagram: *mut MiscFrameHeader,
-    pub last_datagram: *mut MiscFrameHeader,
+    /// Pending datagrams.  Replaces the C `first_datagram` /
+    /// `last_datagram` doubly-linked list head pair.
+    pub datagrams: VecDeque<MiscFrameHeader>,
     pub datagram_priority: u64,
     pub datagram_conflicts_count: i32,
     pub datagram_conflicts_max: i32,
 
     pub keep_alive_interval: u64,
 
-    pub path: *mut *mut Path,
-    pub nb_paths: i32,
-    pub nb_path_alloc: i32,
+    /// Active paths.  Replaces the C `path: *mut *mut Path` array
+    /// + `nb_paths` / `nb_path_alloc` length pair.
+    pub paths: Vec<Path>,
     pub last_path_polled: i32,
     pub unique_path_id_next: u64,
-    pub nominal_path_for_ack: *mut Path,
+    /// Path nominated to carry the next ACK.  C: `*mut Path`
+    /// back-pointer.
+    pub nominal_path_for_ack: Option<PathToken>,
     pub status_sequence_to_send_next: u64,
     pub max_path_id_local: u64,
     pub max_path_id_acknowledged: u64,
     pub max_path_id_remote: u64,
     pub paths_blocked_acknowledged: u64,
 
-    pub first_remote_cnxid_stash: *mut RemoteCnxidStash,
+    /// Per-path stashes of remote CIDs.  Replaces the C
+    /// `first_remote_cnxid_stash` head + per-stash `next_stash`
+    /// chain.
+    pub remote_cnxid_stashes: Vec<RemoteCnxidStash>,
 
-    pub nb_local_cnxid_lists: u64,
     pub next_path_id_in_lists: u64,
     pub max_path_id_in_cnxid_lists: u64,
-    pub first_local_cnxid_list: *mut LocalCnxidList,
+    /// Per-path local-CID lists.  Replaces the C
+    /// `first_local_cnxid_list` head + per-list `next_list` chain
+    /// plus the redundant `nb_local_cnxid_lists` count
+    /// (now `len()`).
+    pub local_cnxid_lists: Vec<LocalCnxidList>,
 
     pub ack_frequency_sequence_local: u64,
     pub ack_gap_local: u64,
@@ -1731,12 +1752,14 @@ pub struct Connection {
     pub ack_delay_remote: u64,
     pub ack_reordering_threshold_remote: u64,
 
-    pub first_sooner: *mut StatelessPacket,
-    pub last_sooner: *mut StatelessPacket,
+    /// Stateless packets queued for sooner-than-normal send.
+    /// Replaces the C `first_sooner` / `last_sooner` doubly-linked
+    /// list head pair.
+    pub sooner_stateless: VecDeque<StatelessPacket>,
 
     pub log_unique: u16,
     pub f_binlog: *mut c_void,
-    pub binlog_file_name: *mut core::ffi::c_char,
+    pub binlog_file_name: Option<PathBuf>,
     pub memlog_call_back: Option<Box<dyn MemLogHook>>,
     pub memlog_ctx: *mut c_void,
     pub qlog_ctx: *mut c_void,
@@ -1768,7 +1791,7 @@ impl core::fmt::Debug for Path {
 // Per-incoming-packet ack accounting (filled in while processing a packet).
 
 pub struct PacketDataPathAck {
-    pub acked_path: *mut Path,
+    pub acked_path: Option<PathToken>,
     pub largest_sent_time: u64,
     pub delivered_prior: u64,
     pub delivered_time_prior: u64,
@@ -2399,11 +2422,17 @@ pub fn varint_decode(_bytes: &[u8], _n64: &mut u64) -> usize {
     todo!()
 }
 
-pub fn frames_varint_decode(_bytes: &[u8], _bytes_max: *const u8, _n64: &mut u64) -> *const u8 {
+/// Decode a QUIC varint at the start of `bytes`, return the
+/// remaining tail (or `None` on under-read).  C: returned a
+/// pointer past the consumed bytes; the Rust shape returns the
+/// remaining slice instead.
+pub fn frames_varint_decode<'a>(_bytes: &'a [u8], _n64: &mut u64) -> Option<&'a [u8]> {
     todo!()
 }
 
-pub fn frames_varint_skip(_bytes: &[u8], _bytes_max: *const u8) -> *const u8 {
+/// Skip past a varint, returning the remaining tail.  C:
+/// `frames_varint_skip` returning a pointer.
+pub fn frames_varint_skip(_bytes: &[u8]) -> Option<&[u8]> {
     todo!()
 }
 
@@ -2798,26 +2827,34 @@ impl SackList {
     }
 }
 
-pub fn sack_item_range_start(_sack_item: *mut SackItem) -> u64 {
-    todo!()
-}
-
-pub fn sack_item_range_end(_sack_item: *mut SackItem) -> u64 {
-    todo!()
-}
-
-pub fn sack_item_nb_times_sent(_sack_item: *mut SackItem, _is_opportunistic: i32) -> i32 {
-    todo!()
-}
-
-impl SackList {
-    /// Bump the per-range send counter for `sack_item`.
-    pub fn item_record_sent(&mut self, _sack_item: *mut SackItem, _is_opportunistic: i32) {
+impl SackItem {
+    /// Inclusive start of this SACK range.  C:
+    /// `sack_item_range_start`.
+    pub fn range_start(&self) -> u64 {
         todo!()
     }
 
-    /// Reset the per-range send counters for `sack_item`.
-    pub fn item_record_reset(&mut self, _sack_item: *mut SackItem) {
+    /// Exclusive end of this SACK range.  C:
+    /// `sack_item_range_end`.
+    pub fn range_end(&self) -> u64 {
+        todo!()
+    }
+
+    /// Number of times this range has been sent in an ACK frame.
+    /// C: `sack_item_nb_times_sent`.
+    pub fn nb_times_sent(&self, _is_opportunistic: i32) -> i32 {
+        todo!()
+    }
+}
+
+impl SackList {
+    /// Bump the per-range send counter for the item at `token`.
+    pub fn item_record_sent(&mut self, _token: SackItemToken, _is_opportunistic: i32) {
+        todo!()
+    }
+
+    /// Reset the per-range send counters for the item at `token`.
+    pub fn item_record_reset(&mut self, _token: SackItemToken) {
         todo!()
     }
 }
@@ -3121,15 +3158,21 @@ pub fn process_ack_of_frames(_cnx: &mut Connection, _p: &mut Packet, _is_spuriou
 // ---------------------------------------------------------------------------
 // Stream data buffer (callback argument for "prepare to send").
 
-pub struct StreamDataBufferArgument {
-    pub bytes: *mut u8,
+pub struct StreamDataBufferArgument<'a> {
+    /// The output buffer the application writes into.  C: `bytes:
+    /// *mut uint8_t`.  Length is `allowed_space` (so `&mut [u8]`
+    /// with that length); `byte_index` advances through it as the
+    /// app fills it.
+    pub bytes: &'a mut [u8],
     pub byte_index: usize,
     pub byte_space: usize,
     pub allowed_space: usize,
     pub length: usize,
     pub is_fin: i32,
     pub is_still_active: i32,
-    pub app_buffer: *mut u8,
+    /// Borrowed app-side buffer the framework reads from.  C:
+    /// `app_buffer: *mut uint8_t`.
+    pub app_buffer: &'a [u8],
 }
 
 pub fn is_stream_frame_unlimited(_bytes: &[u8]) -> bool {
