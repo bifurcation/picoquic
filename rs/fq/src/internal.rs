@@ -921,7 +921,7 @@ pub struct Quic {
     /// chain.
     pub pending_stateless_packets: VecDeque<StatelessPacket>,
 
-    pub default_congestion_alg: *const CongestionAlgorithm,
+    pub default_congestion_alg: Option<&'static CongestionAlgorithm>,
     pub default_congestion_alg_option_string: Option<String>,
 
     /// Owning arena for every live [`Connection`] on this `Quic`.
@@ -1651,7 +1651,7 @@ pub struct Connection {
     pub flow_blocked: bool,
     pub stream_blocked: bool,
 
-    pub congestion_alg: *const CongestionAlgorithm,
+    pub congestion_alg: Option<&'static CongestionAlgorithm>,
     pub congestion_alg_option_string: Option<String>,
 
     pub rtt_update_delta: u64,
