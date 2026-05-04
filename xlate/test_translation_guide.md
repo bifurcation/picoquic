@@ -120,6 +120,75 @@ with `Instant::from_ticks(usec)` / `Duration::from_ticks(usec)`.
 
 ---
 
+## Free fns vs methods — both shapes exist
+
+Phase 1A's "free function on `&mut T` becomes a method on `T`" rule
+was applied unevenly.  **About half** of the C `picoquic_xxx(cnx, …)`
+functions live in `crate::internal` as free functions of the same
+shape, *not* as methods on `Connection`.  When you can't find a
+method, **also check for the free-function form**:
+
+```text
+# Search both shapes:
+grep -nE "fn xxx" rs/fq/src/internal.rs
+grep -nE "^pub fn xxx" rs/fq/src/internal.rs
+```
+
+### SACK / ACK frame surface (canonical example)
+
+These are all in `crate::internal` as free functions:
+
+```rust
+pub fn is_ack_needed(connection: &mut Connection, current_time: Instant,
+    next_wake_time: &mut Instant, packet_context: PacketContext,
+    is_opportunistic: i32) -> bool;
+
+pub fn is_pn_already_received(connection: &mut Connection,
+    packet_context: PacketContext,
+    local_connection_id: Option<LocalConnectionIdToken>,
+    pn: u64) -> i32;
+
+pub fn record_pn_received(connection: &mut Connection,
+    packet_context: PacketContext,
+    local_connection_id: Option<LocalConnectionIdToken>,
+    pn: u64, current_time: Instant) -> i32;
+
+pub fn set_ack_needed(connection: &mut Connection, current_time: Instant,
+    packet_context: PacketContext, path_x: &mut Path,
+    out_of_order: i32);
+
+pub fn format_ack_frame<'a>(connection: &mut Connection,
+    bytes: &'a mut [u8], more_data: &mut i32,
+    current_time: Instant, packet_context: PacketContext,
+    is_opportunistic: i32) -> Option<&'a mut [u8]>;
+
+pub fn create_local_cnx_id(connection: &mut Connection,
+    path_id: u64, suggested_value: Option<&ConnectionId>,
+    sequence_offset: u64) -> Option<LocalConnectionIdToken>;
+```
+
+### Other clusters of free functions to know about
+
+- **Frame format/skip/parse:** `skip_frame`, `parse_frame`,
+  `format_*_frame` for each frame type (`format_max_data_frame`,
+  `format_path_challenge_frame`, etc.) — all free fns.
+- **Tuple/path lifecycle:** `create_local_cnx_id`,
+  `find_or_create_remote_connection_id_stash`,
+  `stash_remote_connection_id`, etc.
+- **Retransmit queue:** `queue_for_retransmit`,
+  `dequeue_retransmit_packet`, `dequeue_retransmitted_packet`.
+- **Bandwidth:** `seed_bandwidth`, `update_path_rtt`,
+  `current_retransmit_timer`.
+- **Integer / varint:** `parse_16/24/32/64`, `format_16/24/32/64`,
+  `varint_encode`, `varint_decode`, `varint_skip`,
+  `frames_varint_decode`, `frames_varint_skip`.
+
+If you don't find an API after the first one or two greps,
+*assume it's a free function in `internal.rs`* and search there
+without the `impl X` qualifier.
+
+---
+
 ## Translation conventions (apply uniformly)
 
 | C pattern | Rust translation |
