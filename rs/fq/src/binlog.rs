@@ -97,6 +97,7 @@ use std::path::Path as FsPath;
 
 use core::net::SocketAddr;
 
+use crate::Instant;
 use crate::Error;
 use crate::internal::{Connection, PacketHeader, PacketType, Path};
 use crate::{ConnectionId, Quic};
@@ -166,7 +167,7 @@ pub fn pdu(
     _f: &mut File,
     _cid: &ConnectionId,
     _receiving: bool,
-    _current_time: u64,
+    _current_time: Instant,
     _addr_peer: &SocketAddr,
     _addr_local: &SocketAddr,
     _packet_length: usize,
@@ -187,7 +188,7 @@ pub fn packet(
     _cid: &ConnectionId,
     _path_id: u64,
     _receiving: bool,
-    _current_time: u64,
+    _current_time: Instant,
     _ph: &PacketHeader,
     _bytes: &[u8],
 ) {
@@ -230,7 +231,7 @@ impl Connection {
         _ph: &PacketHeader,
         _packet_size: usize,
         _err: i32,
-        _current_time: u64,
+        _current_time: Instant,
     ) {
         todo!()
     }
@@ -243,7 +244,7 @@ impl Connection {
         &mut self,
         _path_x: &mut Path,
         _ptype: PacketType,
-        _current_time: u64,
+        _current_time: Instant,
     ) {
         todo!()
     }
@@ -264,7 +265,7 @@ impl Connection {
         _sequence_number: u64,
         _pn_length: usize,
         _send_buffer: &[u8],
-        _current_time: u64,
+        _current_time: Instant,
     ) {
         todo!()
     }
@@ -284,7 +285,7 @@ impl Connection {
         _trigger: &str,
         _dcid: Option<&ConnectionId>,
         _packet_size: usize,
-        _current_time: u64,
+        _current_time: Instant,
     ) {
         todo!()
     }
@@ -338,7 +339,7 @@ impl Connection {
     /// incoming packet or just after sending one.
     ///
     /// C: `void binlog_cc_dump(Connection*, Path*, uint64_t)`.
-    pub fn binlog_cc_dump(&mut self, _path_x: &mut Path, _current_time: u64) {
+    pub fn binlog_cc_dump(&mut self, _path_x: &mut Path, _current_time: Instant) {
         todo!()
     }
 }

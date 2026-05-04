@@ -7,6 +7,7 @@
 //!
 //! Phase 1: signatures only — every function body is `todo!()`.
 
+use crate::Instant;
 use crate::internal::{Connection, Path};
 use crate::{CongestionNotification, PerAckState};
 
@@ -58,9 +59,9 @@ pub const HYSTART_PP_CSS_ROUNDS: u64 = 5;
 /// `nb_rtt_excess` (`int` → `u32`, always non-negative; safety wins).
 #[derive(Debug, Clone, Default)]
 pub struct MinMaxRtt {
-    // REVIEW(open): Phase 2's clock trait should turn this into a
-    // typed `Instant` once the time abstraction lands.
-    pub last_rtt_sample_time: u64,
+    /// `None` until the first RTT measurement arrives.  Phase 2:
+    /// typed [`Instant`] (microseconds since application epoch).
+    pub last_rtt_sample_time: Option<Instant>,
     pub rtt_filtered_min: u64,
     pub nb_rtt_excess: u32,
     pub sample_current: usize,
@@ -120,7 +121,7 @@ impl MinMaxRtt {
         &mut self,
         _rtt_measurement: u64,
         _packet_time: u64,
-        _current_time: u64,
+        _current_time: Instant,
         _is_one_way_delay_enabled: bool,
     ) -> bool {
         todo!()
@@ -267,7 +268,7 @@ impl NewRenoSimState {
         _path_x: &Path,
         _notification: CongestionNotification,
         _ack_state: &PerAckState,
-        _current_time: u64,
+        _current_time: Instant,
     ) {
         todo!()
     }

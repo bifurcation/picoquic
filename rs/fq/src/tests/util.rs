@@ -21,6 +21,7 @@
 
 use core::net::SocketAddr;
 
+use crate::Instant;
 use crate::MAX_PACKET_SIZE;
 
 // ---------------------------------------------------------------------------
@@ -83,7 +84,7 @@ pub fn test_poisson_random(_random_context: &mut u64, _exp_minus_lambda_2_30: u6
 ///   `[u8; MAX_PACKET_SIZE]` because the C struct
 ///   declares it inline at that exact size.
 pub struct TestSimPacket {
-    pub arrival_time: u64,
+    pub arrival_time: Instant,
     pub length: usize,
     pub addr_from: Option<SocketAddr>,
     pub addr_to: Option<SocketAddr>,
@@ -110,10 +111,10 @@ impl TestSimPacket {
 /// `unsafe` raw-pointer access.
 pub trait TestAqm {
     /// Submit a packet to the AQM.  C: `submit`.
-    fn submit(&mut self, link: &mut TestSimLink, packet: TestSimPacket, current_time: u64);
+    fn submit(&mut self, link: &mut TestSimLink, packet: TestSimPacket, current_time: Instant);
 
     /// Reset the AQM state at `current_time`.  C: `reset`.
-    fn reset(&mut self, link: &mut TestSimLink, current_time: u64);
+    fn reset(&mut self, link: &mut TestSimLink, current_time: Instant);
 
     /// Release any resources held by the AQM, e.g. when the link
     /// is being torn down.  C: `release`.
@@ -126,7 +127,7 @@ pub trait TestAqm {
 
     /// Move any AQM-pending packets onto the link's main queue.
     /// C: `admit_pending`.
-    fn admit_pending(&mut self, link: &mut TestSimLink, current_time: u64);
+    fn admit_pending(&mut self, link: &mut TestSimLink, current_time: Instant);
 }
 
 /// Jitter model used by the sim link.  C: `picoquic_jitter_mode`.
@@ -158,9 +159,9 @@ pub enum JitterMode {
 /// * `is_switched_off` / `is_unreachable` / `is_suspended` were
 ///   `int` flags in C; promoted to `bool`.
 pub struct TestSimLink {
-    pub next_send_time: u64,
-    pub queue_time: u64,
-    pub resume_time: u64,
+    pub next_send_time: Instant,
+    pub queue_time: Instant,
+    pub resume_time: Instant,
     pub queue_delay_max: u64,
     pub picosec_per_byte: u64,
     pub microsec_latency: u64,
@@ -179,7 +180,7 @@ pub struct TestSimLink {
     pub packets_between_losses: u64,
     pub packets_sent_next_burst: u64,
     pub nb_losses_this_burst: u64,
-    pub end_of_burst_time: u64,
+    pub end_of_burst_time: Instant,
     pub aqm_state: Option<Box<dyn TestAqm>>,
     pub is_switched_off: bool,
     pub is_unreachable: bool,
@@ -198,7 +199,7 @@ impl TestSimLink {
         _microsec_latency: u64,
         _loss_mask: Option<u64>,
         _queue_delay_max: u64,
-        _current_time: u64,
+        _current_time: Instant,
     ) -> Result<Self, crate::Error> {
         todo!()
     }
@@ -210,27 +211,27 @@ impl TestSimLink {
     /// Time at which the next packet will arrive (or `current_time`
     /// if the queue is empty).  C:
     /// `picoquictest_sim_link_next_arrival`.
-    pub fn next_arrival(&mut self, _current_time: u64) -> u64 {
+    pub fn next_arrival(&mut self, _current_time: Instant) -> u64 {
         todo!()
     }
 
     /// Drain any AQM-pending packets onto the main queue at
     /// `current_time`.  C: `picoquictest_sim_link_admit_pending`.
-    pub fn admit_pending(&mut self, _current_time: u64) {
+    pub fn admit_pending(&mut self, _current_time: Instant) {
         todo!()
     }
 
     /// Time at which the AQM will admit its next packet (or
     /// `next_time` if nothing is pending).  C:
     /// `picoquictest_sim_link_next_admission`.
-    pub fn next_admission(&mut self, _current_time: u64, _next_time: u64) -> u64 {
+    pub fn next_admission(&mut self, _current_time: Instant, _next_time: Instant) -> u64 {
         todo!()
     }
 
     /// Pop the next-due packet, if any.  C:
     /// `picoquictest_sim_link_dequeue` returning `NULL` when
     /// nothing is ready, mapped to `Option<TestSimPacket>`.
-    pub fn dequeue(&mut self, _current_time: u64) -> Option<TestSimPacket> {
+    pub fn dequeue(&mut self, _current_time: Instant) -> Option<TestSimPacket> {
         todo!()
     }
 
@@ -239,7 +240,7 @@ impl TestSimLink {
     /// ownership of the packet — the link is responsible for
     /// either freeing it (drop) or returning it via
     /// [`TestSimLink::dequeue`].
-    pub fn submit(&mut self, _packet: TestSimPacket, _current_time: u64) {
+    pub fn submit(&mut self, _packet: TestSimPacket, _current_time: Instant) {
         todo!()
     }
 
@@ -248,7 +249,7 @@ impl TestSimLink {
     /// instead of queued (and freed by the function).  C:
     /// `picoquictest_sim_link_enqueue` with the C `int
     /// should_drop` promoted to `bool`.
-    pub fn enqueue(&mut self, _packet: TestSimPacket, _current_time: u64, _should_drop: bool) {
+    pub fn enqueue(&mut self, _packet: TestSimPacket, _current_time: Instant, _should_drop: bool) {
         todo!()
     }
 
@@ -261,7 +262,7 @@ impl TestSimLink {
 
     /// Queueing delay of the next packet at `current_time`.  C:
     /// `picoquictest_sim_link_queue_delay`.
-    pub fn queue_delay(&mut self, _current_time: u64) -> u64 {
+    pub fn queue_delay(&mut self, _current_time: Instant) -> u64 {
         todo!()
     }
 
@@ -273,7 +274,7 @@ impl TestSimLink {
     /// in sequence after the interval).  C:
     /// `picoquic_test_simlink_suspend` with the C `int
     /// simulate_receive` promoted to `bool`.
-    pub fn suspend(&mut self, _time_end_of_interval: u64, _simulate_receive: bool) {
+    pub fn suspend(&mut self, _time_end_of_interval: Instant, _simulate_receive: bool) {
         todo!()
     }
 }

@@ -95,6 +95,7 @@ use alloc::vec::Vec;
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
+use crate::Instant;
 use crate::crypto_provider_api::VerifyCertificate;
 use crate::internal::CryptoContext;
 use crate::{Connection, ConnectionId, Error, Quic, RESET_SECRET_SIZE};
@@ -257,7 +258,7 @@ impl Connection {
     /// data_consumed` out-parameter; bytes consumed is non-negative,
     /// so the type widens to `usize` rather than tracking the C
     /// `int`).  C: `tls_stream_process`.
-    pub fn process_tls_stream(&mut self, _current_time: u64) -> Result<usize, Error> {
+    pub fn process_tls_stream(&mut self, _current_time: Instant) -> Result<usize, Error> {
         todo!()
     }
 
@@ -271,7 +272,7 @@ impl Connection {
     /// Send the initial `ClientHello` (or the response to a
     /// `HelloRetry`) on the TLS stream.  C:
     /// `initialize_tls_stream`.
-    pub fn initialize_tls_stream(&mut self, _current_time: u64) -> Result<(), Error> {
+    pub fn initialize_tls_stream(&mut self, _current_time: Instant) -> Result<(), Error> {
         todo!()
     }
 }
@@ -777,7 +778,7 @@ impl Quic {
     pub fn prepare_retry_token(
         &mut self,
         _addr_peer: &SocketAddr,
-        _current_time: u64,
+        _current_time: Instant,
         _odcid: &ConnectionId,
         _rcid: &ConnectionId,
         _initial_pn: u32,
@@ -806,7 +807,7 @@ impl Quic {
     pub fn verify_retry_token(
         &mut self,
         _addr_peer: &SocketAddr,
-        _current_time: u64,
+        _current_time: Instant,
         _rcid: &ConnectionId,
         _initial_pn: u32,
         _token: &[u8],

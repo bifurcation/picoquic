@@ -46,6 +46,7 @@
 
 use core::net::SocketAddr;
 
+use crate::Instant;
 use crate::Error;
 
 // ---------------------------------------------------------------------------
@@ -219,7 +220,7 @@ impl Socket {
 /// The C library exposes both `picoquic_select` (rank discarded) and
 /// `picoquic_select_ex` (rank reported); the Rust port keeps the rank
 /// as a field so a single entry point covers both call patterns.
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct SelectInfo {
     /// Source address; `None` matches the C `addr_from->ss_family
     /// = 0` written when `recvmsg` returned `<= 0`.
@@ -235,11 +236,25 @@ pub struct SelectInfo {
     pub bytes_recv: usize,
     /// Snapshot of `current_time()` taken after the receive;
     /// mirrors the C `*current_time` out-parameter.
-    pub current_time: u64,
+    pub current_time: Instant,
     /// Index into the input socket slice identifying which socket
     /// received the datagram; mirrors the C `*socket_rank`
     /// out-parameter.
     pub socket_rank: usize,
+}
+
+impl Default for SelectInfo {
+    fn default() -> Self {
+        Self {
+            addr_from: None,
+            addr_dest: None,
+            dest_if: 0,
+            received_ecn: 0,
+            bytes_recv: 0,
+            current_time: Instant::from_ticks(0),
+            socket_rank: 0,
+        }
+    }
 }
 
 /// Wait up to `delta_t` microseconds for a packet on any socket

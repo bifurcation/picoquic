@@ -53,6 +53,7 @@
 
 use core::net::SocketAddr;
 
+use crate::Instant;
 use crate::internal::{PacketHeader, PacketType};
 use crate::{Connection, ConnectionId, Path, Quic};
 
@@ -89,7 +90,7 @@ pub trait Logger {
         &mut self,
         quic: &mut Quic,
         receiving: bool,
-        current_time: u64,
+        current_time: Instant,
         cid64: u64,
         addr_peer: &SocketAddr,
         addr_local: &SocketAddr,
@@ -112,7 +113,7 @@ pub trait Logger {
         &mut self,
         connection: &mut Connection,
         receiving: bool,
-        current_time: u64,
+        current_time: Instant,
         addr_peer: &SocketAddr,
         addr_local: &SocketAddr,
         packet_length: usize,
@@ -127,7 +128,7 @@ pub trait Logger {
         connection: &mut Connection,
         path_x: Option<&mut Path>,
         receiving: bool,
-        current_time: u64,
+        current_time: Instant,
         ph: &PacketHeader,
         bytes: &[u8],
     );
@@ -141,7 +142,7 @@ pub trait Logger {
         ph: &PacketHeader,
         packet_size: usize,
         err: i32,
-        current_time: u64,
+        current_time: Instant,
     );
 
     /// Emit a record that the packet was buffered waiting for
@@ -151,7 +152,7 @@ pub trait Logger {
         connection: &mut Connection,
         path_x: &mut Path,
         ptype: PacketType,
-        current_time: u64,
+        current_time: Instant,
     );
 
     /// Emit a record that a packet was formatted, ready to be sent.
@@ -167,7 +168,7 @@ pub trait Logger {
         sequence_number: u64,
         pn_length: usize,
         send_buffer: &[u8],
-        current_time: u64,
+        current_time: Instant,
     );
 
     /// Emit a packet-lost record.  `dcid` may be `None` when the
@@ -182,7 +183,7 @@ pub trait Logger {
         trigger: &str,
         dcid: Option<&ConnectionId>,
         packet_size: usize,
-        current_time: u64,
+        current_time: Instant,
     );
 
     /// Emit a negotiated-ALPN record.  Empty `sni` / `alpn` slices
@@ -218,7 +219,7 @@ pub trait Logger {
     /// path.  C: `picoquic_log_cc_dump_fn` — the public dispatcher
     /// [`Connection::log_cc_dump`] iterates the connection's paths and
     /// invokes this method per-path.
-    fn cc_dump(&mut self, connection: &mut Connection, path_x: &mut Path, current_time: u64);
+    fn cc_dump(&mut self, connection: &mut Connection, path_x: &mut Path, current_time: Instant);
 }
 
 // ---------------------------------------------------------------------------
@@ -248,7 +249,7 @@ impl Quic {
     pub fn log_pdu(
         &mut self,
         _receiving: bool,
-        _current_time: u64,
+        _current_time: Instant,
         _cid64: u64,
         _addr_peer: &SocketAddr,
         _addr_local: &SocketAddr,
@@ -286,7 +287,7 @@ impl Connection {
     pub fn log_pdu(
         &mut self,
         _receiving: bool,
-        _current_time: u64,
+        _current_time: Instant,
         _addr_peer: &SocketAddr,
         _addr_local: &SocketAddr,
         _packet_length: usize,
@@ -305,7 +306,7 @@ impl Connection {
         &mut self,
         _path_x: Option<&mut Path>,
         _receiving: bool,
-        _current_time: u64,
+        _current_time: Instant,
         _ph: &PacketHeader,
         _bytes: &[u8],
     ) {
@@ -323,7 +324,7 @@ impl Connection {
         _ph: &PacketHeader,
         _packet_size: usize,
         _err: i32,
-        _current_time: u64,
+        _current_time: Instant,
     ) {
         todo!()
     }
@@ -335,7 +336,7 @@ impl Connection {
         &mut self,
         _path_x: &mut Path,
         _ptype: PacketType,
-        _current_time: u64,
+        _current_time: Instant,
     ) {
         todo!()
     }
@@ -354,7 +355,7 @@ impl Connection {
         _sequence_number: u64,
         _pn_length: usize,
         _send_buffer: &[u8],
-        _current_time: u64,
+        _current_time: Instant,
     ) {
         todo!()
     }
@@ -371,7 +372,7 @@ impl Connection {
         _trigger: &str,
         _dcid: Option<&ConnectionId>,
         _packet_size: usize,
-        _current_time: u64,
+        _current_time: Instant,
     ) {
         todo!()
     }
@@ -426,7 +427,7 @@ impl Connection {
     /// [`Logger::cc_dump`].
     ///
     /// C: `picoquic_log_cc_dump`.
-    pub fn log_cc_dump(&mut self, _current_time: u64) {
+    pub fn log_cc_dump(&mut self, _current_time: Instant) {
         todo!()
     }
 }

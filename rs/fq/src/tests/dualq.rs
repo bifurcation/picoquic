@@ -34,6 +34,7 @@
 //!   `None` by the caller after `release` drains the queues —
 //!   `release` itself only handles the queue drain.
 
+use crate::Instant;
 use crate::Error;
 use crate::tests::util::{TestAqm, TestSimLink, TestSimPacket};
 
@@ -93,7 +94,6 @@ impl DualqQueue {
 /// fields mirror the C layout one-for-one.  Field names follow Rust
 /// conventions: the RFC 9332 symbols `p_Cmax`, `p'_L`, etc., become
 /// `p_c_max`, `p_prime_l`, and so on.
-#[derive(Default)]
 pub struct Dualq {
     // -- Initialization parameters -----------------------------------
     /// PI2 queue-delay target for both L4S and Classic, in
@@ -140,7 +140,7 @@ pub struct Dualq {
     /// Previous length of the classic queue, in microseconds.
     pub prevq: i64,
     /// Time at which the PI2 parameters should next be updated.
-    pub update_next: u64,
+    pub update_next: Instant,
     pub lq_average_queue: u64,
     /// `p'` coefficient (RFC 9332): nominal mark rate of the L4S
     /// queue derived from the classic queue length.  C: `pprime`.
@@ -159,7 +159,38 @@ pub struct Dualq {
 
     // -- Picoquic NS data --------------------------------------------
     /// Time of the last `submit` call (microseconds).
-    pub last_input_time: u64,
+    pub last_input_time: Instant,
+}
+
+impl Default for Dualq {
+    fn default() -> Self {
+        Self {
+            target: 0,
+            k: 0.0,
+            p_c_max: 0.0,
+            t_update: 0,
+            pi2_alpha: 0.0,
+            pi2_beta: 0.0,
+            max_th: 0,
+            min_th: 0,
+            range: 0,
+            p_l_max: 0.0,
+            limit: 0,
+            schedule_tick: 0,
+            lq: DualqQueue::default(),
+            cq: DualqQueue::default(),
+            curq: 0,
+            prevq: 0,
+            update_next: Instant::from_ticks(0),
+            lq_average_queue: 0,
+            p_prime: 0.0,
+            p_prime_l: 0.0,
+            p_l: 0.0,
+            p_cl: 0.0,
+            p_c: 0.0,
+            last_input_time: Instant::from_ticks(0),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -168,13 +199,13 @@ pub struct Dualq {
 impl TestAqm for Dualq {
     /// C: `dualq_submit`.  Queues the packet, updates
     /// `last_input_time`, and runs the dequeue/PI2 update pass.
-    fn submit(&mut self, _link: &mut TestSimLink, _packet: TestSimPacket, _current_time: u64) {
+    fn submit(&mut self, _link: &mut TestSimLink, _packet: TestSimPacket, _current_time: Instant) {
         todo!()
     }
 
     /// C: `dualq_reset` — runs the dequeue/PI2 update pass at
     /// `current_time`.
-    fn reset(&mut self, _link: &mut TestSimLink, _current_time: u64) {
+    fn reset(&mut self, _link: &mut TestSimLink, _current_time: Instant) {
         todo!()
     }
 
@@ -194,7 +225,7 @@ impl TestAqm for Dualq {
 
     /// C: `dualq_admit_pending` — runs the dequeue/PI2 update pass
     /// at `current_time`.
-    fn admit_pending(&mut self, _link: &mut TestSimLink, _current_time: u64) {
+    fn admit_pending(&mut self, _link: &mut TestSimLink, _current_time: Instant) {
         todo!()
     }
 }
@@ -225,7 +256,7 @@ impl Dualq {
     /// Exposed publicly to mirror the C surface used by the
     /// `dualq_aqm_test.c` unit tests; Phase 2 translates those
     /// tests directly.
-    pub fn dequeue_one(&mut self, _current_time: u64) -> Option<(TestSimPacket, bool)> {
+    pub fn dequeue_one(&mut self, _current_time: Instant) -> Option<(TestSimPacket, bool)> {
         todo!()
     }
 }

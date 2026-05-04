@@ -41,6 +41,7 @@
 //!   always present in Rust; a `cfg`-gated variant lands when the
 //!   build options are translated.
 
+use crate::Instant;
 use crate::Error;
 use crate::{LossbitVersion, Quic, SpinbitVersion, StreamDataCb};
 
@@ -343,7 +344,7 @@ impl Config {
     pub fn create_and_configure(
         &mut self,
         _default_callback: Option<Box<dyn StreamDataCb>>,
-        _current_time: u64,
+        _current_time: Instant,
         _p_simulated_time: Option<&mut u64>,
     ) -> Option<Box<Quic>> {
         todo!()

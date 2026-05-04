@@ -133,6 +133,25 @@ impl core::error::Error for Error {}
 /// Crate-wide `Result` alias defaulting the error type to [`Error`].
 pub type Result<T, E = Error> = core::result::Result<T, E>;
 
+/// Wall-clock instant in microseconds since some application-defined
+/// epoch.  Replaces the C `uint64_t current_time` parameter that
+/// threads through every API call needing "now".  The type is
+/// `Copy`, supports arithmetic with [`Duration`], and converts to
+/// `u64` cheaply via `.ticks()` when crossing wire boundaries.
+///
+/// Phase 2 decision: per-call `current_time: Instant` parameters
+/// stay (matches the C source's design — caller decides what time
+/// it is).  No `Clock` trait at the library level; applications
+/// can build a clock-injecting wrapper around the calls if they
+/// want that style.
+pub type Instant = fugit::Instant<u64, 1, 1_000_000>;
+
+/// Duration in microseconds.  Companion to [`Instant`].  Use for
+/// timeouts, RTTs, jitter, etc.  In the C source these are bare
+/// `uint64_t` values labelled by context (`idle_timeout`,
+/// `microsec_latency`, …); the typed alias makes the unit explicit.
+pub type Duration = fugit::Duration<u64, 1, 1_000_000>;
+
 /// Base offset for quic's internal error codes.  Allocated in
 /// the `0x400`+ range so they never collide with QUIC transport or
 /// TLS alert codes.
@@ -842,7 +861,7 @@ pub struct PerAckState {
 /// version accepted a nullable `char const*` that callers either
 /// owned for the duration of the call or set to `NULL`.
 pub trait CongestionControl {
-    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: u64);
+    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant);
 
     fn alg_notify(
         &self,
@@ -850,7 +869,7 @@ pub trait CongestionControl {
         path_x: &mut Path,
         notification: CongestionNotification,
         ack_state: &PerAckState,
-        current_time: u64,
+        current_time: Instant,
     );
 
     fn alg_delete(&self, path_x: &mut Path);
@@ -1136,10 +1155,11 @@ impl Quic {
     ///   `Option<Box<dyn ConnectionIdCb>>`.
     /// * `reset_seed[16]` is `[u8; RESET_SECRET_SIZE]` taken by
     ///   value (the C body deep-copies it into the context).
-    /// * `p_simulated_time: *mut u64` becomes `Option<&mut u64>`;
-    ///   the QUIC context retains the borrow across calls.
     /// * `ticket_encryption_key` + `ticket_encryption_key_length`
     ///   collapse to a borrowed `Option<&[u8]>`.
+    /// * The C `p_simulated_time: uint64_t*` parameter is dropped
+    ///   — the test simulator owns its own clock and threads the
+    ///   value through `current_time` directly.
     ///
     /// Returns `None` when context creation fails (the C side
     /// returned `NULL`).
@@ -1153,8 +1173,7 @@ impl Quic {
         _default_callback: Option<Box<dyn StreamDataCb>>,
         _cnx_id_callback: Option<Box<dyn ConnectionIdCb>>,
         _reset_seed: [u8; RESET_SECRET_SIZE],
-        _current_time: u64,
-        _p_simulated_time: Option<&mut u64>,
+        _current_time: Instant,
         _ticket_file_name: Option<&str>,
         _ticket_encryption_key: Option<&[u8]>,
     ) -> Option<Box<Quic>> {
@@ -1452,7 +1471,7 @@ impl Quic {
         _initial_cnx_id: ConnectionId,
         _remote_cnx_id: ConnectionId,
         _addr_to: Option<&SocketAddr>,
-        _start_time: u64,
+        _start_time: Instant,
         _preferred_version: u32,
         _sni: Option<&str>,
         _alpn: Option<&str>,
@@ -1466,7 +1485,7 @@ impl Quic {
     pub fn create_client_connection(
         &mut self,
         _addr: &SocketAddr,
-        _start_time: u64,
+        _start_time: Instant,
         _preferred_version: u32,
         _sni: Option<&str>,
         _alpn: Option<&str>,
@@ -1542,7 +1561,7 @@ impl Connection {
         &mut self,
         _addr_peer: &SocketAddr,
         _addr_local: &SocketAddr,
-        _current_time: u64,
+        _current_time: Instant,
     ) -> Result<(), Error> {
         todo!()
     }
@@ -1554,7 +1573,7 @@ impl Connection {
         _addr_peer: &SocketAddr,
         _addr_local: &SocketAddr,
         _if_index: i32,
-        _current_time: u64,
+        _current_time: Instant,
         _to_preferred_address: bool,
     ) -> Result<(), Error> {
         todo!()
@@ -1568,7 +1587,7 @@ impl Connection {
         _addr_peer: &SocketAddr,
         _addr_local: &SocketAddr,
         _if_index: i32,
-        _current_time: u64,
+        _current_time: Instant,
         _to_preferred_address: bool,
     ) -> Result<(), Error> {
         todo!()
@@ -1595,7 +1614,7 @@ impl Connection {
         &mut self,
         _unique_path_id: u64,
         _reason: u64,
-        _current_time: u64,
+        _current_time: Instant,
     ) -> Result<(), Error> {
         todo!()
     }
@@ -1699,7 +1718,7 @@ impl Connection {
 
     /// Compute the number of microseconds until this connection
     /// next needs attention, capped at `delay_max`.
-    pub fn wake_delay(&self, _current_time: u64, _delay_max: i64) -> i64 {
+    pub fn wake_delay(&self, _current_time: Instant, _delay_max: i64) -> i64 {
         todo!()
     }
 
@@ -1853,12 +1872,12 @@ impl Quic {
 
     /// Compute the number of microseconds until *any* connection on
     /// this context next needs attention, capped at `delay_max`.
-    pub fn next_wake_delay(&self, _current_time: u64, _delay_max: i64) -> i64 {
+    pub fn next_wake_delay(&self, _current_time: Instant, _delay_max: i64) -> i64 {
         todo!()
     }
 
     /// Wall-clock time at which the next event is scheduled.
-    pub fn next_wake_time(&self, _current_time: u64) -> u64 {
+    pub fn next_wake_time(&self, _current_time: Instant) -> u64 {
         todo!()
     }
 
@@ -1895,7 +1914,7 @@ impl Quic {
         _addr_to: &SocketAddr,
         _if_index_to: i32,
         _received_ecn: u8,
-        _current_time: u64,
+        _current_time: Instant,
     ) -> Result<(), Error> {
         todo!()
     }
@@ -1910,7 +1929,7 @@ impl Quic {
         _addr_to: &SocketAddr,
         _if_index_to: i32,
         _received_ecn: u8,
-        _current_time: u64,
+        _current_time: Instant,
     ) -> Result<Option<&mut Connection>, Error> {
         todo!()
     }
@@ -1944,7 +1963,7 @@ impl Quic {
     /// out-parameters of the C signature into a [`PreparedPacket`].
     pub fn prepare_next_packet_ex(
         &mut self,
-        _current_time: u64,
+        _current_time: Instant,
         _send_buffer: &mut [u8],
     ) -> Result<PreparedPacket<'_>, Error> {
         todo!()
@@ -1954,7 +1973,7 @@ impl Quic {
     /// GSO segment reporting.
     pub fn prepare_next_packet(
         &mut self,
-        _current_time: u64,
+        _current_time: Instant,
         _send_buffer: &mut [u8],
     ) -> Result<PreparedPacket<'_>, Error> {
         todo!()
@@ -1978,7 +1997,7 @@ impl Connection {
     /// coalesced train).
     pub fn prepare_packet_ex(
         &mut self,
-        _current_time: u64,
+        _current_time: Instant,
         _send_buffer: &mut [u8],
     ) -> Result<PreparedCnxPacket, Error> {
         todo!()
@@ -1988,7 +2007,7 @@ impl Connection {
     /// GSO-segment reporting.
     pub fn prepare_packet(
         &mut self,
-        _current_time: u64,
+        _current_time: Instant,
         _send_buffer: &mut [u8],
     ) -> Result<PreparedCnxPacket, Error> {
         todo!()
@@ -1998,7 +2017,7 @@ impl Connection {
     /// unreachable.
     pub fn notify_destination_unreachable(
         &mut self,
-        _current_time: u64,
+        _current_time: Instant,
         _addr_peer: &SocketAddr,
         _addr_local: &SocketAddr,
         _if_index: i32,
@@ -2015,7 +2034,7 @@ impl Quic {
     pub fn notify_destination_unreachable_by_connection_id(
         &mut self,
         _connection_id: &ConnectionId,
-        _current_time: u64,
+        _current_time: Instant,
         _addr_peer: &SocketAddr,
         _addr_local: &SocketAddr,
         _if_index: i32,

@@ -93,6 +93,7 @@
 
 use core::net::SocketAddr;
 
+use crate::Instant;
 use crate::Error;
 use crate::config::Config;
 use crate::socks::OsError;
@@ -277,12 +278,21 @@ pub struct SystemCallDuration {
 /// the application overwrites `delta_t` with a (possibly smaller)
 /// value if it has work to do sooner.
 /// C: `packet_loop_time_check_arg_t`.
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct TimeCheckArg {
-    /// Loop-time timestamp (microseconds since process start).
-    pub current_time: u64,
+    /// Loop-time timestamp.
+    pub current_time: Instant,
     /// Proposed sleep, in microseconds — application may shrink.
     pub delta_t: i64,
+}
+
+impl Default for TimeCheckArg {
+    fn default() -> Self {
+        Self {
+            current_time: Instant::from_ticks(0),
+            delta_t: 0,
+        }
+    }
 }
 
 /// Application callback fired at the lifecycle and per-iteration
@@ -645,7 +655,7 @@ impl Quic {
     /// `Ok(Box<Quic>)` payload.
     pub fn create_server(
         _config: &mut Config,
-        _current_time: u64,
+        _current_time: Instant,
         _default_callback: Option<Box<dyn StreamDataCb>>,
         _alpn_select_fn: Option<Box<dyn AlpnSelect>>,
     ) -> Result<Box<Quic>, Error> {
@@ -667,7 +677,7 @@ impl Config {
     #[allow(clippy::too_many_arguments)]
     pub fn start_server_threads(
         &mut self,
-        _current_time: u64,
+        _current_time: Instant,
         _alpn_select_fn: Option<Box<dyn AlpnSelect>>,
         _default_callback: Option<Box<dyn StreamDataCb>>,
         _loop_callback: Option<Box<dyn PacketLoopCbFn>>,

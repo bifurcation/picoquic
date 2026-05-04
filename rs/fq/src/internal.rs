@@ -58,6 +58,7 @@ use core::any::Any;
 use core::ffi::c_void;
 use core::net::SocketAddr;
 
+use crate::Instant;
 use crate::arena::{Arena, Token};
 use crate::crypto_provider_api::VerifyCertificate;
 use crate::hash::{HashTable, HashToken};
@@ -430,7 +431,7 @@ pub struct StatelessPacket {
     pub if_index_local: i32,
     pub received_ecn: u8,
     pub length: usize,
-    pub receive_time: u64,
+    pub receive_time: Instant,
     pub connection_id_log64: u64,
     pub initial_cid: ConnectionId,
     pub ptype: PacketType,
@@ -496,7 +497,7 @@ pub struct Packet {
     /// Path the packet was sent on.  C: `*mut Path` back-pointer.
     pub send_path: Option<PathToken>,
     pub sequence_number: u64,
-    pub send_time: u64,
+    pub send_time: Instant,
     pub delivered_prior: u64,
     pub delivered_time_prior: u64,
     pub delivered_sent_prior: u64,
@@ -558,7 +559,7 @@ pub struct RegisteredToken {
     /// Membership in `Quic::token_reuse_tree`.  Phase 4 uses this
     /// for O(1) removal when the token expires.
     pub registered_token_membership: Option<SplayToken>,
-    pub token_time: u64,
+    pub token_time: Instant,
     pub token_hash: u64,
     pub count: i32,
 }
@@ -594,7 +595,7 @@ pub struct StoredTicket {
     pub tp_0rtt: [u64; NB_TP_0RTT],
     /// Owned session ticket (C: `ticket: *mut u8` plus `ticket_length`).
     pub ticket: Vec<u8>,
-    pub time_valid_until: u64,
+    pub time_valid_until: Instant,
     pub version: u32,
     pub was_used: bool,
 }
@@ -675,7 +676,7 @@ impl Quic {
     /// `save_tickets` (operated on the C linked-list head).
     pub fn save_tickets(
         &self,
-        _current_time: u64,
+        _current_time: Instant,
         _ticket_file_name: &(impl AsRef<std::path::Path> + ?Sized),
     ) -> Result<(), crate::Error> {
         todo!()
@@ -705,7 +706,7 @@ pub struct StoredToken {
     /// Owned server IP bytes (C: `ip_addr: *const u8` plus
     /// `ip_addr_length`).
     pub ip_addr: Vec<u8>,
-    pub time_valid_until: u64,
+    pub time_valid_until: Instant,
     pub was_used: bool,
 }
 
@@ -761,7 +762,7 @@ pub struct IssuedTicket {
     /// this for O(1) removal when the ticket is purged.
     pub issued_tickets_membership: Option<HashToken>,
     pub ticket_id: u64,
-    pub creation_time: u64,
+    pub creation_time: Instant,
     pub rtt: u64,
     pub cwin: u64,
     /// 4 bytes for IPv4, 16 for IPv6.
@@ -817,7 +818,7 @@ pub trait MemLogHook {
         connection: &mut Connection,
         path: &mut Path,
         op_code: i32,
-        current_time: u64,
+        current_time: Instant,
     );
 }
 
@@ -842,7 +843,9 @@ pub struct Quic {
     pub alpn_select_fn: Option<Box<dyn AlpnSelect>>,
     pub reset_seed: [u8; RESET_SECRET_SIZE],
     pub retry_seed: [u8; RETRY_SECRET_SIZE],
-    pub p_simulated_time: *mut u64,
+    // C `*mut u64 p_simulated_time` is gone -- the test simulator
+    // owns its own clock and feeds the value through per-call
+    // `current_time: Instant` parameters.
     pub hash_seed: [u8; 16],
     pub ticket_file_name: Option<PathBuf>,
     pub token_file_name: Option<PathBuf>,
@@ -880,7 +883,7 @@ pub struct Quic {
     pub current_number_connections: u32,
     pub tentative_max_number_connections: u32,
     pub max_number_connections: u32,
-    pub stateless_reset_next_time: u64,
+    pub stateless_reset_next_time: Instant,
     pub stateless_reset_min_interval: u64,
     pub cwin_max: u64,
 
@@ -1048,7 +1051,7 @@ pub struct SackItem {
     pub ack_tree_membership: Option<SplayToken>,
     pub start_of_sack_range: u64,
     pub end_of_sack_range: u64,
-    pub time_created: u64,
+    pub time_created: Instant,
     pub nb_times_sent: [i32; 2],
 }
 
@@ -1063,7 +1066,7 @@ pub struct SackList {
     /// Owning arena for [`SackItem`] entries reachable through
     /// [`Self::ack_tree`].
     pub sack_items: Arena<SackItem>,
-    pub ack_horizon: u64,
+    pub ack_horizon: Instant,
     pub horizon_delay: i64,
     pub rc: [SackRangeCount; 2],
 }
@@ -1089,7 +1092,7 @@ pub struct StreamHead {
     pub remote_error: u64,
     pub local_stop_error: u64,
     pub remote_stop_error: u64,
-    pub last_time_data_sent: u64,
+    pub last_time_data_sent: Instant,
     /// Per-stream tree of received but not-yet-consumed data
     /// fragments, keyed by byte offset.  Phase 4 uses splay
     /// because the next-to-consume fragment is usually right after
@@ -1207,8 +1210,8 @@ pub struct PacketContextState {
     pub next_sequence_hole: u64,
     pub retransmit_sequence: u64,
     pub highest_acknowledged: u64,
-    pub latest_time_acknowledged: u64,
-    pub highest_acknowledged_time: u64,
+    pub latest_time_acknowledged: Instant,
+    pub highest_acknowledged_time: Instant,
     /// Packets in flight, keyed by sequence number.  Replaces the
     /// C `pending_first/pending_last` doubly-linked list; the map
     /// gives O(log N) middle removal on ACK (the dominant op) and
@@ -1231,8 +1234,8 @@ pub struct PacketContextState {
 
 pub struct AckContextTrack {
     pub highest_ack_sent: u64,
-    pub highest_ack_sent_time: u64,
-    pub time_oldest_unack_packet_received: u64,
+    pub highest_ack_sent_time: Instant,
+    pub time_oldest_unack_packet_received: Instant,
 
     pub ack_needed: bool,
     pub ack_after_fin: bool,
@@ -1261,7 +1264,7 @@ pub struct LocalCnxid {
     pub connection_by_id_membership: Option<HashToken>,
     pub path_id: u64,
     pub sequence: u64,
-    pub create_time: u64,
+    pub create_time: Instant,
     pub connection_id: ConnectionId,
     pub is_acked: bool,
 }
@@ -1273,7 +1276,7 @@ pub struct LocalCnxidList {
     pub local_connection_id_oldest_created: u64,
     pub nb_local_connection_id_expired: i32,
     pub is_demoted: bool,
-    pub demotion_time: u64,
+    pub demotion_time: Instant,
     /// Local CIDs registered for this path (replaces the C
     /// `local_connection_id_first` head + per-node `next` chain plus the
     /// redundant `nb_local_connection_id` count, which is now `len()`).
@@ -1324,12 +1327,12 @@ pub struct Tuple {
     pub remote_connection_id_index: Option<usize>,
     pub local_connection_id: Option<LocalCnxidToken>,
     pub nb_observed_repeat: i32,
-    pub observed_time: u64,
+    pub observed_time: Instant,
     pub challenge_response: u64,
     pub challenge: [u64; CHALLENGE_REPEAT_MAX],
-    pub challenge_time: u64,
-    pub demotion_time: u64,
-    pub challenge_time_first: u64,
+    pub challenge_time: Instant,
+    pub demotion_time: Instant,
+    pub challenge_time_first: Instant,
     pub is_nat_rebinding: u64,
     pub challenge_repeat_count: u8,
     pub is_backup: u32,
@@ -1358,8 +1361,8 @@ pub struct Path {
     pub observed_sequence_sent: u64,
     pub observed_addr_acked: bool,
     pub last_non_path_probing_pn: u64,
-    pub demotion_time: u64,
-    pub last_sent_time: u64,
+    pub demotion_time: Instant,
+    pub last_sent_time: Instant,
     pub status_sequence_to_receive_next: u64,
     pub status_sequence_sent_last: u64,
 
@@ -1390,8 +1393,8 @@ pub struct Path {
     pub rtt_is_initialized: bool,
     pub sending_path_cid_blocked_frame: bool,
 
-    pub last_packet_received_at: u64,
-    pub last_loss_event_detected: u64,
+    pub last_packet_received_at: Instant,
+    pub last_loss_event_detected: Instant,
     pub nb_retransmit: u64,
     pub total_bytes_lost: u64,
     pub nb_losses_found: u64,
@@ -1597,7 +1600,7 @@ pub struct Connection {
     /// Membership in `Quic::connection_by_secret` (stateless-reset secret index).
     pub connection_by_secret_membership: Option<HashToken>,
 
-    pub start_time: u64,
+    pub start_time: Instant,
     pub phase_delay: i64,
     pub application_error: u64,
     pub local_error: u64,
@@ -1610,7 +1613,7 @@ pub struct Connection {
     /// `retry_token_length: u16`).
     pub retry_token: Vec<u8>,
 
-    pub next_wake_time: u64,
+    pub next_wake_time: Instant,
     /// Membership in `Quic::connection_wake_tree`.  Phase 4 uses this for
     /// O(1) reschedule (remove + reinsert at the new key).
     pub connection_wake_membership: Option<SplayToken>,
@@ -1629,9 +1632,9 @@ pub struct Connection {
     pub crypto_context_new: CryptoContext,
     pub crypto_failure_count: u64,
 
-    pub latest_progress_time: u64,
-    pub latest_receive_time: u64,
-    pub last_close_sent: u64,
+    pub latest_progress_time: Instant,
+    pub latest_receive_time: Instant,
+    pub last_close_sent: Instant,
     pub pkt_ctx: [PacketContextState; crate::NB_PACKET_CONTEXT],
     pub ack_ctx: [AckContext; 3],
     pub observed_number: u64,
@@ -1837,7 +1840,7 @@ pub fn create_cnx_internal(
     _initial_cnx_id: ConnectionId,
     _remote_cnx_id: ConnectionId,
     _addr_to: Option<&SocketAddr>,
-    _start_time: u64,
+    _start_time: Instant,
     _preferred_version: u32,
     _sni: Option<&str>,
     _alpn: Option<&str>,
@@ -1913,8 +1916,8 @@ pub fn create_tuple(
 
 pub fn delete_demoted_tuples(
     _connection: &mut Connection,
-    _current_time: u64,
-    _next_wake_time: &mut u64,
+    _current_time: Instant,
+    _next_wake_time: &mut Instant,
 ) {
     todo!()
 }
@@ -1932,7 +1935,7 @@ pub fn set_first_tuple(_path_x: &mut Path, _index: usize) {
 
 pub fn create_path(
     _connection: &mut Connection,
-    _start_time: u64,
+    _start_time: Instant,
     _local_addr: Option<&SocketAddr>,
     _peer_addr: Option<&SocketAddr>,
     _if_index: i32,
@@ -1951,7 +1954,7 @@ pub fn find_incoming_path(
     _addr_from: &mut SocketAddr,
     _addr_to: &mut SocketAddr,
     _if_index_to: i32,
-    _current_time: u64,
+    _current_time: Instant,
     _p_path_id: &mut i32,
 ) -> i32 {
     todo!()
@@ -1962,11 +1965,11 @@ pub fn prepare_path_control_packet(
     _path_x: &mut Path,
     _tuple: &mut Tuple,
     _packet: &mut Packet,
-    _current_time: u64,
+    _current_time: Instant,
     _send_buffer: &mut [u8],
     _send_buffer_max: usize,
     _send_length: &mut usize,
-    _next_wake_time: &mut u64,
+    _next_wake_time: &mut Instant,
 ) -> i32 {
     todo!()
 }
@@ -1978,16 +1981,16 @@ pub fn prepare_path_challenge_frames<'a>(
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
     _is_challenge_padding_needed: &mut i32,
-    _current_time: u64,
-    _next_wake_time: &mut u64,
+    _current_time: Instant,
+    _next_wake_time: &mut Instant,
 ) -> Option<&'a mut [u8]> {
     todo!()
 }
 
 pub fn select_next_path_tuple(
     _connection: &mut Connection,
-    _current_time: u64,
-    _next_wake_time: &mut u64,
+    _current_time: Instant,
+    _next_wake_time: &mut Instant,
 ) -> Option<(PathToken, usize)> {
     todo!()
 }
@@ -2006,35 +2009,35 @@ impl Connection {
 
     /// Mark path at `path_index` for demotion at `current_time`,
     /// recording the close reason for logging/closure frames.
-    pub fn demote_path(&mut self, _path_index: i32, _current_time: u64, _reason: u64) {
+    pub fn demote_path(&mut self, _path_index: i32, _current_time: Instant, _reason: u64) {
         todo!()
     }
 
     /// Re-queue all in-flight packets on `path_x` for retransmit
     /// after the path was demoted.
-    pub fn retransmit_demoted_path(&mut self, _path_x: &mut Path, _current_time: u64) {
+    pub fn retransmit_demoted_path(&mut self, _path_x: &mut Path, _current_time: Instant) {
         todo!()
     }
 
     /// Re-queue retransmissions on `path_x` triggered by an ACK
     /// arriving on a different path.
-    pub fn queue_retransmit_on_ack(&mut self, _path_x: &mut Path, _current_time: u64) {
+    pub fn queue_retransmit_on_ack(&mut self, _path_x: &mut Path, _current_time: Instant) {
         todo!()
     }
 
     /// Sweep abandoned paths and free any whose teardown is complete.
-    pub fn delete_abandoned_paths(&mut self, _current_time: u64, _next_wake_time: &mut u64) {
+    pub fn delete_abandoned_paths(&mut self, _current_time: Instant, _next_wake_time: &mut Instant) {
         todo!()
     }
 }
 
-pub fn set_tuple_challenge(_tuple: &mut Tuple, _current_time: u64, _use_constant_challenges: i32) {
+pub fn set_tuple_challenge(_tuple: &mut Tuple, _current_time: Instant, _use_constant_challenges: i32) {
     todo!()
 }
 
 impl Connection {
     /// Force a fresh PATH_CHALLENGE on path `path_id`.
-    pub fn set_path_challenge(&mut self, _path_id: i32, _current_time: u64) {
+    pub fn set_path_challenge(&mut self, _path_id: i32, _current_time: Instant) {
         todo!()
     }
 
@@ -2190,7 +2193,7 @@ pub fn remove_not_before_from_stash(
     _connection: &mut Connection,
     _connection_id_stash: &mut RemoteCnxidStash,
     _not_before: u64,
-    _current_time: u64,
+    _current_time: Instant,
 ) -> u64 {
     todo!()
 }
@@ -2204,7 +2207,7 @@ pub fn remove_not_before_cid(
     _connection: &mut Connection,
     _unique_path_id: u64,
     _not_before: u64,
-    _current_time: u64,
+    _current_time: Instant,
 ) -> u64 {
     todo!()
 }
@@ -2225,7 +2228,7 @@ pub fn queue_for_retransmit(
     _path_x: &mut Path,
     _packet: &mut Packet,
     _length: usize,
-    _current_time: u64,
+    _current_time: Instant,
 ) {
     todo!()
 }
@@ -2255,7 +2258,7 @@ pub fn dequeue_retransmitted_packet(
 impl Connection {
     /// Tear down all in-flight state and prepare the connection for
     /// a fresh handshake.
-    pub fn reset(&mut self, _current_time: u64) -> Result<(), crate::Error> {
+    pub fn reset(&mut self, _current_time: Instant) -> Result<(), crate::Error> {
         todo!()
     }
 
@@ -2337,7 +2340,7 @@ impl Quic {
 
 impl Pacing {
     /// Initialize the pacing state at `current_time`.
-    pub fn init(&mut self, _current_time: u64) {
+    pub fn init(&mut self, _current_time: Instant) {
         todo!()
     }
 
@@ -2350,8 +2353,8 @@ impl Pacing {
     /// Writes the next authorized time into `next_time` when blocked.
     pub fn is_authorized(
         &mut self,
-        _current_time: u64,
-        _next_time: &mut u64,
+        _current_time: Instant,
+        _next_time: &mut Instant,
         _packet_train_mode: bool,
         _quic: &mut Quic,
     ) -> bool {
@@ -2383,7 +2386,7 @@ impl Pacing {
     }
 
     /// Update pacer state after a packet of `length` bytes was sent.
-    pub fn update_after_send(&mut self, _length: usize, _send_mtu: usize, _current_time: u64) {
+    pub fn update_after_send(&mut self, _length: usize, _send_mtu: usize, _current_time: Instant) {
         todo!()
     }
 }
@@ -2392,15 +2395,15 @@ pub fn update_pacing_data(_path_x: &mut Path, _slow_start: i32) {
     todo!()
 }
 
-pub fn update_pacing_after_send(_path_x: &mut Path, _length: usize, _current_time: u64) {
+pub fn update_pacing_after_send(_path_x: &mut Path, _length: usize, _current_time: Instant) {
     todo!()
 }
 
 pub fn is_sending_authorized_by_pacing(
     _connection: &mut Connection,
     _path_x: &mut Path,
-    _current_time: u64,
-    _next_time: &mut u64,
+    _current_time: Instant,
+    _next_time: &mut Instant,
 ) -> bool {
     todo!()
 }
@@ -2417,7 +2420,7 @@ pub fn issue_path_quality_update(_connection: &mut Connection, _path_x: &mut Pat
     todo!()
 }
 
-pub fn reinsert_by_wake_time(_quic: &mut Quic, _connection: &mut Connection, _next_time: u64) {
+pub fn reinsert_by_wake_time(_quic: &mut Quic, _connection: &mut Connection, _next_time: Instant) {
     todo!()
 }
 
@@ -2601,7 +2604,7 @@ pub fn protect_packet(
     _pn_enc: *mut c_void,
     _path_x: &mut Path,
     _tuple: &mut Tuple,
-    _current_time: u64,
+    _current_time: Instant,
 ) -> usize {
     todo!()
 }
@@ -2638,7 +2641,7 @@ pub fn finalize_and_protect_packet_tuple(
     _send_buffer: &mut [u8],
     _send_buffer_max: usize,
     _path_x: &mut Path,
-    _current_time: u64,
+    _current_time: Instant,
     _tuple: &mut Tuple,
 ) {
     todo!()
@@ -2655,7 +2658,7 @@ pub fn finalize_and_protect_packet(
     _send_buffer: &mut [u8],
     _send_buffer_max: usize,
     _path_x: &mut Path,
-    _current_time: u64,
+    _current_time: Instant,
 ) {
     todo!()
 }
@@ -2663,12 +2666,12 @@ pub fn finalize_and_protect_packet(
 pub fn implicit_handshake_ack(
     _connection: &mut Connection,
     _pc: PacketContext,
-    _current_time: u64,
+    _current_time: Instant,
 ) {
     todo!()
 }
 
-pub fn false_start_transition(_connection: &mut Connection, _current_time: u64) {
+pub fn false_start_transition(_connection: &mut Connection, _current_time: Instant) {
     todo!()
 }
 
@@ -2676,7 +2679,7 @@ pub fn client_almost_ready_transition(_connection: &mut Connection) {
     todo!()
 }
 
-pub fn ready_state_transition(_connection: &mut Connection, _current_time: u64) {
+pub fn ready_state_transition(_connection: &mut Connection, _current_time: Instant) {
     todo!()
 }
 
@@ -2688,7 +2691,7 @@ pub fn parse_header_and_decrypt(
     _bytes: &[u8],
     _packet_length: usize,
     _addr_from: Option<&SocketAddr>,
-    _current_time: u64,
+    _current_time: Instant,
     _decrypted_data: &mut StreamDataNode,
     _ph: &mut PacketHeader,
     _consumed: &mut usize,
@@ -2728,8 +2731,8 @@ pub fn init_ack_ctx(_connection: &mut Connection, _ack_ctx: &mut AckContext) {
 
 pub fn is_ack_needed(
     _connection: &mut Connection,
-    _current_time: u64,
-    _next_wake_time: &mut u64,
+    _current_time: Instant,
+    _next_wake_time: &mut Instant,
     _pc: PacketContext,
     _is_opportunistic: i32,
 ) -> bool {
@@ -2750,7 +2753,7 @@ pub fn record_pn_received(
     _pc: PacketContext,
     _l_cid: Option<LocalCnxidToken>,
     _pn64: u64,
-    _current_microsec: u64,
+    _current_microsec: Instant,
 ) -> i32 {
     todo!()
 }
@@ -2776,7 +2779,7 @@ impl SackList {
         &mut self,
         _pn64_min: u64,
         _pn64_max: u64,
-        _current_time: u64,
+        _current_time: Instant,
     ) -> Result<(), crate::Error> {
         todo!()
     }
@@ -2799,7 +2802,7 @@ impl SackList {
     }
 
     /// Advance the ack horizon timestamp to drop expired ranges.
-    pub fn update_ack_horizon(&mut self, _current_time: u64) {
+    pub fn update_ack_horizon(&mut self, _current_time: Instant) {
         todo!()
     }
 
@@ -2818,7 +2821,7 @@ impl SackList {
         &mut self,
         _range_min: u64,
         _range_max: u64,
-        _current_time: u64,
+        _current_time: Instant,
     ) -> Result<(), crate::Error> {
         todo!()
     }
@@ -2885,7 +2888,7 @@ impl SackList {
         &mut self,
         _range_min: u64,
         _range_max: u64,
-        _current_time: u64,
+        _current_time: Instant,
     ) -> Result<(), crate::Error> {
         todo!()
     }
@@ -2984,8 +2987,8 @@ pub fn update_path_rtt(
     _connection: &mut Connection,
     _old_path: &mut Path,
     _epoch: i32,
-    _send_time: u64,
-    _current_time: u64,
+    _send_time: Instant,
+    _current_time: Instant,
     _ack_delay: u64,
     _time_stamp: u64,
 ) {
@@ -3104,7 +3107,7 @@ pub fn decode_stream_frame<'a>(
     _connection: &mut Connection,
     _bytes: &'a [u8],
     _received_data: &mut StreamDataNode,
-    _current_time: u64,
+    _current_time: Instant,
 ) -> Option<&'a [u8]> {
     todo!()
 }
@@ -3205,8 +3208,8 @@ pub fn retransmit_needed(
     _connection: &mut Connection,
     _pc: PacketContext,
     _path_x: &mut Path,
-    _current_time: u64,
-    _next_wake_time: &mut u64,
+    _current_time: Instant,
+    _next_wake_time: &mut Instant,
     _packet: &mut Packet,
     _send_buffer_max: usize,
     _header_length: &mut usize,
@@ -3216,7 +3219,7 @@ pub fn retransmit_needed(
 
 pub fn set_ack_needed(
     _connection: &mut Connection,
-    _current_time: u64,
+    _current_time: Instant,
     _pc: PacketContext,
     _path_x: &mut Path,
     _is_immediate_ack_required: i32,
@@ -3307,7 +3310,7 @@ pub fn format_ack_frame<'a>(
     _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
-    _current_time: u64,
+    _current_time: Instant,
     _pc: PacketContext,
     _is_opportunistic: i32,
 ) -> Option<&'a mut [u8]> {
@@ -3405,7 +3408,7 @@ pub fn create_local_connection_id(
     _connection: &mut Connection,
     _unique_path_id: u64,
     _suggested_value: Option<&ConnectionId>,
-    _current_time: u64,
+    _current_time: Instant,
 ) -> Result<LocalCnxidToken, crate::Error> {
     todo!()
 }
@@ -3442,8 +3445,8 @@ pub fn retire_local_connection_id(
 pub fn check_local_connection_id_ttl(
     _connection: &mut Connection,
     _local_connection_id_list: &mut LocalCnxidList,
-    _current_time: u64,
-    _next_wake_time: &mut u64,
+    _current_time: Instant,
+    _next_wake_time: &mut Instant,
 ) {
     todo!()
 }
@@ -3666,12 +3669,12 @@ pub fn format_time_stamp_frame<'a>(
     _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
-    _current_time: u64,
+    _current_time: Instant,
 ) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn encode_time_stamp_length(_connection: &mut Connection, _current_time: u64) -> usize {
+pub fn encode_time_stamp_length(_connection: &mut Connection, _current_time: Instant) -> usize {
     todo!()
 }
 
@@ -3717,7 +3720,7 @@ pub fn decode_frames(
     _addr_to: Option<&SocketAddr>,
     _pn64: u64,
     _path_is_not_allocated: i32,
-    _current_time: u64,
+    _current_time: Instant,
 ) -> i32 {
     todo!()
 }
@@ -3753,8 +3756,8 @@ pub fn prepare_observed_address_frame<'a>(
     _bytes: &'a mut [u8],
     _path_x: &mut Path,
     _tuple: &mut Tuple,
-    _current_time: u64,
-    _next_wake_time: &mut u64,
+    _current_time: Instant,
+    _next_wake_time: &mut Instant,
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
 ) -> Option<&'a mut [u8]> {
@@ -3810,7 +3813,7 @@ pub fn decode_closing_frames(
     todo!()
 }
 
-pub fn process_sooner_packets(_connection: &mut Connection, _current_time: u64) {
+pub fn process_sooner_packets(_connection: &mut Connection, _current_time: Instant) {
     todo!()
 }
 
@@ -3881,7 +3884,7 @@ pub trait MaskOps {
         &self,
         quic: &mut Quic,
         mask_ctx: Option<&mut dyn Any>,
-        current_time: u64,
+        current_time: Instant,
         send_buffer: &mut [u8],
         send_length: &mut usize,
         send_msg_size: &mut usize,
