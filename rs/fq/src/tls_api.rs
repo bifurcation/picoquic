@@ -293,51 +293,12 @@ impl Quic {
 // destination slice; the C `(void* buf, size_t len)` pair collapses
 // to `&mut [u8]`.
 
-impl Quic {
-    /// Fill `buf` with cryptographically random bytes drawn from the
-    /// provider RNG attached to this context.  C: `crypto_random`.
-    pub fn crypto_random(&mut self, _buf: &mut [u8]) {
-        todo!()
-    }
-
-    /// Sample a uniform `u64` in `[0, rnd_max)` from the crypto
-    /// RNG.  C: `crypto_uniform_random`.
-    pub fn crypto_uniform_random(&mut self, _rnd_max: u64) -> u64 {
-        todo!()
-    }
-
-    /// Re-seed the public RNG by drawing fresh entropy from the
-    /// crypto RNG installed in this context.  C:
-    /// `public_random_seed`.
-    pub fn seed_public_random(&mut self) {
-        todo!()
-    }
-}
-
-/// Single 64-bit draw from the public xorshift1024* RNG.  C:
-/// `public_random_64`.
-pub fn public_random_64() -> u64 {
-    todo!()
-}
-
-/// Re-seed the public RNG.  `reset == true` reinitializes the state
-/// to the documented constants; otherwise the seed is XORed into
-/// the current state.  C: `public_random_seed_64`.
-pub fn public_random_seed_64(_seed: u64, _reset: bool) {
-    todo!()
-}
-
-/// Fill `buf` with bytes drawn from the public RNG.  C:
-/// `public_random`.
-pub fn public_random(_buf: &mut [u8]) {
-    todo!()
-}
-
-/// Sample a uniform `u64` in `[0, rnd_max)` from the public RNG.
-/// C: `public_uniform_random`.
-pub fn public_uniform_random(_rnd_max: u64) -> u64 {
-    todo!()
-}
+// `crypto_random` / `crypto_uniform_random` / `seed_public_random`
+// are gone -- callers reach `Quic.rng` (a `Box<dyn CryptoRng>`)
+// directly and use the `rand::Rng` / `rand::RngCore` methods on
+// it.  The public-RNG helpers (`public_random_64` etc.) likewise
+// disappear: callers use `rand::rng()` for the thread-local
+// non-secure stream.
 
 // ---------------------------------------------------------------------------
 // AEAD primitives.

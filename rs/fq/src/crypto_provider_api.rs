@@ -320,19 +320,10 @@ pub trait ClearCryptoErrors {
     fn clear(&self);
 }
 
-/// Installs a provider-specific RNG into a TLS context.  Unused in
-/// the current C tree but kept on the API surface.  C:
-/// `picoquic_set_random_provider_in_ctx_t`.
-pub trait SetRandomProviderInCtx {
-    fn install(&self, ctx: &mut PtlsContext);
-}
-
-/// Fills `buf` with cryptographically secure random bytes.  The C
-/// `(void* buf, size_t len)` pair collapses to `&mut [u8]`.  C:
-/// `picoquic_crypto_random_provider_t`.
-pub trait CryptoRandomProvider {
-    fn random(&self, buf: &mut [u8]);
-}
+// `SetRandomProviderInCtx` and `CryptoRandomProvider` are gone.
+// Phase 2: every callsite that needed entropy reaches through
+// `Quic.rng: Box<dyn rand::CryptoRng>` directly (or `rand::rng()`
+// for the non-secure stream).
 
 /// Reads a private-key PEM file and constructs a key-exchange
 /// context.  The C `PtlsKeyExchangeContext**` owning out-parameter
@@ -388,11 +379,8 @@ pub fn register_explain_crypto_error(
     todo!()
 }
 
-/// Installs the global RNG provider.  C:
-/// `picoquic_register_crypto_random_provider_fn`.
-pub fn register_crypto_random_provider(_random_provider: Option<Box<dyn CryptoRandomProvider>>) {
-    todo!()
-}
+// `register_crypto_random_provider` is gone -- the application
+// installs its RNG by passing it to `Quic::new`.
 
 /// Installs the key-exchange constructor / disposer pair.  C:
 /// `picoquic_register_keyex_from_key_file_fn`.
@@ -519,11 +507,7 @@ pub fn clear_crypto_errors() -> Option<&'static dyn ClearCryptoErrors> {
     todo!()
 }
 
-/// The currently registered RNG, if any.  C:
-/// `picoquic_crypto_random_provider_fn`.
-pub fn crypto_random_provider() -> Option<&'static dyn CryptoRandomProvider> {
-    todo!()
-}
+// `crypto_random_provider()` is gone -- callers reach `Quic.rng` directly.
 
 /// The currently registered key-exchange constructor, if any.  C:
 /// `picoquic_keyex_from_key_file_fn`.

@@ -721,13 +721,10 @@ impl Event {
 // ---------------------------------------------------------------------------
 // Random-number helpers.
 
-/// Uniform random in `[0, rnd_max)` from the platform RNG.  C:
-/// `uint64_t uniform_random(uint64_t rnd_max)`.  Phase 3
-/// will gate the platform-RNG body behind the `std` feature (the
-/// C body reads `/dev/urandom` on Linux).
-pub fn uniform_random(_rnd_max: u64) -> u64 {
-    todo!()
-}
+// `uniform_random` is gone -- the C body read `/dev/urandom`
+// at every call.  Rust callers use `rand::Rng::random_range`
+// on whatever RNG they hold (`Quic.rng` for the secure stream,
+// `rand::rng()` for the non-secure thread-local).
 
 // `test_random` and the `test_*_random` family moved to
 // `crate::tests::util` — they only support the test suite.

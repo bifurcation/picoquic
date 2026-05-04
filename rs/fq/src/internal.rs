@@ -846,6 +846,16 @@ pub struct Quic {
     // C `*mut u64 p_simulated_time` is gone -- the test simulator
     // owns its own clock and feeds the value through per-call
     // `current_time: Instant` parameters.
+    /// Application-supplied cryptographically secure RNG.  Replaces
+    /// the C `register_crypto_random_provider` global registry plus
+    /// `Connection::crypto_random` / `crypto_uniform_random` /
+    /// `seed_public_random` accessors.  Used for handshake nonces,
+    /// connection IDs, retry-token integrity nonces, and so on.
+    /// The application installs this at construction time;
+    /// `rand::rngs::OsRng` (wrapped in a `Box`) is the canonical
+    /// default.  Phase 4 may push it down to per-`Connection` if
+    /// per-connection determinism is needed for tests.
+    pub rng: Box<dyn rand::CryptoRng + Send>,
     pub hash_seed: [u8; 16],
     pub ticket_file_name: Option<PathBuf>,
     pub token_file_name: Option<PathBuf>,
