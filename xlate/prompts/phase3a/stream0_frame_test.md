@@ -1,7 +1,7 @@
-# Phase 3A test-body translation: `ack_frequency_test`
+# Phase 3A test-body translation: `stream0_frame_test`
 
 You're translating the C test bodies in `picoquictest/`
-into Rust `#[test]` bodies in `rs/fq/src/tests/ack_frequency.rs`.
+into Rust `#[test]` bodies in `rs/fq/src/tests/stream0_frame.rs`.
 
 ## What this is
 
@@ -23,8 +23,8 @@ the panic happen wherever it naturally does.
    grepping `lib.rs` / `internal.rs`; only fall back to
    reading those files when this guide doesn't have the
    answer.
-2. The C source: `picoquictest/ack_frequency_test.c`.
-3. The Rust target: `rs/fq/src/tests/ack_frequency.rs` — currently has
+2. The C source: `picoquictest/stream0_frame_test.c`.
+3. The Rust target: `rs/fq/src/tests/stream0_frame.rs` — currently has
    auto-generated stubs (`todo!("<entry_fn>")`) that you
    replace with translations.
 4. `rs/fq/src/tests/util.rs` — test infrastructure;
@@ -35,8 +35,13 @@ the panic happen wherever it naturally does.
 
 ## Test entries to translate
 
-   - `#[test] fn ackfrq_basic()` ← C `ackfrq_basic_test`
-   - `#[test] fn ackfrq_short()` ← C `ackfrq_short_test`
+   - `#[test] fn TlsStreamFrame()` ← C `TlsStreamFrameTest`
+   - `#[test] fn StreamZeroFrame()` ← C `StreamZeroFrameTest`
+   - `#[test] fn stream_splay()` ← C `stream_splay_test`
+   - `#[test] fn stream_output()` ← C `stream_output_test`
+   - `#[test] fn stream_rank()` ← C `stream_rank_test`
+   - `#[test] fn provide_stream_buffer()` ← C `provide_stream_buffer_test`
+   - `#[test] fn stream_state_local_reuse()` ← C `stream_state_local_reuse_test`
 
 ## Translation rules
 
@@ -72,7 +77,7 @@ the panic happen wherever it naturally does.
 
 ## Process
 
-1. Read the C source and the existing `rs/fq/src/tests/ack_frequency.rs`.
+1. Read the C source and the existing `rs/fq/src/tests/stream0_frame.rs`.
 2. Read whichever Rust modules expose the API the C body
    exercises (use `Glob` / `Grep` to navigate).
 3. If common helpers are needed (Quic context creation,

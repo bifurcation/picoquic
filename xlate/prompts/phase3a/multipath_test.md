@@ -1,7 +1,7 @@
-# Phase 3A test-body translation: `ack_frequency_test`
+# Phase 3A test-body translation: `multipath_test`
 
 You're translating the C test bodies in `picoquictest/`
-into Rust `#[test]` bodies in `rs/fq/src/tests/ack_frequency.rs`.
+into Rust `#[test]` bodies in `rs/fq/src/tests/multipath.rs`.
 
 ## What this is
 
@@ -23,8 +23,8 @@ the panic happen wherever it naturally does.
    grepping `lib.rs` / `internal.rs`; only fall back to
    reading those files when this guide doesn't have the
    answer.
-2. The C source: `picoquictest/ack_frequency_test.c`.
-3. The Rust target: `rs/fq/src/tests/ack_frequency.rs` — currently has
+2. The C source: `picoquictest/multipath_test.c`.
+3. The Rust target: `rs/fq/src/tests/multipath.rs` — currently has
    auto-generated stubs (`todo!("<entry_fn>")`) that you
    replace with translations.
 4. `rs/fq/src/tests/util.rs` — test infrastructure;
@@ -35,8 +35,47 @@ the panic happen wherever it naturally does.
 
 ## Test entries to translate
 
-   - `#[test] fn ackfrq_basic()` ← C `ackfrq_basic_test`
-   - `#[test] fn ackfrq_short()` ← C `ackfrq_short_test`
+   - `#[test] fn migration_controlled()` ← C `migration_controlled_test`
+   - `#[test] fn migration_mtu_drop()` ← C `migration_mtu_drop_test`
+   - `#[test] fn monopath_basic()` ← C `monopath_basic_test`
+   - `#[test] fn monopath_hole()` ← C `monopath_hole_test`
+   - `#[test] fn monopath_keep_alive()` ← C `monopath_keep_alive_test`
+   - `#[test] fn monopath_rotation()` ← C `monopath_rotation_test`
+   - `#[test] fn monopath_0rtt()` ← C `monopath_0rtt_test`
+   - `#[test] fn monopath_0rtt_loss()` ← C `monopath_0rtt_loss_test`
+   - `#[test] fn multipath_aead()` ← C `multipath_aead_test`
+   - `#[test] fn multipath_basic()` ← C `multipath_basic_test`
+   - `#[test] fn multipath_drop_first()` ← C `multipath_drop_first_test`
+   - `#[test] fn multipath_drop_second()` ← C `multipath_drop_second_test`
+   - `#[test] fn multipath_fail()` ← C `multipath_fail_test`
+   - `#[test] fn multipath_ab1()` ← C `multipath_ab1_test`
+   - `#[test] fn multipath_sat_plus()` ← C `multipath_sat_plus_test`
+   - `#[test] fn multipath_renew()` ← C `multipath_renew_test`
+   - `#[test] fn multipath_rotation()` ← C `multipath_rotation_test`
+   - `#[test] fn multipath_break1()` ← C `multipath_break1_test`
+   - `#[test] fn multipath_socket_error()` ← C `multipath_socket_error_test`
+   - `#[test] fn multipath_socket0_error()` ← C `multipath_socket0_error_test`
+   - `#[test] fn multipath_abandon()` ← C `multipath_abandon_test`
+   - `#[test] fn multipath_back0()` ← C `multipath_back0_test`
+   - `#[test] fn multipath_back1()` ← C `multipath_back1_test`
+   - `#[test] fn multipath_nat()` ← C `multipath_nat_test`
+   - `#[test] fn multipath_nat_challenge()` ← C `multipath_nat_challenge_test`
+   - `#[test] fn multipath_perf()` ← C `multipath_perf_test`
+   - `#[test] fn multipath_callback()` ← C `multipath_callback_test`
+   - `#[test] fn multipath_quality()` ← C `multipath_quality_test`
+   - `#[test] fn multipath_stream_af()` ← C `multipath_stream_af_test`
+   - `#[test] fn multipath_datagram()` ← C `multipath_datagram_test`
+   - `#[test] fn multipath_dg_af()` ← C `multipath_dg_af_test`
+   - `#[test] fn multipath_backup()` ← C `multipath_backup_test`
+   - `#[test] fn multipath_standup()` ← C `multipath_standup_test`
+   - `#[test] fn multipath_discovery()` ← C `multipath_discovery_test`
+   - `#[test] fn multipath_keep_alive()` ← C `multipath_keep_alive_test`
+   - `#[test] fn multipath_just_one()` ← C `multipath_just_one_test`
+   - `#[test] fn multipath_break_both()` ← C `multipath_break_both_test`
+   - `#[test] fn multipath_qlog()` ← C `multipath_qlog_test`
+   - `#[test] fn multipath_tunnel()` ← C `multipath_tunnel_test`
+   - `#[test] fn monopath_0rtt()` ← C `monopath_0rtt_test`
+   - `#[test] fn monopath_0rtt_loss()` ← C `monopath_0rtt_loss_test`
 
 ## Translation rules
 
@@ -72,7 +111,7 @@ the panic happen wherever it naturally does.
 
 ## Process
 
-1. Read the C source and the existing `rs/fq/src/tests/ack_frequency.rs`.
+1. Read the C source and the existing `rs/fq/src/tests/multipath.rs`.
 2. Read whichever Rust modules expose the API the C body
    exercises (use `Glob` / `Grep` to navigate).
 3. If common helpers are needed (Quic context creation,

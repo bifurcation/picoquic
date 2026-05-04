@@ -1,7 +1,7 @@
-# Phase 3A test-body translation: `ack_frequency_test`
+# Phase 3A test-body translation: `ticket_store_test`
 
 You're translating the C test bodies in `picoquictest/`
-into Rust `#[test]` bodies in `rs/fq/src/tests/ack_frequency.rs`.
+into Rust `#[test]` bodies in `rs/fq/src/tests/ticket_store.rs`.
 
 ## What this is
 
@@ -23,8 +23,8 @@ the panic happen wherever it naturally does.
    grepping `lib.rs` / `internal.rs`; only fall back to
    reading those files when this guide doesn't have the
    answer.
-2. The C source: `picoquictest/ack_frequency_test.c`.
-3. The Rust target: `rs/fq/src/tests/ack_frequency.rs` — currently has
+2. The C source: `picoquictest/ticket_store_test.c`.
+3. The Rust target: `rs/fq/src/tests/ticket_store.rs` — currently has
    auto-generated stubs (`todo!("<entry_fn>")`) that you
    replace with translations.
 4. `rs/fq/src/tests/util.rs` — test infrastructure;
@@ -35,8 +35,11 @@ the panic happen wherever it naturally does.
 
 ## Test entries to translate
 
-   - `#[test] fn ackfrq_basic()` ← C `ackfrq_basic_test`
-   - `#[test] fn ackfrq_short()` ← C `ackfrq_short_test`
+   - `#[test] fn ticket_store()` ← C `ticket_store_test`
+   - `#[test] fn ticket_seed()` ← C `ticket_seed_test`
+   - `#[test] fn ticket_seed_from_bdp_frame()` ← C `ticket_seed_from_bdp_frame_test`
+   - `#[test] fn token_store()` ← C `token_store_test`
+   - `#[test] fn token_reuse_api()` ← C `token_reuse_api_test`
 
 ## Translation rules
 
@@ -72,7 +75,7 @@ the panic happen wherever it naturally does.
 
 ## Process
 
-1. Read the C source and the existing `rs/fq/src/tests/ack_frequency.rs`.
+1. Read the C source and the existing `rs/fq/src/tests/ticket_store.rs`.
 2. Read whichever Rust modules expose the API the C body
    exercises (use `Glob` / `Grep` to navigate).
 3. If common helpers are needed (Quic context creation,

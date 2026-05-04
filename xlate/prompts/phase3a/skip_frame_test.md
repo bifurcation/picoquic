@@ -1,7 +1,7 @@
-# Phase 3A test-body translation: `ack_frequency_test`
+# Phase 3A test-body translation: `skip_frame_test`
 
 You're translating the C test bodies in `picoquictest/`
-into Rust `#[test]` bodies in `rs/fq/src/tests/ack_frequency.rs`.
+into Rust `#[test]` bodies in `rs/fq/src/tests/skip_frame.rs`.
 
 ## What this is
 
@@ -23,8 +23,8 @@ the panic happen wherever it naturally does.
    grepping `lib.rs` / `internal.rs`; only fall back to
    reading those files when this guide doesn't have the
    answer.
-2. The C source: `picoquictest/ack_frequency_test.c`.
-3. The Rust target: `rs/fq/src/tests/ack_frequency.rs` — currently has
+2. The C source: `picoquictest/skip_frame_test.c`.
+3. The Rust target: `rs/fq/src/tests/skip_frame.rs` — currently has
    auto-generated stubs (`todo!("<entry_fn>")`) that you
    replace with translations.
 4. `rs/fq/src/tests/util.rs` — test infrastructure;
@@ -35,8 +35,22 @@ the panic happen wherever it naturally does.
 
 ## Test entries to translate
 
-   - `#[test] fn ackfrq_basic()` ← C `ackfrq_basic_test`
-   - `#[test] fn ackfrq_short()` ← C `ackfrq_short_test`
+   - `#[test] fn frames_skip()` ← C `skip_frame_test`
+   - `#[test] fn frames_parse()` ← C `parse_frame_test`
+   - `#[test] fn frames_repeat()` ← C `frames_repeat_test`
+   - `#[test] fn frames_ackack_error()` ← C `frames_ackack_error_test`
+   - `#[test] fn frames_format()` ← C `frames_format_test`
+   - `#[test] fn logger()` ← C `logger_test`
+   - `#[test] fn binlog()` ← C `binlog_test`
+   - `#[test] fn app_message_overflow()` ← C `app_message_overflow_test`
+   - `#[test] fn stream_retransmit_copy()` ← C `test_copy_for_retransmit`
+   - `#[test] fn dataqueue_copy()` ← C `dataqueue_copy_test`
+   - `#[test] fn dataqueue_packet()` ← C `dataqueue_packet_test`
+   - `#[test] fn new_cnxid_stash()` ← C `cnxid_stash_test`
+   - `#[test] fn new_cnxid()` ← C `new_cnxid_test`
+   - `#[test] fn send_stream_blocked()` ← C `send_stream_blocked_test`
+   - `#[test] fn stream_ack()` ← C `stream_ack_test`
+   - `#[test] fn queue_network_input()` ← C `queue_network_input_test`
 
 ## Translation rules
 
@@ -72,7 +86,7 @@ the panic happen wherever it naturally does.
 
 ## Process
 
-1. Read the C source and the existing `rs/fq/src/tests/ack_frequency.rs`.
+1. Read the C source and the existing `rs/fq/src/tests/skip_frame.rs`.
 2. Read whichever Rust modules expose the API the C body
    exercises (use `Glob` / `Grep` to navigate).
 3. If common helpers are needed (Quic context creation,

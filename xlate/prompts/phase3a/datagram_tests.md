@@ -1,7 +1,7 @@
-# Phase 3A test-body translation: `ack_frequency_test`
+# Phase 3A test-body translation: `datagram_tests`
 
 You're translating the C test bodies in `picoquictest/`
-into Rust `#[test]` bodies in `rs/fq/src/tests/ack_frequency.rs`.
+into Rust `#[test]` bodies in `rs/fq/src/tests/datagram.rs`.
 
 ## What this is
 
@@ -23,8 +23,8 @@ the panic happen wherever it naturally does.
    grepping `lib.rs` / `internal.rs`; only fall back to
    reading those files when this guide doesn't have the
    answer.
-2. The C source: `picoquictest/ack_frequency_test.c`.
-3. The Rust target: `rs/fq/src/tests/ack_frequency.rs` — currently has
+2. The C source: `picoquictest/datagram_tests.c`.
+3. The Rust target: `rs/fq/src/tests/datagram.rs` — currently has
    auto-generated stubs (`todo!("<entry_fn>")`) that you
    replace with translations.
 4. `rs/fq/src/tests/util.rs` — test infrastructure;
@@ -35,8 +35,17 @@ the panic happen wherever it naturally does.
 
 ## Test entries to translate
 
-   - `#[test] fn ackfrq_basic()` ← C `ackfrq_basic_test`
-   - `#[test] fn ackfrq_short()` ← C `ackfrq_short_test`
+   - `#[test] fn datagram()` ← C `datagram_test`
+   - `#[test] fn datagram_rt()` ← C `datagram_rt_test`
+   - `#[test] fn datagram_rt_skip()` ← C `datagram_rt_skip_test`
+   - `#[test] fn datagram_rtnew_skip()` ← C `datagram_rtnew_skip_test`
+   - `#[test] fn datagram_loss()` ← C `datagram_loss_test`
+   - `#[test] fn datagram_size()` ← C `datagram_size_test`
+   - `#[test] fn datagram_small()` ← C `datagram_small_test`
+   - `#[test] fn datagram_small_new()` ← C `datagram_small_new_test`
+   - `#[test] fn datagram_small_packet()` ← C `datagram_small_packet_test`
+   - `#[test] fn datagram_too_long_test()` ← C `datagram_too_long_test`
+   - `#[test] fn datagram_wifi()` ← C `datagram_wifi_test`
 
 ## Translation rules
 
@@ -72,7 +81,7 @@ the panic happen wherever it naturally does.
 
 ## Process
 
-1. Read the C source and the existing `rs/fq/src/tests/ack_frequency.rs`.
+1. Read the C source and the existing `rs/fq/src/tests/datagram.rs`.
 2. Read whichever Rust modules expose the API the C body
    exercises (use `Glob` / `Grep` to navigate).
 3. If common helpers are needed (Quic context creation,

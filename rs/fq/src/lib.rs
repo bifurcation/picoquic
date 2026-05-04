@@ -2375,5 +2375,50 @@ pub fn ech_create_config_file(
 // The C `base64_decode` / `base64_encode` helpers are gone:
 // callers use the standard `base64` crate's engines directly.
 
+// ---------------------------------------------------------------------------
+// Stubs added to support Phase 3A test-body translation.
+
+impl Connection {
+    /// Returns `true` when the send backlog for this connection is empty.
+    /// C: `picoquic_is_cnx_backlog_empty`.
+    pub fn is_cnx_backlog_empty(&self) -> bool {
+        todo!()
+    }
+
+    /// Return the next available local stream ID.  `is_unidirectional`
+    /// selects uni- vs. bi-directional; the direction (client/server)
+    /// is derived from the connection role.
+    /// C: `picoquic_get_next_local_stream_id`.
+    pub fn get_next_local_stream_id(&mut self, _is_unidirectional: bool) -> u64 {
+        todo!()
+    }
+
+    /// Maximum RTT observed on the primary path.
+    /// C: `cnx->path[0]->rtt_max`.
+    pub fn primary_path_rtt_max(&self) -> u64 {
+        todo!()
+    }
+
+    /// Congestion window on the primary path, in bytes.
+    /// C: `cnx->path[0]->cwin`.
+    pub fn primary_path_cwin(&self) -> u64 {
+        todo!()
+    }
+
+    /// Current pacing rate on the primary path, in bytes per second.
+    /// C: `cnx->path[0]->pacing.rate`.
+    pub fn primary_path_pacing_rate(&self) -> u64 {
+        todo!()
+    }
+}
+
+impl Quic {
+    /// Number of data nodes currently available in the pool.
+    /// C: `picoquic_quic_t::nb_data_nodes_in_pool`.
+    pub fn nb_data_nodes_in_pool(&self) -> i32 {
+        todo!()
+    }
+}
+
 #[cfg(test)]
 mod test {}

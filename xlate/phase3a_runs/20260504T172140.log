@@ -17,3 +17,49 @@ Phase 3A: 53 source file(s) to translate
   · Grep(pub enum State|Disconnected|fn is_cnx_backlog|tls_api_one_sim_round|fn tls_api_init_ctx|INTERNAL_TEST_VERSION|APP_LIMITED_TEST_ALPN|PICOQUIC_TEST_SNI)
   · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
   · Grep(nb_data_nodes_in_pool|is_cnx_backlog_empty|tls_api_one_sim_round)
+  · Grep(StreamDataCallback|trait.*Callback|fn call.*stream|callback_event|CallbackEvent)
+  · Grep(fn path\b|path_rtt_max\|rtt_max\|fn.*path.*stats\|path\[0\]\|path_x.*rtt\|pacing.*rate\|cwin\b)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Grep(rtt_max|fn.*path|pub.*cwin|pacing.*rate|pub.*path_x\|path\[0\]\|fn path_)
+  · Grep(get_next_local_stream_id|mark_active_stream|fn.*mark_active)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Grep(pub fn start_client|pub fn close\b|pub fn state\b)
+  · Grep(impl Quic \{|impl Connection \{)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Grep(StreamDataBufferArgument)
+  · Grep(fn reset_stream|fn get_next_local_stream_id)
+  · Write(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Bash(cd /Users/richbarn/Projects/picoquic/rs/fq && cargo fmt 2>&1)
+  · Bash(cargo test --no-run 2>&1 | head -80)
+  · Bash(cargo clippy --tests --all-features -- -D warnings 2>&1)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Bash(cargo fmt && cargo test --no-run 2>&1 && cargo clippy --tests --all-features -- )
+  · Bash(echo "# Phase 3A: app_limited test translation" >> /Users/richbarn/Projects/pico)
+  · Bash(printf "# Phase 3A: app_limited test translation\ncd rs/fq && cargo fmt && cargo)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Bash(tail -1 /Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Edit(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+    RATE-LIMITED: All four tests are translated and all three gates pass. Here's a summary of what was done:
+
+**`rs/fq/src/tests/app_limited.rs`** — fully translated:
+- `app_limited_bbr`, `app_limited_cubic`, `app_limi
+
+ABORTING SWEEP: rate-limited at app_limited.  Re-run later; state file is unchanged for this and pending sources.
+
+=== Phase 3A run summary ===
+  elapsed:   703.5s
+  succeeded: 0
+  failed:    0
+  rate-limited at: app_limited
+  log:       xlate/phase3a_runs/20260504T172140.log

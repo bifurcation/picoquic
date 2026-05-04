@@ -418,7 +418,11 @@ def invoke_claude(src: str, prompt_file: Path,
                     last_assistant_text = block.get("text", "")
         elif ev.get("type") == "result":
             final_summary = ev.get("result", "") or ""
-            if ev.get("api_error_status") == 429 or "limit" in final_summary.lower():
+            # Only rely on the structured api_error_status; the
+            # `result` text mentions "limit" plenty in legitimate
+            # contexts (test names like `app_limited`, words like
+            # `cwin_limited`, etc.).
+            if ev.get("api_error_status") == 429 and ev.get("is_error"):
                 rate_limited = True
     rc = proc.wait()
     elapsed = time.monotonic() - t0

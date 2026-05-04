@@ -13,6 +13,11 @@
 //!   the test suite to exercise the QUIC stack without real sockets.
 //!   The C bodies live in `picoquictest/sim_link.c`.
 //!
+//! * **TLS API test context** (`TestTlsApiCtx`, `TestApiStreamDesc`,
+//!   `tls_api_one_scenario_init_ex`, etc.) — translation of the
+//!   `picoquic_test_tls_api_ctx_t` infrastructure and the helpers
+//!   declared in `picoquictest/picoquictest_internal.h`.
+//!
 //! * **Test-fixture certificate / SNI constants** — paths to PEM
 //!   files baked into the test tree (`certs/...`).
 //!
@@ -21,8 +26,9 @@
 
 use core::net::SocketAddr;
 
-use crate::internal::{Connection, MAX_ACK_RANGE_REPEAT, SackList, format_ack_frame};
-use crate::{Instant, MAX_PACKET_SIZE, PacketContext};
+use crate::internal::{Connection, MAX_ACK_RANGE_REPEAT, SackList, Version, format_ack_frame};
+use crate::tp::TransportParameters;
+use crate::{ConnectionId, Instant, MAX_PACKET_SIZE, PacketContext, Quic};
 
 // ---------------------------------------------------------------------------
 // Deterministic test RNG.
@@ -334,6 +340,122 @@ pub fn format_ack_frame_written(
 }
 
 // ---------------------------------------------------------------------------
+// TLS API test context — translation of `picoquic_test_tls_api_ctx_t`
+// and the helpers from `picoquictest/picoquictest_internal.h`.
+
+/// One stream scenario descriptor.  C: `test_api_stream_desc_t`.
+pub struct TestApiStreamDesc {
+    /// `stream_id` in C.
+    pub stream_id: u64,
+    /// `previous_stream_id` in C.
+    pub previous_stream_id: u64,
+    /// Query (client→server) payload length.
+    pub q_len: usize,
+    /// Response (server→client) payload length.
+    pub r_len: usize,
+}
+
+/// Combined TLS-API test context holding two QUIC contexts, their
+/// two sim-links, and the addresses/callbacks baked in by the C
+/// initialiser helpers.  C: `picoquic_test_tls_api_ctx_t`.
+///
+/// Ownership notes:
+/// * `qclient` and `qserver` own the QUIC contexts.
+/// * `cnx_client` and `cnx_server` are connection handles that live
+///   *inside* their respective QUIC contexts; they are surfaced via
+///   the [`cnx_client`][`TestTlsApiCtx::cnx_client`] /
+///   [`cnx_server`][`TestTlsApiCtx::cnx_server`] methods (Phase 4
+///   will wire these into real accessor paths).
+/// * The sim-links are owned here and mutably shared with the
+///   simulation loop.
+pub struct TestTlsApiCtx {
+    pub qclient: Box<Quic>,
+    pub qserver: Box<Quic>,
+    pub c_to_s_link: Box<TestSimLink>,
+    pub s_to_c_link: Box<TestSimLink>,
+}
+
+impl TestTlsApiCtx {
+    /// Mutable reference to the client connection.
+    /// C: `test_ctx->cnx_client`.
+    pub fn cnx_client(&mut self) -> &mut Connection {
+        todo!()
+    }
+
+    /// Mutable reference to the server-side connection that was
+    /// accepted in response to the client.
+    /// C: `test_ctx->cnx_server`.
+    pub fn cnx_server(&mut self) -> &mut Connection {
+        todo!()
+    }
+}
+
+/// Initialise a TLS-API test context with the `_ex` variant that
+/// accepts an explicit initial CID.
+/// C: `tls_api_one_scenario_init_ex`.
+pub fn tls_api_one_scenario_init_ex(
+    _simulated_time: &mut Instant,
+    _proposed_version: Version,
+    _client_params: Option<&TransportParameters>,
+    _server_params: Option<&TransportParameters>,
+    _initial_cid: Option<&ConnectionId>,
+) -> Option<Box<TestTlsApiCtx>> {
+    todo!()
+}
+
+/// Drive the TLS handshake to completion.
+/// C: `tls_api_connection_loop`.
+pub fn tls_api_connection_loop(
+    _test_ctx: &mut TestTlsApiCtx,
+    _loss_mask: &mut u64,
+    _queue_delay_max: u64,
+    _simulated_time: &mut Instant,
+) -> crate::Result<()> {
+    todo!()
+}
+
+/// Spin the simulator until the client connection reaches the ready
+/// state.  C: `wait_client_connection_ready`.
+pub fn wait_client_connection_ready(
+    _test_ctx: &mut TestTlsApiCtx,
+    _simulated_time: &mut Instant,
+) -> crate::Result<()> {
+    todo!()
+}
+
+/// Register the stream scenario on the test context so that the
+/// send/receive loop will drive those streams.
+/// C: `test_api_init_send_recv_scenario`.
+pub fn test_api_init_send_recv_scenario(
+    _test_ctx: &mut TestTlsApiCtx,
+    _scenario: &[TestApiStreamDesc],
+) -> crate::Result<()> {
+    todo!()
+}
+
+/// Drive data delivery until all streams in the scenario are done.
+/// C: `tls_api_data_sending_loop`.
+pub fn tls_api_data_sending_loop(
+    _test_ctx: &mut TestTlsApiCtx,
+    _loss_mask: &mut u64,
+    _simulated_time: &mut Instant,
+    _max_trials: i32,
+) -> crate::Result<()> {
+    todo!()
+}
+
+/// Assert that all scenario streams completed and that the wall-clock
+/// time did not exceed `max_completion_microsec` (0 = unconstrained).
+/// C: `tls_api_one_scenario_body_verify`.
+pub fn tls_api_one_scenario_body_verify(
+    _test_ctx: &mut TestTlsApiCtx,
+    _simulated_time: &mut Instant,
+    _max_completion_microsec: u64,
+) -> crate::Result<()> {
+    todo!()
+}
+
+// ---------------------------------------------------------------------------
 // SNI / certificate paths used by the test suite.  Linux/macOS
 // layout only; `_WINDOWS` paths are dropped per the v1 scope.
 
@@ -355,6 +477,21 @@ pub const TEST_ECH_CONFIG_REF: &str = "certs/ech/ech_config.txt";
 pub const TEST_FILE_SERVER_CERT_RSA: &str = "certs/rsa/cert.pem";
 pub const TEST_FILE_SERVER_KEY_RSA: &str = "certs/rsa/key.pem";
 pub const TEST_FILE_SERVER_CERT_ED25519: &str = "certs/mtls_ed25519/server.crt";
+
+// ---------------------------------------------------------------------------
+// Single-step simulator.
+
+/// Advance the simulation by one round, respecting `time_out` as the earliest
+/// wake-up.  `was_active` is set to `true` when at least one packet was
+/// processed.  C: `tls_api_one_sim_round`.
+pub fn tls_api_one_sim_round(
+    _test_ctx: &mut TestTlsApiCtx,
+    _simulated_time: &mut Instant,
+    _time_out: Instant,
+    _was_active: &mut bool,
+) -> crate::Result<()> {
+    todo!()
+}
 pub const TEST_FILE_SERVER_KEY_ED25519: &str = "certs/mtls_ed25519/server.key";
 pub const TEST_FILE_CLIENT_CERT_ED25519: &str = "certs/mtls_ed25519/client.crt";
 pub const TEST_FILE_CLIENT_KEY_ED25519: &str = "certs/mtls_ed25519/client.key";

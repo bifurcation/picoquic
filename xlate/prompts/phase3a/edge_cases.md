@@ -1,7 +1,7 @@
-# Phase 3A test-body translation: `ack_frequency_test`
+# Phase 3A test-body translation: `edge_cases`
 
 You're translating the C test bodies in `picoquictest/`
-into Rust `#[test]` bodies in `rs/fq/src/tests/ack_frequency.rs`.
+into Rust `#[test]` bodies in `rs/fq/src/tests/edge_cases.rs`.
 
 ## What this is
 
@@ -23,8 +23,8 @@ the panic happen wherever it naturally does.
    grepping `lib.rs` / `internal.rs`; only fall back to
    reading those files when this guide doesn't have the
    answer.
-2. The C source: `picoquictest/ack_frequency_test.c`.
-3. The Rust target: `rs/fq/src/tests/ack_frequency.rs` — currently has
+2. The C source: `picoquictest/edge_cases.c`.
+3. The Rust target: `rs/fq/src/tests/edge_cases.rs` — currently has
    auto-generated stubs (`todo!("<entry_fn>")`) that you
    replace with translations.
 4. `rs/fq/src/tests/util.rs` — test infrastructure;
@@ -35,8 +35,31 @@ the panic happen wherever it naturally does.
 
 ## Test entries to translate
 
-   - `#[test] fn ackfrq_basic()` ← C `ackfrq_basic_test`
-   - `#[test] fn ackfrq_short()` ← C `ackfrq_short_test`
+   - `#[test] fn error_name()` ← C `error_name_test`
+   - `#[test] fn ec00_zero()` ← C `ec00_zero_test`
+   - `#[test] fn ec2f_second_flight()` ← C `ec2f_second_flight_nack_test`
+   - `#[test] fn eccf_corrupted_fuzz()` ← C `eccf_corrupted_file_fuzz_test`
+   - `#[test] fn eca1_amplification_loss()` ← C `eca1_amplification_loss_test`
+   - `#[test] fn ecf1_final_loss()` ← C `ecf1_final_loss_test`
+   - `#[test] fn ec5c_silly_cid()` ← C `ec5c_silly_cid_test`
+   - `#[test] fn ec9a_preemptive_amok()` ← C `ec9a_preemptive_amok_test`
+   - `#[test] fn idle_server()` ← C `idle_server_test`
+   - `#[test] fn idle_timeout()` ← C `idle_timeout_test`
+   - `#[test] fn reset_ack_max()` ← C `reset_ack_max_test`
+   - `#[test] fn reset_ack_reset()` ← C `reset_ack_reset_test`
+   - `#[test] fn reset_extra_max()` ← C `reset_extra_max_test`
+   - `#[test] fn reset_extra_reset()` ← C `reset_extra_reset_test`
+   - `#[test] fn reset_extra_stop()` ← C `reset_extra_stop_test`
+   - `#[test] fn reset_need_max()` ← C `reset_need_max_test`
+   - `#[test] fn reset_need_reset()` ← C `reset_need_reset_test`
+   - `#[test] fn reset_need_stop()` ← C `reset_need_stop_test`
+   - `#[test] fn reset_loop_test()` ← C `reset_loop_test`
+   - `#[test] fn reset_stream_at_basic()` ← C `reset_stream_at_basic_test`
+   - `#[test] fn reset_stream_at_limit_test()` ← C `reset_stream_at_limit_test`
+   - `#[test] fn reset_stream_at_loss()` ← C `reset_stream_at_loss_test`
+   - `#[test] fn initial_pto()` ← C `initial_pto_test`
+   - `#[test] fn initial_pto_srv()` ← C `initial_pto_srv_test`
+   - `#[test] fn crypto_hs_offset()` ← C `crypto_hs_offset_test`
 
 ## Translation rules
 
@@ -72,7 +95,7 @@ the panic happen wherever it naturally does.
 
 ## Process
 
-1. Read the C source and the existing `rs/fq/src/tests/ack_frequency.rs`.
+1. Read the C source and the existing `rs/fq/src/tests/edge_cases.rs`.
 2. Read whichever Rust modules expose the API the C body
    exercises (use `Glob` / `Grep` to navigate).
 3. If common helpers are needed (Quic context creation,

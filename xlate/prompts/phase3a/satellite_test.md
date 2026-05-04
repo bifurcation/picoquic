@@ -1,7 +1,7 @@
-# Phase 3A test-body translation: `ack_frequency_test`
+# Phase 3A test-body translation: `satellite_test`
 
 You're translating the C test bodies in `picoquictest/`
-into Rust `#[test]` bodies in `rs/fq/src/tests/ack_frequency.rs`.
+into Rust `#[test]` bodies in `rs/fq/src/tests/satellite.rs`.
 
 ## What this is
 
@@ -23,8 +23,8 @@ the panic happen wherever it naturally does.
    grepping `lib.rs` / `internal.rs`; only fall back to
    reading those files when this guide doesn't have the
    answer.
-2. The C source: `picoquictest/ack_frequency_test.c`.
-3. The Rust target: `rs/fq/src/tests/ack_frequency.rs` — currently has
+2. The C source: `picoquictest/satellite_test.c`.
+3. The Rust target: `rs/fq/src/tests/satellite.rs` — currently has
    auto-generated stubs (`todo!("<entry_fn>")`) that you
    replace with translations.
 4. `rs/fq/src/tests/util.rs` — test infrastructure;
@@ -35,8 +35,23 @@ the panic happen wherever it naturally does.
 
 ## Test entries to translate
 
-   - `#[test] fn ackfrq_basic()` ← C `ackfrq_basic_test`
-   - `#[test] fn ackfrq_short()` ← C `ackfrq_short_test`
+   - `#[test] fn satellite_basic()` ← C `satellite_basic_test`
+   - `#[test] fn satellite_seeded()` ← C `satellite_seeded_test`
+   - `#[test] fn satellite_seeded_bbr1()` ← C `satellite_seeded_bbr1_test`
+   - `#[test] fn satellite_loss()` ← C `satellite_loss_test`
+   - `#[test] fn satellite_loss_fc()` ← C `satellite_loss_fc_test`
+   - `#[test] fn satellite_jitter()` ← C `satellite_jitter_test`
+   - `#[test] fn satellite_medium()` ← C `satellite_medium_test`
+   - `#[test] fn satellite_preemptive()` ← C `satellite_preemptive_test`
+   - `#[test] fn satellite_preemptive_fc()` ← C `satellite_preemptive_fc_test`
+   - `#[test] fn satellite_small()` ← C `satellite_small_test`
+   - `#[test] fn satellite_small_up()` ← C `satellite_small_up_test`
+   - `#[test] fn satellite_bbr1()` ← C `satellite_bbr1_test`
+   - `#[test] fn satellite_cubic()` ← C `satellite_cubic_test`
+   - `#[test] fn satellite_cubic_seeded()` ← C `satellite_cubic_seeded_test`
+   - `#[test] fn satellite_cubic_loss()` ← C `satellite_cubic_loss_test`
+   - `#[test] fn satellite_dcubic_seeded()` ← C `satellite_dcubic_seeded_test`
+   - `#[test] fn satellite_prague_seeded()` ← C `satellite_prague_seeded_test`
 
 ## Translation rules
 
@@ -72,7 +87,7 @@ the panic happen wherever it naturally does.
 
 ## Process
 
-1. Read the C source and the existing `rs/fq/src/tests/ack_frequency.rs`.
+1. Read the C source and the existing `rs/fq/src/tests/satellite.rs`.
 2. Read whichever Rust modules expose the API the C body
    exercises (use `Glob` / `Grep` to navigate).
 3. If common helpers are needed (Quic context creation,

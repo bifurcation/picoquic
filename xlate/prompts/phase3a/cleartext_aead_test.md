@@ -1,7 +1,7 @@
-# Phase 3A test-body translation: `ack_frequency_test`
+# Phase 3A test-body translation: `cleartext_aead_test`
 
 You're translating the C test bodies in `picoquictest/`
-into Rust `#[test]` bodies in `rs/fq/src/tests/ack_frequency.rs`.
+into Rust `#[test]` bodies in `rs/fq/src/tests/cleartext_aead.rs`.
 
 ## What this is
 
@@ -23,8 +23,8 @@ the panic happen wherever it naturally does.
    grepping `lib.rs` / `internal.rs`; only fall back to
    reading those files when this guide doesn't have the
    answer.
-2. The C source: `picoquictest/ack_frequency_test.c`.
-3. The Rust target: `rs/fq/src/tests/ack_frequency.rs` — currently has
+2. The C source: `picoquictest/cleartext_aead_test.c`.
+3. The Rust target: `rs/fq/src/tests/cleartext_aead.rs` — currently has
    auto-generated stubs (`todo!("<entry_fn>")`) that you
    replace with translations.
 4. `rs/fq/src/tests/util.rs` — test infrastructure;
@@ -35,8 +35,14 @@ the panic happen wherever it naturally does.
 
 ## Test entries to translate
 
-   - `#[test] fn ackfrq_basic()` ← C `ackfrq_basic_test`
-   - `#[test] fn ackfrq_short()` ← C `ackfrq_short_test`
+   - `#[test] fn clear_text_aead()` ← C `cleartext_aead_test`
+   - `#[test] fn pn_ctr()` ← C `pn_ctr_test`
+   - `#[test] fn cleartext_pn_enc()` ← C `cleartext_pn_enc_test`
+   - `#[test] fn retry_protection_vector()` ← C `retry_protection_vector_test`
+   - `#[test] fn retry_protection_v2()` ← C `retry_protection_v2_test`
+   - `#[test] fn draft17_vector()` ← C `draft17_vector_test`
+   - `#[test] fn pn_vector()` ← C `cleartext_pn_vector_test`
+   - `#[test] fn key_rotation_vector()` ← C `key_rotation_vector_test`
 
 ## Translation rules
 
@@ -72,7 +78,7 @@ the panic happen wherever it naturally does.
 
 ## Process
 
-1. Read the C source and the existing `rs/fq/src/tests/ack_frequency.rs`.
+1. Read the C source and the existing `rs/fq/src/tests/cleartext_aead.rs`.
 2. Read whichever Rust modules expose the API the C body
    exercises (use `Glob` / `Grep` to navigate).
 3. If common helpers are needed (Quic context creation,
