@@ -230,36 +230,10 @@ pub fn parse_connection_id(_bytes: &[u8]) -> Result<ConnectionId, Error> {
     todo!()
 }
 
-/// Test whether a connection id is the `null` sentinel.  C:
-/// `int is_connection_id_null(const ConnectionId* connection_id)`
-/// returning a 0/1 flag, mapped to `bool`.
-pub fn is_connection_id_null(_cnx_id: &ConnectionId) -> bool {
-    todo!()
-}
-
-/// Three-way compare two connection ids.  C:
-/// `int compare_connection_id(const ConnectionId*,
-/// const ConnectionId*)` returning negative / zero /
-/// positive.  Mapped to [`Ordering`].
-pub fn compare_connection_id(_cnx_id1: &ConnectionId, _cnx_id2: &ConnectionId) -> Ordering {
-    todo!()
-}
-
-/// Hash a connection id with a 16-byte seed.  C: `uint64_t
-/// connection_id_hash(const ConnectionId* cid,
-/// const uint8_t* hash_seed)`.  The seed parameter is a fixed-size
-/// 16-byte buffer everywhere it is called — same as
-/// [`crate::iovec_t`]'s neighbour
-/// `hash_bytes`.
-pub fn connection_id_hash(_cid: &ConnectionId, _hash_seed: &[u8; 16]) -> u64 {
-    todo!()
-}
-
-/// Fold the first up-to-8 bytes of a connection id into a `u64`.
-/// C: `uint64_t val64_connection_id(ConnectionId)`.
-pub fn val64_connection_id(_cnx_id: ConnectionId) -> u64 {
-    todo!()
-}
+// `is_null` / cmp / `hash_with_seed` / `val64` live as methods on
+// [`ConnectionId`] (see `crate::lib`); they were free fns in the
+// C source.  `Ord` for `ConnectionId` derives the lexicographic
+// byte-then-length order the C `compare_connection_id` produced.
 
 // ---------------------------------------------------------------------------
 // Address helpers.

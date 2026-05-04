@@ -3149,9 +3149,11 @@ impl Connection {
     }
 }
 
-/// True when `stream` has finished sending and receiving all data.
-pub fn is_stream_closed(_stream: &mut StreamHead, _client_mode: bool) -> bool {
-    todo!()
+impl StreamHead {
+    /// True when `stream` has finished sending and receiving all data.
+    pub fn is_stream_closed(&self, _client_mode: bool) -> bool {
+        todo!()
+    }
 }
 
 // `stream_from_node` is gone — the C version recovered the parent
@@ -3472,8 +3474,10 @@ impl Quic {
     }
 }
 
-pub fn clear_stream(_stream: &mut StreamHead) {
-    todo!()
+impl StreamHead {
+    pub fn clear_stream(&mut self) {
+        todo!()
+    }
 }
 
 impl Connection {
@@ -3697,12 +3701,16 @@ pub fn delete_misc_or_dg(_queue: &mut VecDeque<MiscFrameHeader>, _index: usize) 
     todo!()
 }
 
-pub fn clear_ack_ctx(_ack_ctx: &mut AckContext) {
-    todo!()
+impl AckContext {
+    pub fn clear_ack_ctx(&mut self) {
+        todo!()
+    }
 }
 
-pub fn reset_ack_context(_ack_ctx: &mut AckContext) {
-    todo!()
+impl AckContext {
+    pub fn reset_ack_context(&mut self) {
+        todo!()
+    }
 }
 
 impl Connection {

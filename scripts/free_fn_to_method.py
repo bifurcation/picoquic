@@ -44,6 +44,8 @@ RECEIVERS = {
     "Quic": [r"_quic"],
     "Path": [r"_path_x", r"_path"],
     "SackList": [r"_list"],
+    "AckContext": [r"_ack_ctx"],
+    "StreamHead": [r"_stream"],
 }
 
 

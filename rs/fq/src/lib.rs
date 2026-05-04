@@ -325,7 +325,11 @@ pub const CONNECTION_ID_MAX_SIZE: usize = 20;
 /// in many APIs (`get_local_connection_id`, `create_connection`,
 /// …).  Fields are private — construct via [`Self::clone_from_slice`]
 /// or [`Self::with_size`] and read via [`Self::as_bytes`].
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+///
+/// `Ord` is derived as lexicographic over the live bytes (matching
+/// the C `compare_connection_id` shape: per-byte compare under
+/// `min(len_a, len_b)`, then length tie-break).
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct ConnectionId {
     id: [u8; CONNECTION_ID_MAX_SIZE],
     id_len: u8,
@@ -359,9 +363,21 @@ impl ConnectionId {
         self.id_len as usize
     }
 
-    /// `true` when the id has zero length.
+    /// `true` when the id has zero length.  Mirrors the C
+    /// `is_connection_id_null` sentinel check.
     pub fn is_empty(&self) -> bool {
         self.id_len == 0
+    }
+
+    /// Hash with a 16-byte seed.  C: `connection_id_hash`.
+    pub fn hash_with_seed(&self, _seed: &[u8; 16]) -> u64 {
+        todo!()
+    }
+
+    /// Fold the first up-to-8 bytes of the id into a `u64`.
+    /// C: `val64_connection_id`.
+    pub fn val64(&self) -> u64 {
+        todo!()
     }
 }
 
