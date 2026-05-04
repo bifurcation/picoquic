@@ -64,3 +64,24 @@ Phase 3A: 1 source file(s) to translate
   · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/sacktest.rs)
   · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/sacktest.rs)
   · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/sacktest.rs)
+  · Bash(cargo fmt 2>&1)
+  · Bash(cargo test --no-run 2>&1)
+  · Bash(cargo clippy --tests --all-features -- -D warnings 2>&1)
+  · Bash(echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Phase 3A sacktest translation: translated 6)
+  · Bash(printf '%s Phase 3A sacktest translation: translated 6 tests (ack_sack, ack_send)
+  · Bash(date -u +%Y-%m-%dT%H:%M:%SZ)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Edit(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo test --no-run)
+  $ (cd rs/fq && cargo clippy --tests --all-features -- -D warnings)
+  ok
+
+=== Phase 3A run summary ===
+  elapsed:   1252.4s
+  succeeded: 1
+  failed:    0
+  log:       xlate/phase3a_runs/20260504T142519.log

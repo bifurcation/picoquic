@@ -1,0 +1,12 @@
+{
+  "ack_frequency_test": {
+    "at": "2026-05-04T15:02:42",
+    "changed": true,
+    "status": "ok"
+  },
+  "ack_of_ack_test": {
+    "at": "2026-05-04T15:08:19",
+    "changed": true,
+    "status": "ok"
+  }
+}

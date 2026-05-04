@@ -1,0 +1,19 @@
+Phase 3A: 53 source file(s) to translate
+  run log: xlate/phase3a_runs/20260504T172140.log
+  state:   xlate/phase3a_state.json
+
+=== app_limited (4 test(s)) ===
+  prompt  → xlate/prompts/phase3a/app_limited.md
+  claude  → invoking (sonnet, max-turns=80) …
+  · Read(/Users/richbarn/Projects/picoquic/xlate/test_translation_guide.md)
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/app_limited.c)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Grep(CongestionAlgorithm|ccalgo|congestion_algorithm|preemptive_repeat|mark_active_stream|get_next_local_stream|nb_retransmission|is_cnx_backlog_empty|tls_api_init_ctx|tls_api_connection_loop|tls_api_one_sim_round)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/ack_frequency.rs)
+  · Grep(tls_api_init_ctx_ex2|tls_api_one_sim_round|is_cnx_backlog_empty|get_cnx_state|nb_data_nodes|provide_stream_data_buffer|mark_active_stream|get_next_local_stream_id|set_default_callback|set_callback|start_client_cnx|picoquic_state_disconnected|State::|CongestionAlgorithm)
+  · Grep(tls_api_one_sim_round|tls_api_init_ctx_ex2|is_cnx_backlog_empty|nb_data_nodes_in_pool|State::|get_cnx_state|fn state|fn cnx_state)
+  · Grep(pub fn set_qlog|pub fn set_log_level|use_long_log|set_preemptive_repeat_policy|set_preemptive_repeat_per_cnx|set_preemptive_repeat)
+  · Grep(pub enum State|Disconnected|fn is_cnx_backlog|tls_api_one_sim_round|fn tls_api_init_ctx|INTERNAL_TEST_VERSION|APP_LIMITED_TEST_ALPN|PICOQUIC_TEST_SNI)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Grep(nb_data_nodes_in_pool|is_cnx_backlog_empty|tls_api_one_sim_round)

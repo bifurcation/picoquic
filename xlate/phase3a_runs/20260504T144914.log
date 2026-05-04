@@ -1,0 +1,468 @@
+Phase 3A: 55 source file(s) to translate
+  run log: xlate/phase3a_runs/20260504T144914.log
+  state:   xlate/phase3a_state.json
+
+=== ack_frequency_test (2 test(s)) ===
+  prompt  → xlate/prompts/phase3a/ack_frequency_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+  · Read(/Users/richbarn/Projects/picoquic/xlate/test_translation_guide.md)
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/ack_frequency_test.c)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/ack_frequency.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Grep(tls_api_one_scenario|tls_api_init_ctx|tls_api_connection_loop|tls_api_data_sending_loop|tls_api_one_scenario_body_verify|wait_client_connection_ready|test_api_init_send_recv_scenario|TlsApiCtx|TestTlsApiCtx)
+  · Grep(picoquic_test_tls_api_ctx_t|tls_api_one_scenario_init_ex|tls_api_connection_loop|tls_api_data_sending_loop|tls_api_one_scenario_body_verify|wait_client_connection_ready|test_api_init_send_recv_scenario|test_scenario_ackfrq|test_api_stream_desc_t)
+  · Grep(is_ack_frequency_negotiated|max_ack_delay_remote|min_ack_delay_remote|max_ack_gap_remote|nb_packets_received)
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/picoquictest_internal.h)
+  · Grep(is_ack_frequency_negotiated|max_ack_delay_remote|min_ack_delay_remote|max_ack_gap_remote|nb_packets_received|start_time|set_default_congestion|set_congestion_algorithm|set_qlog|set_log_level|use_long_log|start_client_cnx|CongestionAlgorithm)
+  · Grep(fn set_default_congestion|fn set_congestion|fn set_qlog|fn set_log_level|fn start_client|fn enable_qlog|set_qlog|set_log_level|start_client)
+  · Grep(CongestionAlgorithm|CUBIC|cubic|ccalgo|picoquic_cubic)
+  · Grep(CUBIC_ALGORITHM|picoquic_cubic_algorithm|static.*CongestionAlgorithm|cubic_algorithm\b)
+  · Grep(INTERNAL_TEST_VERSION_1|picoquic_internal_test_version|PICOQUIC_INTERNAL_TEST_VERSION_1)
+  · Grep(0x50435130|INTERNAL_TEST_VERSION|VERSION\s*=|const VERSION|pub const VERSION)
+  · Grep(INTERNAL_TEST_VERSION_1|TestApiStreamDesc|AckFrequencySpec|TlsApiCtx|PICOQUIC_TEST_ALPN|TEST_ALPN)
+  · Grep(VersionCode|InternalTest|pub enum.*Version)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/tls_api.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Grep(^use crate|^use super|^pub use|re-export|pub struct Connection|pub struct Quic)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests)
+  · Glob(rs/fq/src/tests/*.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/sacktest.rs)
+  · Grep(pub use.*Quic|pub use.*Connection|pub.*Quic\b|pub.*Connection\b)
+  · Grep(pub use.*internal|pub use.*Quic|pub use.*Connection\b)
+  · Grep(^pub struct Quic\b|^pub struct Connection\b)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Grep(^pub use|^pub use crate)
+  · Grep(use internal|use crate::internal|pub use internal)
+  · Grep(struct Quic\b|pub.* Quic\b|type Quic\b)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/mod.rs)
+  · Bash(cd /Users/richbarn/Projects/picoquic/rs/fq && cargo check --tests 2>&1 | head -3)
+  · Grep(Quic\b)
+  · Grep(use crate::.*Connection|use crate::internal::Connection)
+  · Grep(pub type Error|pub enum Error|pub struct Error|type Result.*Error|pub type Result)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Write(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/ack_frequency.rs)
+  · Bash(cargo check --tests 2>&1)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/ack_frequency.rs)
+  · Bash(cargo fmt && cargo test --no-run 2>&1 && cargo clippy --tests --all-features -- )
+  · Grep(derive.*Copy.*ConnectionId|ConnectionId.*Copy|impl Copy for ConnectionId)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/ack_frequency.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/ack_frequency.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/ack_frequency.rs)
+  · Bash(cargo fmt && cargo test --no-run 2>&1 && cargo clippy --tests --all-features -- )
+  · Read(/Users/richbarn/Projects/picoquic/xlate/prompts/phase3a/ack_frequency_test.md)
+  · Bash(cd /Users/richbarn/Projects/picoquic && cat >> COMMANDS.log << 'EOF'
+# Phase 3A )
+  · Bash(printf '# Phase 3A ack_frequency_test translation\ncargo check --tests  # verifi)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Bash(wc -l /Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Write(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Bash(git diff HEAD -- /Users/richbarn/Projects/picoquic/COMMANDS.log | head -5)
+  · Bash(git checkout HEAD -- /Users/richbarn/Projects/picoquic/COMMANDS.log && echo "res)
+  · Bash(git checkout HEAD -- COMMANDS.log)
+  · Bash(git show HEAD:COMMANDS.log | wc -l)
+  · Bash(git show HEAD:COMMANDS.log)
+  · Write(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo test --no-run)
+  $ (cd rs/fq && cargo clippy --tests --all-features -- -D warnings)
+  ok
+
+=== ack_of_ack_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/ack_of_ack_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+  · Read(/Users/richbarn/Projects/picoquic/xlate/test_translation_guide.md)
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/ack_of_ack_test.c)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/ack_of_ack.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Agent()
+  · Agent()
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/frames.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Grep(struct\s+SackList)
+  · Grep(struct\s+SackItem)
+  · Grep(fn\s+sack_insert_item)
+  · Grep(fn\s+process_ack_of_ack_frame)
+  · Grep(fn\s+sack_list_init)
+  · Grep(frame_type_ack)
+  · Grep(fn\s+sack_last_item)
+  · Grep(fn\s+sack_previous_item)
+  · Grep(fn\s+sack_next_item)
+  · Grep(fn\s+varint_encode)
+  · Grep(FrameType.*ACK|ACK.*FrameType)
+  · Grep((?i)ack)
+  · Grep(FRAME_TYPE.*ACK|ACK\s*=|FrameType::Ack)
+  · Grep(fn\s+sack.*item|fn.*sack)
+  · Grep(const.*ACK|enum.*FrameType)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Grep(pub fn sack_list_init|pub fn.*sack_last|pub fn.*sack.*insert)
+  · Grep(pub fn sack_insert_item|pub fn.*insert.*item)
+  · Grep(impl SackList)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Grep(enum\s+FrameType)
+  · Grep(pub\s+fn\s+new\(\)\s*->\s*Self.*SackList)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Grep(pub fn new\(\))
+  · Grep(FrameType|FRAME_TYPE)
+  · Bash(grep -n "FrameType\|FRAME_TYPE" /Users/richbarn/Projects/picoquic/rs/fq/src/inte)
+  · Bash(find /Users/richbarn/Projects/picoquic -name "*.rs" -type f | head -20)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Bash(find /Users/richbarn/Projects/picoquic -name "frames.rs" -type f)
+  · Bash(grep -n "pub.*ACK\|enum.*FrameType" /Users/richbarn/Projects/picoquic/rs/fq/src/)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/frames.rs)
+  · Grep(pub fn.*sack|fn.*sack.*item)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Grep(pub struct Token|impl.*Token|Copy.*Token|Token.*Copy|derive.*Token)
+  · Write(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/ack_of_ack.rs)
+  · Bash(cd /Users/richbarn/Projects/picoquic/rs/fq && cargo fmt 2>&1)
+  · Bash(cargo test --no-run 2>&1)
+  · Bash(cargo clippy --tests --all-features -- -D warnings 2>&1)
+  · Bash(echo "# Phase 3A: translate ack_of_ack_test body into rs/fq/src/tests/ack_of_ack)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Bash(tail -3 /Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Edit(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo test --no-run)
+  $ (cd rs/fq && cargo clippy --tests --all-features -- -D warnings)
+  ok
+
+=== app_limited (4 test(s)) ===
+  prompt  → xlate/prompts/phase3a/app_limited.md
+  claude  → invoking (sonnet, max-turns=80) …
+  · Read(/Users/richbarn/Projects/picoquic/xlate/test_translation_guide.md)
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/app_limited.c)
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/app_limited.log)
+
+=== bytestream_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/bytestream_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/bytestream_test.log)
+
+=== cert_verify_test (5 test(s)) ===
+  prompt  → xlate/prompts/phase3a/cert_verify_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/cert_verify_test.log)
+
+=== cleartext_aead_test (8 test(s)) ===
+  prompt  → xlate/prompts/phase3a/cleartext_aead_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/cleartext_aead_test.log)
+
+=== cnx_creation_test (2 test(s)) ===
+  prompt  → xlate/prompts/phase3a/cnx_creation_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/cnx_creation_test.log)
+
+=== cnxstress (2 test(s)) ===
+  prompt  → xlate/prompts/phase3a/cnxstress.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/cnxstress.log)
+
+=== code_version_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/code_version_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/code_version_test.log)
+
+=== config_test (6 test(s)) ===
+  prompt  → xlate/prompts/phase3a/config_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/config_test.log)
+
+=== congestion_test (32 test(s)) ===
+  prompt  → xlate/prompts/phase3a/congestion_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/congestion_test.log)
+
+=== cplusplus (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/cplusplus.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/cplusplus.log)
+
+=== cpu_limited (5 test(s)) ===
+  prompt  → xlate/prompts/phase3a/cpu_limited.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/cpu_limited.log)
+
+=== datagram_tests (11 test(s)) ===
+  prompt  → xlate/prompts/phase3a/datagram_tests.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/datagram_tests.log)
+
+=== delay_tolerant_test (4 test(s)) ===
+  prompt  → xlate/prompts/phase3a/delay_tolerant_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/delay_tolerant_test.log)
+
+=== dualq_aqm_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/dualq_aqm_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/dualq_aqm_test.log)
+
+=== ech_test (6 test(s)) ===
+  prompt  → xlate/prompts/phase3a/ech_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/ech_test.log)
+
+=== edge_cases (25 test(s)) ===
+  prompt  → xlate/prompts/phase3a/edge_cases.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/edge_cases.log)
+
+=== flow_control_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/flow_control_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/flow_control_test.log)
+
+=== getter_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/getter_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/getter_test.log)
+
+=== hashtest (4 test(s)) ===
+  prompt  → xlate/prompts/phase3a/hashtest.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/hashtest.log)
+
+=== high_latency_test (4 test(s)) ===
+  prompt  → xlate/prompts/phase3a/high_latency_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/high_latency_test.log)
+
+=== intformattest (3 test(s)) ===
+  prompt  → xlate/prompts/phase3a/intformattest.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/intformattest.log)
+
+=== l4s_test (6 test(s)) ===
+  prompt  → xlate/prompts/phase3a/l4s_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/l4s_test.log)
+
+=== mbedtls_test (7 test(s)) ===
+  prompt  → xlate/prompts/phase3a/mbedtls_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/mbedtls_test.log)
+
+=== mediatest (11 test(s)) ===
+  prompt  → xlate/prompts/phase3a/mediatest.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/mediatest.log)
+
+=== memlog_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/memlog_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/memlog_test.log)
+
+=== minicrypto_test (2 test(s)) ===
+  prompt  → xlate/prompts/phase3a/minicrypto_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/minicrypto_test.log)
+
+=== multipath_test (41 test(s)) ===
+  prompt  → xlate/prompts/phase3a/multipath_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/multipath_test.log)
+
+=== netperf_test (3 test(s)) ===
+  prompt  → xlate/prompts/phase3a/netperf_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/netperf_test.log)
+
+=== openssl_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/openssl_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/openssl_test.log)
+
+=== p2p_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/p2p_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/p2p_test.log)
+
+=== pacing_test (7 test(s)) ===
+  prompt  → xlate/prompts/phase3a/pacing_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/pacing_test.log)
+
+=== parseheadertest (4 test(s)) ===
+  prompt  → xlate/prompts/phase3a/parseheadertest.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/parseheadertest.log)
+
+=== picolog_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/picolog_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/picolog_test.log)
+
+=== picoquic_lb_test (2 test(s)) ===
+  prompt  → xlate/prompts/phase3a/picoquic_lb_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/picoquic_lb_test.log)
+
+=== pn2pn64test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/pn2pn64test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/pn2pn64test.log)
+
+=== qlog_frame_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/qlog_frame_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/qlog_frame_test.log)
+
+=== qlog_test (2 test(s)) ===
+  prompt  → xlate/prompts/phase3a/qlog_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/qlog_test.log)
+
+=== quic_tester (2 test(s)) ===
+  prompt  → xlate/prompts/phase3a/quic_tester.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/quic_tester.log)
+
+=== sacktest (6 test(s)) ===
+  prompt  → xlate/prompts/phase3a/sacktest.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/sacktest.log)
+
+=== satellite_test (17 test(s)) ===
+  prompt  → xlate/prompts/phase3a/satellite_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/satellite_test.log)
+
+=== skip_frame_test (16 test(s)) ===
+  prompt  → xlate/prompts/phase3a/skip_frame_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/skip_frame_test.log)
+
+=== socket_test (2 test(s)) ===
+  prompt  → xlate/prompts/phase3a/socket_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/socket_test.log)
+
+=== sockloop_test (8 test(s)) ===
+  prompt  → xlate/prompts/phase3a/sockloop_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/sockloop_test.log)
+
+=== spinbit_test (5 test(s)) ===
+  prompt  → xlate/prompts/phase3a/spinbit_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/spinbit_test.log)
+
+=== splay_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/splay_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/splay_test.log)
+
+=== stream0_frame_test (7 test(s)) ===
+  prompt  → xlate/prompts/phase3a/stream0_frame_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/stream0_frame_test.log)
+
+=== stresstest (5 test(s)) ===
+  prompt  → xlate/prompts/phase3a/stresstest.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/stresstest.log)
+
+=== ticket_store_test (5 test(s)) ===
+  prompt  → xlate/prompts/phase3a/ticket_store_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/ticket_store_test.log)
+
+=== tls_api_test (177 test(s)) ===
+  prompt  → xlate/prompts/phase3a/tls_api_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/tls_api_test.log)
+
+=== transport_param_test (4 test(s)) ===
+  prompt  → xlate/prompts/phase3a/transport_param_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/transport_param_test.log)
+
+=== util_test (7 test(s)) ===
+  prompt  → xlate/prompts/phase3a/util_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/util_test.log)
+
+=== warptest (5 test(s)) ===
+  prompt  → xlate/prompts/phase3a/warptest.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/warptest.log)
+
+=== wifitest (14 test(s)) ===
+  prompt  → xlate/prompts/phase3a/wifitest.md
+  claude  → invoking (sonnet, max-turns=80) …
+    FAIL: claude exit 1 (see xlate/claude_logs/phase3a/wifitest.log)
+
+=== Phase 3A run summary ===
+  elapsed:   1068.5s
+  succeeded: 2
+  failed:    53
+    - app_limited
+    - bytestream_test
+    - cert_verify_test
+    - cleartext_aead_test
+    - cnx_creation_test
+    - cnxstress
+    - code_version_test
+    - config_test
+    - congestion_test
+    - cplusplus
+    - cpu_limited
+    - datagram_tests
+    - delay_tolerant_test
+    - dualq_aqm_test
+    - ech_test
+    - edge_cases
+    - flow_control_test
+    - getter_test
+    - hashtest
+    - high_latency_test
+    - intformattest
+    - l4s_test
+    - mbedtls_test
+    - mediatest
+    - memlog_test
+    - minicrypto_test
+    - multipath_test
+    - netperf_test
+    - openssl_test
+    - p2p_test
+    - pacing_test
+    - parseheadertest
+    - picolog_test
+    - picoquic_lb_test
+    - pn2pn64test
+    - qlog_frame_test
+    - qlog_test
+    - quic_tester
+    - sacktest
+    - satellite_test
+    - skip_frame_test
+    - socket_test
+    - sockloop_test
+    - spinbit_test
+    - splay_test
+    - stream0_frame_test
+    - stresstest
+    - ticket_store_test
+    - tls_api_test
+    - transport_param_test
+    - util_test
+    - warptest
+    - wifitest
+  log:       xlate/phase3a_runs/20260504T144914.log

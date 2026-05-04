@@ -384,6 +384,7 @@ def invoke_claude(src: str, prompt_file: Path,
     )
     final_summary = ""
     last_assistant_text = ""
+    rate_limited = False
     proc = subprocess.Popen(
         cmd, cwd=REPO_ROOT,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -417,10 +418,16 @@ def invoke_claude(src: str, prompt_file: Path,
                     last_assistant_text = block.get("text", "")
         elif ev.get("type") == "result":
             final_summary = ev.get("result", "") or ""
+            if ev.get("api_error_status") == 429 or "limit" in final_summary.lower():
+                rate_limited = True
     rc = proc.wait()
     elapsed = time.monotonic() - t0
     log_f.write(f"\n# elapsed: {elapsed:.1f}s, exit: {rc}\n")
     log_f.close()
+    if rate_limited:
+        # Surface the rate-limit signal with a distinctive exit code so
+        # the outer loop aborts rather than marking the source fail.
+        rc = 99
     return rc, final_summary or last_assistant_text
 
 
@@ -465,6 +472,12 @@ def run_one(src: str, entries: list[tuple[str, str]], *,
     print(f"  claude  → invoking ({model}, max-turns={max_turns}) …")
     before = rs_target.read_text()
     code, stdout = invoke_claude(src, prompt_file, max_turns, model)
+    if code == 99:
+        # Rate limit hit; do NOT mark the source as failed (the work
+        # never started).  Surface a distinct status so the outer
+        # loop aborts the sweep cleanly.
+        print(f"    RATE-LIMITED: {stdout.strip()[:200]}")
+        return "rate-limited"
     if code != 0:
         log_rel = claude_log_path(src).relative_to(REPO_ROOT)
         print(f"    FAIL: claude exit {code} (see {log_rel})")
@@ -599,10 +612,17 @@ def main() -> int:
     print(f"  state:   {PHASE3A_STATE.relative_to(REPO_ROOT)}")
     failed: list[str] = []
     succeeded: list[str] = []
+    rate_limited_at: str | None = None
     for src, entries in targets:
         result = run_one(src, entries, dry_run=args.dry_run,
                          max_turns=args.max_turns, model=args.model,
                          state=state)
+        if result == "rate-limited":
+            rate_limited_at = src
+            print(f"\nABORTING SWEEP: rate-limited at {src}.  "
+                  f"Re-run later; state file is unchanged for this "
+                  f"and pending sources.")
+            break
         if result == "fail":
             failed.append(src)
             if args.stop_on_failure:
@@ -619,7 +639,11 @@ def main() -> int:
     print(f"  failed:    {len(failed)}")
     for s in failed:
         print(f"    - {s}")
+    if rate_limited_at:
+        print(f"  rate-limited at: {rate_limited_at}")
     print(f"  log:       {log_path.relative_to(REPO_ROOT)}")
+    if rate_limited_at:
+        return 2
     return 0 if not failed else 1
 
 
