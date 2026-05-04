@@ -62,30 +62,21 @@ pub const DUALQ_MAX_LINK_RATE: u64 = 125_000_000;
 #[derive(Default)]
 pub struct DualqQueue {
     pub queue_bytes: u64,
-    /// Number of packets currently in the queue.
-    pub count: i32,
     /// Running sum of drop probability — when it crosses 1.0 the
     /// `dualq_recur` helper "fires" and the head packet is
     /// dropped/marked.  C: `double sum_p`.
     pub sum_p: f64,
-    // REVIEW(open): replace these intrusive heads with `LinkedList<Box<TestSimPacket>>` once
-    // `TestSimPacket::next_packet` has been removed from `crate::utils` (the sim-link types
-    // share that pointer chain).
-    pub queue_first: *mut TestSimPacket,
-    pub queue_last: *mut TestSimPacket,
+    /// Packets in the queue.  Replaces the C `queue_first` /
+    /// `queue_last` head/tail pair.  `count` is `packets.len()`
+    /// (the C field is gone).
+    pub packets: std::collections::VecDeque<TestSimPacket>,
 }
 
 impl DualqQueue {
-    /// Append `packet` to the tail of this queue's intrusive list.
+    /// Append `packet` to the tail of this queue.
     /// C: `dualq_enqueue_queue(dualq_queue_t* xq,
     /// picoquictest_sim_packet_t* packet)`.
-    ///
-    /// Pointer-shape choice: callers (`Dualq::submit` and the
-    /// `dualq_enqueue_test` unit test) hand off ownership of the
-    /// packet to the queue, so the Rust signature takes `Box<...>`.
-    /// Phase 3 stores `Box::into_raw` into the intrusive
-    /// `next_packet` chain (matching the C raw-pointer storage).
-    pub fn enqueue(&mut self, _packet: Box<TestSimPacket>) {
+    pub fn enqueue(&mut self, _packet: TestSimPacket) {
         todo!()
     }
 }
@@ -177,7 +168,7 @@ pub struct Dualq {
 impl TestAqm for Dualq {
     /// C: `dualq_submit`.  Queues the packet, updates
     /// `last_input_time`, and runs the dequeue/PI2 update pass.
-    fn submit(&mut self, _link: &mut TestSimLink, _packet: Box<TestSimPacket>, _current_time: u64) {
+    fn submit(&mut self, _link: &mut TestSimLink, _packet: TestSimPacket, _current_time: u64) {
         todo!()
     }
 
@@ -234,7 +225,7 @@ impl Dualq {
     /// Exposed publicly to mirror the C surface used by the
     /// `dualq_aqm_test.c` unit tests; Phase 2 translates those
     /// tests directly.
-    pub fn dequeue_one(&mut self, _current_time: u64) -> Option<(Box<TestSimPacket>, bool)> {
+    pub fn dequeue_one(&mut self, _current_time: u64) -> Option<(TestSimPacket, bool)> {
         todo!()
     }
 }

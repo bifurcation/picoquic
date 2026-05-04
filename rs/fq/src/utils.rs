@@ -783,11 +783,9 @@ pub fn uint8_to_str<'a>(_text: &'a mut [u8], _data: &[u8]) -> &'a [u8] {
 ///
 /// Pointer-shape choices:
 ///
-/// * `next_packet` is the head of an intrusive linked list owned
-///   by the parent sim link.  Phase 4 either replaces this pattern
-///   with `VecDeque<Box<TestSimPacket>>` on the link side, or
-///   keeps the raw pointer behind `unsafe` if benchmarks demand
-///   it.  See `tests/dualq.rs` for the related cleanup.
+/// * Packets live in `TestSimLink.packets: VecDeque<TestSimPacket>`
+///   (and `DualqQueue.packets` for the AQM); the C `next_packet`
+///   intrusive chain is gone.
 /// * The two `sockaddr_storage` fields fold into
 ///   `Option<SocketAddr>` (the C zero-initialised storage maps to
 ///   `None`).
@@ -822,7 +820,7 @@ impl TestSimPacket {
 /// `unsafe` raw-pointer access.
 pub trait TestAqm {
     /// Submit a packet to the AQM.  C: `submit`.
-    fn submit(&mut self, link: &mut TestSimLink, packet: Box<TestSimPacket>, current_time: u64);
+    fn submit(&mut self, link: &mut TestSimLink, packet: TestSimPacket, current_time: u64);
 
     /// Reset the AQM state at `current_time`.  C: `reset`.
     fn reset(&mut self, link: &mut TestSimLink, current_time: u64);
@@ -942,7 +940,7 @@ impl TestSimLink {
     /// Pop the next-due packet, if any.  C:
     /// `picoquictest_sim_link_dequeue` returning `NULL` when
     /// nothing is ready, mapped to `Option<Box<...>>`.
-    pub fn dequeue(&mut self, _current_time: u64) -> Option<Box<TestSimPacket>> {
+    pub fn dequeue(&mut self, _current_time: u64) -> Option<TestSimPacket> {
         todo!()
     }
 
@@ -951,7 +949,7 @@ impl TestSimLink {
     /// ownership of the packet — the link is responsible for
     /// either freeing it (drop) or returning it via
     /// [`TestSimLink::dequeue`].
-    pub fn submit(&mut self, _packet: Box<TestSimPacket>, _current_time: u64) {
+    pub fn submit(&mut self, _packet: TestSimPacket, _current_time: u64) {
         todo!()
     }
 
@@ -960,7 +958,7 @@ impl TestSimLink {
     /// instead of queued (and freed by the function).  C:
     /// `picoquictest_sim_link_enqueue` with the C `int
     /// should_drop` promoted to `bool`.
-    pub fn enqueue(&mut self, _packet: Box<TestSimPacket>, _current_time: u64, _should_drop: bool) {
+    pub fn enqueue(&mut self, _packet: TestSimPacket, _current_time: u64, _should_drop: bool) {
         todo!()
     }
 

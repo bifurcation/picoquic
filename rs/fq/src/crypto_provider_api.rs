@@ -556,11 +556,11 @@ pub struct TlsCtx {
     /// Owned tls connection state.  C allocated this with
     /// `ptls_new`; phase 4 will model the ownership transfer.
     pub tls: Option<Box<Ptls>>,
-    /// Back-pointer to the connection that owns this context.  Not
-    /// owned — the connection outlives the TLS context.  Borrows
-    /// will be sorted out in phase 4 when the surrounding
-    /// connection lifetime is mapped.
-    pub cnx: Option<*mut Connection>,
+    /// Token of the connection that owns this context.  C: `cnx:
+    /// *mut Connection` back-pointer; the Rust shape uses the
+    /// arena token so callers reach the connection via
+    /// `quic.connections.get(token)`.
+    pub cnx: Option<crate::internal::ConnectionToken>,
     /// `int client_mode` in C is a 0/1 flag — promoted to `bool`.
     pub client_mode: bool,
     /// QUIC-transport-parameter raw extensions buffer.  C declared
