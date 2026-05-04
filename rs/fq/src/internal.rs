@@ -51,6 +51,7 @@
 //!   `pub const fn` helpers.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fs::File;
 use std::path::PathBuf;
 
 use core::any::Any;
@@ -990,7 +991,12 @@ pub struct Quic {
     pub rtt_update_delta: u64,
     pub pacing_rate_update_delta: u64,
 
-    pub f_log: *mut c_void,
+    /// Open text-log sink, if a textlog is installed on this
+    /// context.  C: `FILE* F_log` plus the `should_close_log` flag
+    /// for whether the C side owned the handle; the Rust shape
+    /// makes ownership unambiguous (`Some` -> we own and `Drop`
+    /// closes; `None` -> no log).
+    pub f_log: Option<File>,
     pub binlog_dir: Option<PathBuf>,
     pub qlog_dir: Option<PathBuf>,
     pub autoqlog_fn: Option<Box<dyn AutoQlog>>,
@@ -1760,7 +1766,9 @@ pub struct Connection {
     pub sooner_stateless: VecDeque<StatelessPacket>,
 
     pub log_unique: u16,
-    pub f_binlog: *mut c_void,
+    /// Open binlog sink for this connection, if a binlog is
+    /// installed.  C: `FILE* f_binlog`.
+    pub f_binlog: Option<File>,
     pub binlog_file_name: Option<PathBuf>,
     pub memlog_call_back: Option<Box<dyn MemLogHook>>,
     /// Application-supplied state for the memory-log hook.
