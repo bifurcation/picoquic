@@ -240,27 +240,23 @@ def compose_prompt(src_basename: str, entries: list[tuple[str, str]]) -> str:
         "body as `todo!()` — translate the C body faithfully and let",
         "the panic happen wherever it naturally does.",
         "",
-        "## Required reading",
+        "## Required reading (in order)",
         "",
-        f"1. The C source: `{c_src_rel}`.",
-        f"2. The Rust target: `{rust_target}` — currently has",
+        "1. **`xlate/test_translation_guide.md`** — focused summary of",
+        "   the Rust API surface, naming conventions, helper",
+        "   inventory, and translation patterns.  Substitutes for",
+        "   grepping `lib.rs` / `internal.rs`; only fall back to",
+        "   reading those files when this guide doesn't have the",
+        "   answer.",
+        f"2. The C source: `{c_src_rel}`.",
+        f"3. The Rust target: `{rust_target}` — currently has",
         "   auto-generated stubs (`todo!(\"<entry_fn>\")`) that you",
         "   replace with translations.",
-        "3. The Rust API surface you'll be calling against:",
-        "   - `rs/fq/src/lib.rs` — public crate API (Quic / Connection",
-        "     constructors, callbacks, error codes).",
-        "   - `rs/fq/src/internal.rs` — internal types (Path,",
-        "     PacketHeader, sack lists, frame helpers, etc.).",
-        "   - `rs/fq/src/tls.rs` — TLS trait surface.",
-        "   - `rs/fq/src/tests/util.rs` — test infrastructure (sim",
-        "     link, deterministic RNG, certificate paths).  Add",
-        "     helpers here if multiple translations need them.",
-        "   - `rs/fq/src/tests/dualq.rs` — DualQ AQM test infra.",
-        "   - Other `rs/fq/src/<X>.rs` modules per the test's topic",
-        "     (e.g. `bytestream.rs`, `splay.rs`, `errors.rs`,",
-        "     `frames.rs`, `tp.rs`, `stream.rs`, `lb.rs`).",
-        "4. `TRANSLATE_PLAN.md` — Phase 3 section.",
-        "5. `CLAUDE.md` — project conventions.",
+        f"4. `rs/fq/src/tests/util.rs` — test infrastructure;",
+        "   add helpers here when multiple translations would need",
+        "   them.",
+        "5. Module sources (`rs/fq/src/<X>.rs`) only when you need to",
+        "   verify a specific signature the guide didn't quote.",
         "",
         "## Test entries to translate",
         "",
@@ -357,24 +353,59 @@ def invoke_claude(src: str, prompt_file: Path,
         "--model", model,
         "--allowedTools", ALLOWED_TOOLS,
         "--max-turns", str(max_turns),
+        "--output-format", "stream-json",
+        "--verbose",
     ]
     t0 = time.monotonic()
-    res = subprocess.run(
-        cmd, cwd=REPO_ROOT,
-        capture_output=True, text=True,
-        stdin=subprocess.DEVNULL,
-    )
-    elapsed = time.monotonic() - t0
-    transcript = (
+    # Stream the events to disk in real time so the run can be
+    # monitored externally (`tail -f xlate/claude_logs/phase3a/<src>.log`).
+    log_f = open(log, "w", buffering=1)
+    log_f.write(
         f"# claude -p (phase3a) for {src}\n"
-        f"# elapsed: {elapsed:.1f}s, exit: {res.returncode}\n"
+        f"# started: {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
         f"# command: {' '.join(shlex.quote(c) for c in cmd[:1] + cmd[3:])}\n"
-        f"# (prompt omitted; see "
-        f"{prompt_file.relative_to(REPO_ROOT)})\n\n"
-        f"## stdout\n{res.stdout}\n\n## stderr\n{res.stderr}\n"
+        f"# (prompt: {prompt_file.relative_to(REPO_ROOT)})\n\n"
     )
-    log.write_text(transcript)
-    return res.returncode, res.stdout
+    final_summary = ""
+    last_assistant_text = ""
+    proc = subprocess.Popen(
+        cmd, cwd=REPO_ROOT,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdin=subprocess.DEVNULL, bufsize=1,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        log_f.write(line)
+        line = line.rstrip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        # Surface a one-line summary for each tool use / message step.
+        if ev.get("type") == "assistant":
+            for block in ev.get("message", {}).get("content", []):
+                if block.get("type") == "tool_use":
+                    name = block.get("name", "?")
+                    inp = block.get("input", {})
+                    label = ""
+                    if name in {"Read", "Edit", "Write"}:
+                        label = inp.get("file_path", "")
+                    elif name == "Bash":
+                        label = inp.get("command", "")[:80]
+                    elif name in {"Glob", "Grep"}:
+                        label = inp.get("pattern", inp.get("query", ""))
+                    print(f"  · {name}({label})", flush=True)
+                elif block.get("type") == "text":
+                    last_assistant_text = block.get("text", "")
+        elif ev.get("type") == "result":
+            final_summary = ev.get("result", "") or ""
+    rc = proc.wait()
+    elapsed = time.monotonic() - t0
+    log_f.write(f"\n# elapsed: {elapsed:.1f}s, exit: {rc}\n")
+    log_f.close()
+    return rc, final_summary or last_assistant_text
 
 
 # ---------------------------------------------------------------------------
