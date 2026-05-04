@@ -19,14 +19,14 @@ For each: what it is, the C library that provides it today,
 the Rust modules that consume it, and the trait surface that
 will replace it.
 
-| # | Capability | Today | Consumed in | Status |
-|---|---|---|---|---|
-| 1 | TLS state machine | picotls | `tls_api`, `internal`, `crypto_provider_api` | Partially scaffolded (opaque `Ptls*` structs) |
-| 2 | AEAD / PN-encrypt / hash crypto | OpenSSL or mbedtls | `tls_api`, `internal::CryptoContext` | Free functions taking `*mut c_void` (~50 sites) |
-| 3 | Random source | OpenSSL `RAND_bytes` (or `/dev/urandom`) | `tls_api::public_random*`, `crypto_provider_api::CryptoRandomProvider` | Trait already drafted (`CryptoRandomProvider`) |
-| 4 | Clock | application-supplied `current_time: u64` | every `pub fn` and trait method that takes `current_time` | Not yet abstracted |
-| 5 | Sockets / packet I/O | platform UDP (`socks.rs`) | `socks`, `packet_loop` | Concrete `Socket(i32)` newtype; `// REVIEW(open):` notes flag the trait |
-| 6 | TLS-fixture / config files | `std::fs::File` already (per Phase 1B) | `binlog`, `textlog`, `qlog`, `config` | Done — no new trait needed |
+| # | Capability                      | Today                                    | Consumed in                                                            | Status                                                                  |
+|---|---------------------------------|------------------------------------------|------------------------------------------------------------------------|-------------------------------------------------------------------------|
+| 1 | TLS state machine               | picotls                                  | `tls_api`, `internal`, `crypto_provider_api`                           | Partially scaffolded (opaque `Ptls*` structs)                           |
+| 2 | AEAD / PN-encrypt / hash crypto | OpenSSL or mbedtls                       | `tls_api`, `internal::CryptoContext`                                   | Free functions taking `*mut c_void` (~50 sites)                         |
+| 3 | Random source                   | OpenSSL `RAND_bytes` (or `/dev/urandom`) | `tls_api::public_random*`, `crypto_provider_api::CryptoRandomProvider` | Trait already drafted (`CryptoRandomProvider`)                          |
+| 4 | Clock                           | application-supplied `current_time: u64` | every `pub fn` and trait method that takes `current_time`              | Not yet abstracted                                                      |
+| 5 | Sockets / packet I/O            | platform UDP (`socks.rs`)                | `socks`, `packet_loop`                                                 | Concrete `Socket(i32)` newtype; `// REVIEW(open):` notes flag the trait |
+| 6 | TLS-fixture / config files      | `std::fs::File` already (per Phase 1B)   | `binlog`, `textlog`, `qlog`, `config`                                  | Done — no new trait needed                                              |
 
 Capability 6 is no longer a Phase 2 boundary — Phase 1B replaced
 the C `FILE*` handles with `std::fs::File` and the path
@@ -48,17 +48,17 @@ The picotls structures themselves are forward-declared in
 
 ### Evidence
 
-| File | Symbol | Phase-1 shape |
-|---|---|---|
-| `internal.rs:830` | `Quic.tls_master_ctx` | `*mut c_void` |
-| `internal.rs:1619` | `Connection.tls_ctx` | `*mut c_void` |
-| `internal.rs:1623` | `Connection.tls_sendbuf` | `*mut c_void` |
-| `tls_api.rs:246` | `tls_context_free(ctx)` | `unsafe fn(*mut c_void, bool)` |
-| `tls_api.rs:213` | `Connection::create_tls_context` | `&mut self -> Result<()>` (body opaque) |
-| `tls_api.rs:260` | `Connection::process_tls_stream` | `&mut self, current_time -> Result<usize>` |
-| `tls_api.rs:267` | `Connection::is_tls_complete` | `&self -> bool` |
-| `crypto_provider_api.rs:99-160` | `Ptls{CipherSuite,KeyExchangeAlgorithm,HpkeCipherSuite,HpkeKem,Context,SignCertificate,Ptls,RawExtension,HandshakeProperties,KeyExchangeContext}` | Forward-declared opaque structs |
-| `crypto_provider_api.rs:551-589` | `TlsCtx` struct | Owns `Option<Box<Ptls>>`, `[PtlsRawExtension; 2]`, etc. |
+| File                             | Symbol                                                                                                                                            | Phase-1 shape                                           |
+|----------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------|
+| `internal.rs:830`                | `Quic.tls_master_ctx`                                                                                                                             | `*mut c_void`                                           |
+| `internal.rs:1619`               | `Connection.tls_ctx`                                                                                                                              | `*mut c_void`                                           |
+| `internal.rs:1623`               | `Connection.tls_sendbuf`                                                                                                                          | `*mut c_void`                                           |
+| `tls_api.rs:246`                 | `tls_context_free(ctx)`                                                                                                                           | `unsafe fn(*mut c_void, bool)`                          |
+| `tls_api.rs:213`                 | `Connection::create_tls_context`                                                                                                                  | `&mut self -> Result<()>` (body opaque)                 |
+| `tls_api.rs:260`                 | `Connection::process_tls_stream`                                                                                                                  | `&mut self, current_time -> Result<usize>`              |
+| `tls_api.rs:267`                 | `Connection::is_tls_complete`                                                                                                                     | `&self -> bool`                                         |
+| `crypto_provider_api.rs:99-160`  | `Ptls{CipherSuite,KeyExchangeAlgorithm,HpkeCipherSuite,HpkeKem,Context,SignCertificate,Ptls,RawExtension,HandshakeProperties,KeyExchangeContext}` | Forward-declared opaque structs                         |
+| `crypto_provider_api.rs:551-589` | `TlsCtx` struct                                                                                                                                   | Owns `Option<Box<Ptls>>`, `[PtlsRawExtension; 2]`, etc. |
 
 The TLS *callbacks* (operations picotls invokes on the picoquic
 side) are partly in `crypto_provider_api.rs` already, as the
@@ -185,22 +185,22 @@ opaque `*mut c_void` today, with `unsafe fn` wrappers in
 
 ### Evidence
 
-| File | Symbol | Phase-1 shape |
-|---|---|---|
-| `internal.rs:1489-1492` | `CryptoContext.{aead_encrypt,aead_decrypt,pn_enc,pn_dec}` | `*mut c_void` |
-| `internal.rs:980-981` | `Quic.aead_{encrypt,decrypt}_ticket_ctx` | `*mut c_void` |
-| `internal.rs:982-983` | `Quic.retry_integrity_{sign,verify}_ctx` | `*mut *mut c_void` (one cipher per QUIC version) |
-| `tls_api.rs:361` | `aead_get_checksum_length` | `unsafe fn(*mut c_void) -> usize` |
-| `tls_api.rs:386` | `aead_encrypt_generic` | `unsafe fn(*mut c_void, ...)` |
-| `tls_api.rs:406, 424` | `aead_decrypt_mp` / `aead_decrypt_generic` | `unsafe fn(*mut c_void, ...)` |
-| `tls_api.rs:441` | `aead_encrypt_mp` | `unsafe fn(*mut c_void, ...)` |
-| `tls_api.rs:452, 462` | `aead_integrity_limit` / `aead_confidentiality_limit` | `unsafe fn(*mut c_void) -> u64` |
-| `tls_api.rs:473` | `aead_free` | `unsafe fn(*mut c_void)` (gone — Drop replaces) |
-| `tls_api.rs:497, 513` | `pn_iv_size` / `pn_encrypt` | `unsafe fn(*mut c_void, ...)` |
-| `tls_api.rs:484` | `cipher_free` | (Drop replaces) |
-| `tls_api.rs:829, 848, 863` | `hash_create` / `hash_update` / `hash_finalize` | `*mut c_void` returns / params |
-| `tls_api.rs:986` | `ecb_create_by_name` | returns `*mut c_void` |
-| `tls_api.rs:1000` | `Aes128EcbContext.inner` | `*mut c_void` |
+| File                       | Symbol                                                    | Phase-1 shape                                    |
+|----------------------------|-----------------------------------------------------------|--------------------------------------------------|
+| `internal.rs:1489-1492`    | `CryptoContext.{aead_encrypt,aead_decrypt,pn_enc,pn_dec}` | `*mut c_void`                                    |
+| `internal.rs:980-981`      | `Quic.aead_{encrypt,decrypt}_ticket_ctx`                  | `*mut c_void`                                    |
+| `internal.rs:982-983`      | `Quic.retry_integrity_{sign,verify}_ctx`                  | `*mut *mut c_void` (one cipher per QUIC version) |
+| `tls_api.rs:361`           | `aead_get_checksum_length`                                | `unsafe fn(*mut c_void) -> usize`                |
+| `tls_api.rs:386`           | `aead_encrypt_generic`                                    | `unsafe fn(*mut c_void, ...)`                    |
+| `tls_api.rs:406, 424`      | `aead_decrypt_mp` / `aead_decrypt_generic`                | `unsafe fn(*mut c_void, ...)`                    |
+| `tls_api.rs:441`           | `aead_encrypt_mp`                                         | `unsafe fn(*mut c_void, ...)`                    |
+| `tls_api.rs:452, 462`      | `aead_integrity_limit` / `aead_confidentiality_limit`     | `unsafe fn(*mut c_void) -> u64`                  |
+| `tls_api.rs:473`           | `aead_free`                                               | `unsafe fn(*mut c_void)` (gone — Drop replaces)  |
+| `tls_api.rs:497, 513`      | `pn_iv_size` / `pn_encrypt`                               | `unsafe fn(*mut c_void, ...)`                    |
+| `tls_api.rs:484`           | `cipher_free`                                             | (Drop replaces)                                  |
+| `tls_api.rs:829, 848, 863` | `hash_create` / `hash_update` / `hash_finalize`           | `*mut c_void` returns / params                   |
+| `tls_api.rs:986`           | `ecb_create_by_name`                                      | returns `*mut c_void`                            |
+| `tls_api.rs:1000`          | `Aes128EcbContext.inner`                                  | `*mut c_void`                                    |
 
 ### Provider traits
 
@@ -299,14 +299,14 @@ The C library has separate calls for each
 
 ### Evidence
 
-| File | Symbol | Phase-1 shape |
-|---|---|---|
-| `utils.rs:728` | `uniform_random(rnd_max: u64) -> u64` | secure RNG; reads `/dev/urandom` in C |
-| `tls_api.rs:298` | `Connection::crypto_random(buf: &mut [u8])` | per-TLS-context CSPRNG |
-| `tls_api.rs:304` | `Connection::crypto_uniform_random(rnd_max: u64) -> u64` | same family |
-| `tls_api.rs:311` | `Connection::seed_public_random()` | seeds the public PRNG |
-| `tls_api.rs:318-340` | `public_random_64`, `public_random_seed_64`, `public_random`, `public_uniform_random` | non-secure PRNG |
-| `crypto_provider_api.rs:333` | `CryptoRandomProvider::random(&self, buf: &mut [u8])` | already a trait |
+| File                         | Symbol                                                                                | Phase-1 shape                         |
+|------------------------------|---------------------------------------------------------------------------------------|---------------------------------------|
+| `utils.rs:728`               | `uniform_random(rnd_max: u64) -> u64`                                                 | secure RNG; reads `/dev/urandom` in C |
+| `tls_api.rs:298`             | `Connection::crypto_random(buf: &mut [u8])`                                           | per-TLS-context CSPRNG                |
+| `tls_api.rs:304`             | `Connection::crypto_uniform_random(rnd_max: u64) -> u64`                              | same family                           |
+| `tls_api.rs:311`             | `Connection::seed_public_random()`                                                    | seeds the public PRNG                 |
+| `tls_api.rs:318-340`         | `public_random_64`, `public_random_seed_64`, `public_random`, `public_uniform_random` | non-secure PRNG                       |
+| `crypto_provider_api.rs:333` | `CryptoRandomProvider::random(&self, buf: &mut [u8])`                                 | already a trait                       |
 
 ### Provider traits
 
@@ -381,12 +381,12 @@ simulator's way of mutating the clock; the trait makes it safe.
 
 ### Evidence
 
-| File | Symbol | Phase-1 shape |
-|---|---|---|
-| `internal.rs:845` | `Quic.p_simulated_time` | `*mut u64` |
-| `lib.rs:629` | `pub fn current_time() -> u64` | wall-clock helper |
-| `lib.rs:1156-7` | `Config::create_and_configure(_, current_time, p_simulated_time: Option<&mut u64>)` | bootstraps clock |
-| every method that takes `current_time: u64` | (~100 sites) | parameter remains for source-level fidelity |
+| File                                        | Symbol                                                                              | Phase-1 shape                               |
+|---------------------------------------------|-------------------------------------------------------------------------------------|---------------------------------------------|
+| `internal.rs:845`                           | `Quic.p_simulated_time`                                                             | `*mut u64`                                  |
+| `lib.rs:629`                                | `pub fn current_time() -> u64`                                                      | wall-clock helper                           |
+| `lib.rs:1156-7`                             | `Config::create_and_configure(_, current_time, p_simulated_time: Option<&mut u64>)` | bootstraps clock                            |
+| every method that takes `current_time: u64` | (~100 sites)                                                                        | parameter remains for source-level fidelity |
 
 ### Provider trait
 
@@ -443,13 +443,13 @@ move into a default implementation.
 
 ### Evidence
 
-| File | Symbol | Phase-1 shape |
-|---|---|---|
-| `socks.rs:74` | `pub struct Socket { fd: i32 }` | concrete fd |
-| `socks.rs:82` | `pub struct ServerSockets` | `[Option<Socket>; 2]` |
-| `socks.rs:94` | `pub struct MessageHeader(())` | opaque platform wrapper |
-| `socks.rs:120-167` | `Socket::open_client`/`bind_to_port`/etc. | `unsafe`-adjacent OS calls |
-| `// REVIEW(open):` line 67 | flags this as the Phase 2 boundary | — |
+| File                       | Symbol                                    | Phase-1 shape              |
+|----------------------------|-------------------------------------------|----------------------------|
+| `socks.rs:74`              | `pub struct Socket { fd: i32 }`           | concrete fd                |
+| `socks.rs:82`              | `pub struct ServerSockets`                | `[Option<Socket>; 2]`      |
+| `socks.rs:94`              | `pub struct MessageHeader(())`            | opaque platform wrapper    |
+| `socks.rs:120-167`         | `Socket::open_client`/`bind_to_port`/etc. | `unsafe`-adjacent OS calls |
+| `// REVIEW(open):` line 67 | flags this as the Phase 2 boundary        | —                          |
 
 ### Provider trait
 
