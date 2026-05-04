@@ -163,7 +163,7 @@ impl Path {
     /// Lowest sequence number not yet acknowledged on this path: the
     /// pending-list head if any, else `highest_acknowledged + 1`.
     /// C: `picoquic_cc_get_lowest_not_ack` (reaches the connection
-    /// through the path's `cnx` back-pointer, so no `cnx` argument).
+    /// through the path's `connection` back-pointer, so no `connection` argument).
     pub fn cc_lowest_not_ack(&self) -> u64 {
         todo!()
     }
@@ -257,13 +257,13 @@ impl NewRenoSimState {
 
     /// Drive the simulator with a congestion-control event.
     ///
-    /// `cnx` and `path_x` are read-only here: the C body only mutates
+    /// `connection` and `path_x` are read-only here: the C body only mutates
     /// `self`, reading the connection and path to resolve sequence
     /// numbers and timestamps via the `cc_*` accessors.  C:
     /// `picoquic_newreno_sim_notify`.
     pub fn notify(
         &mut self,
-        _cnx: &Connection,
+        _connection: &Connection,
         _path_x: &Path,
         _notification: CongestionNotification,
         _ack_state: &PerAckState,

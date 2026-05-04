@@ -126,7 +126,7 @@ pub enum OptionId {
 /// pointer-shape rationale.
 ///
 /// `Default` produces the documented C defaults:
-/// `nb_connections = 256`, `cnx_id_length = -1`, `cwin_max =
+/// `nb_connections = 256`, `connection_id_length = -1`, `cwin_max =
 /// u64::MAX`, idle timeout from `MICROSEC_HANDSHAKE_MAX`, etc.  This
 /// folds the C `picoquic_config_init` step into the constructor —
 /// the C `config_clear` (which `free`s every owned string) collapses
@@ -155,12 +155,12 @@ pub struct Config {
     /// values `>= 0` set the connection-ID length explicitly.  Kept
     /// as `i32` rather than `Option<u8>` for source-level parity
     /// with the C body.
-    pub cnx_id_length: i32,
+    pub connection_id_length: i32,
     pub idle_timeout: i32,
     pub socket_buffer_size: i32,
     pub cc_algo_id: Option<String>,
     pub cc_algo_option_string: Option<String>,
-    pub cnx_id_cbdata: Option<String>,
+    pub connection_id_cbdata: Option<String>,
     pub spinbit_policy: SpinbitVersion,
     pub lossbit_policy: LossbitVersion,
     pub multipath_option: i32,

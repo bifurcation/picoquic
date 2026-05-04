@@ -104,13 +104,13 @@ pub trait Logger {
     /// Emit a free-form application message attached to a live
     /// connection.  C: `picoquic_log_app_message_fn` — the `va_list`
     /// flavour collapses to [`core::fmt::Arguments`].
-    fn app_message(&mut self, cnx: &mut Connection, args: core::fmt::Arguments<'_>);
+    fn app_message(&mut self, connection: &mut Connection, args: core::fmt::Arguments<'_>);
 
     /// Emit a per-connection UDP-datagram arrival or departure
     /// record.  C: `picoquic_log_pdu_fn`.
     fn pdu(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         receiving: bool,
         current_time: u64,
         addr_peer: &SocketAddr,
@@ -124,7 +124,7 @@ pub trait Logger {
     /// arrivals.  C: `picoquic_log_packet_fn`.
     fn packet(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         path_x: Option<&mut Path>,
         receiving: bool,
         current_time: u64,
@@ -136,7 +136,7 @@ pub trait Logger {
     /// C: `picoquic_log_dropped_packet_fn`.
     fn dropped_packet(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         path_x: Option<&mut Path>,
         ph: &PacketHeader,
         packet_size: usize,
@@ -148,7 +148,7 @@ pub trait Logger {
     /// decryption.  C: `picoquic_log_buffered_packet_fn`.
     fn buffered_packet(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         path_x: &mut Path,
         ptype: PacketType,
         current_time: u64,
@@ -161,7 +161,7 @@ pub trait Logger {
     /// `bytes`.  C: `picoquic_log_outgoing_packet_fn`.
     fn outgoing_packet(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         path_x: &mut Path,
         bytes: &[u8],
         sequence_number: u64,
@@ -175,7 +175,7 @@ pub trait Logger {
     /// C: `picoquic_log_packet_lost_fn`.
     fn packet_lost(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         path_x: &mut Path,
         ptype: PacketType,
         sequence_number: u64,
@@ -190,7 +190,7 @@ pub trait Logger {
     /// `picoquic_log_negotiated_alpn_fn`.
     fn negotiated_alpn(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         is_local: bool,
         sni: &[u8],
         alpn: &[u8],
@@ -200,25 +200,25 @@ pub trait Logger {
     /// Emit a transport-extension record formatted by the local peer
     /// (`is_local == true`) or received from the remote peer.  C:
     /// `picoquic_log_transport_extension_fn`.
-    fn transport_extension(&mut self, cnx: &mut Connection, is_local: bool, params: &[u8]);
+    fn transport_extension(&mut self, connection: &mut Connection, is_local: bool, params: &[u8]);
 
     /// Emit a TLS session-ticket record.  C:
     /// `picoquic_log_tls_ticket_fn`.
-    fn tls_ticket(&mut self, cnx: &mut Connection, ticket: &[u8]);
+    fn tls_ticket(&mut self, connection: &mut Connection, ticket: &[u8]);
 
     /// Emit a connection-start record.  C:
     /// `picoquic_log_new_connection_fn`.
-    fn new_connection(&mut self, cnx: &mut Connection);
+    fn new_connection(&mut self, connection: &mut Connection);
 
     /// Emit a connection-end record.  C:
     /// `picoquic_log_close_connection_fn`.
-    fn close_connection(&mut self, cnx: &mut Connection);
+    fn close_connection(&mut self, connection: &mut Connection);
 
     /// Emit a snapshot of congestion-control parameters for one
     /// path.  C: `picoquic_log_cc_dump_fn` — the public dispatcher
     /// [`Connection::log_cc_dump`] iterates the connection's paths and
     /// invokes this method per-path.
-    fn cc_dump(&mut self, cnx: &mut Connection, path_x: &mut Path, current_time: u64);
+    fn cc_dump(&mut self, connection: &mut Connection, path_x: &mut Path, current_time: u64);
 }
 
 // ---------------------------------------------------------------------------
@@ -421,7 +421,7 @@ impl Connection {
     }
 
     /// Log a snapshot of congestion-control parameters across every
-    /// path on the connection.  Iterates `cnx->path[…]` internally
+    /// path on the connection.  Iterates `connection->path[…]` internally
     /// and dispatches per-path through
     /// [`Logger::cc_dump`].
     ///

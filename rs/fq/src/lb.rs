@@ -20,7 +20,7 @@
 //! * [`ConnectionIdContext::generate`] / [`ConnectionIdContext::verify`]
 //!   are the per-CID callback bodies.  They are exposed as inherent methods
 //!   so the eventual [`crate::ConnectionIdCb`] trait impl can
-//!   delegate to them; the C `void* cnx_id_cb_data` parameter is
+//!   delegate to them; the C `void* connection_id_cb_data` parameter is
 //!   recovered as `&mut self`.
 //!
 //! ## Field-shape decisions
@@ -161,21 +161,21 @@ impl ConnectionIdContext {
     /// Encode a CID from `nonce` per `self.method` and return it.
     /// C: `lb_compat_cid_generate`.
     ///
-    /// The C signature took a `cnx_id_returned` out parameter that
+    /// The C signature took a `connection_id_returned` out parameter that
     /// the body both read (for the nonce / "for-server use" bytes)
     /// and wrote (for the encoded CID); the Rust signature splits
     /// those two roles — the input nonce comes in by reference and
     /// the encoded CID is the return value.  `&mut self` because the
     /// underlying AES contexts mutate cipher state in place.  `quic`
-    /// is read for `local_cnxid_length`; the unused `cnx_id_local` /
-    /// `cnx_id_remote` parameters of the C signature are dropped
+    /// is read for `local_connection_id_length`; the unused `connection_id_local` /
+    /// `connection_id_remote` parameters of the C signature are dropped
     /// here and reintroduced (if needed) by the
     /// [`crate::ConnectionIdCb`] adapter.
     pub fn generate(&mut self, _quic: &Quic, _nonce: &ConnectionId) -> ConnectionId {
         todo!()
     }
 
-    /// Decode the server ID embedded in `cnx_id`.  Returns `None`
+    /// Decode the server ID embedded in `connection_id`.  Returns `None`
     /// when the CID length doesn't match `self.connection_id_length`
     /// or when `self.method` is unrecognised; the C sentinel
     /// `UINT64_MAX` is folded into `Option`.

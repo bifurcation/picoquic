@@ -529,7 +529,7 @@ pub unsafe fn pn_encrypt(_pn_enc: *mut c_void, _iv: &[u8], _output: &mut [u8], _
 pub fn setup_initial_master_secret(
     _cipher: &PtlsCipherSuite,
     _salt: &[u8],
-    _initial_cnxid: ConnectionId,
+    _initial_connection_id: ConnectionId,
     _master_secret: &mut [u8],
 ) -> Result<(), Error> {
     todo!()
@@ -576,7 +576,7 @@ impl Quic {
     pub fn initial_aead_context(
         &mut self,
         _version_index: i32,
-        _initial_cnxid: &ConnectionId,
+        _initial_connection_id: &ConnectionId,
         _is_client: bool,
         _is_enc: bool,
     ) -> Result<InitialAeadContext, Error> {
@@ -677,9 +677,9 @@ pub fn pn_enc_create_for_test(_secret: &[u8], _prefix_label: &str) -> *mut c_voi
 // Reset secret and verify-certificate management.
 
 impl Quic {
-    /// Compute the 16-byte reset secret tied to `cnx_id` using this
-    /// context's reset seed.  C: `create_cnxid_reset_secret`.
-    pub fn create_cnxid_reset_secret(
+    /// Compute the 16-byte reset secret tied to `connection_id` using this
+    /// context's reset seed.  C: `create_connection_id_reset_secret`.
+    pub fn create_connection_id_reset_secret(
         &mut self,
         _cnx_id: &ConnectionId,
         _reset_secret: &mut [u8; RESET_SECRET_SIZE],

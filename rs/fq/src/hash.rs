@@ -73,11 +73,11 @@
 //! and the table's slot stores the parent's `ConnectionToken`
 //! (or other token type) into the arena that owns the parent.
 //!
-//! For example, `quic.cnx_by_id: HashTable<ConnectionId,
+//! For example, `quic.connection_by_id: HashTable<ConnectionId,
 //! ConnectionToken>` points at connections that live in
 //! `quic.connections: Arena<Connection>`.  A `Connection` carries
-//! `cnx_by_id_membership: Option<HashToken>`; on removal the
-//! Connection hands that token back for an O(1) `cnx_by_id.remove`.
+//! `connection_by_id_membership: Option<HashToken>`; on removal the
+//! Connection hands that token back for an O(1) `connection_by_id.remove`.
 
 use core::hash::Hash;
 use core::marker::PhantomData;

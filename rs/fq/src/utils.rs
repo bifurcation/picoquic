@@ -207,7 +207,7 @@ pub const NULL_CONNECTION_ID: ConnectionId = ConnectionId {
 
 /// Format the connection id into `bytes` and return the number of
 /// bytes written.  C: `uint8_t format_connection_id(uint8_t* bytes,
-/// size_t bytes_max, ConnectionId cnx_id)`.
+/// size_t bytes_max, ConnectionId connection_id)`.
 ///
 /// Pointer-shape choice: the C body writes through `bytes` for
 /// `bytes_max` bytes and reports the populated prefix length, so
@@ -217,10 +217,10 @@ pub fn format_connection_id(_bytes: &mut [u8], _cnx_id: ConnectionId) -> u8 {
     todo!()
 }
 
-/// Parse a connection id of `len` bytes from `bytes` into `cnx_id`,
+/// Parse a connection id of `len` bytes from `bytes` into `connection_id`,
 /// returning the number of bytes consumed.  C:
 /// `uint8_t parse_connection_id(const uint8_t* bytes, uint8_t len,
-/// ConnectionId* cnx_id)`.
+/// ConnectionId* connection_id)`.
 ///
 /// The C output parameter becomes the function return:
 /// `Result<ConnectionId, Error>` reports the parsed id on
@@ -231,7 +231,7 @@ pub fn parse_connection_id(_bytes: &[u8]) -> Result<ConnectionId, Error> {
 }
 
 /// Test whether a connection id is the `null` sentinel.  C:
-/// `int is_connection_id_null(const ConnectionId* cnx_id)`
+/// `int is_connection_id_null(const ConnectionId* connection_id)`
 /// returning a 0/1 flag, mapped to `bool`.
 pub fn is_connection_id_null(_cnx_id: &ConnectionId) -> bool {
     todo!()
@@ -292,7 +292,7 @@ pub fn parse_hexa(_hex_input: &str, _bin_output: &mut [u8]) -> usize {
 
 /// Parse a hex-coded connection id.  C: `uint8_t
 /// parse_connection_id_hexa(char const* hex_input, size_t
-/// input_length, ConnectionId* cnx_id)` returning the
+/// input_length, ConnectionId* connection_id)` returning the
 /// number of bytes decoded; the output parameter folds into the
 /// `Result` return.
 pub fn parse_connection_id_hexa(_hex_input: &str) -> Result<ConnectionId, Error> {
@@ -301,14 +301,14 @@ pub fn parse_connection_id_hexa(_hex_input: &str) -> Result<ConnectionId, Error>
 
 /// Print a connection id to a hex string buffer.  C:
 /// `int print_connection_id_hexa(char* buf, size_t buf_len,
-/// const ConnectionId* cnxid)` returning 0 / -1.
+/// const ConnectionId* connection_id)` returning 0 / -1.
 ///
 /// The output buffer becomes a `&mut dyn core::fmt::Write` sink to
 /// keep the helper `no_std`-friendly (same convention as the
 /// logger module).  The 0 / -1 status maps to `Result<(), Error>`.
 pub fn print_connection_id_hexa(
     _w: &mut dyn core::fmt::Write,
-    _cnxid: &ConnectionId,
+    _connection_id: &ConnectionId,
 ) -> Result<(), Error> {
     todo!()
 }

@@ -56,7 +56,7 @@
 //!    `splay-tree`, or BTreeMap (if log-N is fine and we don't
 //!    actually need access locality).  picoquic uses splay
 //!    specifically for the access-locality property in
-//!    `cnx_wake_tree` (the next-to-fire connection is usually the
+//!    `connection_wake_tree` (the next-to-fire connection is usually the
 //!    one we just touched).  `BTreeMap` is the safe-default
 //!    fallback; a real splay crate is the performance-preserving
 //!    choice.

@@ -438,7 +438,7 @@ pub const CONNECTION_ID_MAX_SIZE: usize = 20;
 ///
 /// Stored as a 20-byte buffer plus a length so the type is `Copy`,
 /// matching the C usage where connection IDs are passed by value
-/// in many APIs (`get_local_cnxid`, `create_cnx`,
+/// in many APIs (`get_local_connection_id`, `create_connection`,
 /// …).
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub struct ConnectionId {
@@ -658,7 +658,7 @@ impl Quic {
 pub trait StreamDataCb {
     fn callback(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         stream_id: u64,
         bytes: &[u8],
         fin_or_event: CallbackEvent,
@@ -676,14 +676,14 @@ pub trait AlpnSelect {
 }
 
 /// Callback that produces a server-environment-compatible CID.
-/// Folds the C `void* cnx_id_cb_data` into the implementor's state.
+/// Folds the C `void* connection_id_cb_data` into the implementor's state.
 /// C: `ConnectionIdCb`.
 pub trait ConnectionIdCb {
     fn produce(
         &mut self,
         quic: &mut Quic,
-        cnx_id_local: ConnectionId,
-        cnx_id_remote: ConnectionId,
+        connection_id_local: ConnectionId,
+        connection_id_remote: ConnectionId,
     ) -> ConnectionId;
 }
 
@@ -693,7 +693,7 @@ pub trait ConnectionIdCb {
 pub trait Fuzz {
     fn fuzz(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         bytes: &mut [u8],
         length: usize,
         header_length: usize,
@@ -707,7 +707,7 @@ pub trait Fuzz {
 pub trait StreamDirectReceive {
     fn receive(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         stream_id: u64,
         fin: bool,
         bytes: &[u8],
@@ -846,7 +846,7 @@ pub trait CongestionControl {
 
     fn alg_notify(
         &self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         path_x: &mut Path,
         notification: CongestionNotification,
         ack_state: &PerAckState,
@@ -1132,7 +1132,7 @@ impl Quic {
     ///   source passes `NULL` to mean "absent").
     /// * `default_callback_fn` + `default_callback_ctx` collapse to
     ///   one `Option<Box<dyn StreamDataCb>>`.
-    /// * `cnx_id_callback` + `cnx_id_callback_data` collapse to
+    /// * `connection_id_callback` + `connection_id_callback_data` collapse to
     ///   `Option<Box<dyn ConnectionIdCb>>`.
     /// * `reset_seed[16]` is `[u8; RESET_SECRET_SIZE]` taken by
     ///   value (the C body deep-copies it into the context).
@@ -1447,7 +1447,7 @@ impl Quic {
     /// C side stores the new connection in the context's hash
     /// tables.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_cnx(
+    pub fn create_connection(
         &mut self,
         _initial_cnx_id: ConnectionId,
         _remote_cnx_id: ConnectionId,
@@ -1461,9 +1461,9 @@ impl Quic {
         todo!()
     }
 
-    /// Convenience wrapper around [`Self::create_cnx`] for the
+    /// Convenience wrapper around [`Self::create_connection`] for the
     /// client side; `addr` is required.
-    pub fn create_client_cnx(
+    pub fn create_client_connection(
         &mut self,
         _addr: &SocketAddr,
         _start_time: u64,
@@ -1735,7 +1735,7 @@ impl Connection {
     }
 
     /// Obsolete; prefer [`Self::set_pmtud_policy`].  Kept for
-    /// source-level parity with the C API (`cnx_set_pmtud_required`).
+    /// source-level parity with the C API (`connection_set_pmtud_required`).
     pub fn set_pmtud_required(&mut self, _is_pmtud_required: bool) {
         todo!()
     }
@@ -1769,34 +1769,34 @@ impl Connection {
     }
 
     /// Local connection ID currently in use.
-    pub fn local_cnxid(&self) -> ConnectionId {
+    pub fn local_connection_id(&self) -> ConnectionId {
         todo!()
     }
 
     /// Remote connection ID currently in use.
-    pub fn remote_cnxid(&self) -> ConnectionId {
+    pub fn remote_connection_id(&self) -> ConnectionId {
         todo!()
     }
 
     /// Initial connection ID picked at handshake start.
-    pub fn initial_cnxid(&self) -> ConnectionId {
+    pub fn initial_connection_id(&self) -> ConnectionId {
         todo!()
     }
 
     /// Client-side initial connection ID (mirrors C
-    /// `get_client_cnxid`).
-    pub fn client_cnxid(&self) -> ConnectionId {
+    /// `get_client_connection_id`).
+    pub fn client_connection_id(&self) -> ConnectionId {
         todo!()
     }
 
     /// Server-side initial connection ID (mirrors C
-    /// `get_server_cnxid`).
-    pub fn server_cnxid(&self) -> ConnectionId {
+    /// `get_server_connection_id`).
+    pub fn server_connection_id(&self) -> ConnectionId {
         todo!()
     }
 
     /// Connection ID used for log entries on this connection.
-    pub fn logging_cnxid(&self) -> ConnectionId {
+    pub fn logging_connection_id(&self) -> ConnectionId {
         todo!()
     }
 
@@ -1847,7 +1847,7 @@ impl Connection {
 
 impl Quic {
     /// Borrow the first connection registered with this context.
-    pub fn first_cnx(&mut self) -> Option<&mut Connection> {
+    pub fn first_connection(&mut self) -> Option<&mut Connection> {
         todo!()
     }
 
@@ -1864,7 +1864,7 @@ impl Quic {
 
     /// Borrow the connection currently advancing through its state
     /// machine, if any (`get_cnx_in_progress` in C).
-    pub fn cnx_in_progress(&mut self) -> Option<&mut Connection> {
+    pub fn connection_in_progress(&mut self) -> Option<&mut Connection> {
         todo!()
     }
 
@@ -1931,9 +1931,9 @@ pub struct PreparedPacket<'a> {
     /// Connection ID that should be logged for this packet.
     pub log_cid: ConnectionId,
     /// Connection that produced the packet (the C
-    /// `p_last_cnx`).  `None` when the QUIC context had no work to
+    /// `p_last_connection`).  `None` when the QUIC context had no work to
     /// do.
-    pub last_cnx: Option<&'a mut Connection>,
+    pub last_connection: Option<&'a mut Connection>,
     /// Optional GSO segment size when the packet is a coalesced
     /// train; `None` for a single-packet send.
     pub send_msg_size: Option<usize>,
@@ -2009,12 +2009,12 @@ impl Connection {
 }
 
 impl Quic {
-    /// Notify the connection identified by `cnxid` that a
+    /// Notify the connection identified by `connection_id` that a
     /// destination became unreachable.
     #[allow(clippy::too_many_arguments)]
-    pub fn notify_destination_unreachable_by_cnxid(
+    pub fn notify_destination_unreachable_by_connection_id(
         &mut self,
-        _cnxid: &ConnectionId,
+        _connection_id: &ConnectionId,
         _current_time: u64,
         _addr_peer: &SocketAddr,
         _addr_local: &SocketAddr,

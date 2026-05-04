@@ -463,7 +463,15 @@ tests need a concrete dependency wiring to link, and that wiring
 should be the abstraction layer's first consumer, not an ad-hoc
 shim.
 
-### Top-level rules
+Phase 2 splits into three sub-phases that mirror the 1A/1B/1C
+shape: an AI-drafted plan (2A), a human-reviewed plan with
+iterative revision (2B), and an AI-driven implementation that
+follows the agreed plan (2C).  The plan is the artifact carried
+between sub-phases — it lives at `xlate/phase2_plan.md` and is the
+single source of truth for what gets abstracted, how, and behind
+which Cargo features.
+
+### Top-level rules (apply to all of 2A/2B/2C)
 
 * **Two-direction traits.**  For each capability boundary, define
   *both* directions explicitly:
@@ -504,11 +512,11 @@ shim.
   the `std` Cargo feature.  The trait itself is `no_std`-clean;
   the *default implementation* using `std` is feature-gated.
 
-### What gets abstracted (initial inventory)
+### Seed inventory (input to Phase 2A)
 
-The list below is the starting point — Phase 2 begins by
-re-deriving it from the current Rust source, but these are the
-capability boundaries already visible:
+The list below is *not* the plan — it's the starting point Phase 2A
+re-derives from the current Rust source.  These are the capability
+boundaries already visible:
 
 * **TLS stack** — currently picotls.  Provider trait covers the
   TLS state machine, key schedule output, and certificate
@@ -537,39 +545,59 @@ capability boundaries already visible:
   crate's facade for level-filtered events.  No new trait
   needed — these *are* the standard abstractions.
 
-### Per-capability procedure
+## Phase 2A — Draft the abstraction plan
 
-For each capability:
+Phase 2A is a single-shot AI pass whose only output is a written
+plan at `xlate/phase2_plan.md`.  No source changes, no trait
+definitions, no refactoring — just analysis and a plan document
+the human can review.
 
-1. **Locate the boundary.**  Find every place in `rs/fq/src/`
-   where the current translation references a concrete external
-   type (a stub `extern crate` symbol, an opaque type name lifted
-   from a C dependency header, a free function whose only purpose
-   is to call into the dependency).
-2. **Define the provider trait** in the module that owns the
-   capability.  Methods follow the C call patterns observed in
-   step 1, with C signatures translated per the Phase 1 pointer
-   rules.
-3. **Define the callback trait** if the C dependency calls back
-   into the library.  Same module.
-4. **Refactor library code** to take a `&mut impl Provider` (or
-   a generic type parameter, or a `&mut dyn Provider` if dynamic
-   dispatch is preferable for object-safety reasons).  Concrete
-   dependency types disappear from the library's surface.
-5. **Provide a default implementation** for the dependency the
-   C library currently uses.  Default implementations live in a
-   sibling module (`tls_picotls.rs`, `crypto_openssl.rs`,
-   `clock_std.rs`) and are feature-gated where appropriate
-   (`#[cfg(feature = "std")]` for OS-backed implementations,
-   per-backend Cargo features for swappable backends).
-6. **Run the gate.**  `cargo check` for every meaningful feature
-   combination: default features, `--no-default-features`,
-   `--no-default-features --features alloc`.  `cargo clippy
-   -- -D warnings` for the default build.
+### What the AI does
 
-### Cargo feature layout
+1. Read `TRANSLATE_PLAN.md` (this document) and `CLAUDE.md`.
+2. Walk `rs/fq/src/` and catalog every place the current
+   translation touches an external dependency: stub `extern`
+   blocks, opaque types lifted from C dependency headers, free
+   functions whose only purpose is to call into a dependency,
+   Cargo `dependencies` entries.
+3. Cross-reference the seed inventory above and confirm,
+   refine, or extend each item based on what's actually in the
+   Rust source.
+4. Write `xlate/phase2_plan.md` covering, for each capability:
+   * **Boundary description** — what the capability is, which C
+     library currently provides it, which Rust modules consume
+     it.
+   * **Evidence** — the specific files / lines / symbols that
+     pin the boundary.  This is what makes the plan auditable.
+   * **Provider trait sketch** — name, location, methods (with
+     signatures translated per Phase 1 pointer rules), and
+     whether dispatch should be generic (`impl Trait`) or
+     dynamic (`dyn Trait`) with a one-line reason.
+   * **Callback trait sketch** — same shape, when applicable.
+   * **Default implementation plan** — which sibling module
+     (`tls_picotls.rs`, `crypto_openssl.rs`, …), which Cargo
+     feature gates it, what crates.io / sys-crate dependencies
+     it pulls in.
+   * **Open questions** — anything the AI couldn't decide from
+     the source alone, called out explicitly so the human can
+     resolve in 2B.
+5. Include a **Cargo feature layout** section at the end of the
+   plan: the proposed `[features]` table, plus a note on which
+   feature combinations Phase 2C must `cargo check` against
+   (default, `--no-default-features --features alloc`, each
+   single-backend permutation worth checking).
+6. Include an **implementation order** section: the order Phase
+   2C should attack capabilities in (typically leaf
+   dependencies first — RNG, clock — then crypto primitives,
+   then TLS state machine, then I/O), with a one-line rationale
+   per capability.
 
-After Phase 2, `Cargo.toml` looks roughly like:
+After 2A, `xlate/phase2_plan.md` exists; nothing under `rs/fq/`
+has changed.
+
+### Cargo feature layout (template for the plan)
+
+The plan should converge on something like:
 
 ```toml
 [features]
@@ -589,34 +617,158 @@ are interchangeable.
 
 ### Scripting
 
-`scripts/phase2.py` (to be written) drives the pass per
-capability rather than per file:
+`scripts/phase2a.py` drives the pass:
 
-* Iterates a manually-curated capability list (initially the
-  inventory above, refined as the work progresses).
-* Per capability: composes a prompt naming the trait to define,
-  the C reference(s), and the Rust modules that should consume
-  the trait.
-* Same `claude -p` allowlist as 1A — Read/Edit/Glob/Grep plus
-  cargo gates.
-* State at `xlate/phase2_state.json`, keyed by capability name.
+* Single-shot; no per-file iteration.
+* Composes a prompt that points the AI at `TRANSLATE_PLAN.md`,
+  `CLAUDE.md`, the seed inventory, and `rs/fq/src/`, and asks
+  for the plan document at `xlate/phase2_plan.md`.
+* Invokes `claude -p` with `--allowedTools "Read Glob Grep
+  Bash(cargo metadata) Write"` — `Write` is allowed because
+  the plan document itself is the output.  `Edit` is not
+  needed.  No cargo build/check tools — 2A doesn't change the
+  source, so there's nothing to gate.
+* Transcript at `xlate/claude_logs/phase2a.log`.
+
+## Phase 2B — Human review of the plan
+
+Phase 2B is *pure human* — no AI, no edits to `rs/fq/`.  The
+reviewer reads `xlate/phase2_plan.md`, marks places they
+disagree with or want clarified using `// REVIEW: <instruction>`
+comments inline in the plan document, and runs `scripts/phase2b.py`
+to have the AI revise the plan in place.
+
+This is the same REVIEW-marker mechanic Phase 1C uses, but
+applied to a markdown plan instead of Rust source.  The plan is
+revised, not the implementation — 2B and 2C stay separate.
+
+### How `// REVIEW` comments work in the plan
+
+Same conventions as 1C:
+
+* Plain `// REVIEW: <instruction>` — the AI revises the
+  surrounding plan section to address the request and removes
+  the comment.
+* `// REVIEW(open): <reason>` — the AI tried and could not
+  resolve automatically; the comment stays for further human
+  attention.
+
+Markdown doesn't have a native comment syntax, so the
+`// REVIEW: ` token is used verbatim as inline text within the
+plan.  It stays greppable across the project.
+
+### Per-iteration procedure
+
+1. Human reads `xlate/phase2_plan.md` and adds `// REVIEW: ` markers
+   wherever a section needs revision.  Markers can name a
+   specific trait, ask "why dynamic dispatch here?", request a
+   different feature-gate split, etc.
+2. Run `scripts/phase2b.py`.  The AI reads the plan, addresses
+   each marker, and rewrites the affected sections.
+3. Human re-reads the revised plan.  If more revision is
+   needed, add fresh markers and rerun.  Iterate until the plan
+   reads cleanly.
+
+### Scripting
+
+`scripts/phase2b.py` drives the iteration:
+
+* Scans `xlate/phase2_plan.md` for `// REVIEW: ` markers (the
+  open form is excluded).
+* If any markers exist, invokes `claude -p` with
+  `--allowedTools "Read Edit Glob Grep"` — Edit on the plan
+  document only.  No source changes; no cargo gates.
+* Each invocation passes the file plus the extracted REVIEW
+  comments (line numbers + text) in the prompt.
+* State at `xlate/phase2b_state.json` records each iteration's
+  resolved-vs-open counts.
+* Resumable; re-running with no fresh markers is a no-op.
+* Transcript at `xlate/claude_logs/phase2b/<iteration>.log`.
+
+### Phase 2B acceptance gate
+
+Phase 2B is complete when the human signs off on the plan and
+no plain `// REVIEW: ` markers remain in `xlate/phase2_plan.md`
+(only `// REVIEW(open):` entries, each with a recorded reason
+the human has chosen to defer).
+
+## Phase 2C — Implement the agreed plan
+
+Phase 2C executes the plan from 2A/2B.  The plan dictates which
+capabilities to abstract, which traits to define, which default
+implementations to wire, and in what order.  The AI follows the
+plan; it does not re-derive it.
+
+### Per-capability procedure
+
+Iterate the capabilities in the order the plan specifies.  For each:
+
+1. **Locate the boundary.**  Use the evidence the plan recorded
+   to find the exact files / symbols to refactor.
+2. **Define the provider trait** in the module the plan names,
+   with the methods the plan sketched (signatures may be
+   refined when reality bites — record any divergence in the
+   commit message).
+3. **Define the callback trait** if the plan calls for one.
+   Same module.
+4. **Refactor library code** to take the provider through the
+   dispatch shape (`impl Trait` / `dyn Trait`) the plan chose.
+   Concrete dependency types disappear from the library's
+   surface.
+5. **Provide the default implementation** in the sibling module
+   the plan names, behind the Cargo feature the plan specifies.
+6. **Run the gate.**  `cargo check` for every feature
+   combination the plan's Cargo-features section enumerates
+   (typically: default features, `--no-default-features
+   --features alloc`, each single-backend permutation).
+   `cargo clippy -- -D warnings` for the default build.
+
+### Plan drift
+
+When implementation reveals that a plan decision was wrong (a
+trait method needs a different signature, dynamic dispatch is
+required where generic dispatch was planned, an unforeseen
+callback edge), the implementation wins, but the plan document
+gets updated in the same commit so it stays the authoritative
+record.  Don't silently diverge.
+
+### Scripting
+
+`scripts/phase2c.py` drives the per-capability pass:
+
+* Reads `xlate/phase2_plan.md` and iterates the capabilities in
+  the order the plan specifies.
+* Per capability: composes a prompt that names the capability,
+  quotes the relevant plan section, and lists the consuming
+  Rust modules.
+* Invokes `claude -p` with `--allowedTools "Read Edit Write
+  Glob Grep Bash(cargo check) Bash(cargo clippy)"` — `Write`
+  is allowed because new sibling modules
+  (`tls_picotls.rs`, etc.) need to be created.
+* State at `xlate/phase2c_state.json`, keyed by capability name
+  (`status: ok / fail / skipped`).
+* Resumable; continues on failure by default.
+* Per-capability transcripts at
+  `xlate/claude_logs/phase2c/<capability>.log`.
 
 ### Phase 2 acceptance gate
 
 Phase 2 is complete when:
 
-1. No public function or type in `rs/fq/src/` mentions a concrete
+1. `xlate/phase2_plan.md` exists, has been human-reviewed
+   through 2B, and matches the implementation (no silent drift).
+2. No public function or type in `rs/fq/src/` mentions a concrete
    external dependency.  (Greppable check: no `picotls::`,
    `openssl::`, `mbedtls::`, `getrandom::` outside the
    feature-gated default-implementation modules.)
-2. Every capability has a provider trait and, where applicable,
-   a callback trait, both documented.
-3. A default implementation exists for each dependency the C
+3. Every capability the plan calls out has a provider trait and,
+   where applicable, a callback trait, both documented.
+4. A default implementation exists for each dependency the C
    library currently uses, behind the matching Cargo feature.
-4. `cargo check --no-default-features --features alloc` passes
+5. `cargo check --no-default-features --features alloc` passes
    (the library compiles with no backends selected — consumers
    wire their own).
-5. `cargo check` and `cargo clippy -- -D warnings` pass with
+6. `cargo check` and `cargo clippy -- -D warnings` pass with
    default features.
 
 ## Phase 3 — Translate tests

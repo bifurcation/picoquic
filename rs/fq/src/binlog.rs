@@ -11,11 +11,11 @@
 //!    without a dedicated directory.
 //! 2. **Per-event writers** that emit one trace record.  In C they
 //!    all bottom out in `fwrite()` against either an out-of-band
-//!    `FILE*` or `cnx->f_binlog` pulled from the connection.  The
+//!    `FILE*` or `connection->f_binlog` pulled from the connection.  The
 //!    Rust split mirrors that: the three file-only writers ([`pdu`],
 //!    [`packet`], [`tls_ticket`]) are free functions on a [`File`]
 //!    sink, and the rest hang as inherent methods on [`Connection`] (they
-//!    pull the file handle from `cnx.f_binlog` themselves).
+//!    pull the file handle from `connection.f_binlog` themselves).
 //!
 //! Phase 1 contract: signatures only — every body is `todo!()`.
 //! Bodies and the empty-test module land in later phases.
@@ -24,24 +24,24 @@
 //!
 //! * `FILE*` (the three low-level writers) → `&mut std::fs::File`.
 //!   These calls borrow the handle for the duration of one record
-//!   write — ownership stays with the connection (`cnx->f_binlog`)
+//!   write — ownership stays with the connection (`connection->f_binlog`)
 //!   or the caller.  The binlog stream is *binary*, so the text-side
 //!   `&mut impl core::fmt::Write` convention used by
 //!   [`crate::textlog`] does not apply here.
 //! * `Quic*` / `Connection*` — every observed caller passes a non-NULL
 //!   handle and the body mutates internal state (`quic->bin_log_fns`,
-//!   `cnx->f_binlog`, `quic->binlog_dir`).  Free functions whose
+//!   `connection->f_binlog`, `quic->binlog_dir`).  Free functions whose
 //!   first argument was one of these become inherent methods on the
 //!   corresponding type.
 //! * `Path*` — only ever accessed inside
-//!   `binlog_get_path_id(cnx, path_x)`, which dereferences `path_x`
+//!   `binlog_get_path_id(connection, path_x)`, which dereferences `path_x`
 //!   to read `unique_path_id`.  Every observed caller passes a
 //!   non-NULL path handle, so this is `&mut Path` for parity with
 //!   the unified-log dispatch trait (which takes the path mutably
 //!   for the same hooks).
 //! * `const ConnectionId*` (in [`pdu`] / [`packet`]) →
 //!   `&ConnectionId`.  The C contract is "must be non-NULL"; every
-//!   caller passes `&cnx->initial_cnxid`.
+//!   caller passes `&connection->initial_connection_id`.
 //! * `ConnectionId* dcid` (in [`Connection::binlog_packet_lost`]) is
 //!   nullable per `loss_recovery.c` — when no remote CID is known
 //!   the C call site passes NULL and the body emits a single zero
@@ -56,7 +56,7 @@
 //!   crosses the API boundary.  In [`packet`] /
 //!   [`Connection::binlog_dropped_packet`] we map `ph` to `&PacketHeader`
 //!   (immutable borrow) — matching the unified-log trait shape.
-//! * `ConnectionId cnx_id` (in [`tls_ticket`]) is `Copy` and
+//! * `ConnectionId connection_id` (in [`tls_ticket`]) is `Copy` and
 //!   pass-by-value, mirroring the C ABI.
 //! * `const struct sockaddr*` pairs (`addr_peer`, `addr_local` in
 //!   [`pdu`]) → `&core::net::SocketAddr`, matching the convention
@@ -152,7 +152,7 @@ pub enum LogEventType {
 // handle, so calls are namespaced through the module path
 // (`binlog::pdu(...)`, `binlog::packet(...)`,
 // `binlog::tls_ticket(...)`).  Callers usually go through the
-// [`Connection`] methods below, which thread through `cnx.f_binlog`; the
+// [`Connection`] methods below, which thread through `connection.f_binlog`; the
 // file-only writers are kept public for the contexts where the
 // caller already owns the handle (e.g., the binlog backend's
 // implementation of [`crate::logger::Logger`]).
@@ -207,11 +207,11 @@ pub fn tls_ticket(_f: &mut File, _cnx_id: ConnectionId, _ticket: &[u8]) {
 // ---------------------------------------------------------------------------
 // High-level per-event writers — methods on [`Connection`].
 //
-// Each method pulls the file handle from `cnx.f_binlog` and
+// Each method pulls the file handle from `connection.f_binlog` and
 // delegates to one of the low-level writers above (or composes
 // several records).  The `binlog_` prefix on each method name
 // keeps the binary-trace API distinct from the unified-log
-// dispatch methods (`cnx.log_*`) on the same type.
+// dispatch methods (`connection.log_*`) on the same type.
 
 // REVIEW(open): replace these `impl Connection` blocks with a local
 // trait (`Binlog`) implemented on `Connection`, so callers can opt into
@@ -325,7 +325,7 @@ impl Connection {
 
     /// Emit the `connection_close` record and close the
     /// per-connection binlog file.  Safe to call when no binlog is
-    /// currently open (the C body guards on `cnx->f_binlog !=
+    /// currently open (the C body guards on `connection->f_binlog !=
     /// NULL`).
     ///
     /// C: `void binlog_close_connection(Connection*)`.

@@ -261,7 +261,7 @@ pub trait VerifyCertificate {
     /// handshake; the contained [`Error`] is reported to the peer.
     fn verify_chain(
         &mut self,
-        cnx: &mut Connection,
+        connection: &mut Connection,
         certs: &[&[u8]],
     ) -> Result<Box<dyn VerifySignature>, Error>;
 }
@@ -547,7 +547,7 @@ pub fn keyex_dispose() -> Option<&'static dyn KeyexDispose> {
 /// inspects it across an FFI boundary.  Heap-arrays from the C
 /// shape (`alpn_vec` + `alpn_vec_size` / `alpn_count`, `ext_data` +
 /// `ext_data_size`) become owning `Vec<T>`s; capacity-vs-length
-/// tracking moves into the vector.  `tls`, `cnx`, and the tls
+/// tracking moves into the vector.  `tls`, `connection`, and the tls
 /// extension array stay as their forward-declared shapes; phase 3
 /// will pick `Box` vs. `&mut` once the tls bindings settle.
 ///
@@ -556,11 +556,11 @@ pub struct TlsCtx {
     /// Owned tls connection state.  C allocated this with
     /// `ptls_new`; phase 4 will model the ownership transfer.
     pub tls: Option<Box<Ptls>>,
-    /// Token of the connection that owns this context.  C: `cnx:
+    /// Token of the connection that owns this context.  C: `connection:
     /// *mut Connection` back-pointer; the Rust shape uses the
     /// arena token so callers reach the connection via
     /// `quic.connections.get(token)`.
-    pub cnx: Option<crate::internal::ConnectionToken>,
+    pub connection: Option<crate::internal::ConnectionToken>,
     /// `int client_mode` in C is a 0/1 flag — promoted to `bool`.
     pub client_mode: bool,
     /// QUIC-transport-parameter raw extensions buffer.  C declared

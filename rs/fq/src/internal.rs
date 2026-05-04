@@ -402,10 +402,10 @@ pub struct PacketHeader {
 /// together so they share one Rust trait.
 pub trait SpinBitPolicy {
     /// C: `spinbit_incoming_fn`.
-    fn incoming(&self, cnx: &mut Connection, path_x: &mut Path, ph: &PacketHeader);
+    fn incoming(&self, connection: &mut Connection, path_x: &mut Path, ph: &PacketHeader);
 
     /// C: `spinbit_outgoing_fn`.
-    fn outgoing(&self, cnx: &mut Connection) -> u8;
+    fn outgoing(&self, connection: &mut Connection) -> u8;
 }
 
 /// One row of the spin-bit policy dispatch table.  C:
@@ -431,7 +431,7 @@ pub struct StatelessPacket {
     pub received_ecn: u8,
     pub length: usize,
     pub receive_time: u64,
-    pub cnxid_log64: u64,
+    pub connection_id_log64: u64,
     pub initial_cid: ConnectionId,
     pub ptype: PacketType,
     pub bytes: [u8; MAX_PACKET_SIZE],
@@ -795,14 +795,14 @@ impl Quic {
 /// turn the binlog into a qlog file.  Returns 0 on success, an
 /// errno-style negative on failure.
 pub trait AutoQlog {
-    fn run(&mut self, cnx: &mut Connection) -> i32;
+    fn run(&mut self, connection: &mut Connection) -> i32;
 }
 
 /// C: `performance_log_fn` — emit a per-connection
 /// performance log row.  `should_delete` is `true` on connection
 /// teardown.
 pub trait PerformanceLog {
-    fn emit(&mut self, quic: &mut Quic, cnx: &mut Connection, should_delete: bool) -> i32;
+    fn emit(&mut self, quic: &mut Quic, connection: &mut Connection, should_delete: bool) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +812,13 @@ pub trait PerformanceLog {
 /// void* v_memlog, int op_code, uint64_t current_time)` field on
 /// `Connection`.
 pub trait MemLogHook {
-    fn callback(&mut self, cnx: &mut Connection, path: &mut Path, op_code: i32, current_time: u64);
+    fn callback(
+        &mut self,
+        connection: &mut Connection,
+        path: &mut Path,
+        op_code: i32,
+        current_time: u64,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -853,10 +859,10 @@ pub struct Quic {
     /// Owning arena for [`RegisteredToken`] entries reachable
     /// through [`Self::token_reuse_tree`].
     pub registered_tokens: Arena<RegisteredToken>,
-    pub local_cnxid_length: u8,
+    pub local_connection_id_length: u8,
     pub default_stream_priority: u8,
     pub default_datagram_priority: u8,
-    pub local_cnxid_ttl: u64,
+    pub local_connection_id_ttl: u64,
     pub mtu_max: u32,
     pub padding_multiple_default: u32,
     pub padding_minsize_default: u32,
@@ -915,7 +921,7 @@ pub struct Quic {
 
     /// Owning arena for every live [`Connection`] on this `Quic`.
     /// Every C `*mut picoquic_cnx_t` becomes a [`ConnectionToken`]
-    /// indexing into here; the C `cnx_list` / `cnx_last` /
+    /// indexing into here; the C `connection_list` / `connection_last` /
     /// `next_in_table` / `previous_in_table` doubly-linked list is
     /// gone — iterate the arena and sort on demand if order
     /// matters.
@@ -924,12 +930,12 @@ pub struct Quic {
     /// Per-connection wake-up scheduler keyed by `next_wake_time`.
     /// Splay-tree access locality matters here — the next-to-fire
     /// connection is usually adjacent to the one we just touched.
-    /// C: `cnx_wake_tree`.
-    pub cnx_wake_tree: SplayTree<u64, ConnectionToken>,
+    /// C: `connection_wake_tree`.
+    pub connection_wake_tree: SplayTree<u64, ConnectionToken>,
 
     /// In-progress (currently being serviced) connection.  C:
     /// `*mut Connection` re-entrancy slot.
-    pub cnx_in_progress: Option<ConnectionToken>,
+    pub connection_in_progress: Option<ConnectionToken>,
 
     /// Lookup by local CID (each connection registers one CID per
     /// active path).  Phase 4 plan: the value type may end up as
@@ -937,15 +943,15 @@ pub struct Quic {
     /// per-path CID arena is wired up; a CID does not uniquely
     /// identify a connection — paths within a connection have
     /// distinct CIDs.  Stub assumes the simpler shape for now.
-    pub cnx_by_id: HashTable<ConnectionId, ConnectionToken>,
+    pub connection_by_id: HashTable<ConnectionId, ConnectionToken>,
     /// Lookup by network 5-tuple.  Phase 4 plan: value is more
     /// likely `PathToken`, since the C side stored a `*mut Path`
     /// here (paths back-point to their connection).
-    pub cnx_by_net: HashTable<core::net::SocketAddr, ConnectionToken>,
+    pub connection_by_net: HashTable<core::net::SocketAddr, ConnectionToken>,
     /// Lookup by initial connection ID (server only).
-    pub cnx_by_icid: HashTable<ConnectionId, ConnectionToken>,
+    pub connection_by_icid: HashTable<ConnectionId, ConnectionToken>,
     /// Lookup by stateless-reset secret.
-    pub cnx_by_secret: HashTable<[u8; RESET_SECRET_SIZE], ConnectionToken>,
+    pub connection_by_secret: HashTable<[u8; RESET_SECRET_SIZE], ConnectionToken>,
 
     /// Server-side: index of issued session tickets by ticket id.
     /// Replaces the C `table_issued_tickets` hashtable plus the
@@ -966,10 +972,10 @@ pub struct Quic {
     pub nb_data_nodes_allocated: i32,
     pub nb_data_nodes_allocated_max: i32,
 
-    pub cnx_id_callback_fn: Option<Box<dyn ConnectionIdCb>>,
+    pub connection_id_callback_fn: Option<Box<dyn ConnectionIdCb>>,
     /// Application-supplied state for the CID callback.  Opaque
     /// to the library.
-    pub cnx_id_callback_ctx: Option<Box<dyn Any>>,
+    pub connection_id_callback_ctx: Option<Box<dyn Any>>,
 
     pub aead_encrypt_ticket_ctx: *mut c_void,
     pub aead_decrypt_ticket_ctx: *mut c_void,
@@ -1250,33 +1256,33 @@ pub struct AckContext {
 // CID state — local and remote.
 
 pub struct LocalCnxid {
-    /// Membership in `Quic::cnx_by_id`.  Phase 4 uses this for
+    /// Membership in `Quic::connection_by_id`.  Phase 4 uses this for
     /// O(1) removal when a CID is retired.
-    pub cnx_by_id_membership: Option<HashToken>,
+    pub connection_by_id_membership: Option<HashToken>,
     pub path_id: u64,
     pub sequence: u64,
     pub create_time: u64,
-    pub cnx_id: ConnectionId,
+    pub connection_id: ConnectionId,
     pub is_acked: bool,
 }
 
 pub struct LocalCnxidList {
     pub unique_path_id: u64,
-    pub local_cnxid_sequence_next: u64,
-    pub local_cnxid_retire_before: u64,
-    pub local_cnxid_oldest_created: u64,
-    pub nb_local_cnxid_expired: i32,
+    pub local_connection_id_sequence_next: u64,
+    pub local_connection_id_retire_before: u64,
+    pub local_connection_id_oldest_created: u64,
+    pub nb_local_connection_id_expired: i32,
     pub is_demoted: bool,
     pub demotion_time: u64,
     /// Local CIDs registered for this path (replaces the C
-    /// `local_cnxid_first` head + per-node `next` chain plus the
-    /// redundant `nb_local_cnxid` count, which is now `len()`).
+    /// `local_connection_id_first` head + per-node `next` chain plus the
+    /// redundant `nb_local_connection_id` count, which is now `len()`).
     pub cnxids: Vec<LocalCnxidToken>,
 }
 
 pub struct RemoteCnxid {
     pub sequence: u64,
-    pub cnx_id: ConnectionId,
+    pub connection_id: ConnectionId,
     pub reset_secret: [u8; RESET_SECRET_SIZE],
     pub nb_path_references: i32,
     pub needs_removal: bool,
@@ -1287,9 +1293,9 @@ pub struct RemoteCnxid {
 
 pub struct RemoteCnxidStash {
     pub unique_path_id: u64,
-    pub retire_cnxid_before: u64,
+    pub retire_connection_id_before: u64,
     /// Remote CIDs stashed for this path.  Replaces the C
-    /// `cnxid_stash_first` head + per-node `next` chain.
+    /// `connection_id_stash_first` head + per-node `next` chain.
     pub cnxids: Vec<RemoteCnxid>,
     pub is_in_use: bool,
 }
@@ -1315,8 +1321,8 @@ pub struct Tuple {
     pub local_addr: SocketAddr,
     pub if_index: core::ffi::c_ulong,
     pub observed_addr: SocketAddr,
-    pub remote_cnxid_index: Option<usize>,
-    pub local_cnxid: Option<LocalCnxidToken>,
+    pub remote_connection_id_index: Option<usize>,
+    pub local_connection_id: Option<LocalCnxidToken>,
     pub nb_observed_repeat: i32,
     pub observed_time: u64,
     pub challenge_response: u64,
@@ -1336,9 +1342,9 @@ pub struct Tuple {
 
 pub struct Path {
     pub registered_peer_addr: SocketAddr,
-    /// Membership in `Quic::cnx_by_net`.  Phase 4 uses this for
+    /// Membership in `Quic::connection_by_net`.  Phase 4 uses this for
     /// O(1) removal on path teardown / migration.
-    pub cnx_by_net_membership: Option<HashToken>,
+    pub connection_by_net_membership: Option<HashToken>,
     pub unique_path_id: u64,
     /// Application-supplied state attached to this path.
     pub app_path_ctx: Option<Box<dyn Any>>,
@@ -1491,7 +1497,7 @@ pub struct CryptoContext {
 
 /// Per-connection state.  C: `Connection`.  This is the
 /// largest and longest-lived structure in the library; almost
-/// every internal function takes `cnx` as its first argument.
+/// every internal function takes `connection` as its first argument.
 pub struct Connection {
     pub proposed_version: u32,
     pub rejected_version: u32,
@@ -1579,17 +1585,17 @@ pub struct Connection {
     /// Application-supplied state for the per-connection callback.
     pub callback_ctx: Option<Box<dyn Any>>,
 
-    pub cnx_state: State,
-    pub initial_cnxid: ConnectionId,
-    pub original_cnxid: ConnectionId,
+    pub connection_state: State,
+    pub initial_connection_id: ConnectionId,
+    pub original_connection_id: ConnectionId,
     pub registered_icid_addr: SocketAddr,
-    /// Membership in `Quic::cnx_by_icid` (server-side initial CID
+    /// Membership in `Quic::connection_by_icid` (server-side initial CID
     /// index).  Phase 4 uses this for O(1) removal on connection close.
-    pub cnx_by_icid_membership: Option<HashToken>,
+    pub connection_by_icid_membership: Option<HashToken>,
     pub registered_secret_addr: SocketAddr,
     pub registered_reset_secret: [u8; RESET_SECRET_SIZE],
-    /// Membership in `Quic::cnx_by_secret` (stateless-reset secret index).
-    pub cnx_by_secret_membership: Option<HashToken>,
+    /// Membership in `Quic::connection_by_secret` (stateless-reset secret index).
+    pub connection_by_secret_membership: Option<HashToken>,
 
     pub start_time: u64,
     pub phase_delay: i64,
@@ -1605,9 +1611,9 @@ pub struct Connection {
     pub retry_token: Vec<u8>,
 
     pub next_wake_time: u64,
-    /// Membership in `Quic::cnx_wake_tree`.  Phase 4 uses this for
+    /// Membership in `Quic::connection_wake_tree`.  Phase 4 uses this for
     /// O(1) reschedule (remove + reinsert at the new key).
-    pub cnx_wake_membership: Option<SplayToken>,
+    pub connection_wake_membership: Option<SplayToken>,
     pub app_wake_time: u64,
 
     pub tls_ctx: *mut c_void,
@@ -1740,17 +1746,17 @@ pub struct Connection {
     pub paths_blocked_acknowledged: u64,
 
     /// Per-path stashes of remote CIDs.  Replaces the C
-    /// `first_remote_cnxid_stash` head + per-stash `next_stash`
+    /// `first_remote_connection_id_stash` head + per-stash `next_stash`
     /// chain.
-    pub remote_cnxid_stashes: Vec<RemoteCnxidStash>,
+    pub remote_connection_id_stashes: Vec<RemoteCnxidStash>,
 
     pub next_path_id_in_lists: u64,
-    pub max_path_id_in_cnxid_lists: u64,
+    pub max_path_id_in_connection_id_lists: u64,
     /// Per-path local-CID lists.  Replaces the C
-    /// `first_local_cnxid_list` head + per-list `next_list` chain
-    /// plus the redundant `nb_local_cnxid_lists` count
+    /// `first_local_connection_id_list` head + per-list `next_list` chain
+    /// plus the redundant `nb_local_connection_id_lists` count
     /// (now `len()`).
-    pub local_cnxid_lists: Vec<LocalCnxidList>,
+    pub local_connection_id_lists: Vec<LocalCnxidList>,
 
     pub ack_frequency_sequence_local: u64,
     pub ack_gap_local: u64,
@@ -1861,10 +1867,10 @@ pub fn init_transport_parameters(_tp: &mut TransportParameters) {
 }
 
 /// Insert `l_cid` into the QUIC context's CID lookup table so that
-/// future packets carrying it route to `cnx`.
+/// future packets carrying it route to `connection`.
 pub fn register_cnx_id(
     _quic: &mut Quic,
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _l_cid: &mut LocalCnxid,
 ) -> Result<(), crate::Error> {
     todo!()
@@ -1905,7 +1911,11 @@ pub fn create_tuple(
     todo!()
 }
 
-pub fn delete_demoted_tuples(_cnx: &mut Connection, _current_time: u64, _next_wake_time: &mut u64) {
+pub fn delete_demoted_tuples(
+    _connection: &mut Connection,
+    _current_time: u64,
+    _next_wake_time: &mut u64,
+) {
     todo!()
 }
 
@@ -1921,7 +1931,7 @@ pub fn set_first_tuple(_path_x: &mut Path, _index: usize) {
 }
 
 pub fn create_path(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _start_time: u64,
     _local_addr: Option<&SocketAddr>,
     _peer_addr: Option<&SocketAddr>,
@@ -1931,12 +1941,12 @@ pub fn create_path(
     todo!()
 }
 
-pub fn register_path(_cnx: &mut Connection, _path_x: &mut Path) {
+pub fn register_path(_connection: &mut Connection, _path_x: &mut Path) {
     todo!()
 }
 
 pub fn find_incoming_path(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _ph: &mut PacketHeader,
     _addr_from: &mut SocketAddr,
     _addr_to: &mut SocketAddr,
@@ -1948,7 +1958,7 @@ pub fn find_incoming_path(
 }
 
 pub fn prepare_path_control_packet(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _path_x: &mut Path,
     _tuple: &mut Tuple,
     _packet: &mut Packet,
@@ -1962,7 +1972,7 @@ pub fn prepare_path_control_packet(
 }
 
 pub fn prepare_path_challenge_frames<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _path_x: &mut Path,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
@@ -1975,7 +1985,7 @@ pub fn prepare_path_challenge_frames<'a>(
 }
 
 pub fn select_next_path_tuple(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _current_time: u64,
     _next_wake_time: &mut u64,
 ) -> Option<(PathToken, usize)> {
@@ -2053,7 +2063,7 @@ impl Connection {
 
     /// Bind a remote CID to `tuple` so it can address peer packets
     /// on `path_x`.
-    pub fn assign_peer_cnxid_to_tuple(
+    pub fn assign_peer_connection_id_to_tuple(
         &mut self,
         _path_x: &mut Path,
         _tuple: &mut Tuple,
@@ -2066,15 +2076,15 @@ pub fn reset_path_mtu(_path_x: &mut Path) {
     todo!()
 }
 
-pub fn get_path_id_from_unique(_cnx: &mut Connection, _unique_path_id: u64) -> i32 {
+pub fn get_path_id_from_unique(_connection: &mut Connection, _unique_path_id: u64) -> i32 {
     todo!()
 }
 
 /// Find the remote-CID stash for `unique_path_id`, optionally
 /// creating one if it doesn't exist.  Returns the index into
-/// `cnx.remote_cnxid_stashes`.  C: `find_or_create_remote_cnxid_stash`.
-pub fn find_or_create_remote_cnxid_stash(
-    _cnx: &mut Connection,
+/// `connection.remote_connection_id_stashes`.  C: `find_or_create_remote_connection_id_stash`.
+pub fn find_or_create_remote_connection_id_stash(
+    _connection: &mut Connection,
     _unique_path_id: u64,
     _do_create: bool,
 ) -> Option<usize> {
@@ -2086,12 +2096,12 @@ pub fn find_or_create_remote_cnxid_stash(
 
 impl Connection {
     /// Initialize the per-connection remote-CID stash.
-    pub fn init_cnxid_stash(&mut self) -> Result<(), crate::Error> {
+    pub fn init_connection_id_stash(&mut self) -> Result<(), crate::Error> {
         todo!()
     }
 }
 
-/// Output of [`add_remote_cnxid_to_stash`] / [`stash_remote_cnxid`]:
+/// Output of [`add_remote_connection_id_to_stash`] / [`stash_remote_connection_id`]:
 /// a status code (matching the C `uint64_t` return) and the index
 /// of the newly-stashed CID inside the stash's `cnxids` vector,
 /// or `None` if no CID was stashed.
@@ -2100,44 +2110,44 @@ pub struct StashResult {
     pub stashed_index: Option<usize>,
 }
 
-pub fn add_remote_cnxid_to_stash(
-    _cnx: &mut Connection,
+pub fn add_remote_connection_id_to_stash(
+    _connection: &mut Connection,
     _stash_index: usize,
     _retire_before_next: u64,
     _sequence: u64,
-    _cnxid_bytes: &[u8],
+    _connection_id_bytes: &[u8],
     _secret_bytes: &[u8],
 ) -> StashResult {
     todo!()
 }
 
-pub fn stash_remote_cnxid(
-    _cnx: &mut Connection,
+pub fn stash_remote_connection_id(
+    _connection: &mut Connection,
     _retire_before_next: u64,
     _unique_path_id: u64,
     _sequence: u64,
-    _cnxid_bytes: &[u8],
+    _connection_id_bytes: &[u8],
     _secret_bytes: &[u8],
 ) -> StashResult {
     todo!()
 }
 
 /// Remove the CID at `removed_index` from
-/// `cnx.remote_cnxid_stashes[stash_index].cnxids`.  Returns the
+/// `connection.remote_connection_id_stashes[stash_index].cnxids`.  Returns the
 /// next index that is still live, if any (matches the C "return
 /// the chain successor" pattern).
-pub fn remove_cnxid_from_stash(
-    _cnx: &mut Connection,
+pub fn remove_connection_id_from_stash(
+    _connection: &mut Connection,
     _stash_index: usize,
     _removed_index: usize,
 ) -> Option<usize> {
     todo!()
 }
 
-/// As [`remove_cnxid_from_stash`] but locates the stash by
+/// As [`remove_connection_id_from_stash`] but locates the stash by
 /// `unique_path_id`.
-pub fn remove_stashed_cnxid(
-    _cnx: &mut Connection,
+pub fn remove_stashed_connection_id(
+    _connection: &mut Connection,
     _unique_path_id: u64,
     _removed_index: usize,
 ) -> Option<usize> {
@@ -2145,46 +2155,53 @@ pub fn remove_stashed_cnxid(
 }
 
 /// Return a reference to the first available CID in `stash`, if any.
-pub fn get_cnxid_from_stash(_stash: &mut RemoteCnxidStash) -> Option<&mut RemoteCnxid> {
+pub fn get_connection_id_from_stash(_stash: &mut RemoteCnxidStash) -> Option<&mut RemoteCnxid> {
     todo!()
 }
 
 /// Reserve a stashed CID for use on `unique_path_id`.  Returns the
 /// stash index of the chosen CID, or `None` when none are
 /// available.
-pub fn obtain_stashed_cnxid(_cnx: &mut Connection, _unique_path_id: u64) -> Option<(usize, usize)> {
+pub fn obtain_stashed_connection_id(
+    _connection: &mut Connection,
+    _unique_path_id: u64,
+) -> Option<(usize, usize)> {
     todo!()
 }
 
-pub fn dereference_stashed_cnxid(_cnx: &mut Connection, _path_x: &mut Path, _is_deleting_cnx: i32) {
+pub fn dereference_stashed_connection_id(
+    _connection: &mut Connection,
+    _path_x: &mut Path,
+    _is_deleting_connection: i32,
+) {
     todo!()
 }
 
-pub fn dereference_stashed_cnxid_tuple(
-    _cnx: &mut Connection,
+pub fn dereference_stashed_connection_id_tuple(
+    _connection: &mut Connection,
     _path_x: &mut Path,
     _tuple: &mut Tuple,
-    _is_deleting_cnx: i32,
+    _is_deleting_connection: i32,
 ) {
     todo!()
 }
 
 pub fn remove_not_before_from_stash(
-    _cnx: &mut Connection,
-    _cnxid_stash: &mut RemoteCnxidStash,
+    _connection: &mut Connection,
+    _connection_id_stash: &mut RemoteCnxidStash,
     _not_before: u64,
     _current_time: u64,
 ) -> u64 {
     todo!()
 }
 
-/// Remove the stash at `cnx.remote_cnxid_stashes[stash_index]`.
-pub fn delete_remote_cnxid_stash(_cnx: &mut Connection, _stash_index: usize) {
+/// Remove the stash at `connection.remote_connection_id_stashes[stash_index]`.
+pub fn delete_remote_connection_id_stash(_connection: &mut Connection, _stash_index: usize) {
     todo!()
 }
 
 pub fn remove_not_before_cid(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _unique_path_id: u64,
     _not_before: u64,
     _current_time: u64,
@@ -2204,7 +2221,7 @@ impl Connection {
 // Retransmission queue management.
 
 pub fn queue_for_retransmit(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _path_x: &mut Path,
     _packet: &mut Packet,
     _length: usize,
@@ -2218,7 +2235,7 @@ pub fn queue_for_retransmit(
 /// caller to chain onto.  C: `dequeue_retransmit_packet` returning
 /// the next pointer.
 pub fn dequeue_retransmit_packet(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _pkt_ctx: &mut PacketContextState,
     _packet: PacketToken,
     _should_free: bool,
@@ -2228,7 +2245,7 @@ pub fn dequeue_retransmit_packet(
 }
 
 pub fn dequeue_retransmitted_packet(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _pkt_ctx: &mut PacketContextState,
     _packet: PacketToken,
 ) {
@@ -2251,7 +2268,7 @@ impl Connection {
     /// Mark this connection as having hit a transport error so the
     /// next outgoing packet emits CONNECTION_CLOSE.  The returned
     /// value mirrors the C convention (the error code itself) so
-    /// callers can write `return cnx.connection_error(…);`.
+    /// callers can write `return connection.connection_error(…);`.
     pub fn connection_error(&mut self, _local_error: u64, _frame_type: u64) -> i32 {
         todo!()
     }
@@ -2281,22 +2298,22 @@ impl Quic {
     /// Look up a connection by destination CID, returning both the
     /// connection token and the matching local CID token (the C
     /// out-parameter `l_cid_sequence` collapses into the second
-    /// tuple slot).  C: `cnx_by_id`.
-    pub fn cnx_by_id(
+    /// tuple slot).  C: `connection_by_id`.
+    pub fn connection_by_id(
         &mut self,
         _cnx_id: ConnectionId,
     ) -> Option<(ConnectionToken, LocalCnxidToken)> {
         todo!()
     }
 
-    /// Look up a connection by peer address.  C: `cnx_by_net`.
-    pub fn cnx_by_net(&mut self, _addr: Option<&SocketAddr>) -> Option<ConnectionToken> {
+    /// Look up a connection by peer address.  C: `connection_by_net`.
+    pub fn connection_by_net(&mut self, _addr: Option<&SocketAddr>) -> Option<ConnectionToken> {
         todo!()
     }
 
     /// Look up a connection by initial CID and peer address.  C:
-    /// `cnx_by_icid`.
-    pub fn cnx_by_icid(
+    /// `connection_by_icid`.
+    pub fn connection_by_icid(
         &mut self,
         _icid: &ConnectionId,
         _addr: Option<&SocketAddr>,
@@ -2305,8 +2322,8 @@ impl Quic {
     }
 
     /// Look up a connection by stateless-reset secret and peer
-    /// address.  C: `cnx_by_secret`.
-    pub fn cnx_by_secret(
+    /// address.  C: `connection_by_secret`.
+    pub fn connection_by_secret(
         &mut self,
         _reset_secret: &[u8],
         _addr: Option<&SocketAddr>,
@@ -2380,7 +2397,7 @@ pub fn update_pacing_after_send(_path_x: &mut Path, _length: usize, _current_tim
 }
 
 pub fn is_sending_authorized_by_pacing(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _path_x: &mut Path,
     _current_time: u64,
     _next_time: &mut u64,
@@ -2396,11 +2413,11 @@ pub fn refresh_path_quality_thresholds(_path_x: &mut Path) {
     todo!()
 }
 
-pub fn issue_path_quality_update(_cnx: &mut Connection, _path_x: &mut Path) -> i32 {
+pub fn issue_path_quality_update(_connection: &mut Connection, _path_x: &mut Path) -> i32 {
     todo!()
 }
 
-pub fn reinsert_by_wake_time(_quic: &mut Quic, _cnx: &mut Connection, _next_time: u64) {
+pub fn reinsert_by_wake_time(_quic: &mut Quic, _connection: &mut Connection, _next_time: u64) {
     todo!()
 }
 
@@ -2526,7 +2543,7 @@ pub fn create_long_header(
 }
 
 pub fn create_packet_header(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _packet_type: PacketType,
     _sequence_number: u64,
     _path_x: &mut Path,
@@ -2540,7 +2557,7 @@ pub fn create_packet_header(
 }
 
 pub fn predict_packet_header_length(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _packet_type: PacketType,
     _pkt_ctx: &mut PacketContextState,
 ) -> usize {
@@ -2556,7 +2573,7 @@ pub fn update_payload_length(
     todo!()
 }
 
-pub fn get_checksum_length(_cnx: &mut Connection, _is_cleartext_mode: Epoch) -> usize {
+pub fn get_checksum_length(_connection: &mut Connection, _is_cleartext_mode: Epoch) -> usize {
     todo!()
 }
 
@@ -2571,7 +2588,7 @@ pub fn protect_packet_header(
 }
 
 pub fn protect_packet(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _ptype: PacketType,
     _bytes: &mut [u8],
     _sequence_number: u64,
@@ -2611,7 +2628,7 @@ pub fn pad_to_target_length(_bytes: &mut [u8], _length: usize, _target: usize) -
 }
 
 pub fn finalize_and_protect_packet_tuple(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _packet: &mut Packet,
     _ret: i32,
     _length: usize,
@@ -2628,7 +2645,7 @@ pub fn finalize_and_protect_packet_tuple(
 }
 
 pub fn finalize_and_protect_packet(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _packet: &mut Packet,
     _ret: i32,
     _length: usize,
@@ -2643,19 +2660,23 @@ pub fn finalize_and_protect_packet(
     todo!()
 }
 
-pub fn implicit_handshake_ack(_cnx: &mut Connection, _pc: PacketContext, _current_time: u64) {
+pub fn implicit_handshake_ack(
+    _connection: &mut Connection,
+    _pc: PacketContext,
+    _current_time: u64,
+) {
     todo!()
 }
 
-pub fn false_start_transition(_cnx: &mut Connection, _current_time: u64) {
+pub fn false_start_transition(_connection: &mut Connection, _current_time: u64) {
     todo!()
 }
 
-pub fn client_almost_ready_transition(_cnx: &mut Connection) {
+pub fn client_almost_ready_transition(_connection: &mut Connection) {
     todo!()
 }
 
-pub fn ready_state_transition(_cnx: &mut Connection, _current_time: u64) {
+pub fn ready_state_transition(_connection: &mut Connection, _current_time: u64) {
     todo!()
 }
 
@@ -2678,16 +2699,20 @@ pub fn parse_header_and_decrypt(
 // ---------------------------------------------------------------------------
 // Packet number / ACK shortcuts.
 
-pub fn get_sequence_number(_cnx: &mut Connection, _path_x: &mut Path, _pc: PacketContext) -> u64 {
+pub fn get_sequence_number(
+    _connection: &mut Connection,
+    _path_x: &mut Path,
+    _pc: PacketContext,
+) -> u64 {
     todo!()
 }
 
-pub fn get_ack_number(_cnx: &mut Connection, _path_x: &mut Path, _pc: PacketContext) -> u64 {
+pub fn get_ack_number(_connection: &mut Connection, _path_x: &mut Path, _pc: PacketContext) -> u64 {
     todo!()
 }
 
 pub fn get_last_packet(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _path_x: &mut Path,
     _pc: PacketContext,
 ) -> Option<PacketToken> {
@@ -2697,12 +2722,12 @@ pub fn get_last_packet(
 // ---------------------------------------------------------------------------
 // ACK logic.
 
-pub fn init_ack_ctx(_cnx: &mut Connection, _ack_ctx: &mut AckContext) {
+pub fn init_ack_ctx(_connection: &mut Connection, _ack_ctx: &mut AckContext) {
     todo!()
 }
 
 pub fn is_ack_needed(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _current_time: u64,
     _next_wake_time: &mut u64,
     _pc: PacketContext,
@@ -2712,7 +2737,7 @@ pub fn is_ack_needed(
 }
 
 pub fn is_pn_already_received(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _pc: PacketContext,
     _l_cid: Option<LocalCnxidToken>,
     _pn64: u64,
@@ -2721,7 +2746,7 @@ pub fn is_pn_already_received(
 }
 
 pub fn record_pn_received(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _pc: PacketContext,
     _l_cid: Option<LocalCnxidToken>,
     _pn64: u64,
@@ -2814,20 +2839,20 @@ pub fn sack_previous_item(_list: &mut SackList, _sack: SackItemToken) -> Option<
     todo!()
 }
 
-/// Borrow the ACK context for `(pc, l_cid)` on `cnx`.  Returns
+/// Borrow the ACK context for `(pc, l_cid)` on `connection`.  Returns
 /// `None` when the requested context isn't installed.
 pub fn ack_ctx_from_cnx_context(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _pc: PacketContext,
     _l_cid: Option<LocalCnxidToken>,
 ) -> Option<&mut AckContext> {
     todo!()
 }
 
-/// Borrow the SACK list for `(pc, l_cid)` on `cnx`.  Returns
+/// Borrow the SACK list for `(pc, l_cid)` on `connection`.  Returns
 /// `None` when the requested context isn't installed.
 pub fn sack_list_from_cnx_context(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _pc: PacketContext,
     _l_cid: Option<LocalCnxidToken>,
 ) -> Option<&mut SackList> {
@@ -2913,7 +2938,7 @@ pub fn record_ack_packet_data(_packet_data: &mut PacketData, _acked_packet: &mut
 }
 
 pub fn init_packet_ctx(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _pkt_ctx: &mut PacketContextState,
     _pc: PacketContext,
 ) {
@@ -2931,7 +2956,7 @@ pub fn process_ack_of_ack_frame(
 }
 
 pub fn compute_ack_gap_and_delay(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _rtt: u64,
     _remote_min_ack_delay: u64,
     _data_rate: u64,
@@ -2942,7 +2967,7 @@ pub fn compute_ack_gap_and_delay(
 }
 
 pub fn seed_bandwidth(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _rtt_min: u64,
     _cwin: u64,
     _ip_addr: &[u8],
@@ -2951,12 +2976,12 @@ pub fn seed_bandwidth(
     todo!()
 }
 
-pub fn current_retransmit_timer(_cnx: &mut Connection, _path_x: &mut Path) -> u64 {
+pub fn current_retransmit_timer(_connection: &mut Connection, _path_x: &mut Path) -> u64 {
     todo!()
 }
 
 pub fn update_path_rtt(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _old_path: &mut Path,
     _epoch: i32,
     _send_time: u64,
@@ -3070,13 +3095,13 @@ pub fn is_stream_closed(_stream: &mut StreamHead, _client_mode: bool) -> bool {
 // the `Connection::stream_tree.get(token)` path is one indirection
 // rather than offset arithmetic.
 
-/// Splay-tree successor of `stream` in `cnx.stream_tree`.
-pub fn next_stream(_cnx: &mut Connection, _stream: StreamToken) -> Option<StreamToken> {
+/// Splay-tree successor of `stream` in `connection.stream_tree`.
+pub fn next_stream(_connection: &mut Connection, _stream: StreamToken) -> Option<StreamToken> {
     todo!()
 }
 
 pub fn decode_stream_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a [u8],
     _received_data: &mut StreamDataNode,
     _current_time: u64,
@@ -3085,7 +3110,7 @@ pub fn decode_stream_frame<'a>(
 }
 
 pub fn format_stream_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _stream: &mut StreamHead,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
@@ -3096,7 +3121,7 @@ pub fn format_stream_frame<'a>(
     todo!()
 }
 
-pub fn update_max_stream_id_local(_cnx: &mut Connection, _stream: &mut StreamHead) {
+pub fn update_max_stream_id_local(_connection: &mut Connection, _stream: &mut StreamHead) {
     todo!()
 }
 
@@ -3104,7 +3129,7 @@ pub fn update_max_stream_id_local(_cnx: &mut Connection, _stream: &mut StreamHea
 // Frame retransmission.
 
 pub fn check_frame_needs_repeat(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &[u8],
     _bytes_max: usize,
     _p_type: PacketType,
@@ -3116,7 +3141,7 @@ pub fn check_frame_needs_repeat(
 }
 
 pub fn format_available_stream_frames<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _path_x: &mut Path,
     _bytes: &'a mut [u8],
     _current_priority: u64,
@@ -3128,24 +3153,24 @@ pub fn format_available_stream_frames<'a>(
     todo!()
 }
 
-pub fn queue_data_repeat_init(_cnx: &mut Connection) {
+pub fn queue_data_repeat_init(_connection: &mut Connection) {
     todo!()
 }
 
-pub fn queue_data_repeat_packet(_cnx: &mut Connection, _packet: &mut Packet) {
+pub fn queue_data_repeat_packet(_connection: &mut Connection, _packet: &mut Packet) {
     todo!()
 }
 
-pub fn dequeue_data_repeat_packet(_cnx: &mut Connection, _packet: &mut Packet) {
+pub fn dequeue_data_repeat_packet(_connection: &mut Connection, _packet: &mut Packet) {
     todo!()
 }
 
-pub fn first_data_repeat_packet(_cnx: &mut Connection) -> Option<PacketToken> {
+pub fn first_data_repeat_packet(_connection: &mut Connection) -> Option<PacketToken> {
     todo!()
 }
 
 pub fn copy_stream_frame_for_retransmit<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _packet: &mut Packet,
     _bytes: &'a mut [u8],
 ) -> Option<&'a mut [u8]> {
@@ -3153,7 +3178,7 @@ pub fn copy_stream_frame_for_retransmit<'a>(
 }
 
 pub fn copy_stream_frames_for_retransmit<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _current_priority: u64,
     _more_data: &mut i32,
@@ -3164,7 +3189,7 @@ pub fn copy_stream_frames_for_retransmit<'a>(
 
 pub fn copy_before_retransmit(
     _old_p: &mut Packet,
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _new_bytes: &mut [u8],
     _send_buffer_max_minus_checksum: usize,
     _packet_is_pure_ack: &mut i32,
@@ -3177,7 +3202,7 @@ pub fn copy_before_retransmit(
 }
 
 pub fn retransmit_needed(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _pc: PacketContext,
     _path_x: &mut Path,
     _current_time: u64,
@@ -3190,7 +3215,7 @@ pub fn retransmit_needed(
 }
 
 pub fn set_ack_needed(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _current_time: u64,
     _pc: PacketContext,
     _path_x: &mut Path,
@@ -3199,7 +3224,7 @@ pub fn set_ack_needed(
     todo!()
 }
 
-pub fn process_ack_of_frames(_cnx: &mut Connection, _p: &mut Packet, _is_spurious: i32) {
+pub fn process_ack_of_frames(_connection: &mut Connection, _p: &mut Packet, _is_spurious: i32) {
     todo!()
 }
 
@@ -3261,7 +3286,7 @@ pub fn parse_ack_header(
 }
 
 pub fn decode_crypto_hs_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a [u8],
     _received_data: &mut StreamDataNode,
     _epoch: i32,
@@ -3279,7 +3304,7 @@ pub fn format_crypto_hs_frame<'a>(
 }
 
 pub fn format_ack_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _current_time: u64,
@@ -3290,7 +3315,7 @@ pub fn format_ack_frame<'a>(
 }
 
 pub fn format_connection_close_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
@@ -3299,7 +3324,7 @@ pub fn format_connection_close_frame<'a>(
 }
 
 pub fn format_application_close_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
@@ -3308,7 +3333,7 @@ pub fn format_application_close_frame<'a>(
 }
 
 pub fn format_required_max_stream_data_frames<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
@@ -3317,7 +3342,7 @@ pub fn format_required_max_stream_data_frames<'a>(
 }
 
 pub fn format_max_data_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
@@ -3327,7 +3352,7 @@ pub fn format_max_data_frame<'a>(
 }
 
 pub fn format_max_stream_data_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _stream: &mut StreamHead,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
@@ -3337,12 +3362,12 @@ pub fn format_max_stream_data_frame<'a>(
     todo!()
 }
 
-pub fn cc_increased_window(_cnx: &mut Connection, _previous_window: u64) -> u64 {
+pub fn cc_increased_window(_connection: &mut Connection, _previous_window: u64) -> u64 {
     todo!()
 }
 
 pub fn format_max_streams_frame_if_needed<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
@@ -3362,22 +3387,22 @@ pub fn clear_stream(_stream: &mut StreamHead) {
     todo!()
 }
 
-pub fn delete_stream(_cnx: &mut Connection, _stream: &mut StreamHead) {
+pub fn delete_stream(_connection: &mut Connection, _stream: &mut StreamHead) {
     todo!()
 }
 
 /// Find the local-CID list for `unique_path_id` (the index into
-/// `cnx.local_cnxid_lists`), optionally creating one when absent.
-pub fn find_or_create_local_cnxid_list(
-    _cnx: &mut Connection,
+/// `connection.local_connection_id_lists`), optionally creating one when absent.
+pub fn find_or_create_local_connection_id_list(
+    _connection: &mut Connection,
     _unique_path_id: u64,
     _do_create: bool,
 ) -> Option<usize> {
     todo!()
 }
 
-pub fn create_local_cnxid(
-    _cnx: &mut Connection,
+pub fn create_local_connection_id(
+    _connection: &mut Connection,
     _unique_path_id: u64,
     _suggested_value: Option<&ConnectionId>,
     _current_time: u64,
@@ -3385,40 +3410,48 @@ pub fn create_local_cnxid(
     todo!()
 }
 
-pub fn demote_local_cnxid_list(_cnx: &mut Connection, _unique_path_id: u64, _reason: u64) -> i32 {
+pub fn demote_local_connection_id_list(
+    _connection: &mut Connection,
+    _unique_path_id: u64,
+    _reason: u64,
+) -> i32 {
     todo!()
 }
 
-pub fn delete_local_cnxid(_cnx: &mut Connection, _l_cid: LocalCnxidToken) {
+pub fn delete_local_connection_id(_connection: &mut Connection, _l_cid: LocalCnxidToken) {
     todo!()
 }
 
-/// Remove `cnx.local_cnxid_lists[list_index]`.
-pub fn delete_local_cnxid_list(_cnx: &mut Connection, _list_index: usize) {
+/// Remove `connection.local_connection_id_lists[list_index]`.
+pub fn delete_local_connection_id_list(_connection: &mut Connection, _list_index: usize) {
     todo!()
 }
 
-pub fn delete_local_cnxid_lists(_cnx: &mut Connection) {
+pub fn delete_local_connection_id_lists(_connection: &mut Connection) {
     todo!()
 }
 
-pub fn retire_local_cnxid(_cnx: &mut Connection, _unique_path_id: u64, _sequence: u64) {
+pub fn retire_local_connection_id(
+    _connection: &mut Connection,
+    _unique_path_id: u64,
+    _sequence: u64,
+) {
     todo!()
 }
 
-pub fn check_local_cnxid_ttl(
-    _cnx: &mut Connection,
-    _local_cnxid_list: &mut LocalCnxidList,
+pub fn check_local_connection_id_ttl(
+    _connection: &mut Connection,
+    _local_connection_id_list: &mut LocalCnxidList,
     _current_time: u64,
     _next_wake_time: &mut u64,
 ) {
     todo!()
 }
 
-pub fn find_local_cnxid(
-    _cnx: &mut Connection,
+pub fn find_local_connection_id(
+    _connection: &mut Connection,
     _unique_path_id: u64,
-    _cnxid: &ConnectionId,
+    _connection_id: &ConnectionId,
 ) -> Option<LocalCnxidToken> {
     todo!()
 }
@@ -3442,7 +3475,7 @@ pub fn format_path_response_frame<'a>(
 }
 
 pub fn should_repeat_path_response_frame(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &[u8],
     _bytes_max: usize,
 ) -> bool {
@@ -3450,8 +3483,8 @@ pub fn should_repeat_path_response_frame(
 }
 
 pub fn format_new_connection_id_frame<'a>(
-    _cnx: &mut Connection,
-    _local_cnxid_list: &mut LocalCnxidList,
+    _connection: &mut Connection,
+    _local_connection_id_list: &mut LocalCnxidList,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
@@ -3469,7 +3502,7 @@ pub fn format_max_path_id_frame<'a>(
 }
 
 pub fn format_blocked_frames<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
@@ -3495,7 +3528,7 @@ impl Connection {
 }
 
 pub fn format_one_blocked_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
@@ -3517,17 +3550,17 @@ pub fn format_first_misc_or_dg_frame<'a>(
     todo!()
 }
 
-/// Borrow the next misc-frame header in `cnx` for packet context
+/// Borrow the next misc-frame header in `connection` for packet context
 /// `pc`.  C: `find_first_misc_frame`.
 pub fn find_first_misc_frame(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _pc: PacketContext,
 ) -> Option<&mut MiscFrameHeader> {
     todo!()
 }
 
 pub fn format_misc_frames_in_context<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
@@ -3540,7 +3573,7 @@ pub fn format_misc_frames_in_context<'a>(
 /// `*mut *mut MiscFrameHeader` head/tail out-pointers; the Rust
 /// shape just takes the queue and pushes at the back.
 pub fn queue_misc_or_dg_frame(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _queue: &mut VecDeque<MiscFrameHeader>,
     _bytes: &[u8],
     _is_pure_ack: bool,
@@ -3549,7 +3582,7 @@ pub fn queue_misc_or_dg_frame(
     todo!()
 }
 
-pub fn purge_misc_frames_after_ready(_cnx: &mut Connection) {
+pub fn purge_misc_frames_after_ready(_connection: &mut Connection) {
     todo!()
 }
 
@@ -3575,7 +3608,7 @@ impl Connection {
 }
 
 pub fn format_first_datagram_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _is_first_in_packet: i32,
     _more_data: &mut i32,
@@ -3585,7 +3618,7 @@ pub fn format_first_datagram_frame<'a>(
 }
 
 pub fn format_ready_datagram_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _path_x: &mut Path,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
@@ -3615,7 +3648,7 @@ pub fn parse_ack_frequency_frame<'a>(
 }
 
 pub fn format_ack_frequency_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
 ) -> Option<&'a mut [u8]> {
@@ -3630,7 +3663,7 @@ pub fn format_immediate_ack_frame<'a>(
 }
 
 pub fn format_time_stamp_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _current_time: u64,
@@ -3638,12 +3671,12 @@ pub fn format_time_stamp_frame<'a>(
     todo!()
 }
 
-pub fn encode_time_stamp_length(_cnx: &mut Connection, _current_time: u64) -> usize {
+pub fn encode_time_stamp_length(_connection: &mut Connection, _current_time: u64) -> usize {
     todo!()
 }
 
 pub fn format_bdp_frame<'a>(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _bytes: &'a mut [u8],
     _path_x: &mut Path,
     _more_data: &mut i32,
@@ -3674,7 +3707,7 @@ impl Connection {
 }
 
 pub fn decode_frames(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _path_x: &mut Path,
     _bytes: &[u8],
     _bytes_max: usize,
@@ -3765,7 +3798,7 @@ impl Connection {
     }
 }
 
-pub fn test_and_signal_new_path_allowed(_cnx: &mut Connection) {
+pub fn test_and_signal_new_path_allowed(_connection: &mut Connection) {
     todo!()
 }
 
@@ -3777,11 +3810,11 @@ pub fn decode_closing_frames(
     todo!()
 }
 
-pub fn process_sooner_packets(_cnx: &mut Connection, _current_time: u64) {
+pub fn process_sooner_packets(_connection: &mut Connection, _current_time: u64) {
     todo!()
 }
 
-pub fn delete_sooner_packets(_cnx: &mut Connection) {
+pub fn delete_sooner_packets(_connection: &mut Connection) {
     todo!()
 }
 
@@ -3800,7 +3833,7 @@ pub fn process_tp_version_negotiation<'a>(
 }
 
 pub fn prepare_transport_extensions(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _extension_mode: i32,
     _bytes: &mut [u8],
     _bytes_max: usize,
@@ -3810,7 +3843,7 @@ pub fn prepare_transport_extensions(
 }
 
 pub fn receive_transport_extensions(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _extension_mode: i32,
     _bytes: &mut [u8],
     _bytes_max: usize,
@@ -3828,7 +3861,7 @@ pub fn create_misc_frame(
 }
 
 pub fn process_version_upgrade(
-    _cnx: &mut Connection,
+    _connection: &mut Connection,
     _old_version_index: i32,
     _new_version_index: i32,
 ) -> i32 {

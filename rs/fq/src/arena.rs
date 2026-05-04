@@ -8,7 +8,7 @@
 //! Every Phase-4 collection that needs "address an object by
 //! handle, not by raw pointer" sits on top of this — most notably
 //! the `Quic` connection arena, which holds every live connection
-//! and lets the secondary indexes (`cnx_by_id`, `cnx_by_net`, …)
+//! and lets the secondary indexes (`connection_by_id`, `connection_by_net`, …)
 //! store `ConnectionToken`s as their values.
 //!
 //! Bodies are `todo!()` — Phase 4 either hand-rolls the slotmap
