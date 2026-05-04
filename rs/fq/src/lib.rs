@@ -28,9 +28,9 @@
 //!   always installs the four together.
 //! * `void*` "callback context" arguments are folded into the trait
 //!   implementor's state.  Per-stream / per-path application
-//!   contexts that flow through the stack (e.g. `stream_ctx`) stay
-//!   as `*mut c_void` — they are produced by the application and
-//!   handed back unchanged.
+//!   contexts that flow through the stack (e.g. `stream_ctx`,
+//!   `app_stream_ctx`) become `Option<Box<dyn core::any::Any>>` —
+//!   the application produces them, downcasts on retrieval.
 //! * C `int` / `int64_t` return values that encode 0/-1 or 0/error
 //!   status become `Result<T, Error>` — the crate-level `Error` enum
 //!   doesn't exist yet, so `()` is a placeholder per the Phase 1
@@ -54,7 +54,7 @@ pub mod binlog;
 pub mod bytestream;
 pub mod cc_common;
 pub mod config;
-pub mod crypto_provider_api;
+pub mod crypto;
 pub mod hash;
 pub mod header_protection;
 pub mod internal;
@@ -67,6 +67,7 @@ pub mod siphash;
 pub mod socks;
 pub mod socks_socket2;
 pub mod splay;
+pub mod sys;
 #[cfg(test)]
 pub mod tests;
 pub mod textlog;
@@ -154,6 +155,7 @@ pub type Instant = fugit::Instant<u64, 1, 1_000_000>;
 /// `microsec_latency`, …); the typed alias makes the unit explicit.
 pub type Duration = fugit::Duration<u64, 1, 1_000_000>;
 
+// REVIEW: Turn these into a Rust enum.
 /// Base offset for quic's internal error codes.  Allocated in
 /// the `0x400`+ range so they never collide with QUIC transport or
 /// TLS alert codes.
@@ -232,6 +234,8 @@ pub const ERROR_PADDING_PACKET: u64 = ERROR_CLASS + 70;
 // ---------------------------------------------------------------------------
 // Protocol errors defined by the QUIC and TLS specs.
 
+// REVIEW: Make this an enum.  If you need to convert to u64, make the enum repr(u64) and use the
+// IntoPrimitive and TryFromPrimitive traits from the `num_enum` crate.
 pub const TRANSPORT_INTERNAL_ERROR: u64 = 0x1;
 pub const TRANSPORT_SERVER_BUSY: u64 = 0x2;
 pub const TRANSPORT_FLOW_CONTROL_ERROR: u64 = 0x3;
@@ -293,6 +297,7 @@ pub const ECN_ECT_0: u8 = 0x02;
 pub const ECN_ECT_1: u8 = 0x01;
 pub const ECN_CE: u8 = 0x03;
 
+// REVIEW: Can't this just be u32::from_le_bytes() ?
 /// C macro `FOURCC(a, b, c, d)`.  Produces a 32-bit code from four
 /// bytes in little-endian order.
 pub const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
@@ -336,6 +341,7 @@ pub enum State {
 /// for several extension parameters, hence the `#[repr(u64)]`.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u64)]
+// REVIEW: Rename to TransportParameter and move to `tp.rs`.
 pub enum Tp {
     OriginalConnectionId = 0,
     IdleTimeout = 1,
@@ -455,6 +461,12 @@ pub enum PathStatus {
 pub const CONNECTION_ID_MIN_SIZE: usize = 0;
 pub const CONNECTION_ID_MAX_SIZE: usize = 20;
 
+// REVIEW: Make the fields of this struct non-public.  Then add an impl of the form:
+//
+// ConnectionId::clone_from_slice(&[u8]) -> Option<Self> (None if too large for storage)
+// ConnectionId::with_size(usize) -> Option<Self> (None if too large for storage)
+// ConnectionId::as_bytes() -> &[u8]
+// ConnectionId::as_bytes_mut() -> &mut [u8] (only if needed)
 /// Fixed-capacity QUIC connection ID.  C: `ConnectionId`.
 ///
 /// Stored as a 20-byte buffer plus a length so the type is `Copy`,
@@ -532,12 +544,17 @@ pub enum CallbackEvent {
 // ---------------------------------------------------------------------------
 // Transport parameters.
 
+// REVIEW: Pull these out into a separate module `tp.rs` and drop the `Tp` prefix.
+
 /// Server's preferred address advertised in transport parameters.
 /// C: `TpPreferredAddress`.  `is_defined` was an `int`
 /// flag in C; promoted to `bool`.
 // Field names mirror the camelCase identifiers from the C struct verbatim.
 #[allow(non_snake_case)]
 #[derive(Debug, Default, Copy, Clone)]
+// REVIEW If the ipv4Address and ipv6Address fields are not mandatory, they should be Option.  If
+// only one can be set, you should use core::net::IpAddr, or more likely core::net::SocketAddr to
+// include the port.
 pub struct TpPreferredAddress {
     pub is_defined: bool,
     pub ipv4Address: [u8; 4],
@@ -554,6 +571,7 @@ pub struct TpPreferredAddress {
 /// `nb_received` / `nb_supported` length fields disappear (the
 /// `Vec` carries its length).
 #[derive(Debug, Default, Clone)]
+// REVIEW: Make a repr(u32) enum for versions, as discussed in internal.rs.
 pub struct TpVersionNegotiation {
     /// Version found in TP, should match envelope.
     pub current: u32,
@@ -574,7 +592,7 @@ pub struct TpVersionNegotiation {
 /// `enable_loss_bit` and `enable_time_stamp` and
 /// `address_discovery_mode` are kept as integers because callers
 /// inspect the low bits separately ("want / can" flags).
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct TransportParameters {
     pub initial_max_stream_data_bidi_local: u64,
     pub initial_max_stream_data_bidi_remote: u64,
@@ -582,7 +600,7 @@ pub struct TransportParameters {
     pub initial_max_data: u64,
     pub initial_max_stream_id_bidir: u64,
     pub initial_max_stream_id_unidir: u64,
-    pub max_idle_timeout: u64,
+    pub max_idle_timeout: Duration,
     pub max_packet_size: u32,
     /// Stored in microseconds for convenience.
     pub max_ack_delay: u32,
@@ -594,7 +612,7 @@ pub struct TransportParameters {
     pub enable_loss_bit: i32,
     /// `(x & 1)` want, `(x & 2)` can.
     pub enable_time_stamp: i32,
-    pub min_ack_delay: u64,
+    pub min_ack_delay: Duration,
     pub do_grease_quic_bit: bool,
     pub version_negotiation: TpVersionNegotiation,
     pub enable_bdp_frame: bool,
@@ -602,6 +620,36 @@ pub struct TransportParameters {
     /// `0`=none, `1`=provide-only, `2`=receive-only, `3`=both.
     pub address_discovery_mode: i32,
     pub is_reset_stream_at_enabled: bool,
+}
+
+impl Default for TransportParameters {
+    fn default() -> Self {
+        Self {
+            initial_max_stream_data_bidi_local: 0,
+            initial_max_stream_data_bidi_remote: 0,
+            initial_max_stream_data_uni: 0,
+            initial_max_data: 0,
+            initial_max_stream_id_bidir: 0,
+            initial_max_stream_id_unidir: 0,
+            max_idle_timeout: Duration::from_ticks(0),
+            max_packet_size: 0,
+            max_ack_delay: 0,
+            active_connection_id_limit: 0,
+            ack_delay_exponent: 0,
+            migration_disabled: false,
+            preferred_address: TpPreferredAddress::default(),
+            max_datagram_frame_size: 0,
+            enable_loss_bit: 0,
+            enable_time_stamp: 0,
+            min_ack_delay: Duration::from_ticks(0),
+            do_grease_quic_bit: false,
+            version_negotiation: TpVersionNegotiation::default(),
+            enable_bdp_frame: false,
+            initial_max_path_id: 0,
+            address_discovery_mode: 0,
+            is_reset_stream_at_enabled: false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +740,9 @@ pub trait StreamDataCb {
 /// proposed ALPNs is supported".  C: `AlpnSelect` (the C `_v2`
 /// flavour is folded in — it only differed in the iovec type, which
 /// is now just `&[u8]`).
+// REVIEW: Other parts of the API refer to ALPNs as &str or enum.  Which is it?  It would be nice
+// if we could just use the enum everywhere above the TLS layer.
+// REVIEW: DO NOT return out-of-bounds to signal failure.  Return Option<usize>.
 pub trait AlpnSelect {
     fn select(&mut self, quic: &mut Quic, list: &[&[u8]]) -> usize;
 }
@@ -699,6 +750,7 @@ pub trait AlpnSelect {
 /// Callback that produces a server-environment-compatible CID.
 /// Folds the C `void* connection_id_cb_data` into the implementor's state.
 /// C: `ConnectionIdCb`.
+// REVIEW: Change "Cb" to "Callback" globally.
 pub trait ConnectionIdCb {
     fn produce(
         &mut self,
@@ -741,7 +793,7 @@ pub trait StreamDirectReceive {
 
 /// Per-path quality snapshot reported by
 /// `get_path_quality`.  C: `PathQuality`.
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct PathQuality {
     /// Receive rate estimate in bytes per second.
     pub receive_rate_estimate: u64,
@@ -750,25 +802,50 @@ pub struct PathQuality {
     /// Number of bytes in the congestion window.
     pub cwin: u64,
     /// Smoothed RTT estimate in microseconds.
-    pub rtt: u64,
+    pub rtt: Duration,
     /// Most recent RTT sample.
-    pub rtt_sample: u64,
+    pub rtt_sample: Duration,
     /// Estimated RTT variability.
-    pub rtt_variant: u64,
+    pub rtt_variant: Duration,
     /// Minimum observed RTT since path creation.
-    pub rtt_min: u64,
+    pub rtt_min: Duration,
     /// Maximum observed RTT since path creation.
-    pub rtt_max: u64,
+    pub rtt_max: Duration,
     pub sent: u64,
     pub lost: u64,
     pub timer_losses: u64,
     pub spurious_losses: u64,
-    pub max_spurious_rtt: u64,
-    pub max_reorder_delay: u64,
+    pub max_spurious_rtt: Duration,
+    pub max_reorder_delay: Duration,
     pub max_reorder_gap: u64,
     pub bytes_in_transit: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+}
+
+impl Default for PathQuality {
+    fn default() -> Self {
+        Self {
+            receive_rate_estimate: 0,
+            pacing_rate: 0,
+            cwin: 0,
+            rtt: Duration::from_ticks(0),
+            rtt_sample: Duration::from_ticks(0),
+            rtt_variant: Duration::from_ticks(0),
+            rtt_min: Duration::from_ticks(0),
+            rtt_max: Duration::from_ticks(0),
+            sent: 0,
+            lost: 0,
+            timer_losses: 0,
+            spurious_losses: 0,
+            max_spurious_rtt: Duration::from_ticks(0),
+            max_reorder_delay: Duration::from_ticks(0),
+            max_reorder_gap: 0,
+            bytes_in_transit: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -835,21 +912,41 @@ pub enum CongestionNotification {
 /// stays an `i32` (the C field used `int` instead of the enum
 /// itself to avoid include dependencies; we follow suit so the
 /// translation can be checked field-by-field).
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct PerAckState {
-    pub rtt_measurement: u64,
-    pub send_delay: u64,
-    pub one_way_delay: u64,
+    pub rtt_measurement: Duration,
+    pub send_delay: Duration,
+    pub one_way_delay: Duration,
     pub nb_bytes_acknowledged: u64,
     pub nb_bytes_newly_lost: u64,
     pub nb_bytes_lost_since_packet_sent: u64,
     pub nb_bytes_delivered_since_packet_sent: u64,
     pub inflight_prior: u64,
     pub lost_packet_number: u64,
-    pub lost_packet_sent_time: u64,
+    pub lost_packet_sent_time: Instant,
     pub pc: i32,
     pub is_app_limited: bool,
     pub is_cwnd_limited: bool,
+}
+
+impl Default for PerAckState {
+    fn default() -> Self {
+        Self {
+            rtt_measurement: Duration::from_ticks(0),
+            send_delay: Duration::from_ticks(0),
+            one_way_delay: Duration::from_ticks(0),
+            nb_bytes_acknowledged: 0,
+            nb_bytes_newly_lost: 0,
+            nb_bytes_lost_since_packet_sent: 0,
+            nb_bytes_delivered_since_packet_sent: 0,
+            inflight_prior: 0,
+            lost_packet_number: 0,
+            lost_packet_sent_time: Instant::from_ticks(0),
+            pc: 0,
+            is_app_limited: false,
+            is_cwnd_limited: false,
+        }
+    }
 }
 
 /// Congestion-control algorithm vtable.  In C this is four
@@ -929,7 +1026,8 @@ pub fn congestion_control_algorithms() -> &'static [&'static CongestionAlgorithm
 /// Application-protocol identifiers used during session
 /// negotiation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-#[repr(u8)]
+#[repr(u8)] // REVIEW: You probably don't need this `repr`.  And you probably do want `as_str()`
+            // and core::str::FromStr.  Stub those in.
 pub enum Alpn {
     /// No ALPN selected / unrecognised.
     #[default]
@@ -943,6 +1041,9 @@ pub enum Alpn {
 /// `alpn_val.len()` but kept as a separate field for source-level
 /// parity with the C struct; Phase 3 may collapse to a single
 /// `&'static [u8]` slice.
+// REVIEW: Anywhere you have done something for "source-level parity with C", you should not do
+// that.
+// REVIEW: Delete this struct, and replace it with an as_str() method on Alpn
 #[derive(Debug, Copy, Clone)]
 pub struct AlpnEntry {
     pub alpn_code: Alpn,
@@ -974,6 +1075,7 @@ pub fn is_handshake_error(_error_code: u64) -> bool {
 
 /// C: `error_name`.  Returns a short textual name for
 /// `error_code`, or `None` if unrecognised.
+// REVIEW: Make this a `name()` method on the appropriate error enum
 pub fn error_name(_error_code: u64) -> Option<&'static str> {
     todo!()
 }
@@ -981,12 +1083,14 @@ pub fn error_name(_error_code: u64) -> Option<&'static str> {
 /// C: `tp_name`.  Returns a textual name for transport
 /// parameter `tp_number`.  Takes a raw `u64` (rather than `Tp`)
 /// because the C function answers for unknown / extension IDs too.
+// REVIEW: Move to tp.rs and make it a `name()` method on the TransportParameter enum.
 pub fn tp_name(_tp_number: u64) -> Option<&'static str> {
     todo!()
 }
 
 /// C: `frame_name`.  Returns a textual name for frame type
 /// `frame_type`.
+// REVIEW: Move to frames.rs and make it a `name()` method on the FrameType enum
 pub fn frame_name(_frame_type: u64) -> Option<&'static str> {
     todo!()
 }
@@ -1000,6 +1104,7 @@ pub fn frame_name(_frame_type: u64) -> Option<&'static str> {
 impl Connection {
     /// Negotiated ALPN value (borrowed), or `None` when none was
     /// selected.
+    // REVIEW: Return `Alpn`
     pub fn tls_negotiated_alpn(&self) -> Option<&str> {
         todo!()
     }
@@ -1014,6 +1119,18 @@ impl Connection {
     /// remote_reason, local_application_reason,
     /// remote_application_reason)`; the C signature exposed these as
     /// four `uint64_t*` out-parameters.
+    // REVIEW: It seems like these reasons are indices into some registry.  Make enums for the
+    // reasons and use try_from() in implementation.  So this signature would be something like
+    //
+    //   fn close_reasons(&self) -> (LocalReason, RemoteReason, LocalAppReason, RemoteAppReason)
+    //
+    // Also, is there a reason to provide all four?  It seems like only one would be populated in
+    // any given case.  So you might have a single enum of the following form:
+    //
+    //   enum CloseReason {
+    //      Local(LocalReason), // Including an App case
+    //      Remote(RemoteReason), // Including an App case
+    //   }
     pub fn close_reasons(&self) -> (u64, u64, u64, u64) {
         todo!()
     }
@@ -1249,16 +1366,6 @@ impl Quic {
         todo!()
     }
 
-    /// Install a custom certificate-verification callback.  The
-    /// QUIC context takes ownership of the verifier; `Drop` on the
-    /// box subsumes the C `free_fn` custodial hook.
-    pub fn set_verify_certificate_callback(
-        &mut self,
-        _cb: Box<dyn crate::crypto_provider_api::VerifyCertificate>,
-    ) {
-        todo!()
-    }
-
     /// Toggle whether this context demands client-side TLS
     /// authentication.
     pub fn set_client_authentication(&mut self, _client_authentication: bool) {
@@ -1321,7 +1428,7 @@ impl Quic {
 
     /// Default idle-timeout (in milliseconds) advertised on new
     /// connections.
-    pub fn set_default_idle_timeout(&mut self, _idle_timeout_ms: u64) {
+    pub fn set_default_idle_timeout(&mut self, _idle_timeout: Duration) {
         todo!()
     }
 }
@@ -1353,7 +1460,7 @@ impl Connection {
 
 impl Quic {
     /// Default per-connection handshake-timeout (microseconds).
-    pub fn set_default_handshake_timeout(&mut self, _handshake_timeout_us: u64) {
+    pub fn set_default_handshake_timeout(&mut self, _handshake_timeout: Duration) {
         todo!()
     }
 
@@ -1438,7 +1545,7 @@ impl Quic {
 
     /// Default minimum interval between stateless-reset emissions
     /// (microseconds).
-    pub fn set_default_stateless_reset_min_interval(&mut self, _min_interval_usec: u64) {
+    pub fn set_default_stateless_reset_min_interval(&mut self, _min_interval: Duration) {
         todo!()
     }
 
@@ -1501,7 +1608,7 @@ impl Quic {
     }
 
     /// Default thresholds for the path-quality-update callback.
-    pub fn set_default_quality_update(&mut self, _pacing_rate_delta: u64, _rtt_delta: u64) {
+    pub fn set_default_quality_update(&mut self, _pacing_rate_delta: u64, _rtt_delta: Duration) {
         todo!()
     }
 }
@@ -1542,7 +1649,7 @@ impl Connection {
     }
 
     /// Override the application-set wake time.
-    pub fn set_app_wake_time(&mut self, _app_wake_time: u64) {
+    pub fn set_app_wake_time(&mut self, _app_wake_time: Instant) {
         todo!()
     }
 
@@ -1682,14 +1789,14 @@ impl Connection {
         &mut self,
         _unique_path_id: u64,
         _pacing_rate_delta: u64,
-        _rtt_delta: u64,
+        _rtt_delta: Duration,
     ) -> Result<(), Error> {
         todo!()
     }
 
     /// Subscribe to quality-update events on every path of this
     /// connection.
-    pub fn subscribe_to_quality_update(&mut self, _pacing_rate_delta: u64, _rtt_delta: u64) {
+    pub fn subscribe_to_quality_update(&mut self, _pacing_rate_delta: u64, _rtt_delta: Duration) {
         todo!()
     }
 }
@@ -2290,7 +2397,7 @@ impl Connection {
     }
 
     /// Enable keep-alives at the given interval (microseconds).
-    pub fn enable_keep_alive(&mut self, _interval: u64) {
+    pub fn enable_keep_alive(&mut self, _interval: Duration) {
         todo!()
     }
 
@@ -2389,6 +2496,7 @@ impl Quic {
 
     /// Convenience: select the default algorithm by name (looking up
     /// in the registry).
+    // REVIEW: This method should be fallible, in case the algorithm doesn't exist.
     pub fn set_default_congestion_algorithm_by_name(&mut self, _alg_name: &str) {
         todo!()
     }
@@ -2504,6 +2612,9 @@ pub fn ech_create_config_file(
 
 // ---------------------------------------------------------------------------
 // Base64 helpers.
+
+// REVIEW: Do not translate these methods. Calls to these should be replaced with calls to the
+// appropriate engine in the `base64` crate.
 
 /// C: `base64_decode`.  The C signature output an owned
 /// buffer via `uint8_t** v` + `size_t* v_len`; the Rust translation

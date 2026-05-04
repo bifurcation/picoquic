@@ -18,16 +18,20 @@
 //!   `bool` per field (the "ordinary integer field with
 //!   mask/shift accessors" rule, simplified for the trivial
 //!   1-bit case where `bool` is clearer than `u32` + masks).
-//! * Intrusive list / splay-tree pointers stay as raw
-//!   `*mut`/`*const` because the chains are not owned by their
-//!   container — hash and splay already established
-//!   this convention.  Phase 3 dereferences inside `unsafe { … }`
-//!   with `// SAFETY:` notes.
-//! * `void* tls_master_ctx`, `void* aead_*`, `void* pn_enc/dec`,
-//!   `FILE* F_log`, `struct st_ptls_buffer_t*` etc. stay as
-//!   `*mut c_void` — they reference state owned by external
-//!   libraries (tls, OpenSSL) that has no Rust counterpart in
-//!   v1.
+//! * Phase 1B replaced the C intrusive linked-list / splay /
+//!   hash linkage with arena tokens
+//!   ([`crate::arena::Token`], [`crate::splay::SplayToken`],
+//!   [`crate::hash::HashToken`]).  Every per-collection
+//!   membership is `Option<Token>` on the parent struct; the
+//!   container holds the slot storage.  Zero raw pointers, no
+//!   `unsafe`.
+//! * The C `void* tls_master_ctx`, `void* aead_*`,
+//!   `void* pn_enc/dec`, etc. were external-library handles
+//!   ((picotls, OpenSSL).  Phase 2 replaced them with the
+//!   trait family in [`crate::tls`] (`Session`, `PacketKey`,
+//!   `HeaderKey`, …); backends supply implementations.
+//! * `FILE* F_log` / `FILE* f_binlog` became
+//!   `Option<std::fs::File>` in Phase 1B.
 //! * `struct sockaddr_storage` fields fold into
 //!   [`core::net::SocketAddr`].  Fields that the C code zeros out
 //!   to mean "address not yet set" become `Option<SocketAddr>`.
@@ -57,11 +61,10 @@ use std::path::PathBuf;
 use core::any::Any;
 use core::net::SocketAddr;
 
-use crate::Instant;
 use crate::arena::{Arena, Token};
-use crate::crypto_provider_api::VerifyCertificate;
 use crate::hash::{HashTable, HashToken};
 use crate::splay::{SplayToken, SplayTree};
+use crate::{Duration, Instant};
 
 /// Token into the per-`Quic` connection arena.
 ///
@@ -88,8 +91,8 @@ pub type PathToken = Token<Path>;
 use crate::logger::Logger;
 use crate::{
     AlpnSelect, CongestionAlgorithm, ConnectionId, ConnectionIdCb, Fuzz, LossbitVersion,
-    PacketContext, PathStatus, PmtudPolicy, RESET_SECRET_SIZE, SpinbitVersion, State, StreamDataCb,
-    StreamDirectReceive, TransportParameters,
+    PacketContext, PathStatus, PmtudPolicy, SpinbitVersion, State, StreamDataCb,
+    StreamDirectReceive, TransportParameters, RESET_SECRET_SIZE,
 };
 
 // ---------------------------------------------------------------------------
@@ -110,22 +113,22 @@ pub const MAX_PACKETS_IN_POOL: i32 = 0x2000;
 pub const STORED_IP_MAX: usize = 16;
 pub const INITIAL_FLOW_CONTROL_MAX: u64 = 0x100000;
 
-pub const INITIAL_RTT: u64 = 250_000;
-pub const TARGET_RENO_RTT: u64 = 100_000;
-pub const TARGET_SATELLITE_RTT: u64 = 610_000;
-pub const INITIAL_RETRANSMIT_TIMER: u64 = 250_000;
-pub const INITIAL_MAX_RETRANSMIT_TIMER: u64 = 1_000_000;
-pub const LARGE_RETRANSMIT_TIMER: u64 = 2_000_000;
-pub const MIN_RETRANSMIT_TIMER: u64 = 50_000;
-pub const ACK_DELAY_MAX: u64 = 10_000;
-pub const ACK_DELAY_MAX_DEFAULT: u64 = 25_000;
-pub const ACK_DELAY_MIN: u64 = 1_000;
+pub const INITIAL_RTT: Duration = Duration::from_ticks(250_000);
+pub const TARGET_RENO_RTT: Duration = Duration::from_ticks(100_000);
+pub const TARGET_SATELLITE_RTT: Duration = Duration::from_ticks(610_000);
+pub const INITIAL_RETRANSMIT_TIMER: Duration = Duration::from_ticks(250_000);
+pub const INITIAL_MAX_RETRANSMIT_TIMER: Duration = Duration::from_ticks(1_000_000);
+pub const LARGE_RETRANSMIT_TIMER: Duration = Duration::from_ticks(2_000_000);
+pub const MIN_RETRANSMIT_TIMER: Duration = Duration::from_ticks(50_000);
+pub const ACK_DELAY_MAX: Duration = Duration::from_ticks(10_000);
+pub const ACK_DELAY_MAX_DEFAULT: Duration = Duration::from_ticks(25_000);
+pub const ACK_DELAY_MIN: Duration = Duration::from_ticks(1_000);
 pub const ACK_DELAY_MIN_MAX_VALUE: u64 = 0xFFFFFF;
-pub const RACK_DELAY: u64 = 10_000;
+pub const RACK_DELAY: Duration = Duration::from_ticks(10_000);
 pub const MAX_ACK_DELAY_MAX_MS: u64 = 0x4000;
-pub const TOKEN_DELAY_LONG: u64 = 24 * 60 * 60 * 1_000_000;
-pub const TOKEN_DELAY_SHORT: u64 = 2 * 60 * 1_000_000;
-pub const CID_REFRESH_DELAY: u64 = 5 * 1_000_000;
+pub const TOKEN_DELAY_LONG: Duration = Duration::from_ticks(24 * 60 * 60 * 1_000_000);
+pub const TOKEN_DELAY_SHORT: Duration = Duration::from_ticks(2 * 60 * 1_000_000);
+pub const CID_REFRESH_DELAY: Duration = Duration::from_ticks(5 * 1_000_000);
 pub const MTU_LOSS_THRESHOLD: u64 = 10;
 
 pub const BANDWIDTH_ESTIMATE_MAX: u64 = 10_000_000_000;
@@ -137,13 +140,13 @@ pub const MAX_BANDWIDTH_TIME_INTERVAL_MAX: u64 = 15000;
 pub const MINRTT_MARGIN: u64 = 128;
 pub const MINRTT_THRESHOLD: u64 = 128;
 
-pub const SPURIOUS_RETRANSMIT_DELAY_MAX: u64 = 1_000_000;
+pub const SPURIOUS_RETRANSMIT_DELAY_MAX: Duration = Duration::from_ticks(1_000_000);
 
-pub const MICROSEC_SILENCE_MAX: u64 = 120_000_000;
-pub const MICROSEC_HANDSHAKE_MAX: u64 = 30_000_000;
-pub const MICROSEC_WAIT_MAX: u64 = 10_000_000;
+pub const MICROSEC_SILENCE_MAX: Duration = Duration::from_ticks(120_000_000);
+pub const MICROSEC_HANDSHAKE_MAX: Duration = Duration::from_ticks(30_000_000);
+pub const MICROSEC_WAIT_MAX: Duration = Duration::from_ticks(10_000_000);
 
-pub const MICROSEC_STATELESS_RESET_INTERVAL_DEFAULT: u64 = 100_000;
+pub const MICROSEC_STATELESS_RESET_INTERVAL_DEFAULT: Duration = Duration::from_ticks(100_000);
 
 pub const CWIN_INITIAL: u64 = 10 * MAX_PACKET_SIZE as u64;
 pub const CWIN_MINIMUM: u64 = 2 * MAX_PACKET_SIZE as u64;
@@ -217,6 +220,7 @@ pub const fn bits_clear_in_range(v: u64, min: u64, max: u64, bits: u64) -> bool 
 /// individually named in the C source either.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u64)]
+// REVIEW: Move to a `frames.rs` module, along with encode/decode logic.
 pub enum FrameType {
     Padding = 0,
     Ping = 1,
@@ -279,6 +283,7 @@ pub enum PmtuDiscoveryStatus {
 // ---------------------------------------------------------------------------
 // Supported versions.
 
+// REVIEW: Turn these versions into a repr(u32) enum.
 pub const SEVENTEENTH_INTEROP_VERSION: u32 = 0xFF00001B;
 pub const EIGHTEENTH_INTEROP_VERSION: u32 = 0xFF00001C;
 pub const NINETEENTH_INTEROP_VERSION: u32 = 0xFF00001D;
@@ -317,10 +322,16 @@ pub struct VersionParameters {
 // `supported_versions[]` and `nb_supported_versions`
 // in C — exposed here as a single accessor returning a borrowed
 // slice (length implicit).
+// REVIEW Instead of returning VersionParameters here, just return Version, and have a
+// `parameters()` method that looks up parameters for an algorithm.  The body of the method will
+// just be a `match self` mapping to a set of constants for the version parameters.
 pub fn supported_versions() -> &'static [VersionParameters] {
     todo!()
 }
 
+// REVIEW If the purpose of this is to determine whether a version is supported, then `try_from()`
+// on the enum should suffice.  Or if not all defined enum values are supported, a `supported()`
+// method.
 pub fn get_version_index(_proposed_version: u32) -> i32 {
     todo!()
 }
@@ -358,19 +369,19 @@ pub enum PacketType {
 /// The C struct uses a packed bitfield for eight single-bit
 /// flags; Rust stores them as plain `bool` fields (one per flag).
 pub struct PacketHeader {
-    pub dest_cnx_id: ConnectionId,
+    pub dest_cnx_id: ConnectionId, // REVIEW: `cnd` should be `connection` everywhere
     pub srce_cnx_id: ConnectionId,
-    pub pn: u32,
-    pub vn: u32,
+    pub pn: u32, // REVIEW: Expand abbreviated fields to something semantic.  `packet_number`?
+    pub vn: u32, // REVIEW: `version_number`?  Should be an enum
     pub offset: usize,
-    pub pn_offset: usize,
-    pub ptype: PacketType,
+    pub pn_offset: usize,  // REVIEW: `packet_number_offset`
+    pub ptype: PacketType, // REVIEW: `packet_type`
     pub pnmask: u64,
     pub pn64: u64,
     pub payload_length: usize,
-    pub version_index: i32,
+    pub version_index: i32, // REVIEW: Delete this field if it's not needed
     pub epoch: Epoch,
-    pub pc: PacketContext,
+    pub pc: PacketContext, // REVIEW: `packet_context`
 
     pub key_phase: bool,
     pub spin: bool,
@@ -386,10 +397,10 @@ pub struct PacketHeader {
     /// `token_length` field is gone (it lived only as the slice's
     /// length).
     pub token_bytes: Vec<u8>,
-    pub pl_val: usize,
+    pub pl_val: usize, // REVIEW: semantic name
     /// Token into [`Quic`]'s arena for the local CID this packet
     /// targets, if any.  C: `*mut LocalCnxid` back-pointer.
-    pub l_cid: Option<LocalCnxidToken>,
+    pub l_cid: Option<LocalCnxidToken>, // REVIEW: `local_connection_id`, `LocalConnectionIdToken`
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +421,7 @@ pub trait SpinBitPolicy {
 
 /// One row of the spin-bit policy dispatch table.  C:
 /// `SpinbitDef`.
+// REVIEW: Delete this struct and make the table `[&'static dyn SpinBitPolicy]` if possible.
 pub struct SpinbitDef {
     pub policy: &'static dyn SpinBitPolicy,
 }
@@ -417,6 +429,22 @@ pub struct SpinbitDef {
 /// Replacement for `extern SpinbitDef
 /// spin_function_table[]`.  Returns the policy table as
 /// a borrowed slice — length is implicit.
+// REVIEW: It should be possible to make this a `const` instead of dynamically constructing.
+//
+// mod spinbit { // probably in spinbit.rs
+//
+// struct BasicPolicy;
+// impl SpinBitPolicy for BasicPolicy { ... }
+//
+// const FUNCTION_TABLE: [&'static dyn SpinBitPolicy; 3] = [
+//      &BasicPolicy,
+//      &RandomPolicy,
+//      &NullPolicy,
+// ];
+//
+// }
+//
+// That probably means we eliminate this function and SpinbitDef, and just
 pub fn spin_function_table() -> &'static [SpinbitDef] {
     todo!()
 }
@@ -432,7 +460,7 @@ pub struct StatelessPacket {
     pub length: usize,
     pub receive_time: Instant,
     pub connection_id_log64: u64,
-    pub initial_cid: ConnectionId,
+    pub initial_cid: ConnectionId, // REVIEW: `cid` should be `connection_id` everywhere
     pub ptype: PacketType,
     pub bytes: [u8; MAX_PACKET_SIZE],
 }
@@ -498,7 +526,7 @@ pub struct Packet {
     pub sequence_number: u64,
     pub send_time: Instant,
     pub delivered_prior: u64,
-    pub delivered_time_prior: u64,
+    pub delivered_time_prior: Instant,
     pub delivered_sent_prior: u64,
     pub lost_prior: u64,
     pub inflight_prior: u64,
@@ -566,6 +594,7 @@ pub struct RegisteredToken {
 // ---------------------------------------------------------------------------
 // 0-RTT remembered transport parameters.
 
+// REVIEW: Rename to TransportParameter0RttKind
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Tp0rttKind {
@@ -585,7 +614,8 @@ pub struct StoredTicket {
     /// Owned SNI string (C: `sni: *mut c_char` plus `sni_length`).
     pub sni: Option<String>,
     /// Owned ALPN string (C: `alpn: *mut c_char` plus `alpn_length`).
-    pub alpn: Option<String>,
+    pub alpn: Option<String>, // REVIEW: Use `Alpn`
+    // REVIEW These IP address types should instead use core::net::IpAddr
     /// Owned server IP bytes (C: `ip_addr: *mut u8` plus `ip_addr_length`).
     pub ip_addr: Vec<u8>,
     /// Owned client IP bytes (C: `ip_addr_client: *mut u8` plus
@@ -610,7 +640,7 @@ impl Quic {
         _alpn: Option<&str>,
         _alpn_length: u16,
         _version: u32,
-        _ip_addr: &[u8],
+        _ip_addr: &[u8], // REVIEW same comment about core::net::IpAddr
         _ip_addr_length: u8,
         _ip_addr_client: &[u8],
         _ip_addr_client_length: u8,
@@ -702,6 +732,7 @@ pub struct StoredToken {
     /// Owned retry-token bytes (C: `token: *const u8` plus
     /// `token_length`).
     pub token: Vec<u8>,
+    // REVIEW: core::net::IpAddr
     /// Owned server IP bytes (C: `ip_addr: *const u8` plus
     /// `ip_addr_length`).
     pub ip_addr: Vec<u8>,
@@ -715,7 +746,7 @@ impl Quic {
     pub fn store_token(
         &mut self,
         _sni: Option<&str>,
-        _ip_addr: &[u8],
+        _ip_addr: &[u8], // REVIEW: core::net::IpAddr
         _token: &[u8],
     ) -> Result<(), crate::Error> {
         todo!()
@@ -728,7 +759,7 @@ impl Quic {
     pub fn get_token(
         &mut self,
         _sni: Option<&str>,
-        _ip_addr: &[u8],
+        _ip_addr: &[u8], // REVIEW: core::net::IpAddr
         _mark_used: bool,
     ) -> Result<&[u8], crate::Error> {
         todo!()
@@ -762,10 +793,10 @@ pub struct IssuedTicket {
     pub issued_tickets_membership: Option<HashToken>,
     pub ticket_id: u64,
     pub creation_time: Instant,
-    pub rtt: u64,
+    pub rtt: Duration,
     pub cwin: u64,
     /// 4 bytes for IPv4, 16 for IPv6.
-    pub ip_addr: Vec<u8>,
+    pub ip_addr: Vec<u8>, // REVIEW: core::net::IpAddr
 }
 
 impl Quic {
@@ -774,9 +805,9 @@ impl Quic {
     pub fn remember_issued_ticket(
         &mut self,
         _ticket_id: u64,
-        _rtt: u64,
+        _rtt: Duration,
         _cwin: u64,
-        _ip_addr: &[u8],
+        _ip_addr: &[u8], // REVIEW: core::net::IpAddr
     ) -> Result<(), crate::Error> {
         todo!()
     }
@@ -795,6 +826,7 @@ impl Quic {
 /// turn the binlog into a qlog file.  Returns 0 on success, an
 /// errno-style negative on failure.
 pub trait AutoQlog {
+    // REVIEW: `connection` should not be mutable here.
     fn run(&mut self, connection: &mut Connection) -> i32;
 }
 
@@ -802,6 +834,7 @@ pub trait AutoQlog {
 /// performance log row.  `should_delete` is `true` on connection
 /// teardown.
 pub trait PerformanceLog {
+    // REVIEW: `connection` and `quic` should not be mutable here.
     fn emit(&mut self, quic: &mut Quic, connection: &mut Connection, should_delete: bool) -> i32;
 }
 
@@ -812,6 +845,7 @@ pub trait PerformanceLog {
 /// void* v_memlog, int op_code, uint64_t current_time)` field on
 /// `Connection`.
 pub trait MemLogHook {
+    // REVIEW: `connection` should not be mutable here.
     fn callback(
         &mut self,
         connection: &mut Connection,
@@ -893,7 +927,7 @@ pub struct Quic {
     pub default_spin_policy: SpinbitVersion,
     pub default_lossbit_policy: LossbitVersion,
     pub default_multipath_option: u32,
-    pub default_handshake_timeout: u64,
+    pub default_handshake_timeout: Duration,
     pub crypto_epoch_length_max: u64,
     pub max_simultaneous_logs: u32,
     pub current_number_of_open_logs: u32,
@@ -903,7 +937,7 @@ pub struct Quic {
     pub tentative_max_number_connections: u32,
     pub max_number_connections: u32,
     pub stateless_reset_next_time: Instant,
-    pub stateless_reset_min_interval: u64,
+    pub stateless_reset_min_interval: Duration,
     pub cwin_max: u64,
 
     pub check_token: bool,
@@ -1012,8 +1046,8 @@ pub struct Quic {
     /// Per-version retry-integrity AEAD verification keys.
     pub retry_integrity_verify_ctx: Vec<Box<dyn crate::tls::PacketKey>>,
 
-    pub verify_certificate_callback: Option<Box<dyn VerifyCertificate>>,
-
+    // The C `verify_certificate_callback` is folded into
+    // `tls_callbacks` (the `TlsCallbacks::verify_certificate` hook).
     pub default_tp: TransportParameters,
 
     pub fuzz_fn: Option<Box<dyn Fuzz>>,
@@ -1024,7 +1058,7 @@ pub struct Quic {
 
     pub max_data_limit: u64,
 
-    pub rtt_update_delta: u64,
+    pub rtt_update_delta: Duration,
     pub pacing_rate_update_delta: u64,
 
     /// Open text-log sink, if a textlog is installed on this
@@ -1064,7 +1098,7 @@ impl Quic {
 
     /// Drop registered-token entries that expired before
     /// `expiry_time_max`.
-    pub fn registered_token_clear(&mut self, _expiry_time_max: u64) {
+    pub fn registered_token_clear(&mut self, _expiry_time_max: Instant) {
         todo!()
     }
 }
@@ -1166,6 +1200,10 @@ pub struct StreamHead {
 
 /// True if the stream ID belongs to the client side (client opens
 /// even-numbered streams).
+// REVIEW: These functions are duplicative with functions in lib.rs.
+// REVIEW: The `inline` annotations are unnecessary.  The compiler will figure it out.
+// REVIEW: Let's define a newtype StreamId(pub u64), and then we can define methods on it for
+// client(), bidir(), local(),
 #[inline]
 pub const fn is_client_stream_id(id: u64) -> bool {
     (id & 1) == 0
@@ -1180,6 +1218,7 @@ pub const fn is_bidir_stream_id(id: u64) -> bool {
 
 /// True if the stream ID was opened locally given the connection's
 /// `client_mode` flag (1 ↔ client, 0 ↔ server).
+// REVIEW: No magic ints!  If there are only two values, use an enum stream::Role
 #[inline]
 pub const fn is_local_stream_id(id: u64, client_mode: u64) -> bool {
     ((id ^ client_mode) & 1) != 0
@@ -1187,6 +1226,7 @@ pub const fn is_local_stream_id(id: u64, client_mode: u64) -> bool {
 
 /// Build a stream ID from its 1-based rank, client/server role, and
 /// uni/bidi flag.
+// REVIEW: StreamId::from_parts();
 #[inline]
 pub const fn stream_id_from_rank(rank: u64, client_mode: u64, is_unidir: u64) -> u64 {
     ((rank - 1) << 2) | (is_unidir << 1) | (client_mode ^ 1)
@@ -1194,6 +1234,7 @@ pub const fn stream_id_from_rank(rank: u64, client_mode: u64, is_unidir: u64) ->
 
 /// Recover the 1-based rank from a stream ID.
 #[inline]
+// REVIEW: StreamId::rank();
 pub const fn stream_rank_from_id(id: u64) -> u64 {
     (id + 4) >> 2
 }
@@ -1201,12 +1242,14 @@ pub const fn stream_rank_from_id(id: u64) -> u64 {
 /// Extract the two type bits (bidi/unidir × client/server) from a
 /// stream ID.
 #[inline]
+// REVIEW: StreamId::type() -> (Direction, Role)
 pub const fn stream_type_from_id(id: u64) -> u64 {
     id & 3
 }
 
 /// Next stream ID with the same type bits as `id`.
 #[inline]
+// REVIEW:: StreamId::next_with_same_type() -> Self
 pub const fn next_stream_id_for_type(id: u64) -> u64 {
     id + 4
 }
@@ -1272,7 +1315,7 @@ pub struct AckContextTrack {
 
 pub struct AckContext {
     pub sack_list: SackList,
-    pub time_stamp_largest_received: u64,
+    pub time_stamp_largest_received: Instant,
     pub act: [AckContextTrack; 2],
     pub crypto_rotation_sequence: u64,
 
@@ -1286,6 +1329,7 @@ pub struct AckContext {
 // CID state — local and remote.
 
 pub struct LocalCnxid {
+    // REVIEW: LocalConnectionId
     /// Membership in `Quic::connection_by_id`.  Phase 4 uses this for
     /// O(1) removal when a CID is retired.
     pub connection_by_id_membership: Option<HashToken>,
@@ -1297,6 +1341,7 @@ pub struct LocalCnxid {
 }
 
 pub struct LocalCnxidList {
+    // REVIEW: LocalConnectionIdList
     pub unique_path_id: u64,
     pub local_connection_id_sequence_next: u64,
     pub local_connection_id_retire_before: u64,
@@ -1311,6 +1356,7 @@ pub struct LocalCnxidList {
 }
 
 pub struct RemoteCnxid {
+    // REVIEW: RemoteConnectionId
     pub sequence: u64,
     pub connection_id: ConnectionId,
     pub reset_secret: [u8; RESET_SECRET_SIZE],
@@ -1322,11 +1368,12 @@ pub struct RemoteCnxid {
 }
 
 pub struct RemoteCnxidStash {
+    // REVIEW: RemoteConnectionIdStash
     pub unique_path_id: u64,
     pub retire_connection_id_before: u64,
     /// Remote CIDs stashed for this path.  Replaces the C
     /// `connection_id_stash_first` head + per-node `next` chain.
-    pub cnxids: Vec<RemoteCnxid>,
+    pub cnxids: Vec<RemoteCnxid>, // REVIEW: `connection_ids`
     pub is_in_use: bool,
 }
 
@@ -1335,9 +1382,9 @@ pub struct RemoteCnxidStash {
 
 pub struct Pacing {
     pub rate: u64,
-    pub evaluation_time: u64,
+    pub evaluation_time: Instant,
     pub bucket_max: i64,
-    pub packet_time_microsec: u64,
+    pub packet_time_microsec: Duration,
     pub quantum_max: u64,
     pub rate_max: u64,
     pub bandwidth_pause: i32,
@@ -1431,38 +1478,38 @@ pub struct Path {
     pub nb_losses_reported: u64,
     pub q_square: u64,
 
-    pub max_ack_delay: u64,
-    pub rtt_sample: u64,
-    pub one_way_delay_sample: u64,
-    pub smoothed_rtt: u64,
-    pub rtt_variant: u64,
-    pub retransmit_timer: u64,
-    pub rtt_min: u64,
-    pub rtt_max: u64,
-    pub max_spurious_rtt: u64,
-    pub max_reorder_delay: u64,
+    pub max_ack_delay: Duration,
+    pub rtt_sample: Duration,
+    pub one_way_delay_sample: Duration,
+    pub smoothed_rtt: Duration,
+    pub rtt_variant: Duration,
+    pub retransmit_timer: Duration,
+    pub rtt_min: Duration,
+    pub rtt_max: Duration,
+    pub max_spurious_rtt: Duration,
+    pub max_reorder_delay: Duration,
     pub max_reorder_gap: u64,
-    pub latest_sent_time: u64,
-    pub rtt_packet_previous_period: u64,
-    pub rtt_time_previous_period: u64,
+    pub latest_sent_time: Instant,
+    pub rtt_packet_previous_period: Duration,
+    pub rtt_time_previous_period: Duration,
     pub nb_rtt_estimate_in_period: u64,
-    pub sum_rtt_estimate_in_period: u64,
-    pub max_rtt_estimate_in_period: u64,
-    pub min_rtt_estimate_in_period: u64,
+    pub sum_rtt_estimate_in_period: Duration,
+    pub max_rtt_estimate_in_period: Duration,
+    pub min_rtt_estimate_in_period: Duration,
 
     pub send_mtu: usize,
     pub send_mtu_max_tried: usize,
 
     pub delivered: u64,
     pub delivered_last: u64,
-    pub delivered_time_last: u64,
+    pub delivered_time_last: Instant,
     pub delivered_sent_last: u64,
     pub delivered_limited_index: u64,
     pub delivered_last_packet: u64,
     pub bandwidth_estimate: u64,
     pub bandwidth_estimate_max: u64,
-    pub max_sample_acked_time: u64,
-    pub max_sample_sent_time: u64,
+    pub max_sample_acked_time: Instant,
+    pub max_sample_sent_time: Instant,
     pub max_sample_delivered: u64,
     pub peak_bandwidth_estimate: u64,
 
@@ -1475,9 +1522,9 @@ pub struct Path {
 
     pub cwin: u64,
     pub bytes_in_transit: u64,
-    pub last_sender_limited_time: u64,
-    pub last_cwin_blocked_time: u64,
-    pub last_time_acked_data_frame_sent: u64,
+    pub last_sender_limited_time: Instant,
+    pub last_cwin_blocked_time: Instant,
+    pub last_time_acked_data_frame_sent: Instant,
     /// Per-path state owned by the congestion-control algorithm.
     /// The C side stored an opaque `void*`; in Rust each algo impl
     /// stashes its own typed state in a `Box<dyn Any>` so we get
@@ -1497,16 +1544,16 @@ pub struct Path {
     pub selected: i32,
     pub nb_delay_outliers: i32,
 
-    pub rtt_update_delta: u64,
+    pub rtt_update_delta: Duration,
     pub pacing_rate_update_delta: u64,
-    pub rtt_threshold_low: u64,
-    pub rtt_threshold_high: u64,
+    pub rtt_threshold_low: Duration,
+    pub rtt_threshold_high: Duration,
     pub pacing_rate_threshold_low: u64,
     pub pacing_rate_threshold_high: u64,
     pub receive_rate_threshold_low: u64,
     pub receive_rate_threshold_high: u64,
 
-    pub rtt_min_remote: u64,
+    pub rtt_min_remote: Duration,
     pub cwin_remote: u64,
     pub ip_client_remote: [u8; 16],
     pub ip_client_remote_length: u8,
@@ -1600,14 +1647,14 @@ pub struct Connection {
 
     pub pmtud_policy: PmtudPolicy,
     pub spin_policy: SpinbitVersion,
-    pub idle_timeout: u64,
+    pub idle_timeout: Duration,
     pub local_parameters: TransportParameters,
     pub remote_parameters: TransportParameters,
     pub padding_multiple: u32,
     pub padding_minsize: u32,
-    pub seed_ip_addr: [u8; STORED_IP_MAX],
+    pub seed_ip_addr: [u8; STORED_IP_MAX], // REVIEW: core::net::IpAddr
     pub seed_ip_addr_length: u8,
-    pub seed_rtt_min: u64,
+    pub seed_rtt_min: Duration,
     pub seed_cwin: u64,
 
     pub issued_ticket_id: u64,
@@ -1650,14 +1697,14 @@ pub struct Connection {
     /// Membership in `Quic::connection_wake_tree`.  Phase 4 uses this for
     /// O(1) reschedule (remove + reinsert at the new key).
     pub connection_wake_membership: Option<SplayToken>,
-    pub app_wake_time: u64,
+    pub app_wake_time: Instant,
 
     /// Per-connection TLS state (the handshake state machine,
     /// negotiated keys, etc.).  Replaces the C `tls_ctx: void*`.
     pub tls_ctx: Option<Box<dyn crate::tls::Session>>,
     pub crypto_epoch_length_max: u64,
     pub crypto_epoch_sequence: u64,
-    pub crypto_rotation_time_guard: u64,
+    pub crypto_rotation_time_guard: Duration,
     /// Buffer the TLS layer fills with bytes destined for the peer.
     /// Replaces the C `tls_sendbuf: void*`; in Rust it's just an
     /// owned `Vec<u8>` the caller drains.
@@ -1696,12 +1743,12 @@ pub struct Connection {
     pub nb_spurious: u64,
     pub nb_crypto_key_rotations: u64,
     pub nb_packet_holes_inserted: u64,
-    pub max_ack_delay_remote: u64,
+    pub max_ack_delay_remote: Duration,
     pub max_ack_gap_remote: u64,
-    pub max_ack_delay_local: u64,
+    pub max_ack_delay_local: Duration,
     pub max_ack_gap_local: u64,
-    pub min_ack_delay_remote: u64,
-    pub min_ack_delay_local: u64,
+    pub min_ack_delay_remote: Duration,
+    pub min_ack_delay_local: Duration,
     pub cwin_blocked: bool,
     pub flow_blocked: bool,
     pub stream_blocked: bool,
@@ -1709,7 +1756,7 @@ pub struct Connection {
     pub congestion_alg: Option<&'static CongestionAlgorithm>,
     pub congestion_alg_option_string: Option<String>,
 
-    pub rtt_update_delta: u64,
+    pub rtt_update_delta: Duration,
     pub pacing_rate_update_delta: u64,
     pub pacing_rate_signalled: u64,
     pub pacing_increase_threshold: u64,
@@ -1770,7 +1817,7 @@ pub struct Connection {
     pub datagram_conflicts_count: i32,
     pub datagram_conflicts_max: i32,
 
-    pub keep_alive_interval: u64,
+    pub keep_alive_interval: Duration,
 
     /// Active paths.  Replaces the C `path: *mut *mut Path` array
     /// + `nb_paths` / `nb_path_alloc` length pair.
@@ -1801,10 +1848,10 @@ pub struct Connection {
 
     pub ack_frequency_sequence_local: u64,
     pub ack_gap_local: u64,
-    pub ack_frequency_delay_local: u64,
+    pub ack_frequency_delay_local: Duration,
     pub ack_frequency_sequence_remote: u64,
     pub ack_gap_remote: u64,
-    pub ack_delay_remote: u64,
+    pub ack_delay_remote: Duration,
     pub ack_reordering_threshold_remote: u64,
 
     /// Stateless packets queued for sooner-than-normal send.
@@ -1851,9 +1898,9 @@ impl core::fmt::Debug for Path {
 
 pub struct PacketDataPathAck {
     pub acked_path: Option<PathToken>,
-    pub largest_sent_time: u64,
+    pub largest_sent_time: Instant,
     pub delivered_prior: u64,
-    pub delivered_time_prior: u64,
+    pub delivered_time_prior: Instant,
     pub delivered_sent_prior: u64,
     pub lost_prior: u64,
     pub inflight_prior: u64,
@@ -1864,8 +1911,8 @@ pub struct PacketDataPathAck {
 }
 
 pub struct PacketData {
-    pub last_time_stamp_received: u64,
-    pub last_ack_delay: u64,
+    pub last_time_stamp_received: Instant,
+    pub last_ack_delay: Duration,
     pub nb_path_ack: i32,
     pub path_ack: [PacketDataPathAck; NB_PATH_TARGET],
 }
@@ -1940,6 +1987,7 @@ pub fn create_local_cnx_id(
 // Tuple/path management.
 
 /// Add a tuple to `path_x.tuples` and return its index there.
+// REVIEW: It seems like these should be methods on `Path`.
 pub fn create_tuple(
     _path_x: &mut Path,
     _local_addr: Option<&SocketAddr>,
@@ -1949,6 +1997,7 @@ pub fn create_tuple(
     todo!()
 }
 
+// REVIEW: Method on `Path`
 pub fn delete_demoted_tuples(
     _connection: &mut Connection,
     _current_time: Instant,
@@ -1958,16 +2007,19 @@ pub fn delete_demoted_tuples(
 }
 
 /// Remove the tuple at `path_x.tuples[index]`.  C: `delete_tuple`.
+// REVIEW: Method on `Path`
 pub fn delete_tuple(_path_x: &mut Path, _index: usize, _is_deleting_path: bool) {
     todo!()
 }
 
 /// Move the tuple at `index` to the head of `path_x.tuples`.  C:
 /// `set_first_tuple`.
+// REVIEW: Method on `Path`
 pub fn set_first_tuple(_path_x: &mut Path, _index: usize) {
     todo!()
 }
 
+// REVIEW: Method on `Path`.  Path::new
 pub fn create_path(
     _connection: &mut Connection,
     _start_time: Instant,
@@ -1979,10 +2031,13 @@ pub fn create_path(
     todo!()
 }
 
+// REVIEW: Method on `Connection`
 pub fn register_path(_connection: &mut Connection, _path_x: &mut Path) {
     todo!()
 }
 
+// REVIEW: Method on `Connection`.
+// REVIEW: i32 return value has strong code smell, especially with all the `mut` parameters.  Seems like you probably need a semantic return value Result<Something>.
 pub fn find_incoming_path(
     _connection: &mut Connection,
     _ph: &mut PacketHeader,
@@ -1995,6 +2050,8 @@ pub fn find_incoming_path(
     todo!()
 }
 
+// REVIEW: Method on `Connection`
+// REVIEW: i32 return value has strong code smell, especially with all the `mut` parameters.  Seems like you probably need a semantic return value Result<Something>.
 pub fn prepare_path_control_packet(
     _connection: &mut Connection,
     _path_x: &mut Path,
@@ -2009,6 +2066,7 @@ pub fn prepare_path_control_packet(
     todo!()
 }
 
+// REVIEW: Method on `Connection`
 pub fn prepare_path_challenge_frames<'a>(
     _connection: &mut Connection,
     _path_x: &mut Path,
@@ -2022,6 +2080,7 @@ pub fn prepare_path_challenge_frames<'a>(
     todo!()
 }
 
+// REVIEW: Method on `Connection`
 pub fn select_next_path_tuple(
     _connection: &mut Connection,
     _current_time: Instant,
@@ -2061,12 +2120,20 @@ impl Connection {
     }
 
     /// Sweep abandoned paths and free any whose teardown is complete.
-    pub fn delete_abandoned_paths(&mut self, _current_time: Instant, _next_wake_time: &mut Instant) {
+    pub fn delete_abandoned_paths(
+        &mut self,
+        _current_time: Instant,
+        _next_wake_time: &mut Instant,
+    ) {
         todo!()
     }
 }
 
-pub fn set_tuple_challenge(_tuple: &mut Tuple, _current_time: Instant, _use_constant_challenges: i32) {
+pub fn set_tuple_challenge(
+    _tuple: &mut Tuple,
+    _current_time: Instant,
+    _use_constant_challenges: i32,
+) {
     todo!()
 }
 
@@ -2402,7 +2469,7 @@ impl Pacing {
         _pacing_rate: f64,
         _quantum: u64,
         _send_mtu: usize,
-        _smoothed_rtt: u64,
+        _smoothed_rtt: Duration,
         _signalled_path: Option<PathToken>,
     ) {
         todo!()
@@ -2414,7 +2481,7 @@ impl Pacing {
         _slow_start: i32,
         _cwin: u64,
         _send_mtu: usize,
-        _smoothed_rtt: u64,
+        _smoothed_rtt: Duration,
         _signalled_path: Option<PathToken>,
     ) {
         todo!()
@@ -2425,6 +2492,10 @@ impl Pacing {
         todo!()
     }
 }
+
+// REVIEW: IN GENERAL: There is a bunch of non-idiomatic translation in this file.  Do a re-review
+// to see (a) when free functions should be struct methods, (b) when out parameters are used
+// instead of return values, and (c) when parameters are unnecessarily mutable.
 
 pub fn update_pacing_data(_path_x: &mut Path, _slow_start: i32) {
     todo!()
@@ -2443,10 +2514,12 @@ pub fn is_sending_authorized_by_pacing(
     todo!()
 }
 
+// REVIEW: Method on `Path`
 pub fn update_pacing_rate(_path_x: &mut Path, _pacing_rate: f64, _quantum: u64) {
     todo!()
 }
 
+// REVIEW: Method on `Path`
 pub fn refresh_path_quality_thresholds(_path_x: &mut Path) {
     todo!()
 }
@@ -2462,6 +2535,9 @@ pub fn reinsert_by_wake_time(_quic: &mut Quic, _connection: &mut Connection, _ne
 // ---------------------------------------------------------------------------
 // Integer parsing / formatting helpers (translated from `PARSE_*` and
 // `format_*`).
+
+// REVIEW: These integer functions should not do manual encoding, and should instead use
+// `to_be_bytes` / `from_be_bytes`.
 
 /// Read a big-endian `u16` from the first two bytes of `b`.
 #[inline]
@@ -2992,7 +3068,7 @@ pub fn process_ack_of_ack_frame(
 
 pub fn compute_ack_gap_and_delay(
     _connection: &mut Connection,
-    _rtt: u64,
+    _rtt: Duration,
     _remote_min_ack_delay: u64,
     _data_rate: u64,
     _ack_gap: &mut u64,
@@ -3003,9 +3079,9 @@ pub fn compute_ack_gap_and_delay(
 
 pub fn seed_bandwidth(
     _connection: &mut Connection,
-    _rtt_min: u64,
+    _rtt_min: Duration,
     _cwin: u64,
-    _ip_addr: &[u8],
+    _ip_addr: &[u8], // REVIEW: core::net::IpAddr
     _ip_addr_length: u8,
 ) {
     todo!()

@@ -7,23 +7,16 @@
 //!
 //! Phase 1: signatures only — every function body is `todo!()`.
 
-use crate::Instant;
 use crate::internal::{Connection, Path};
-use crate::{CongestionNotification, PerAckState};
+use crate::{CongestionNotification, Duration, Instant, PerAckState};
 
 // ---------------------------------------------------------------------------
 // Tunable constants (`#define`s in the header).
 
 /// Window size of the min/max RTT filter, counted in RTT
-/// measurements (one "sample" = one observed RTT, microseconds in
-/// the C source).  Doubles as the threshold of consecutive
+/// measurements.  Doubles as the threshold of consecutive
 /// RTT-excess measurements that trigger slow-start exit.  Used as
 /// an array dimension below, hence `usize`.
-///
-/// REVIEW(open): the RTT values themselves are still raw `u64`
-/// microseconds for source-level parity with the C body.  Phase 2
-/// (the clock-trait abstraction) introduces a typed Duration
-/// (`fugit::Duration` or equivalent) and these fields move with it.
 pub const MIN_MAX_RTT_SCOPE: usize = 7;
 
 /// Lookback window for the smoothed packet-loss filter, in packets.
@@ -57,12 +50,11 @@ pub const HYSTART_PP_CSS_ROUNDS: u64 = 5;
 /// Type deviations from C: `is_init` (`int` → `bool`);
 /// `sample_current` (`int` → `usize`, used as array index);
 /// `nb_rtt_excess` (`int` → `u32`, always non-negative; safety wins).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MinMaxRtt {
-    /// `None` until the first RTT measurement arrives.  Phase 2:
-    /// typed [`Instant`] (microseconds since application epoch).
+    /// `None` until the first RTT measurement arrives.
     pub last_rtt_sample_time: Option<Instant>,
-    pub rtt_filtered_min: u64,
+    pub rtt_filtered_min: Duration,
     pub nb_rtt_excess: u32,
     pub sample_current: usize,
     pub is_init: bool,
@@ -75,15 +67,34 @@ pub struct MinMaxRtt {
     /// Same fixed-point convention as [`Self::smoothed_bytes_sent_16`].
     pub smoothed_bytes_lost_16: u64,
     pub last_lost_packet_number: u64,
-    pub sample_min: u64,
-    pub sample_max: u64,
-    pub samples: [u64; MIN_MAX_RTT_SCOPE],
+    pub sample_min: Duration,
+    pub sample_max: Duration,
+    pub samples: [Duration; MIN_MAX_RTT_SCOPE],
+}
+
+impl Default for MinMaxRtt {
+    fn default() -> Self {
+        Self {
+            last_rtt_sample_time: None,
+            rtt_filtered_min: Duration::from_ticks(0),
+            nb_rtt_excess: 0,
+            sample_current: 0,
+            is_init: false,
+            smoothed_drop_rate: 0.0,
+            smoothed_bytes_sent_16: 0,
+            smoothed_bytes_lost_16: 0,
+            last_lost_packet_number: 0,
+            sample_min: Duration::from_ticks(0),
+            sample_max: Duration::from_ticks(0),
+            samples: [Duration::from_ticks(0); MIN_MAX_RTT_SCOPE],
+        }
+    }
 }
 
 impl MinMaxRtt {
     /// Append `rtt` to the rolling sample window and recompute
     /// `sample_min` / `sample_max`.  C: `picoquic_cc_filter_rtt_min_max`.
-    pub fn filter_rtt_min_max(&mut self, _rtt: u64) {
+    pub fn filter_rtt_min_max(&mut self, _rtt: Duration) {
         todo!()
     }
 
@@ -119,8 +130,8 @@ impl MinMaxRtt {
     /// was an `int` in C; promoted to `bool`.
     pub fn hystart_test(
         &mut self,
-        _rtt_measurement: u64,
-        _packet_time: u64,
+        _rtt_measurement: Duration,
+        _packet_time: Instant,
         _current_time: Instant,
         _is_one_way_delay_enabled: bool,
     ) -> bool {
@@ -133,69 +144,97 @@ impl MinMaxRtt {
 //
 // These are pure reads in the C source, so the receivers are `&self`
 // rather than `&mut self`.  Each was a free function whose primary
-// argument is a connection or path; per the Phase 1A rules they fold
-// into inherent methods on `Connection` / `Path`.  Inherent impls land in
-// this module because the methods belong with the rest of the
-// congestion-control surface; the structs themselves stay in
-// `crate::internal`.
+// argument is a connection or path; the surface lifts into two
+// capability traits (one rooted on `Connection`, one on `Path`) so
+// callers opt into them with `use crate::cc_common::{ConnectionCc,
+// PathCc}` and the `cc_*` prefix on the C names drops — the trait
+// names already say "this is the cc surface".
 
-impl Connection {
+/// Connection-rooted congestion-control read accessors.  C: the
+/// `picoquic_cc_get_*` family that takes a connection plus a path.
+pub trait ConnectionCc {
     /// Next-to-send packet sequence number for the relevant packet
     /// context — per-path under multipath, otherwise the connection's
     /// application context.  C: `picoquic_cc_get_sequence_number`.
-    pub fn cc_sequence_number(&self, _path_x: &Path) -> u64 {
-        todo!()
-    }
+    fn sequence_number(&self, path_x: &Path) -> u64;
 
     /// Highest acknowledged packet sequence number for the relevant
     /// packet context.  C: `picoquic_cc_get_ack_number`.
-    pub fn cc_ack_number(&self, _path_x: &Path) -> u64 {
-        todo!()
-    }
+    fn ack_number(&self, path_x: &Path) -> u64;
 
     /// Wall-clock time at which the most recent ACK was received for
     /// the relevant packet context.  C: `picoquic_cc_get_ack_sent_time`.
-    pub fn cc_ack_sent_time(&self, _path_x: &Path) -> u64 {
+    fn ack_sent_time(&self, path_x: &Path) -> Instant;
+}
+
+impl ConnectionCc for Connection {
+    fn sequence_number(&self, _path_x: &Path) -> u64 {
+        todo!()
+    }
+
+    fn ack_number(&self, _path_x: &Path) -> u64 {
+        todo!()
+    }
+
+    fn ack_sent_time(&self, _path_x: &Path) -> Instant {
         todo!()
     }
 }
 
-impl Path {
+/// Path-rooted congestion-control read accessors.  C: the
+/// `picoquic_cc_*` family that takes a path (and reaches the
+/// connection through the path's back-pointer when needed).
+pub trait PathCc {
     /// Lowest sequence number not yet acknowledged on this path: the
     /// pending-list head if any, else `highest_acknowledged + 1`.
-    /// C: `picoquic_cc_get_lowest_not_ack` (reaches the connection
-    /// through the path's `connection` back-pointer, so no `connection` argument).
-    pub fn cc_lowest_not_ack(&self) -> u64 {
-        todo!()
-    }
-
-    // -----------------------------------------------------------------
-    // Slow-start window-growth helpers.  Each returns the number of
-    // bytes by which CWIN should be increased.  None mutate path
-    // state, hence `&self`.
+    /// C: `picoquic_cc_get_lowest_not_ack`.
+    fn lowest_not_ack(&self) -> u64;
 
     /// Bytes to add to CWIN while in classic slow start.  Returns
     /// `nb_delivered` if the path is currently CWIN-blocked, else
     /// zero (no growth without back-pressure).
     /// C: `picoquic_cc_slow_start_increase`.
-    pub fn cc_slow_start_increase(&self, _nb_delivered: u64) -> u64 {
-        todo!()
-    }
+    fn slow_start_increase(&self, nb_delivered: u64) -> u64;
 
     /// Bytes to add to CWIN, with HyStart++ Conservative Slow Start
     /// support: when `in_css` is true, growth is divided by
     /// [`HYSTART_PP_CSS_GROWTH_DIVISOR`].
     /// C: `picoquic_cc_slow_start_increase_ex`.
-    pub fn cc_slow_start_increase_ex(&self, _nb_delivered: u64, _in_css: bool) -> u64 {
-        todo!()
-    }
+    fn slow_start_increase_ex(&self, nb_delivered: u64, in_css: bool) -> u64;
 
     /// Bytes to add to CWIN, with Prague-style ECN damping.
     /// `prague_alpha` is an integer fraction over 1024 (so `0` means
     /// no ECN signal and the call falls back to
-    /// [`Self::cc_slow_start_increase_ex`]).
+    /// [`Self::slow_start_increase_ex`]).
     /// C: `picoquic_cc_slow_start_increase_ex2`.
-    pub fn cc_slow_start_increase_ex2(
+    fn slow_start_increase_ex2(&self, nb_delivered: u64, in_css: bool, prague_alpha: u64) -> u64;
+
+    /// Bandwidth-derived target CWIN: returns the half-BDP estimate
+    /// if it exceeds the current CWIN, otherwise the current CWIN.
+    /// C: `picoquic_cc_update_target_cwin_estimation`.
+    fn update_target_cwin_estimation(&self) -> u64;
+
+    /// CWIN floor for long-RTT paths: scales `CWIN_INITIAL` by the
+    /// path's `rtt_min` (capped at the satellite RTT target).
+    /// Returns the floor if it exceeds the current CWIN, otherwise
+    /// the current CWIN.  C: `picoquic_cc_update_cwin_for_long_rtt`.
+    fn update_cwin_for_long_rtt(&self) -> u64;
+}
+
+impl PathCc for Path {
+    fn lowest_not_ack(&self) -> u64 {
+        todo!()
+    }
+
+    fn slow_start_increase(&self, _nb_delivered: u64) -> u64 {
+        todo!()
+    }
+
+    fn slow_start_increase_ex(&self, _nb_delivered: u64, _in_css: bool) -> u64 {
+        todo!()
+    }
+
+    fn slow_start_increase_ex2(
         &self,
         _nb_delivered: u64,
         _in_css: bool,
@@ -204,18 +243,11 @@ impl Path {
         todo!()
     }
 
-    /// Bandwidth-derived target CWIN: returns the half-BDP estimate
-    /// if it exceeds the current CWIN, otherwise the current CWIN.
-    /// C: `picoquic_cc_update_target_cwin_estimation`.
-    pub fn cc_update_target_cwin_estimation(&self) -> u64 {
+    fn update_target_cwin_estimation(&self) -> u64 {
         todo!()
     }
 
-    /// CWIN floor for long-RTT paths: scales `CWIN_INITIAL` by the
-    /// path's `rtt_min` (capped at the satellite RTT target).
-    /// Returns the floor if it exceeds the current CWIN, otherwise
-    /// the current CWIN.  C: `picoquic_cc_update_cwin_for_long_rtt`.
-    pub fn cc_update_cwin_for_long_rtt(&self) -> u64 {
+    fn update_cwin_for_long_rtt(&self) -> u64 {
         todo!()
     }
 }

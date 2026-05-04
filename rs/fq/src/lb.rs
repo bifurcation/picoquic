@@ -99,9 +99,6 @@ pub struct Config {
     pub nonce_length: usize,
     pub connection_id_length: usize,
     pub server_id: u64,
-    // REVIEW(open): the encryption key naturally belongs inside the AES context (newtype around
-    // `[u8; 16]` exposed as an associated type of `Aes128EcbContext`).  Land that when the
-    // crypto provider abstraction (Phase 2) defines the AES wrapper for real.
     pub cid_encryption_key: [u8; 16],
 }
 
@@ -130,11 +127,12 @@ impl Config {
 /// [`crate::ConnectionIdCb`] hook.
 /// C: `load_balancer_cid_context_t`.
 ///
-/// REVIEW(open): the AES contexts below are `Option` to match the C
-/// "uninitialised" intermediate state during parsing.  Once the
-/// crypto provider abstraction (Phase 2) lands, switch construction
-/// to a builder so the contexts are always set on a finished
-/// `ConnectionIdContext` and drop the `Option` wrapper.
+/// The two AES contexts are method-dependent: [`ConnectionIdMethod::Clear`]
+/// uses neither, [`ConnectionIdMethod::StreamCipher`] uses only the
+/// encryption context (the verify path re-encrypts the nonce and XORs),
+/// and [`ConnectionIdMethod::BlockCipher`] uses both.  Hence the
+/// `Option<Box<…>>` wrappers — they encode method-dependence rather
+/// than an init-time gap.
 #[derive(Debug, Default)]
 pub struct ConnectionIdContext {
     pub method: ConnectionIdMethod,

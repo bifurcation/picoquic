@@ -622,101 +622,17 @@ pub fn constant_time_memcmp(_x: &[u8], _y: &[u8]) -> Ordering {
     todo!()
 }
 
-// ---------------------------------------------------------------------------
-// Threading primitives — out-of-scope-for-v1 placeholders.
+// The C `picoquic_thread_t` / `picoquic_mutex_t` / `picoquic_event_t`
+// portability wrappers around pthread / Win32 are gone.  Rust call
+// sites use the standard library directly: `std::thread::JoinHandle`
+// for a thread handle, `std::sync::Mutex<T>` for a lock paired with
+// the value it guards, and `(Mutex<bool>, Condvar)` (or a higher-level
+// channel from `std::sync::mpsc`) where C used `picoquic_event_t`.
 //
-// `TRANSLATE_PLAN.md` explicitly drops threading from v1; these
-// types and functions exist purely so call sites compile.  Phase 3
-// will either remove them entirely (single-threaded scope) or
-// route them through `std::thread` / `parking_lot` once v2 lands.
-
-/// Opaque thread handle.  Out-of-scope-for-v1 placeholder.
-pub struct Thread {
-    _opaque: [u8; 0],
-}
-
-/// Opaque mutex.  Out-of-scope-for-v1 placeholder.
-pub struct Mutex {
-    _opaque: [u8; 0],
-}
-
-/// Opaque condition-variable wrapper.  Out-of-scope-for-v1
-/// placeholder.  C: `typedef struct st_picoquic_event_t { ... }
-/// picoquic_event_t;` — a `pthread_mutex_t` + `pthread_cond_t`
-/// pair on Linux.
-pub struct Event {
-    _opaque: [u8; 0],
-}
-
-/// Trait counterpart of the C `picoquic_thread_fn` typedef.  v1
-/// keeps the trait shape so signatures land; the bodies are
-/// `todo!()` and the trait is unused in the single-threaded scope.
-pub trait ThreadFn {
-    /// Thread entry point.  C: `void* (*)(void* lpParam)`.
-    fn run(&mut self);
-}
-
-impl Thread {
-    /// Spawn a thread.  Out-of-scope-for-v1 — see module docstring.
-    pub fn create(&mut self, _thread_fn: Box<dyn ThreadFn>) -> Result<(), Error> {
-        todo!()
-    }
-
-    /// Wait for a thread to exit.  Out-of-scope-for-v1.
-    pub fn wait(self) -> Result<(), Error> {
-        todo!()
-    }
-
-    /// Detach / release a thread handle.  Out-of-scope-for-v1.
-    pub fn delete(&mut self) {
-        todo!()
-    }
-}
-
-impl Mutex {
-    /// Initialize a mutex.  Out-of-scope-for-v1.
-    pub fn create(&mut self) -> Result<(), Error> {
-        todo!()
-    }
-
-    /// Tear down a mutex.  Out-of-scope-for-v1.
-    pub fn delete(&mut self) -> Result<(), Error> {
-        todo!()
-    }
-
-    /// Lock a mutex.  Out-of-scope-for-v1.
-    pub fn lock(&mut self) -> Result<(), Error> {
-        todo!()
-    }
-
-    /// Unlock a mutex.  Out-of-scope-for-v1.
-    pub fn unlock(&mut self) -> Result<(), Error> {
-        todo!()
-    }
-}
-
-impl Event {
-    /// Initialize an event.  Out-of-scope-for-v1.
-    pub fn create(&mut self) -> Result<(), Error> {
-        todo!()
-    }
-
-    /// Tear down an event.  Out-of-scope-for-v1.
-    pub fn delete(&mut self) {
-        todo!()
-    }
-
-    /// Signal an event.  Out-of-scope-for-v1.
-    pub fn signal(&mut self) -> Result<(), Error> {
-        todo!()
-    }
-
-    /// Wait for an event to be signalled, with a timeout in
-    /// microseconds.  Out-of-scope-for-v1.
-    pub fn wait(&mut self, _microsec_wait: u64) -> Result<(), Error> {
-        todo!()
-    }
-}
+// Likewise the `picoquic_thread_fn` typedef has no Rust counterpart —
+// `std::thread::spawn` already takes an arbitrary `FnOnce() + Send`
+// closure, which subsumes the C "function pointer + void* arg"
+// pattern.
 
 // ---------------------------------------------------------------------------
 // Random-number helpers.

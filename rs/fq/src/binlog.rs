@@ -14,8 +14,9 @@
 //!    `FILE*` or `connection->f_binlog` pulled from the connection.  The
 //!    Rust split mirrors that: the three file-only writers ([`pdu`],
 //!    [`packet`], [`tls_ticket`]) are free functions on a [`File`]
-//!    sink, and the rest hang as inherent methods on [`Connection`] (they
-//!    pull the file handle from `connection.f_binlog` themselves).
+//!    sink, and the rest hang on the [`Binlog`] trait implemented for
+//!    [`Connection`] (they pull the file handle from
+//!    `connection.f_binlog` themselves).
 //!
 //! Phase 1 contract: signatures only — every body is `todo!()`.
 //! Bodies and the empty-test module land in later phases.
@@ -30,9 +31,10 @@
 //!   [`crate::textlog`] does not apply here.
 //! * `Quic*` / `Connection*` — every observed caller passes a non-NULL
 //!   handle and the body mutates internal state (`quic->bin_log_fns`,
-//!   `connection->f_binlog`, `quic->binlog_dir`).  Free functions whose
-//!   first argument was one of these become inherent methods on the
-//!   corresponding type.
+//!   `connection->f_binlog`, `quic->binlog_dir`).  Free functions
+//!   keyed on `Quic*` become inherent methods on [`Quic`]; those keyed
+//!   on `Connection*` become methods on the [`Binlog`] trait
+//!   (implemented for [`Connection`]).
 //! * `Path*` — only ever accessed inside
 //!   `binlog_get_path_id(connection, path_x)`, which dereferences `path_x`
 //!   to read `unique_path_id`.  Every observed caller passes a
@@ -42,19 +44,19 @@
 //! * `const ConnectionId*` (in [`pdu`] / [`packet`]) →
 //!   `&ConnectionId`.  The C contract is "must be non-NULL"; every
 //!   caller passes `&connection->initial_connection_id`.
-//! * `ConnectionId* dcid` (in [`Connection::binlog_packet_lost`]) is
+//! * `ConnectionId* dcid` (in [`Binlog::packet_lost`]) is
 //!   nullable per `loss_recovery.c` — when no remote CID is known
 //!   the C call site passes NULL and the body emits a single zero
 //!   length byte.  Maps to `Option<&ConnectionId>`.  The C signature
 //!   drops `const` but the body only reads through the pointer, so
 //!   the Rust equivalent stays a shared borrow.
-//! * `packet_header* ph` (in [`Connection::binlog_dropped_packet`],
-//!   [`Connection::binlog_outgoing_packet`]) — the body only *reads*
+//! * `packet_header* ph` (in [`Binlog::dropped_packet`],
+//!   [`Binlog::outgoing_packet`]) — the body only *reads*
 //!   `ph->ptype` in the dropped path and reconstructs a fresh header
-//!   in the outgoing path.  In [`Connection::binlog_outgoing_packet`] the
+//!   in the outgoing path.  In [`Binlog::outgoing_packet`] the
 //!   parsed-header buffer is constructed locally, so no pointer
 //!   crosses the API boundary.  In [`packet`] /
-//!   [`Connection::binlog_dropped_packet`] we map `ph` to `&PacketHeader`
+//!   [`Binlog::dropped_packet`] we map `ph` to `&PacketHeader`
 //!   (immutable borrow) — matching the unified-log trait shape.
 //! * `ConnectionId connection_id` (in [`tls_ticket`]) is `Copy` and
 //!   pass-by-value, mirroring the C ABI.
@@ -63,11 +65,11 @@
 //!   established in [`crate::logger`].
 //! * `const uint8_t* + size_t` argument pairs collapse to `&[u8]`
 //!   (`bytes`/`bytes_max` in [`packet`], `params`/`param_length` in
-//!   [`Connection::binlog_transport_extension`], `ticket`/`ticket_length`
+//!   [`Binlog::transport_extension`], `ticket`/`ticket_length`
 //!   in [`tls_ticket`], `sni`/`sni_len` and `alpn`/`alpn_len` in
-//!   [`Connection::binlog_negotiated_alpn`]).  An empty slice models the C
+//!   [`Binlog::negotiated_alpn`]).  An empty slice models the C
 //!   `(NULL, 0)` callers cleanly.
-//! * [`Connection::binlog_outgoing_packet`] carries *two* buffers: the
+//! * [`Binlog::outgoing_packet`] carries *two* buffers: the
 //!   unencrypted `bytes` (length passed separately as `length`) and
 //!   the encrypted `send_buffer` (length passed separately as
 //!   `send_length`).  Each pair collapses to one `&[u8]`.  The
@@ -84,7 +86,7 @@
 //!   `Some(path)` installs the vtable and copies the directory name
 //!   into the QUIC context; `None` leaves the directory cleared
 //!   while still wiring up the vtable.
-//! * `char const* trigger` (in [`Connection::binlog_packet_lost`]) is
+//! * `char const* trigger` (in [`Binlog::packet_lost`]) is
 //!   always a non-NULL static string literal at the call sites
 //!   grepped in `loss_recovery.c`, so it maps to `&str`.
 //!
@@ -97,8 +99,8 @@ use std::path::Path as FsPath;
 
 use core::net::SocketAddr;
 
-use crate::Instant;
 use crate::Error;
+use crate::Instant;
 use crate::internal::{Connection, PacketHeader, PacketType, Path};
 use crate::{ConnectionId, Quic};
 
@@ -210,44 +212,36 @@ pub fn tls_ticket(_f: &mut File, _cnx_id: ConnectionId, _ticket: &[u8]) {
 //
 // Each method pulls the file handle from `connection.f_binlog` and
 // delegates to one of the low-level writers above (or composes
-// several records).  The `binlog_` prefix on each method name
-// keeps the binary-trace API distinct from the unified-log
-// dispatch methods (`connection.log_*`) on the same type.
+// several records).  Bundling them as a [`Binlog`] trait (rather
+// than inherent methods on `Connection`) lets callers opt into the
+// capability with `use crate::binlog::Binlog`, scopes the names to
+// the trait, and keeps the names short — no `binlog_` prefix
+// needed since the trait disambiguates.
 
-// REVIEW(open): replace these `impl Connection` blocks with a local
-// trait (`Binlog`) implemented on `Connection`, so callers can opt into
-// the capability and the `binlog_` prefix can drop.  Same shape
-// applies to the per-Connection blocks in `logger`, `qlog`, and the
-// `cc_*` accessors in `cc_common`.  Land it once Phase 2 has
-// settled the dependency-trait conventions.
-impl Connection {
+/// Binary trace recording for a [`Connection`].  Each method writes
+/// one record (or composes a few records) into the connection's
+/// `f_binlog` file; bringing the trait into scope opts the caller
+/// into the capability.  C: the per-event writers in
+/// `quic/binlog.c`.
+pub trait Binlog {
     /// Report that a packet was dropped due to some error.
     ///
     /// C: `void binlog_dropped_packet(Connection*, Path*,
     /// packet_header*, size_t, int, uint64_t)`.
-    pub fn binlog_dropped_packet(
+    fn dropped_packet(
         &mut self,
-        _path_x: &mut Path,
-        _ph: &PacketHeader,
-        _packet_size: usize,
-        _err: i32,
-        _current_time: Instant,
-    ) {
-        todo!()
-    }
+        path_x: &mut Path,
+        ph: &PacketHeader,
+        packet_size: usize,
+        err: i32,
+        current_time: Instant,
+    );
 
     /// Report that a packet was buffered waiting for decryption.
     ///
     /// C: `void binlog_buffered_packet(Connection*, Path*,
     /// packet_type_enum, uint64_t)`.
-    pub fn binlog_buffered_packet(
-        &mut self,
-        _path_x: &mut Path,
-        _ptype: PacketType,
-        _current_time: Instant,
-    ) {
-        todo!()
-    }
+    fn buffered_packet(&mut self, path_x: &mut Path, ptype: PacketType, current_time: Instant);
 
     /// Binary alternative to `log_outgoing_segment()`.  `bytes`
     /// is the unencrypted payload (the C `length` parameter is
@@ -258,7 +252,89 @@ impl Connection {
     /// C: `void binlog_outgoing_packet(Connection*, Path*,
     /// uint8_t*, uint64_t, size_t, size_t, uint8_t*, size_t,
     /// uint64_t)`.
-    pub fn binlog_outgoing_packet(
+    fn outgoing_packet(
+        &mut self,
+        path_x: &mut Path,
+        bytes: &[u8],
+        sequence_number: u64,
+        pn_length: usize,
+        send_buffer: &[u8],
+        current_time: Instant,
+    );
+
+    /// Log a packet-lost event.  `dcid` is `None` when the remote
+    /// connection ID is unknown — the C body emits a single zero
+    /// byte in that case.
+    ///
+    /// C: `void binlog_packet_lost(Connection*, Path*,
+    /// packet_type_enum, uint64_t, char const*,
+    /// ConnectionId*, size_t, uint64_t)`.
+    fn packet_lost(
+        &mut self,
+        path_x: &mut Path,
+        ptype: PacketType,
+        sequence_number: u64,
+        trigger: &str,
+        dcid: Option<&ConnectionId>,
+        packet_size: usize,
+        current_time: Instant,
+    );
+
+    /// Log negotiated SNI / ALPN.  Empty `sni`/`alpn` slices stand
+    /// in for the C `(NULL, 0)` callers.
+    ///
+    /// C: `void binlog_negotiated_alpn(Connection*, int,
+    /// uint8_t const*, size_t, uint8_t const*, size_t,
+    /// const PtlsIovec*, size_t)`.
+    fn negotiated_alpn(&mut self, is_local: bool, sni: &[u8], alpn: &[u8], alpn_list: &[&[u8]]);
+
+    /// Binary alternative to `log_transport_extension()`.
+    ///
+    /// C: `void binlog_transport_extension(Connection*, int, size_t,
+    /// uint8_t*)`.
+    fn transport_extension(&mut self, is_local: bool, params: &[u8]);
+
+    /// Open the per-connection binlog file and emit the
+    /// `new_connection` record.  Idempotent — the C body is a no-op
+    /// when neither `quic->binlog_dir` nor `quic->qlog_dir` are
+    /// set, or when `quic->bin_log_fns` is `NULL`.
+    ///
+    /// C: `void binlog_new_connection(Connection*)`.
+    fn new_connection(&mut self);
+
+    /// Emit the `connection_close` record and close the
+    /// per-connection binlog file.  Safe to call when no binlog is
+    /// currently open (the C body guards on `connection->f_binlog !=
+    /// NULL`).
+    ///
+    /// C: `void binlog_close_connection(Connection*)`.
+    fn close_connection(&mut self);
+
+    /// Log the state of the congestion controller, retransmission
+    /// queues, etc.  Called either just after processing an
+    /// incoming packet or just after sending one.
+    ///
+    /// C: `void binlog_cc_dump(Connection*, Path*, uint64_t)`.
+    fn cc_dump(&mut self, path_x: &mut Path, current_time: Instant);
+}
+
+impl Binlog for Connection {
+    fn dropped_packet(
+        &mut self,
+        _path_x: &mut Path,
+        _ph: &PacketHeader,
+        _packet_size: usize,
+        _err: i32,
+        _current_time: Instant,
+    ) {
+        todo!()
+    }
+
+    fn buffered_packet(&mut self, _path_x: &mut Path, _ptype: PacketType, _current_time: Instant) {
+        todo!()
+    }
+
+    fn outgoing_packet(
         &mut self,
         _path_x: &mut Path,
         _bytes: &[u8],
@@ -270,14 +346,7 @@ impl Connection {
         todo!()
     }
 
-    /// Log a packet-lost event.  `dcid` is `None` when the remote
-    /// connection ID is unknown — the C body emits a single zero
-    /// byte in that case.
-    ///
-    /// C: `void binlog_packet_lost(Connection*, Path*,
-    /// packet_type_enum, uint64_t, char const*,
-    /// ConnectionId*, size_t, uint64_t)`.
-    pub fn binlog_packet_lost(
+    fn packet_lost(
         &mut self,
         _path_x: &mut Path,
         _ptype: PacketType,
@@ -290,13 +359,7 @@ impl Connection {
         todo!()
     }
 
-    /// Log negotiated SNI / ALPN.  Empty `sni`/`alpn` slices stand
-    /// in for the C `(NULL, 0)` callers.
-    ///
-    /// C: `void binlog_negotiated_alpn(Connection*, int,
-    /// uint8_t const*, size_t, uint8_t const*, size_t,
-    /// const PtlsIovec*, size_t)`.
-    pub fn binlog_negotiated_alpn(
+    fn negotiated_alpn(
         &mut self,
         _is_local: bool,
         _sni: &[u8],
@@ -306,40 +369,19 @@ impl Connection {
         todo!()
     }
 
-    /// Binary alternative to `log_transport_extension()`.
-    ///
-    /// C: `void binlog_transport_extension(Connection*, int, size_t,
-    /// uint8_t*)`.
-    pub fn binlog_transport_extension(&mut self, _is_local: bool, _params: &[u8]) {
+    fn transport_extension(&mut self, _is_local: bool, _params: &[u8]) {
         todo!()
     }
 
-    /// Open the per-connection binlog file and emit the
-    /// `new_connection` record.  Idempotent — the C body is a no-op
-    /// when neither `quic->binlog_dir` nor `quic->qlog_dir` are
-    /// set, or when `quic->bin_log_fns` is `NULL`.
-    ///
-    /// C: `void binlog_new_connection(Connection*)`.
-    pub fn binlog_new_connection(&mut self) {
+    fn new_connection(&mut self) {
         todo!()
     }
 
-    /// Emit the `connection_close` record and close the
-    /// per-connection binlog file.  Safe to call when no binlog is
-    /// currently open (the C body guards on `connection->f_binlog !=
-    /// NULL`).
-    ///
-    /// C: `void binlog_close_connection(Connection*)`.
-    pub fn binlog_close_connection(&mut self) {
+    fn close_connection(&mut self) {
         todo!()
     }
 
-    /// Log the state of the congestion controller, retransmission
-    /// queues, etc.  Called either just after processing an
-    /// incoming packet or just after sending one.
-    ///
-    /// C: `void binlog_cc_dump(Connection*, Path*, uint64_t)`.
-    pub fn binlog_cc_dump(&mut self, _path_x: &mut Path, _current_time: Instant) {
+    fn cc_dump(&mut self, _path_x: &mut Path, _current_time: Instant) {
         todo!()
     }
 }

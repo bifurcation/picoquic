@@ -6,9 +6,10 @@
 //! (see [`crate::qlog`]) — but most applications only enable a
 //! subset.  Each backend is described by a single [`Logger`] trait
 //! object that the application optionally installs on the QUIC
-//! context.  The inherent methods on [`Quic`] and [`Connection`]
-//! in this module are the dispatch layer: they fan a single log
-//! event out to whichever backends are registered.
+//! context.  Per-connection dispatch happens through the [`Log`]
+//! trait (implemented on [`Connection`]); per-context dispatch
+//! happens through inherent methods on [`Quic`].  Either layer
+//! fans the event out to whichever backends are registered.
 //!
 //! Phase 1 contract: signatures only — every body is `todo!()`.
 //!
@@ -24,8 +25,9 @@
 //!   translated.
 //! * `Quic*` / `Connection*` — every observed caller passes a non-NULL
 //!   pointer and the logger callbacks may mutate internal state.
-//!   Free functions whose first argument is one of these become
-//!   inherent methods on [`Quic`] / [`Connection`].
+//!   Free functions keyed on `Quic*` become inherent methods on
+//!   [`Quic`]; those keyed on `Connection*` become methods on the
+//!   [`Log`] trait (implemented for [`Connection`]).
 //! * `Path*` — non-NULL for every per-path log event except
 //!   [`Logger::dropped_packet`] and
 //!   [`Logger::packet`], where `packet.c` may pass NULL when
@@ -217,7 +219,7 @@ pub trait Logger {
 
     /// Emit a snapshot of congestion-control parameters for one
     /// path.  C: `picoquic_log_cc_dump_fn` — the public dispatcher
-    /// [`Connection::log_cc_dump`] iterates the connection's paths and
+    /// [`Log::cc_dump`] iterates the connection's paths and
     /// invokes this method per-path.
     fn cc_dump(&mut self, connection: &mut Connection, path_x: &mut Path, current_time: Instant);
 }
@@ -268,7 +270,12 @@ impl Quic {
     }
 }
 
-impl Connection {
+/// Per-connection logging dispatcher.  Bringing this trait into
+/// scope opts a caller into the unified-logging surface; each
+/// method fans the event out to whichever [`Logger`] backends the
+/// QUIC context has installed.  The C names (`picoquic_log_*`) drop
+/// their `log_` prefix here — the trait name carries the verb.
+pub trait Log {
     /// Append `args` to the connection's text log.  In C this exists
     /// in two flavours (`picoquic_log_app_message` and a `_v`/
     /// `va_list` twin); Rust folds them into one entry point — the
@@ -276,15 +283,131 @@ impl Connection {
     /// substitute.
     ///
     /// C: `picoquic_log_app_message`.
-    pub fn log_app_message(&mut self, _args: core::fmt::Arguments<'_>) {
-        todo!()
-    }
+    fn app_message(&mut self, args: core::fmt::Arguments<'_>);
 
     /// Log arrival or departure of a UDP datagram on this
     /// connection.
     ///
     /// C: `picoquic_log_pdu`.
-    pub fn log_pdu(
+    fn pdu(
+        &mut self,
+        receiving: bool,
+        current_time: Instant,
+        addr_peer: &SocketAddr,
+        addr_local: &SocketAddr,
+        packet_length: usize,
+        unique_path_id: u64,
+        ecn: u8,
+    );
+
+    /// Log a decrypted packet.  `receiving == true` for an arrival.
+    /// `path_x` is `None` when the path lookup failed (C source
+    /// passes NULL).
+    ///
+    /// C: `picoquic_log_packet`.
+    fn packet(
+        &mut self,
+        path_x: Option<&mut Path>,
+        receiving: bool,
+        current_time: Instant,
+        ph: &PacketHeader,
+        bytes: &[u8],
+    );
+
+    /// Report that a packet was dropped due to some error.  The C
+    /// wrapper takes a `raw_data` buffer that it then ignores
+    /// (`UNUSED(raw_data)`); the parameter is dropped here.
+    ///
+    /// C: `picoquic_log_dropped_packet`.
+    fn dropped_packet(
+        &mut self,
+        path_x: Option<&mut Path>,
+        ph: &PacketHeader,
+        packet_size: usize,
+        err: i32,
+        current_time: Instant,
+    );
+
+    /// Report that a packet was buffered waiting for decryption.
+    ///
+    /// C: `picoquic_log_buffered_packet`.
+    fn buffered_packet(&mut self, path_x: &mut Path, ptype: PacketType, current_time: Instant);
+
+    /// Log that a packet was formatted, ready to be sent.  `bytes`
+    /// is the unencrypted packet (slice length subsumes the C
+    /// `length` parameter); `send_buffer` is the encrypted wire
+    /// form.  `pn_length` is the length of the packet-number field
+    /// within `bytes`.
+    ///
+    /// C: `picoquic_log_outgoing_packet`.
+    fn outgoing_packet(
+        &mut self,
+        path_x: &mut Path,
+        bytes: &[u8],
+        sequence_number: u64,
+        pn_length: usize,
+        send_buffer: &[u8],
+        current_time: Instant,
+    );
+
+    /// Log a packet-lost event.  `dcid` is `None` when the remote
+    /// connection ID is unknown.
+    ///
+    /// C: `picoquic_log_packet_lost`.
+    fn packet_lost(
+        &mut self,
+        path_x: &mut Path,
+        ptype: PacketType,
+        sequence_number: u64,
+        trigger: &str,
+        dcid: Option<&ConnectionId>,
+        packet_size: usize,
+        current_time: Instant,
+    );
+
+    /// Log negotiated SNI/ALPN.  Empty `sni`/`alpn` slices match the
+    /// C callers that pass `(NULL, 0)`.
+    ///
+    /// C: `picoquic_log_negotiated_alpn`.
+    fn negotiated_alpn(&mut self, is_local: bool, sni: &[u8], alpn: &[u8], alpn_list: &[&[u8]]);
+
+    /// Log a transport-extension blob.  `is_local == true` when the
+    /// extension was formatted by the local peer; `false` when it
+    /// was received.
+    ///
+    /// C: `picoquic_log_transport_extension`.
+    fn transport_extension(&mut self, is_local: bool, params: &[u8]);
+
+    /// Log a TLS session ticket.
+    ///
+    /// C: `picoquic_log_tls_ticket`.
+    fn tls_ticket(&mut self, ticket: &[u8]);
+
+    /// Log the start of this connection.
+    ///
+    /// C: `picoquic_log_new_connection`.
+    fn new_connection(&mut self);
+
+    /// Log the end of this connection.
+    ///
+    /// C: `picoquic_log_close_connection`.
+    fn close_connection(&mut self);
+
+    /// Log a snapshot of congestion-control parameters across every
+    /// path on the connection.  Iterates `connection->path[…]`
+    /// internally and dispatches per-path through
+    /// [`Logger::cc_dump`].
+    ///
+    /// C: `picoquic_log_cc_dump`.
+    fn cc_dump(&mut self, current_time: Instant);
+}
+
+impl Log for Connection {
+    fn app_message(&mut self, _args: core::fmt::Arguments<'_>) {
+        todo!()
+    }
+
+    fn pdu(
         &mut self,
         _receiving: bool,
         _current_time: Instant,
@@ -297,12 +420,7 @@ impl Connection {
         todo!()
     }
 
-    /// Log a decrypted packet.  `receiving == true` for an arrival.
-    /// `path_x` is `None` when the path lookup failed (C source
-    /// passes NULL).
-    ///
-    /// C: `picoquic_log_packet`.
-    pub fn log_packet(
+    fn packet(
         &mut self,
         _path_x: Option<&mut Path>,
         _receiving: bool,
@@ -313,12 +431,7 @@ impl Connection {
         todo!()
     }
 
-    /// Report that a packet was dropped due to some error.  The C
-    /// wrapper takes a `raw_data` buffer that it then ignores
-    /// (`UNUSED(raw_data)`); the parameter is dropped here.
-    ///
-    /// C: `picoquic_log_dropped_packet`.
-    pub fn log_dropped_packet(
+    fn dropped_packet(
         &mut self,
         _path_x: Option<&mut Path>,
         _ph: &PacketHeader,
@@ -329,26 +442,11 @@ impl Connection {
         todo!()
     }
 
-    /// Report that a packet was buffered waiting for decryption.
-    ///
-    /// C: `picoquic_log_buffered_packet`.
-    pub fn log_buffered_packet(
-        &mut self,
-        _path_x: &mut Path,
-        _ptype: PacketType,
-        _current_time: Instant,
-    ) {
+    fn buffered_packet(&mut self, _path_x: &mut Path, _ptype: PacketType, _current_time: Instant) {
         todo!()
     }
 
-    /// Log that a packet was formatted, ready to be sent.  `bytes`
-    /// is the unencrypted packet (slice length subsumes the C
-    /// `length` parameter); `send_buffer` is the encrypted wire
-    /// form.  `pn_length` is the length of the packet-number field
-    /// within `bytes`.
-    ///
-    /// C: `picoquic_log_outgoing_packet`.
-    pub fn log_outgoing_packet(
+    fn outgoing_packet(
         &mut self,
         _path_x: &mut Path,
         _bytes: &[u8],
@@ -360,11 +458,7 @@ impl Connection {
         todo!()
     }
 
-    /// Log a packet-lost event.  `dcid` is `None` when the remote
-    /// connection ID is unknown.
-    ///
-    /// C: `picoquic_log_packet_lost`.
-    pub fn log_packet_lost(
+    fn packet_lost(
         &mut self,
         _path_x: &mut Path,
         _ptype: PacketType,
@@ -377,11 +471,7 @@ impl Connection {
         todo!()
     }
 
-    /// Log negotiated SNI/ALPN.  Empty `sni`/`alpn` slices match the
-    /// C callers that pass `(NULL, 0)`.
-    ///
-    /// C: `picoquic_log_negotiated_alpn`.
-    pub fn log_negotiated_alpn(
+    fn negotiated_alpn(
         &mut self,
         _is_local: bool,
         _sni: &[u8],
@@ -391,43 +481,23 @@ impl Connection {
         todo!()
     }
 
-    /// Log a transport-extension blob.  `is_local == true` when the
-    /// extension was formatted by the local peer; `false` when it
-    /// was received.
-    ///
-    /// C: `picoquic_log_transport_extension`.
-    pub fn log_transport_extension(&mut self, _is_local: bool, _params: &[u8]) {
+    fn transport_extension(&mut self, _is_local: bool, _params: &[u8]) {
         todo!()
     }
 
-    /// Log a TLS session ticket.
-    ///
-    /// C: `picoquic_log_tls_ticket`.
-    pub fn log_tls_ticket(&mut self, _ticket: &[u8]) {
+    fn tls_ticket(&mut self, _ticket: &[u8]) {
         todo!()
     }
 
-    /// Log the start of this connection.
-    ///
-    /// C: `picoquic_log_new_connection`.
-    pub fn log_new_connection(&mut self) {
+    fn new_connection(&mut self) {
         todo!()
     }
 
-    /// Log the end of this connection.
-    ///
-    /// C: `picoquic_log_close_connection`.
-    pub fn log_close_connection(&mut self) {
+    fn close_connection(&mut self) {
         todo!()
     }
 
-    /// Log a snapshot of congestion-control parameters across every
-    /// path on the connection.  Iterates `connection->path[…]` internally
-    /// and dispatches per-path through
-    /// [`Logger::cc_dump`].
-    ///
-    /// C: `picoquic_log_cc_dump`.
-    pub fn log_cc_dump(&mut self, _current_time: Instant) {
+    fn cc_dump(&mut self, _current_time: Instant) {
         todo!()
     }
 }

@@ -3,6 +3,13 @@ name = "fq"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+# Each backend lives behind its own feature so a binary only pays
+# for the implementations it actually links.  See `src/sys/`.
+sys-picotls = []
+sys-openssl = ["dep:openssl"]
+
 [dependencies]
 fugit = { version = "0.3", default-features = false }
 rand = { version = "0.9", default-features = false }
@@ -22,3 +29,6 @@ chacha20 = { version = "0.9", default-features = false }
 
 # UDP socket abstraction.  std-only.
 socket2 = { version = "0.5", default-features = false, features = ["all"] }
+
+# Optional backend implementations (gated by `sys-*` features).
+openssl = { version = "0.10", optional = true }

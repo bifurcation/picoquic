@@ -198,3 +198,4 @@
 2026-05-02T10:15:14-04:00 python3 scripts/phase1a.py --force --model opus --stop-on-failure (broader idiomatic refactor)
 2026-05-02T10:42:22-04:00 python3 scripts/phase1a.py --model opus --stop-on-failure --max-turns 200 (resume after picoquic.h failure with higher budget)
 2026-05-02T11:12:26-04:00 python3 scripts/phase1a.py --model opus --stop-on-failure --max-turns 200 (refactor remaining 16 modules)
+2026-05-04T12:32:34Z python3 scripts/migrate_rtt_time.py  # bulk RTT/time u64->Duration/Instant

@@ -56,10 +56,9 @@
 //!   `custom_thread_create_fn`, `_setname_fn`,
 //!   `_delete_fn`) become traits per the Phase 1 rules; the C `void*
 //!   callback_ctx` companion folds into the trait implementor's
-//!   state.  Per-event `void* callback_argv` stays a raw pointer —
-//!   its concrete type depends on `cb_mode` (see
-//!   [`LoopEvent`]) and a tagged enum would
-//!   diverge from C source structure; Phase 3 may revisit.
+//!   state.  The C `(cb_mode, void* callback_argv)` tagged-union
+//!   pair becomes the typed [`LoopEvent`] enum — each variant
+//!   carries the payload type the C `cb_mode` implied.
 //! * `SocketCtx* s_ctx` is used as both a single object
 //!   ([`SocketCtx::close`]) and a fixed-size array
 //!   ([`open_sockets`] writes up to `PACKET_LOOP_SOCKETS_MAX`
@@ -87,17 +86,18 @@
 //!   on the Windows path, or `packet_loop_recv_buf_uring_init`
 //!   on io_uring; freed in [`SocketCtx::close`]).
 //!   On the canonical Linux/`select` build neither is used — every
-//!   datagram lands in the shared loop buffer.  Phase 1 keeps the
-//!   field as `Option<Box<[u8]>>` so the unused state is `None`;
-//!   Phase 3 will tighten once the loop is implemented.
+//!   datagram lands in the shared loop buffer.  The field shape is
+//!   `Option<Vec<u8>>` so the unused state is `None`; Vec subsumes
+//!   the (pointer, size) pair into one owning value.
 
 use core::net::SocketAddr;
 
-use crate::Instant;
+use std::thread::JoinHandle;
+
 use crate::Error;
+use crate::Instant;
 use crate::config::Config;
 use crate::socks::OsError;
-use crate::utils::{Thread, ThreadFn};
 use crate::{AlpnSelect, Quic, StreamDataCb};
 
 // ---------------------------------------------------------------------------
@@ -374,21 +374,23 @@ pub struct LoopParam {
 /// thread_fn thread_fn, void* arg)`.
 ///
 /// In C, `(thread_fn, arg)` is the trampoline + state pair the new
-/// thread will run.  In Rust, the existing
-/// [`ThreadFn`](crate::utils::ThreadFn)
-/// trait already bundles both into a single trait object, so the
-/// hook reduces to "produce a thread handle from a `Box<dyn …>`".
+/// thread will run.  In Rust, [`std::thread::spawn`] already takes
+/// an arbitrary `FnOnce() + Send` closure (which subsumes the C
+/// "function pointer + void* arg" pattern), so the hook reduces to
+/// "produce a [`JoinHandle`] from that closure".
 pub trait CustomThreadCreateFn {
     /// Create a thread that runs `thread_fn` to completion.  The
-    /// returned [`Thread`] is opaque to quic and is
-    /// passed back through
-    /// [`CustomThreadDeleteFn::delete`] at teardown.
+    /// returned [`JoinHandle`] is owned by the caller and passed
+    /// back through [`CustomThreadDeleteFn::delete`] at teardown.
     ///
     /// The C contract returns `0` for success / non-zero `errno`
     /// otherwise; the [`OsError`] payload carries the same value
     /// that the C `*ret` out-parameter would on
     /// [`NetworkThreadCtx::spawn_custom`].
-    fn create(&mut self, thread_fn: Box<dyn ThreadFn>) -> Result<Thread, OsError>;
+    fn create(
+        &mut self,
+        thread_fn: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<JoinHandle<()>, OsError>;
 }
 
 /// Set-thread-name hook.  C:
@@ -405,10 +407,15 @@ pub trait CustomThreadSetnameFn {
 
 /// Tear-down-a-thread hook.  C:
 /// `void (*custom_thread_delete_fn)(void** thread_id)`.
+///
+/// In Rust the standard `JoinHandle` cleans itself up on drop, so
+/// this hook only matters for backends that allocate their own
+/// out-of-band thread bookkeeping; the default
+/// [`internal_thread_delete`] just lets the handle go.
 pub trait CustomThreadDeleteFn {
     /// Release any resources tied to `thread`.  Called from the
     /// destruction path of [`NetworkThreadCtx`].
-    fn delete(&mut self, thread: Thread);
+    fn delete(&mut self, thread: JoinHandle<()>);
 }
 
 // ---------------------------------------------------------------------------
@@ -464,7 +471,7 @@ pub struct NetworkThreadCtx {
     pub thread_name: Option<String>,
     /// Underlying OS thread handle.  `None` for the foreground v2
     /// entry path (no thread is spawned).
-    pub pthread: Option<Thread>,
+    pub pthread: Option<JoinHandle<()>>,
     /// Wake-up pipe (Linux: `pipe2`).  `[ -1, -1 ]` when no wake-up
     /// has been opened (`wake_up_defined == false`).  The Windows
     /// `HANDLE wake_up_event` variant is dropped per the v1 scope.
@@ -615,17 +622,23 @@ impl NetworkThreadCtx {
 /// C: `int internal_thread_create(void**,
 /// thread_fn, void*)`.
 ///
-/// Returns `Ok(Thread)` carrying the OS handle, or `Err(OsError)`
-/// with the platform errno.  Threading is dropped from v1
-/// (`TRANSLATE_PLAN.md`) so the body is a `todo!()` placeholder
-/// that lands when v2 multi-threading work begins.
-pub fn internal_thread_create(_thread_fn: Box<dyn ThreadFn>) -> Result<Thread, OsError> {
+/// Returns `Ok(JoinHandle)` carrying the std handle, or
+/// `Err(OsError)` with the platform errno.  Threading is dropped
+/// from v1 (`TRANSLATE_PLAN.md`) so the body is a `todo!()`
+/// placeholder that lands when v2 multi-threading work begins.
+pub fn internal_thread_create(
+    _thread_fn: Box<dyn FnOnce() + Send + 'static>,
+) -> Result<JoinHandle<()>, OsError> {
     todo!()
 }
 
 /// Default implementation of [`CustomThreadDeleteFn`].
 /// C: `void internal_thread_delete(void**)`.
-pub fn internal_thread_delete(_thread: Thread) {
+///
+/// In Rust this is a no-op — dropping the [`JoinHandle`] detaches
+/// the thread; if the caller wants to wait for completion they
+/// call `join()` themselves first.
+pub fn internal_thread_delete(_thread: JoinHandle<()>) {
     todo!()
 }
 

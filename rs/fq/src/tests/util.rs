@@ -107,8 +107,7 @@ impl TestSimPacket {
 /// `picoquictest_sim_link_t*` link pointer stays explicit because
 /// the AQM lives inside the link (taking the link by `&mut` in
 /// each call would conflict with the `&mut self` borrow).  Phase 4
-/// will resolve the borrow with a take-replace pattern or an
-/// `unsafe` raw-pointer access.
+/// will resolve the borrow with a take-replace pattern.
 pub trait TestAqm {
     /// Submit a packet to the AQM.  C: `submit`.
     fn submit(&mut self, link: &mut TestSimLink, packet: TestSimPacket, current_time: Instant);

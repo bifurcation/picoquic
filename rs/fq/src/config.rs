@@ -41,8 +41,8 @@
 //!   always present in Rust; a `cfg`-gated variant lands when the
 //!   build options are translated.
 
-use crate::Instant;
 use crate::Error;
+use crate::Instant;
 use crate::{LossbitVersion, Quic, SpinbitVersion, StreamDataCb};
 
 // ---------------------------------------------------------------------------

@@ -1,37 +1,26 @@
 //! Translation of `quic/tls_api.h`.
 //!
 //! `tls_api.h` is the boundary between quic-core's QUIC machinery
-//! and the tls TLS 1.3 stack underneath.  It exposes the master
-//! TLS context lifecycle, per-connection TLS contexts, the AEAD /
-//! cipher / hash primitives quic uses internally, the public and
-//! crypto random generators, the retry-token / retry-protection
-//! helpers, and a handful of provider-installation entry points kept
-//! in this header so applications don't have to include `tls.h`.
+//! and the TLS 1.3 stack underneath.  It exposes the master
+//! TLS context lifecycle, per-connection TLS contexts, the
+//! retry-token / retry-protection helpers, and a handful of
+//! provider-installation entry points kept in this header so
+//! applications don't have to include `tls.h`.
 //!
 //! Phase 1 contract: signatures only — every body is `todo!()`.
-//! Phase 3 fills in the bodies.
+//! Phase 4 fills in the bodies.
 //!
 //! ## Shape conventions
 //!
 //! * Free C functions whose first argument is a `Quic*` or `Connection*`
-//!   become inherent methods on [`Quic`] / [`Connection`].  The remaining
-//!   free functions either operate on opaque tls handles
-//!   (`*mut c_void` — see below) or have no obvious receiver
-//!   (global RNG, hash factories, cipher-suite lookups, the
-//!   `tls_api_init` lifecycle).
-//! * Tls types this header references but does not define
-//!   (`PtlsCipherSuite`, …) are
-//!   already forward-declared in [`crate::crypto_provider_api`] and
-//!   [`crate`]; this module re-uses those declarations rather than
-//!   duplicating them.
-//! * The `void*` AEAD / PN-encryption / cipher / hash contexts on the
-//!   C side are tls handles whose Rust binding doesn't exist yet
-//!   (tls is an external dependency that has not been translated).
-//!   They stay as `*mut c_void` opaque handles in Phase 1; Phase 3
-//!   will replace them with proper trait objects or forward-declared
-//!   structs once tls is bound.  Functions that dereference such a
-//!   handle are `unsafe` with a `# Safety` doc note describing the
-//!   caller's obligations.
+//!   become inherent methods on [`Quic`] / [`Connection`].
+//! * The C `void*` AEAD / PN-encryption / cipher / hash contexts
+//!   are gone — Phase 2 replaced them with the trait family in
+//!   [`crate::tls`] (`PacketKey`, `HeaderKey`, `Session`,
+//!   `ClientConfig`, `ServerConfig`).  Backend implementations
+//!   (picotls, rustls, OpenSSL) wrap their native session types
+//!   to satisfy those traits.  No `unsafe fn` or raw-pointer
+//!   parameters remain in this module.
 //! * `int` flag parameters that encode booleans (`is_enc`,
 //!   `is_client`, `client_mode`, `use_low_memory`, `reset`,
 //!   `check_reuse`, `sending`) become `bool`.
@@ -95,7 +84,6 @@ use alloc::vec::Vec;
 use core::net::SocketAddr;
 
 use crate::Instant;
-use crate::crypto_provider_api::VerifyCertificate;
 use crate::internal::CryptoContext;
 use crate::{Connection, ConnectionId, Error, Quic, RESET_SECRET_SIZE};
 
@@ -153,25 +141,13 @@ pub const LABEL_QUIC_V1_KEY_BASE: &str = "tls13 quic ";
 pub const LABEL_QUIC_V2_KEY_BASE: &str = "tls13 quicv2 ";
 
 // ---------------------------------------------------------------------------
-// Forward declaration of `PtlsCipherSuite` (C: `ptls_cipher_suite_t`).
-//
-// The C header re-typedef-s `ptls_cipher_suite_t` as
-// `const struct st_ptls_cipher_suite_t` so consumers don't need
-// `tls.h`.  tls itself has not been translated; this opaque
-// stand-in keeps signatures compiling.  Phase 3 will swap in the
-// real tls binding once it exists.
-//
-// Note: `crypto_provider_api` already declares an identical
-// placeholder.  Pull it in for use within this module's signatures
-// (no re-export).
-use crate::crypto_provider_api::PtlsCipherSuite;
-
-// ---------------------------------------------------------------------------
 // Master TLS context.
 //
-// The master context lives in `quic.tls_master_ctx` (a `*mut c_void`
-// once cast from `ptls_context_t*`).  Both lifecycle entry points
-// install or release state on the QUIC context itself.
+// In Phase 2 the C `*mut c_void tls_master_ctx` is replaced by
+// `Quic.tls_client_config` / `tls_server_config` (boxed
+// `DynClientConfig` / `DynServerConfig` trait objects defined in
+// [`crate::tls`]).  Both lifecycle entry points install or
+// release state on the QUIC context itself.
 
 impl Quic {
     /// Initialize this context's master TLS context.  Loads the
@@ -289,14 +265,12 @@ impl Quic {
 // ---------------------------------------------------------------------------
 // AEAD primitives.
 //
-// All AEAD entry points take an opaque `void*` AEAD handle in C
-// (really a `ptls_aead_context_t*`).  Phase 1 keeps the opaque
-// shape as `*mut c_void`; Phase 3 will swap in a forward-declared
-// tls struct or trait object once that binding lands.  Each
-// `aead_*` body is a thin wrapper around the corresponding
-// `ptls_aead_*` call, so the callee mutates state through the
-// pointer (e.g. AEAD nonce) — the Rust shape uses `&mut` to capture
-// that.
+// The C `aead_*` family wrapped opaque `void*` handles around
+// `ptls_aead_context_t*`.  Phase 2 replaced them with the
+// [`crate::tls::PacketKey`] trait — backends supply implementations,
+// the rest of the crate is generic over them.  This module
+// retains only the constant `QUIC_AEAD_TAG_LEN` (the fixed
+// 16-byte tag QUIC mandates).
 
 /// Length of the QUIC AEAD authentication tag.  All TLS 1.3
 /// cipher suites used by QUIC (RFC 9001 §5.3) produce a 16-byte
@@ -322,17 +296,17 @@ pub const QUIC_AEAD_TAG_LEN: usize = 16;
 // ---------------------------------------------------------------------------
 // Initial-secret derivation.
 //
-// `setup_initial_master_secret` and
-// `setup_initial_secrets` write into caller-provided
-// buffers sized at `cipher->hash->digest_size`.  Phase 1 keeps the
-// `&mut [u8]` shape for the buffers so the caller controls
-// allocation; Phase 3 may switch to fixed-size arrays once the
-// digest size is part of the cipher trait.
+// RFC 9001 fixes the initial-secret HKDF to SHA-256 (the salt is the
+// version-specific 20-byte constant).  Both helpers therefore commit
+// to SHA-256 internally — no cipher-suite parameter needed (the C
+// API took `&PtlsCipherSuite` purely for parity with later epoch
+// derivations).  `master_secret` / `client_secret` / `server_secret`
+// must be 32 bytes (`Sha256::output_size()`); a wider buffer is
+// fine (caller-provided slots stay flexible).
 
 /// Derive the per-connection-ID initial master secret.  C:
 /// `setup_initial_master_secret`.
 pub fn setup_initial_master_secret(
-    _cipher: &PtlsCipherSuite,
     _salt: &[u8],
     _initial_connection_id: ConnectionId,
     _master_secret: &mut [u8],
@@ -344,7 +318,6 @@ pub fn setup_initial_master_secret(
 /// `client_secret` and `server_secret` are filled in place.  C:
 /// `setup_initial_secrets`.
 pub fn setup_initial_secrets(
-    _cipher: &PtlsCipherSuite,
     _master_secret: &[u8],
     _client_secret: &mut [u8],
     _server_secret: &mut [u8],
@@ -431,10 +404,12 @@ impl Connection {
 }
 
 /// Rotate the application traffic secret in place using the
-/// version-specific traffic-update label.  C:
-/// `rotate_app_secret`.
+/// version-specific traffic-update label.  The active hash
+/// algorithm is supplied through a fresh [`digest::DynDigest`]
+/// instance (callers obtain one from
+/// [`crate::tls::Session`]).  C: `rotate_app_secret`.
 pub fn rotate_app_secret(
-    _cipher: &PtlsCipherSuite,
+    _hash: &mut dyn digest::DynDigest,
     _secret: &mut [u8],
     _traffic_update_label: &str,
 ) -> Result<(), Error> {
@@ -457,13 +432,12 @@ impl CryptoContext {
 // Test helpers (still part of the public API surface).
 //
 // These two helpers build standalone AEAD / PN-encryption contexts
-// from a raw secret.  They are used by the test suite to mock
-// crypto state.  The C return type is `void*` — Phase 1 keeps it
-// as `*mut c_void` for parity with the rest of the AEAD plumbing.
+// from a raw secret.  They're used by the test suite to mock
+// crypto state.  The Phase 2 trait family ([`crate::tls`]) is the
+// return shape.
 
 /// Construct an AEAD context backed by AES128-GCM-SHA256 from a
-/// raw secret + prefix label.  Returns null on allocation failure
-/// (matching the C `void*`).  C: `setup_test_aead_context`.
+/// raw secret + prefix label.  C: `setup_test_aead_context`.
 pub fn setup_test_aead_context(
     _is_encrypt: bool,
     _secret: &[u8],
@@ -495,30 +469,11 @@ impl Quic {
         todo!()
     }
 
-    /// Install a custom certificate-verification callback into the
-    /// master TLS context, replacing any previously installed one.
-    /// C: `tls_set_verify_certificate_callback`.
-    ///
-    /// `cb` is owned by the registry; take it by value.  `free_fn`
-    /// runs when the verifier is replaced or the master context is
-    /// freed; `None` matches the C `NULL` "no teardown hook"
-    /// sentinel.  `Box<dyn …>` for `free_fn` is required (you can't
-    /// own a `dyn Trait` any other way).
-    ///
-    /// The public-API wrapper [`Quic::set_verify_certificate_callback`]
-    /// (declared in `picoquic.h`) calls
-    /// [`Quic::dispose_verify_certificate_callback`] first; this
-    /// internal entry point does not.
-    pub fn tls_set_verify_certificate_callback(&mut self, _cb: Box<dyn VerifyCertificate>) {
-        todo!()
-    }
-
-    /// Tear down whatever certificate-verifier callback is
-    /// currently installed in this context's master TLS context.
-    /// C: `dispose_verify_certificate_callback`.
-    pub fn dispose_verify_certificate_callback(&mut self) {
-        todo!()
-    }
+    // The C `tls_set_verify_certificate_callback` /
+    // `dispose_verify_certificate_callback` pair is folded into
+    // [`crate::tls::TlsCallbacks`] — applications install a single
+    // callbacks bundle on the QUIC context and override
+    // `verify_certificate` to plug in their own logic.
 
     /// Toggle whether the server requires client certificates.  C
     /// took an `int`; promoted to `bool`.  C:
@@ -782,40 +737,15 @@ impl Aes128EcbContext {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TLS API initialization.
+// The C `tls_api_init` / `tls_api_unload` / `tls_api_reset` family
+// loaded picotls' optional providers (OpenSSL / minicrypto / fusion
+// / mbedtls) into a global registry.  The Rust shape is direct
+// backend selection: the application picks an implementation of
+// [`crate::tls::TlsBackend`] (e.g. `crate::sys::picotls::Picotls`)
+// and hands it to the QUIC context.  No global init step.
 //
-// These four functions wrap the global crypto-provider registry's
-// load / unload / reset cycle.  The flag word is the same
-// `TLS_API_INIT_FLAGS_*` bit set declared in
-// `crypto_provider_api.rs`.
-
-/// Idempotent first-time initialization of the crypto provider
-/// registry.  C: `tls_api_init`.
-pub fn tls_api_init() {
-    todo!()
-}
-
-/// Tear down the crypto provider registry.  C:
-/// `tls_api_unload`.
-pub fn tls_api_unload() {
-    todo!()
-}
-
-/// Reset the crypto provider registry, applying a new
-/// `TLS_API_INIT_FLAGS_*` mask.  Used by the test suite to swap
-/// providers in/out.  C: `tls_api_reset`.
-pub fn tls_api_reset(_init_flags: u64) {
-    todo!()
-}
-
-impl Connection {
-    /// Log the loaded provider versions to this connection's
-    /// app-message stream.  C: `tls_api_log_versions`.
-    pub fn log_tls_api_versions(&mut self) {
-        todo!()
-    }
-}
+// `tls_api_log_versions` likewise disappears — the active backend
+// owns its own version-string surface.
 
 #[cfg(test)]
 mod test {}

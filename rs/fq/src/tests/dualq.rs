@@ -19,11 +19,11 @@
 //!   [`crate::utils`].  The C "embed `super` and cast pointer"
 //!   inheritance pattern collapses to `impl TestAqm for Dualq`; the
 //!   C `super` field is dropped.
-//! * Both queue heads (`queue_first` / `queue_last` in
-//!   [`DualqQueue`]) stay raw `*mut TestSimPacket`, matching the
-//!   intrusive-linked-list shape used by the parent sim-link.  Phase
-//!   3 will dereference inside `unsafe` blocks with `// SAFETY:`
-//!   notes (or refactor to `VecDeque`).
+//! * The C dualq pair of `queue_first` / `queue_last` raw
+//!   `*mut TestSimPacket` heads (the intrusive-linked-list shape
+//!   used by the parent sim-link) is replaced by an owning
+//!   `VecDeque<TestSimPacket>` per queue.  Submit pushes;
+//!   dequeue pops.  No raw pointers, no `unsafe`.
 //! * The C `dualq_dequeue_one`'s `int* should_drop` out-parameter
 //!   folds into a tuple return — `Option<(Box<...>, bool)>`
 //!   represents "no packet ready" / "(packet, drop?)".
@@ -34,8 +34,8 @@
 //!   `None` by the caller after `release` drains the queues —
 //!   `release` itself only handles the queue drain.
 
-use crate::Instant;
 use crate::Error;
+use crate::Instant;
 use crate::tests::util::{TestAqm, TestSimLink, TestSimPacket};
 
 // ---------------------------------------------------------------------------
@@ -51,13 +51,13 @@ pub const DUALQ_MAX_LINK_RATE: u64 = 125_000_000;
 /// One classified queue (L4S or Classic) inside a [`Dualq`].
 /// C: `dualq_queue_t`.
 ///
-/// Pointer-shape choices:
+/// Storage shape:
 ///
-/// * `queue_first` / `queue_last` stay raw pointers — same intrusive
-///   list pattern as [`crate::tests::util::TestSimLink`].  The queue does
-///   not own the node allocations on its own; the parent [`Dualq`]
-///   reaches them through these raw heads and hands ownership back
-///   to callers via [`Dualq::dequeue_one`].
+/// * The C `queue_first` / `queue_last` pair (intrusive linked
+///   list, same pattern as [`crate::tests::util::TestSimLink`])
+///   is replaced by an owning `VecDeque<TestSimPacket>`.  Submit
+///   pushes to the back; dequeue pops from the front and hands
+///   ownership to the caller via [`Dualq::dequeue_one`].
 /// * `count` mirrors the C `int`, kept as `i32` for ABI parity with
 ///   the dualq tests that inspect it directly.
 #[derive(Default)]
