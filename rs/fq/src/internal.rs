@@ -2152,11 +2152,11 @@ impl Connection {
     }
 }
 
-/// Return a reference to the first available CID in `stash`, if any.
-pub fn get_connection_id_from_stash(
-    _stash: &mut RemoteConnectionIdStash,
-) -> Option<&mut RemoteConnectionId> {
-    todo!()
+impl RemoteConnectionIdStash {
+    /// Return a reference to the first available CID in `stash`, if any.
+    pub fn get_connection_id_from_stash(&self) -> Option<&mut RemoteConnectionId> {
+        todo!()
+    }
 }
 
 impl Connection {
@@ -2924,6 +2924,12 @@ impl Connection {
     }
 }
 
+impl Default for SackList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SackList {
     /// Highest packet number currently sacked.
     pub fn first(&self) -> u64 {
@@ -2938,6 +2944,25 @@ impl SackList {
     /// Topmost range, or `None` when empty.
     pub fn first_range(&self) -> Option<SackItemToken> {
         todo!()
+    }
+
+    /// Create a zero-initialised SACK list.  C: `picoquic_sack_list_init`
+    /// applied to a zero-initialised struct.
+    pub fn new() -> Self {
+        Self {
+            ack_tree: SplayTree::new(),
+            sack_items: Arena::new(),
+            ack_horizon: Instant::from_ticks(0),
+            horizon_delay: 0,
+            rc: [
+                SackRangeCount {
+                    range_counts: [0; MAX_ACK_RANGE_REPEAT],
+                },
+                SackRangeCount {
+                    range_counts: [0; MAX_ACK_RANGE_REPEAT],
+                },
+            ],
+        }
     }
 
     /// Reset the list to "everything before this PN was acked".
@@ -2998,8 +3023,10 @@ impl SackList {
     }
 }
 
-pub fn record_ack_packet_data(_packet_data: &mut PacketData, _acked_packet: &mut Packet) {
-    todo!()
+impl PacketData {
+    pub fn record_ack_packet_data(&mut self, _acked_packet: &mut Packet) {
+        todo!()
+    }
 }
 
 impl Connection {
@@ -3008,14 +3035,16 @@ impl Connection {
     }
 }
 
-pub fn process_ack_of_ack_frame(
-    _first_sack: &mut SackList,
-    _bytes: &mut [u8],
-    _bytes_max: usize,
-    _consumed: &mut usize,
-    _is_ecn: i32,
-) -> i32 {
-    todo!()
+impl SackList {
+    pub fn process_ack_of_ack_frame(
+        &mut self,
+        _bytes: &mut [u8],
+        _bytes_max: usize,
+        _consumed: &mut usize,
+        _is_ecn: i32,
+    ) -> i32 {
+        todo!()
+    }
 }
 
 impl Connection {
@@ -3315,6 +3344,22 @@ impl Connection {
     }
 }
 
+impl Connection {
+    /// Variant of [`Self::set_ack_needed`] that looks up `self.paths[path_index]`
+    /// internally, avoiding the double-borrow that arises when the caller
+    /// passes `&mut self.paths[n]` alongside `&mut self`.  C:
+    /// `picoquic_set_ack_needed` called with `cnx->path[n]`.
+    pub fn set_ack_needed_on_path(
+        &mut self,
+        _current_time: Instant,
+        _pc: PacketContext,
+        _path_index: usize,
+        _is_immediate_ack_required: i32,
+    ) {
+        todo!()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Stream data buffer (callback argument for "prepare to send").
 
@@ -3464,8 +3509,10 @@ pub fn format_max_streams_frame_if_needed<'a>(
     todo!()
 }
 
-pub fn stream_data_node_recycle(_stream_data: &mut StreamDataNode) {
-    todo!()
+impl StreamDataNode {
+    pub fn stream_data_node_recycle(&mut self) {
+        todo!()
+    }
 }
 
 impl Quic {

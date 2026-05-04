@@ -1,0 +1,30 @@
+Phase 3A: 1 source file(s) to translate
+  run log: xlate/phase3a_runs/20260504T133726.log
+  state:   xlate/phase3a_state.json
+
+=== sacktest (6 test(s)) ===
+  prompt  → xlate/prompts/phase3a/sacktest.md
+  claude  → invoking (sonnet, max-turns=60) …
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/sacktest.c)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/sacktest.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Grep(sack|SackList|SackItem|ack_ctx|record_pn|is_pn_already|format_ack|is_ack_needed|set_ack_needed|process_ack_of_ack|sack_list_size|horizon_delay|check_sack_list|update_sack_list|sack_list_first|sack_list_last|sack_list_init|sack_list_free)
+  · Grep(sack|SackList|ack_ctx|format_ack|is_ack_needed|set_ack_needed|process_ack_of_ack)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Grep(create_local_cnxid|first_local_cnxid|LocalConnectionIdToken|sending_ecn_ack|ack_delay_remote|ack_gap_remote|MAX_ACK_RANGE_REPEAT)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/arena.rs)
+  · Grep(pub paths|PathToken|paths:|nb_paths|first_path)
+  · Grep(pub struct SplayTree|pub fn new|impl.*SplayTree|impl.*SackList|impl SackRangeCount)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/splay.rs)
+  · Grep(varint_decode|varint_skip|varint_encode|pub fn varint|FrameType|frame_type_ack|Ack)
+  · Grep(FrameType|Ack|pub const.*ACK|frame_type_ack)
+  · Grep(pub fn|pub struct|varint|pub const)

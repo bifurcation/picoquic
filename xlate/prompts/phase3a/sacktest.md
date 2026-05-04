@@ -15,27 +15,23 @@ currently-`todo!()` API) on its first call is a clean fail.
 body as `todo!()` — translate the C body faithfully and let
 the panic happen wherever it naturally does.
 
-## Required reading
+## Required reading (in order)
 
-1. The C source: `picoquictest/sacktest.c`.
-2. The Rust target: `rs/fq/src/tests/sacktest.rs` — currently has
+1. **`xlate/test_translation_guide.md`** — focused summary of
+   the Rust API surface, naming conventions, helper
+   inventory, and translation patterns.  Substitutes for
+   grepping `lib.rs` / `internal.rs`; only fall back to
+   reading those files when this guide doesn't have the
+   answer.
+2. The C source: `picoquictest/sacktest.c`.
+3. The Rust target: `rs/fq/src/tests/sacktest.rs` — currently has
    auto-generated stubs (`todo!("<entry_fn>")`) that you
    replace with translations.
-3. The Rust API surface you'll be calling against:
-   - `rs/fq/src/lib.rs` — public crate API (Quic / Connection
-     constructors, callbacks, error codes).
-   - `rs/fq/src/internal.rs` — internal types (Path,
-     PacketHeader, sack lists, frame helpers, etc.).
-   - `rs/fq/src/tls.rs` — TLS trait surface.
-   - `rs/fq/src/tests/util.rs` — test infrastructure (sim
-     link, deterministic RNG, certificate paths).  Add
-     helpers here if multiple translations need them.
-   - `rs/fq/src/tests/dualq.rs` — DualQ AQM test infra.
-   - Other `rs/fq/src/<X>.rs` modules per the test's topic
-     (e.g. `bytestream.rs`, `splay.rs`, `errors.rs`,
-     `frames.rs`, `tp.rs`, `stream.rs`, `lb.rs`).
-4. `TRANSLATE_PLAN.md` — Phase 3 section.
-5. `CLAUDE.md` — project conventions.
+4. `rs/fq/src/tests/util.rs` — test infrastructure;
+   add helpers here when multiple translations would need
+   them.
+5. Module sources (`rs/fq/src/<X>.rs`) only when you need to
+   verify a specific signature the guide didn't quote.
 
 ## Test entries to translate
 
@@ -100,14 +96,30 @@ the panic happen wherever it naturally does.
 ## Constraints
 
 - Edit / write under `rs/fq/src/tests/` and `rs/fq/tests/`
-  (for fixtures) only.  You may also edit
-  `rs/fq/src/tests/util.rs` to add helpers.
-- Do **not** edit any non-test source under `rs/fq/src/`.
-  If a translated test needs an API that doesn't yet exist,
-  call the intended method anyway — the resulting compile
-  error or `todo!()` panic is the spec for Phase 4.
-  (If you genuinely cannot express the test without adding
-  a method, surface it on stdout and skip that entry — the
-  human reviewer adjusts the API on the next iteration.)
+  (for fixtures) only — **with one exception**: if a test
+  body needs to call an API method that doesn't yet exist
+  on a public Rust type (e.g. `Connection::record_pn_received`
+  isn't there but the test calls it), **add the method as a
+  `todo!()` stub** in the appropriate source file (typically
+  `rs/fq/src/internal.rs` or `rs/fq/src/lib.rs`).  Match the
+  shape of the C function being translated — same parameter
+  list (translated to Rust types), `Result<…, Error>` for
+  fallible C `int` returns, etc.  Add a doc comment `/// C:
+  `picoquic_xxx``.  This grows the API surface incrementally
+  as tests demand it; Phase 4 then fills the bodies.
+- That's the **only** API-source change allowed.  Do not
+  rename existing items, change existing signatures, or
+  reshape existing types.  If an existing method has the
+  wrong signature, document it on stdout and use a wrapper
+  helper in `tests/util.rs`.
 - Do **not** modify `Cargo.toml` or anything outside `rs/fq/`.
 - Do **not** introduce `unsafe`.
+
+## Stop spinning
+
+If 5 grep/read tool calls into the same file haven't found
+what you need, **stop searching**.  The API doesn't exist.
+Add it as a `todo!()` stub per the rule above and move on.
+Time spent re-grepping `internal.rs` is time not spent
+translating.  Aim to start writing edits within the first
+10 tool calls.

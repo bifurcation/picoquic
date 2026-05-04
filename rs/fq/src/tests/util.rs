@@ -21,8 +21,8 @@
 
 use core::net::SocketAddr;
 
-use crate::Instant;
-use crate::MAX_PACKET_SIZE;
+use crate::internal::{Connection, MAX_ACK_RANGE_REPEAT, SackList, format_ack_frame};
+use crate::{Instant, MAX_PACKET_SIZE, PacketContext};
 
 // ---------------------------------------------------------------------------
 // Deterministic test RNG.
@@ -276,6 +276,61 @@ impl TestSimLink {
     pub fn suspend(&mut self, _time_end_of_interval: Instant, _simulate_receive: bool) {
         todo!()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sack / ACK-frame test helpers.
+
+/// Verify that every per-range send counter in `sack_list` is consistent
+/// with the summary stored in `sack_list.rc`.  C: `check_ack_ranges` in
+/// `picoquictest/sacktest.c`.
+pub fn check_ack_ranges(sack_list: &mut SackList) {
+    for r in 0..2usize {
+        let mut range_sum = [0i32; MAX_ACK_RANGE_REPEAT];
+        let mut tok = sack_list.first_item();
+        while let Some(t) = tok {
+            let nb = sack_list
+                .sack_items
+                .get(t)
+                .expect("sack item token valid")
+                .nb_times_sent[r];
+            assert!(nb >= 0, "nb_times_sent[{r}] < 0");
+            let idx = nb as usize;
+            if idx < MAX_ACK_RANGE_REPEAT {
+                range_sum[idx] += 1;
+            }
+            tok = sack_list.sack_next_item(t);
+        }
+        for (i, &expected) in range_sum.iter().enumerate() {
+            assert_eq!(
+                sack_list.rc[r].range_counts[i], expected,
+                "rc[{r}].range_counts[{i}] mismatch",
+            );
+        }
+    }
+}
+
+/// Write an ACK frame into `bytes` and return the number of bytes written.
+/// `None` maps to a test failure; `Some(0)` can't occur for a valid ACK.
+/// Wraps [`crate::internal::format_ack_frame`] to avoid lifetime tangle.
+pub fn format_ack_frame_written(
+    connection: &mut Connection,
+    bytes: &mut [u8],
+    more_data: &mut i32,
+    current_time: Instant,
+    pc: PacketContext,
+    is_opportunistic: i32,
+) -> Option<usize> {
+    let total = bytes.len();
+    format_ack_frame(
+        connection,
+        bytes,
+        more_data,
+        current_time,
+        pc,
+        is_opportunistic,
+    )
+    .map(|r| total - r.len())
 }
 
 // ---------------------------------------------------------------------------

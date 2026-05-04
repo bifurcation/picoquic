@@ -523,33 +523,37 @@ impl Default for NetworkThreadCtx {
 // ---------------------------------------------------------------------------
 // Loop entry points.
 
-/// Drive the packet loop until the application or an error breaks
-/// it.  C: `int packet_loop_v2(…)`.
-///
-/// Builds a transient [`NetworkThreadCtx`] on the stack and calls
-/// [`NetworkThreadCtx::run`].  The return code is what `run` stored
-/// in `thread_ctx.return_code`.
-pub fn run_v2(
-    _quic: &mut Quic,
-    _param: &mut LoopParam,
-    _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
-) -> Result<(), Error> {
-    todo!()
+impl Quic {
+    /// Drive the packet loop until the application or an error breaks
+    /// it.  C: `int packet_loop_v2(…)`.
+    ///
+    /// Builds a transient [`NetworkThreadCtx`] on the stack and calls
+    /// [`NetworkThreadCtx::run`].  The return code is what `run` stored
+    /// in `thread_ctx.return_code`.
+    pub fn run_v2(
+        &mut self,
+        _param: &mut LoopParam,
+        _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 }
 
-/// Legacy single-call entry point; builds a [`LoopParam`] from
-/// positional arguments and forwards to [`run_v2`].
-/// C: `int packet_loop(…)`.
-pub fn run(
-    _quic: &mut Quic,
-    _local_port: i32,
-    _local_af: i32,
-    _dest_if: i32,
-    _socket_buffer_size: i32,
-    _do_not_use_gso: bool,
-    _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
-) -> Result<(), Error> {
-    todo!()
+impl Quic {
+    /// Legacy single-call entry point; builds a [`LoopParam`] from
+    /// positional arguments and forwards to [`run_v2`].
+    /// C: `int packet_loop(…)`.
+    pub fn run(
+        &mut self,
+        _local_port: i32,
+        _local_af: i32,
+        _dest_if: i32,
+        _socket_buffer_size: i32,
+        _do_not_use_gso: bool,
+        _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+    ) -> Result<(), Error> {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -33,7 +33,23 @@ import re
 import sys
 from pathlib import Path
 
-INTERNAL_RS = Path("src/internal.rs")
+TARGETS = [
+    Path("src/internal.rs"),
+    Path("src/lib.rs"),
+    Path("src/packet_loop.rs"),
+    Path("src/config.rs"),
+    Path("src/lb.rs"),
+    Path("src/tls_api.rs"),
+    Path("src/utils.rs"),
+    Path("src/binlog.rs"),
+    Path("src/logger.rs"),
+    Path("src/cc_common.rs"),
+    Path("src/header_protection.rs"),
+    Path("src/textlog.rs"),
+    Path("src/performance_log.rs"),
+    Path("src/socks.rs"),
+    Path("src/qlog.rs"),
+]
 
 # Receiver types we handle, with the C-side parameter names that
 # the Phase 1 translation produced.  Names are the leading
@@ -43,9 +59,12 @@ RECEIVERS = {
     "Connection": [r"_connection", r"_cnx"],
     "Quic": [r"_quic"],
     "Path": [r"_path_x", r"_path"],
-    "SackList": [r"_list"],
+    "SackList": [r"_list", r"_first_sack"],
     "AckContext": [r"_ack_ctx"],
     "StreamHead": [r"_stream"],
+    "RemoteConnectionIdStash": [r"_stash"],
+    "PacketData": [r"_packet_data"],
+    "StreamDataNode": [r"_stream_data"],
 }
 
 
@@ -201,40 +220,36 @@ def convert_one(text: str, start: int, end: int, ty: str,
 
 
 def main() -> int:
-    if not INTERNAL_RS.exists():
-        print(f"error: {INTERNAL_RS} not found; run from rs/fq/", file=sys.stderr)
-        return 1
-    text = INTERNAL_RS.read_text()
-    candidates = find_candidate_fns(text)
-    if not candidates:
-        print("no candidates found")
-        return 0
-
-    # Verify all bodies are `todo!()` (or empty / one-liner).  Abort
-    # if any body has real logic; we don't want to silently drop it.
-    for start, end, ty, kind, fn_text in candidates:
-        body = fn_text[fn_text.find("{") + 1:fn_text.rfind("}")].strip()
-        if body and "todo!" not in body:
-            allowed = body.replace("\n", " ").strip()
-            if allowed and not allowed.startswith("todo!"):
-                print(f"WARN: non-todo body for {fn_text.splitlines()[0]}", file=sys.stderr)
-                print(f"      body = {allowed[:80]}", file=sys.stderr)
-
-    # Apply replacements from end to start so offsets stay valid.
-    candidates.sort(key=lambda c: c[0], reverse=True)
-    new_text = text
-    converted: dict[tuple[str, str], int] = {}
-    for start, end, ty, kind, fn_text in candidates:
-        replacement, doc_start, _end = convert_one(
-            new_text, start, end, ty, kind, fn_text,
-        )
-        new_text = new_text[:doc_start] + replacement + new_text[end:]
-        converted[(ty, kind)] = converted.get((ty, kind), 0) + 1
-
-    INTERNAL_RS.write_text(new_text)
-    total = sum(converted.values())
-    print(f"converted {total} free functions to methods:")
-    for (ty, kind), n in sorted(converted.items()):
+    grand_total = 0
+    grand_converted: dict[tuple[str, str], int] = {}
+    for path in TARGETS:
+        if not path.exists():
+            continue
+        text = path.read_text()
+        candidates = find_candidate_fns(text)
+        if not candidates:
+            continue
+        for start, end, ty, kind, fn_text in candidates:
+            body = fn_text[fn_text.find("{") + 1:fn_text.rfind("}")].strip()
+            if body and "todo!" not in body:
+                allowed = body.replace("\n", " ").strip()
+                if allowed and not allowed.startswith("todo!"):
+                    print(f"WARN: non-todo body for {path}: "
+                          f"{fn_text.splitlines()[0]}", file=sys.stderr)
+                    print(f"      body = {allowed[:80]}", file=sys.stderr)
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        new_text = text
+        for start, end, ty, kind, fn_text in candidates:
+            replacement, doc_start, _end = convert_one(
+                new_text, start, end, ty, kind, fn_text,
+            )
+            new_text = new_text[:doc_start] + replacement + new_text[end:]
+            grand_converted[(ty, kind)] = grand_converted.get((ty, kind), 0) + 1
+            grand_total += 1
+        path.write_text(new_text)
+        print(f"{path}: converted {len(candidates)}")
+    print(f"\ntotal: {grand_total} free functions converted to methods")
+    for (ty, kind), n in sorted(grand_converted.items()):
         print(f"  impl {ty}: {n} (with {kind})")
     return 0
 
