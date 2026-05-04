@@ -7,3 +7,15 @@ edition = "2024"
 fugit = { version = "0.3", default-features = false }
 rand = { version = "0.9", default-features = false }
 rand_core = { version = "0.9", default-features = false }
+
+# Rust Crypto trait crates (no implementations -- those come from
+# the active TLS backend's crypto layer, except for header
+# protection which we implement ourselves).
+aead = { version = "0.5", default-features = false }
+cipher = { version = "0.4", default-features = false }
+digest = { version = "0.10", default-features = false }
+
+# Concrete cipher implementations used by header protection
+# (QUIC packet-number encryption is QUIC logic, not TLS).
+aes = { version = "0.8", default-features = false }
+chacha20 = { version = "0.9", default-features = false }

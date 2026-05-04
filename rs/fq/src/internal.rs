@@ -990,10 +990,18 @@ pub struct Quic {
     /// to the library.
     pub connection_id_callback_ctx: Option<Box<dyn Any>>,
 
-    pub aead_encrypt_ticket_ctx: *mut c_void,
-    pub aead_decrypt_ticket_ctx: *mut c_void,
-    pub retry_integrity_sign_ctx: *mut *mut c_void,
-    pub retry_integrity_verify_ctx: *mut *mut c_void,
+    /// AEAD context for protecting / verifying outbound session
+    /// tickets (server-side ticket-encryption key).  Replaces
+    /// the C `aead_encrypt_ticket_ctx: void*`.
+    pub aead_encrypt_ticket_ctx: Option<Box<dyn crate::tls::PacketKey>>,
+    /// AEAD context for the inbound ticket-decryption key.
+    pub aead_decrypt_ticket_ctx: Option<Box<dyn crate::tls::PacketKey>>,
+    /// Per-version retry-integrity AEAD signing keys (one per
+    /// supported QUIC version).  Replaces the C
+    /// `retry_integrity_sign_ctx: void**`.
+    pub retry_integrity_sign_ctx: Vec<Box<dyn crate::tls::PacketKey>>,
+    /// Per-version retry-integrity AEAD verification keys.
+    pub retry_integrity_verify_ctx: Vec<Box<dyn crate::tls::PacketKey>>,
 
     pub verify_certificate_callback: Option<Box<dyn VerifyCertificate>>,
 
@@ -1499,10 +1507,16 @@ pub struct Path {
 // Crypto context (per-epoch, four total).
 
 pub struct CryptoContext {
-    pub aead_encrypt: *mut c_void,
-    pub aead_decrypt: *mut c_void,
-    pub pn_enc: *mut c_void,
-    pub pn_dec: *mut c_void,
+    /// Outbound packet protection (encrypt direction).  Replaces
+    /// the C `aead_encrypt: void*`.
+    pub aead_encrypt: Option<Box<dyn crate::tls::PacketKey>>,
+    /// Inbound packet protection (decrypt direction).  Replaces
+    /// the C `aead_decrypt: void*`.
+    pub aead_decrypt: Option<Box<dyn crate::tls::PacketKey>>,
+    /// Outbound header protection.  Replaces the C `pn_enc: void*`.
+    pub pn_enc: Option<Box<dyn crate::tls::HeaderKey>>,
+    /// Inbound header protection.  Replaces the C `pn_dec: void*`.
+    pub pn_dec: Option<Box<dyn crate::tls::HeaderKey>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1855,11 +1869,8 @@ pub fn create_cnx_internal(
     _sni: Option<&str>,
     _alpn: Option<&str>,
     _client_mode: bool,
-    // Phase 2 plan: replace these *mut c_void crypto-handle
-    // parameters with `Box<dyn AeadCipher>` / `Box<dyn PnEncrypt>`
-    // once the crypto provider abstraction lands.
-    _initial_aead_dec: *mut c_void,
-    _initial_pn_dec: *mut c_void,
+    _initial_aead_dec: Option<Box<dyn crate::tls::PacketKey>>,
+    _initial_pn_dec: Option<Box<dyn crate::tls::HeaderKey>>,
 ) -> Result<ConnectionToken, crate::Error> {
     todo!()
 }
@@ -2594,8 +2605,7 @@ pub fn protect_packet_header(
     _send_buffer: &mut [u8],
     _pn_offset: usize,
     _first_mask: u8,
-    // Phase 2: replace with `&mut dyn PnEncrypt`.
-    _pn_enc: *mut c_void,
+    _pn_enc: &dyn crate::tls::HeaderKey,
 ) {
     todo!()
 }
@@ -2609,9 +2619,8 @@ pub fn protect_packet(
     _header_length: usize,
     _send_buffer: &mut [u8],
     _send_buffer_max: usize,
-    // Phase 2: replace with `&mut dyn AeadCipher` + `&mut dyn PnEncrypt`.
-    _aead_context: *mut c_void,
-    _pn_enc: *mut c_void,
+    _aead_context: &dyn crate::tls::PacketKey,
+    _pn_enc: &dyn crate::tls::HeaderKey,
     _path_x: &mut Path,
     _tuple: &mut Tuple,
     _current_time: Instant,
@@ -2628,8 +2637,7 @@ pub fn remove_header_protection_inner(
     _length: usize,
     _decrypted_bytes: &mut [u8],
     _ph: &mut PacketHeader,
-    // Phase 2: replace with `&mut dyn PnEncrypt`.
-    _pn_enc: *mut c_void,
+    _pn_enc: &dyn crate::tls::HeaderKey,
     _is_loss_bit_enabled_incoming: bool,
     _sack_list_last: u64,
 ) -> i32 {

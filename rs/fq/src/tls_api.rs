@@ -314,7 +314,10 @@ impl Quic {
 
 /// Length of the authentication tag for the AEAD context (capped at
 /// 16 bytes per the workaround in `tls_api.c` for an old tls
-/// regression).  C: `aead_get_checksum_length`.
+/// regression).  C: `aead_get_checksum_length`.  This is the only
+/// AEAD wrapper that survives Phase 2 (the rest are subsumed by
+/// `crate::tls::PacketKey`); it's queried at cipher-suite
+/// negotiation time, before any packet keys exist.
 ///
 /// # Safety
 ///
@@ -324,157 +327,19 @@ pub unsafe fn aead_get_checksum_length(_aead_context: *mut c_void) -> usize {
     todo!()
 }
 
-/// Encrypt `input` (length `input_length`) into `output` using the
-/// AEAD context, sequence number, and authenticated-data slice
-/// supplied.  Returns the number of bytes written, mirroring
-/// `ptls_aead_encrypt`.  C: `aead_encrypt_generic`.
-///
-/// The C signature took raw `(uint8_t* output, …, size_t
-/// input_length)` and `(const uint8_t* auth_data, size_t
-/// auth_data_length)` pairs; the Rust shape collapses each
-/// pointer/length pair into a slice.  The output buffer is borrowed
-/// long enough to receive `input.len() + tag_size` bytes; callers
-/// must size it.
-///
-/// # Safety
-///
-/// `aead_context` must be a non-null pointer to a valid
-/// `ptls_aead_context_t`.
-pub unsafe fn aead_encrypt_generic(
-    _output: &mut [u8],
-    _input: &[u8],
-    _seq_num: u64,
-    _auth_data: &[u8],
-    _aead_context: *mut c_void,
-) -> usize {
-    todo!()
-}
-
-/// Decrypt `input` into `output`.  Returns the number of plaintext
-/// bytes produced; the C `SIZE_MAX` failure sentinel (returned when
-/// the AEAD context is null or authentication fails) maps to
-/// `Err`.  C: `aead_decrypt_generic`.
-///
-/// # Safety
-///
-/// `aead_ctx` may be null (the C path returns `SIZE_MAX`, which
-/// becomes `Err`); when non-null it must point to a valid
-/// `ptls_aead_context_t`.
-pub unsafe fn aead_decrypt_generic(
-    _output: &mut [u8],
-    _input: &[u8],
-    _seq_num: u64,
-    _auth_data: &[u8],
-    _aead_ctx: *mut c_void,
-) -> Result<usize, Error> {
-    todo!()
-}
-
-/// Multipath variant of [`aead_decrypt_generic`].  The IV is XORed
-/// with the path id before / after the tls call, per the multipath
-/// extension.  C: `aead_decrypt_mp`.
-///
-/// # Safety
-///
-/// Same conditions as [`aead_decrypt_generic`].
-pub unsafe fn aead_decrypt_mp(
-    _output: &mut [u8],
-    _input: &[u8],
-    _path_id: u64,
-    _seq_num: u64,
-    _auth_data: &[u8],
-    _aead_context: *mut c_void,
-) -> Result<usize, Error> {
-    todo!()
-}
-
-/// Multipath variant of [`aead_encrypt_generic`].  C:
-/// `aead_encrypt_mp`.
-///
-/// # Safety
-///
-/// Same conditions as [`aead_encrypt_generic`].
-pub unsafe fn aead_encrypt_mp(
-    _output: &mut [u8],
-    _input: &[u8],
-    _path_id: u64,
-    _seq_num: u64,
-    _auth_data: &[u8],
-    _aead_context: *mut c_void,
-) -> usize {
-    todo!()
-}
-
-/// AEAD integrity limit (bytes processed) carried by the
-/// algorithm.  C: `aead_integrity_limit`.
-///
-/// # Safety
-///
-/// `aead_ctx` must point to a valid `ptls_aead_context_t`.
-pub unsafe fn aead_integrity_limit(_aead_ctx: *mut c_void) -> u64 {
-    todo!()
-}
-
-/// AEAD confidentiality limit (records encrypted) carried by the
-/// algorithm.  C: `aead_confidentiality_limit`.
-///
-/// # Safety
-///
-/// `aead_ctx` must point to a valid `ptls_aead_context_t`.
-pub unsafe fn aead_confidentiality_limit(_aead_ctx: *mut c_void) -> u64 {
-    todo!()
-}
-
-/// Free the tls AEAD context.  C: `aead_free`.
-///
-/// # Safety
-///
-/// `aead_context` must point to a `ptls_aead_context_t` previously
-/// allocated by tls and not yet freed.  After the call the
-/// pointer is dangling.
-pub unsafe fn aead_free(_aead_context: *mut c_void) {
-    todo!()
-}
-
-/// Free the tls cipher context (used for PN encryption and the
-/// CID encryption / ECB cipher).  C: `cipher_free`.
-///
-/// # Safety
-///
-/// `cipher_context` must point to a `ptls_cipher_context_t`
-/// previously allocated by tls and not yet freed.
-pub unsafe fn cipher_free(_cipher_context: *mut c_void) {
-    todo!()
-}
-
-// ---------------------------------------------------------------------------
-// Packet-number encryption.
-
-/// IV size of the PN encryption cipher, surfaced from the tls
-/// cipher algo struct.  C: `pn_iv_size`.
-///
-/// # Safety
-///
-/// `pn_enc` must point to a valid `ptls_cipher_context_t`.
-pub unsafe fn pn_iv_size(_pn_enc: *mut c_void) -> usize {
-    todo!()
-}
-
-/// Apply the PN encryption cipher to `input`, writing `len` bytes
-/// to `output`.  `iv` is the nonce; it is borrowed for the
-/// duration of the call.  C: `pn_encrypt`.
-///
-/// The C signature used `void*` for everything because tls
-/// works on raw bytes; the Rust shape uses byte slices.  `iv` is
-/// sized at the cipher's IV length (caller must pass a slice of at
-/// least that length); `input` and `output` carry the same length.
-///
-/// # Safety
-///
-/// `pn_enc` must point to a valid `ptls_cipher_context_t`.
-pub unsafe fn pn_encrypt(_pn_enc: *mut c_void, _iv: &[u8], _output: &mut [u8], _input: &[u8]) {
-    todo!()
-}
+// The AEAD wrappers (`aead_encrypt_generic`, `aead_decrypt_generic`,
+// `aead_encrypt_mp` / `aead_decrypt_mp`, `aead_integrity_limit`,
+// `aead_confidentiality_limit`) are gone -- their behaviour is the
+// `crate::tls::PacketKey` trait.  Backends supply concrete
+// implementations.  Multipath variants fold into the same trait by
+// XORing the path id into the nonce inside the implementor.
+//
+// `aead_free` and `cipher_free` are gone -- `Drop` on the boxed
+// trait object replaces them.
+//
+// `pn_iv_size` and `pn_encrypt` are gone -- header protection
+// (the only consumer) is implemented in `crate::header_protection`
+// and exposed through `crate::tls::HeaderKey`.
 
 // ---------------------------------------------------------------------------
 // Initial-secret derivation.
@@ -523,10 +388,10 @@ impl Connection {
 /// shape collapses both into a struct so the function signature is
 /// one-out, one-return.
 pub struct InitialAeadContext {
-    /// Owned AEAD context handle.
-    pub aead_ctx: *mut c_void,
-    /// Owned PN-encryption context handle.
-    pub pn_enc_ctx: *mut c_void,
+    /// Owned AEAD context for packet protection.
+    pub aead_ctx: Box<dyn crate::tls::PacketKey>,
+    /// Owned header-protection context.
+    pub pn_enc_ctx: Box<dyn crate::tls::HeaderKey>,
 }
 
 impl Quic {
@@ -625,13 +490,16 @@ pub fn setup_test_aead_context(
     _is_encrypt: bool,
     _secret: &[u8],
     _prefix_label: &str,
-) -> *mut c_void {
+) -> Option<Box<dyn crate::tls::PacketKey>> {
     todo!()
 }
 
 /// Construct a PN-encryption context for tests.  C:
 /// `pn_enc_create_for_test`.
-pub fn pn_enc_create_for_test(_secret: &[u8], _prefix_label: &str) -> *mut c_void {
+pub fn pn_enc_create_for_test(
+    _secret: &[u8],
+    _prefix_label: &str,
+) -> Option<Box<dyn crate::tls::HeaderKey>> {
     todo!()
 }
 
@@ -786,9 +654,13 @@ impl Quic {
 pub const HASH_SIZE_MAX: usize = 64;
 
 /// Construct a streaming hash context for the named algorithm
-/// (e.g. `"sha256"`).  Returns null on lookup failure (matching the
-/// C `void*`).  C: `hash_create`.
-pub fn hash_create(_algorithm_name: &str) -> *mut c_void {
+/// (e.g. `"sha256"`).  Returns a `digest::DynDigest` trait
+/// object so callers feed bytes via `update` and read out via
+/// `finalize` (the canonical Rust Crypto shape).
+///
+/// Backends supply concrete digest types (e.g. `sha2::Sha256`)
+/// and lift them through this entry point.
+pub fn hash_create(_algorithm_name: &str) -> Option<Box<dyn digest::DynDigest>> {
     todo!()
 }
 
@@ -798,33 +670,9 @@ pub fn hash_get_length(_algorithm_name: &str) -> usize {
     todo!()
 }
 
-/// Push `input` into the streaming hash context.  C signature
-/// passed `(uint8_t* input, size_t input_length, void*
-/// hash_context)`; the Rust shape collapses the pointer/length pair
-/// into a slice.  C: `hash_update`.
-///
-/// # Safety
-///
-/// `hash_context` must point to a hash context returned by
-/// [`hash_create`] and not yet finalized.
-pub unsafe fn hash_update(_input: &[u8], _hash_context: *mut c_void) {
-    todo!()
-}
-
-/// Finalize the hash context, writing the digest into `output` and
-/// freeing the context.  `output` must be at least
-/// `hash_get_length(algorithm)` bytes long; phase 1 keeps
-/// the caller-sized slice shape from the C signature.  C:
-/// `hash_finalize`.
-///
-/// # Safety
-///
-/// `hash_context` must point to a hash context returned by
-/// [`hash_create`] and not yet finalized.  After the call
-/// the context is consumed.
-pub unsafe fn hash_finalize(_output: &mut [u8], _hash_context: *mut c_void) {
-    todo!()
-}
+// `hash_update` and `hash_finalize` are gone -- callers use
+// `digest::DynDigest`'s `update` and `finalize_into` methods on
+// the boxed trait object returned by `hash_create`.
 
 // ---------------------------------------------------------------------------
 // Private-key / certificate file loaders.
@@ -855,13 +703,12 @@ pub fn get_certs_from_file(_file_name: &str) -> Option<Vec<Vec<u8>>> {
 // QUIC version) used to compute retry-packet integrity tags.
 
 /// Build a retry-protection AEAD context from the retry integrity
-/// key for a given version.  Returns null on failure (matching C
-/// `void*`).  C: `create_retry_protection_context`.
+/// key for a given version.  C: `create_retry_protection_context`.
 pub fn create_retry_protection_context(
     _is_enc: bool,
     _key: &[u8],
     _prefix_label: &str,
-) -> *mut c_void {
+) -> Option<Box<dyn crate::tls::PacketKey>> {
     todo!()
 }
 
@@ -873,7 +720,7 @@ impl Quic {
         &mut self,
         _version_index: i32,
         _sending: bool,
-    ) -> *mut c_void {
+    ) -> Option<&mut dyn crate::tls::PacketKey> {
         todo!()
     }
 
@@ -887,13 +734,8 @@ impl Quic {
 /// Append the integrity tag to the bytes already written into the
 /// retry packet buffer.  Returns the new write index.  C:
 /// `encode_retry_protection`.
-///
-/// # Safety
-///
-/// `integrity_aead` may be null (the C path is a no-op then); when
-/// non-null it must point to a valid `ptls_aead_context_t`.
-pub unsafe fn encode_retry_protection(
-    _integrity_aead: *mut c_void,
+pub fn encode_retry_protection(
+    _integrity_aead: &dyn crate::tls::PacketKey,
     _bytes: &mut [u8],
     _byte_index: usize,
     _odcid: &ConnectionId,
@@ -902,16 +744,10 @@ pub unsafe fn encode_retry_protection(
 }
 
 /// Verify the integrity tag at the end of an inbound retry packet.
-/// Returns the new payload length (with the tag stripped); the C
-/// signature took `size_t* length` to mutate in place, the Rust
-/// shape returns the updated length on success.  C:
-/// `verify_retry_protection`.
-///
-/// # Safety
-///
-/// `integrity_aead` must point to a valid `ptls_aead_context_t`.
-pub unsafe fn verify_retry_protection(
-    _integrity_aead: *mut c_void,
+/// Returns the new payload length (with the tag stripped).
+/// C: `verify_retry_protection`.
+pub fn verify_retry_protection(
+    _integrity_aead: &dyn crate::tls::PacketKey,
     _bytes: &mut [u8],
     _length: usize,
     _byte_index: usize,
@@ -923,43 +759,27 @@ pub unsafe fn verify_retry_protection(
 // ---------------------------------------------------------------------------
 // Cipher-suite accessors and ECB cipher for CID encryption.
 
-/// Look up a cipher suite by its TLS code-point.  Returns null when
-/// no provider supplies one (matching the C `void*`).  C:
-/// `get_cipher_suite_by_id_v`.
-pub fn get_cipher_suite_by_id_v(_cipher_suite_id: i32, _use_low_memory: bool) -> *mut c_void {
-    todo!()
-}
+// The cipher-suite lookup functions (`get_cipher_suite_by_id_v`,
+// `get_aes128gcm_sha256_v`, `get_aes128gcm_v`, `ecb_create_by_name`)
+// returned opaque `*mut c_void` cipher-suite handles in C.  In
+// Phase 2 the cipher-suite registry lives on the
+// `crate::tls::TlsBackend` and is reached through
+// `Session::next_1rtt_keys` etc., which return typed
+// `KeyPair`s.  The free-function lookups disappear.
 
-/// Look up the AES-128-GCM-SHA256 cipher suite (used for Initial
-/// packets).  C: `get_aes128gcm_sha256_v`.
-pub fn get_aes128gcm_sha256_v(_use_low_memory: bool) -> *mut c_void {
-    todo!()
-}
-
-/// Look up just the AEAD algorithm slot of the AES-128-GCM cipher
-/// suite.  C: `get_aes128gcm_v`.
-pub fn get_aes128gcm_v(_use_low_memory: bool) -> *mut c_void {
-    todo!()
-}
-
-/// Build an ECB-mode cipher context by algorithm name (used by the
-/// load-balancer CID encryption flow).  Returns null on lookup
-/// failure.  C: `ecb_create_by_name`.
-pub fn ecb_create_by_name(_is_enc: bool, _ecb_key: &[u8], _alg_name: &str) -> *mut c_void {
-    todo!()
-}
-
-/// AES-128-ECB cipher context.  C: the `ptls_cipher_context_t`
-/// produced by `picoquic_aes128_ecb_create`, behind a typed wrapper
-/// here so callers don't see a raw `*mut c_void`.
+/// AES-128-ECB cipher context.  Phase 2: the C `*mut c_void`
+/// wrapper is gone — this struct now owns a concrete
+/// [`aes::Aes128`] (the Rust Crypto AES implementation).  Used
+/// by the load-balancer CID-encryption flow in [`crate::lb`];
+/// header protection has its own AES paths in
+/// [`crate::header_protection`].
 ///
-/// REVIEW(open): the inner pointer becomes a real owned cipher
-/// context (or a trait object over the crypto provider) once Phase 2
-/// lands the dependency abstraction.  `Drop` will replace the
-/// explicit `aes128_ecb_free` once the body is wired up.
-pub struct Aes128EcbContext {
-    #[allow(dead_code)] // Phase 4 wires this through to the crypto provider.
-    pub(crate) inner: *mut c_void,
+/// `Direction` distinguishes encrypt-mode from decrypt-mode (the
+/// C side took an `is_enc` flag); each backing AES type
+/// implements one direction only.
+pub enum Aes128EcbContext {
+    Encrypt(aes::Aes128Enc),
+    Decrypt(aes::Aes128Dec),
 }
 
 impl core::fmt::Debug for Aes128EcbContext {
@@ -970,15 +790,16 @@ impl core::fmt::Debug for Aes128EcbContext {
 
 impl Aes128EcbContext {
     /// Construct an AES-128-ECB context (encrypt or decrypt) keyed
-    /// by `ecb_key`.  Returns [`None`] when the underlying
-    /// allocation fails.  C: `aes128_ecb_create`.
-    pub fn new(_is_enc: bool, _ecb_key: &[u8]) -> Option<Self> {
+    /// by `ecb_key`.  C: `aes128_ecb_create`.
+    pub fn new(_is_enc: bool, _ecb_key: &[u8; 16]) -> Self {
         todo!()
     }
 
-    /// Encrypt `input` into `output` (both same length) using this
-    /// ECB cipher.  C: `aes128_ecb_encrypt`.
-    pub fn encrypt(&mut self, _output: &mut [u8], _input: &[u8]) {
+    /// Encrypt or decrypt `block` in place.  C:
+    /// `aes128_ecb_encrypt` (encrypt-mode only — decrypt-mode
+    /// is exposed through the same method here, since the
+    /// direction is fixed at construction).
+    pub fn process(&self, _block: &mut [u8; 16]) {
         todo!()
     }
 }

@@ -56,6 +56,7 @@ pub mod cc_common;
 pub mod config;
 pub mod crypto_provider_api;
 pub mod hash;
+pub mod header_protection;
 pub mod internal;
 pub mod lb;
 pub mod logger;
@@ -68,6 +69,7 @@ pub mod splay;
 #[cfg(test)]
 pub mod tests;
 pub mod textlog;
+pub mod tls;
 pub mod tls_api;
 pub mod utils;
 
