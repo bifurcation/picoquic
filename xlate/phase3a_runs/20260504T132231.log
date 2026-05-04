@@ -1,0 +1,7 @@
+Phase 3A: 1 source file(s) to translate
+  run log: xlate/phase3a_runs/20260504T132231.log
+  state:   xlate/phase3a_state.json
+
+=== sacktest (6 test(s)) ===
+  prompt  → xlate/prompts/phase3a/sacktest.md
+  claude  → invoking (sonnet, max-turns=60) …

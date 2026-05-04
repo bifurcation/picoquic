@@ -1,0 +1,17 @@
+Phase 3A: 2 source file(s) to translate
+  run log: xlate/phase3a_runs/20260504T132206.log
+  state:   xlate/phase3a_state.json
+
+=== ack_frequency_test (2 test(s)) ===
+  prompt  → xlate/prompts/phase3a/ack_frequency_test.md
+  (dry-run; skipping claude + gate)
+
+=== ack_of_ack_test (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/ack_of_ack_test.md
+  (dry-run; skipping claude + gate)
+
+=== Phase 3A run summary ===
+  elapsed:   0.0s
+  succeeded: 0
+  failed:    0
+  log:       xlate/phase3a_runs/20260504T132206.log
