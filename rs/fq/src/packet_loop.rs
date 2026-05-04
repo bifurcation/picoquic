@@ -130,10 +130,12 @@ pub const PACKET_LOOP_SEND_DELAY_MAX: u64 = 2500;
 /// `iovec`, `ctrl_buffer`) fields are dropped per the v1
 /// single-target scope.  The four C bitfields collapse to plain
 /// `bool` flags.
-pub struct SocketCtx {
-    /// OS file descriptor.  C: `SOCKET_TYPE fd` — `None` mirrors
-    /// the C `INVALID_SOCKET` sentinel for "not yet open".
-    pub fd: Option<crate::socks::Socket>,
+pub struct SocketCtx<S: crate::socks::Socket> {
+    /// OS socket handle.  `None` mirrors the C `INVALID_SOCKET`
+    /// sentinel for "not yet open".  Generic over the active
+    /// `Socket` implementation; the default in production is
+    /// `crate::socks_socket2::Socket2Udp` (wraps `socket2::Socket`).
+    pub fd: Option<S>,
     /// Address family the socket was opened in (`AF_INET`,
     /// `AF_INET6`).  Stays `i32` to match call sites that pass the
     /// libc `AF_*` constants directly.
@@ -194,7 +196,7 @@ pub struct SocketCtx {
     pub udp_coalesced_size: usize,
 }
 
-impl Default for SocketCtx {
+impl<S: crate::socks::Socket> Default for SocketCtx<S> {
     fn default() -> Self {
         SocketCtx {
             fd: None,
@@ -693,7 +695,7 @@ impl Config {
 // ---------------------------------------------------------------------------
 // SocketCtx: per-socket operations (exposed for unit tests).
 
-impl SocketCtx {
+impl<S: crate::socks::Socket> SocketCtx<S> {
     /// Close the socket and reset the `fd` slot to `None`.
     /// C: `void packet_loop_close_socket(socket_ctx_t*)`.
     /// Exposed directly so `sockloop_test.c`-derived tests can reach it.
@@ -709,7 +711,7 @@ impl SocketCtx {
 /// Returns the number of sockets actually opened; `Err` on a
 /// non-recoverable open failure.
 #[allow(clippy::too_many_arguments)]
-pub fn open_sockets(
+pub fn open_sockets<S: crate::socks::Socket>(
     _local_port: u16,
     _local_af: i32,
     _public_port: u16,
@@ -717,7 +719,7 @@ pub fn open_sockets(
     _socket_buffer_size: i32,
     _extra_socket_required: bool,
     _do_not_use_gso: bool,
-    _s_ctx: &mut [SocketCtx],
+    _s_ctx: &mut [SocketCtx<S>],
     _ecn_value: u8,
 ) -> Result<usize, Error> {
     todo!()

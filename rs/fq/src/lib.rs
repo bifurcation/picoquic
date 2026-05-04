@@ -65,6 +65,7 @@ pub mod performance_log;
 pub mod qlog;
 pub mod siphash;
 pub mod socks;
+pub mod socks_socket2;
 pub mod splay;
 #[cfg(test)]
 pub mod tests;

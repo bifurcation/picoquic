@@ -19,3 +19,6 @@ digest = { version = "0.10", default-features = false }
 # (QUIC packet-number encryption is QUIC logic, not TLS).
 aes = { version = "0.8", default-features = false }
 chacha20 = { version = "0.9", default-features = false }
+
+# UDP socket abstraction.  std-only.
+socket2 = { version = "0.5", default-features = false, features = ["all"] }
