@@ -572,7 +572,7 @@ impl Quic {
     /// Retrieve a cached ticket record (without consuming it).
     /// `need_unused` skips already-used tickets.
     pub fn get_stored_ticket(
-        &mut self,
+        &self,
         _sni: Option<&str>,
         _alpn: Option<&str>,
         _version: u32,
@@ -1779,20 +1779,22 @@ pub struct PacketData {
 // ---------------------------------------------------------------------------
 // Connection lifecycle / registration.
 
-pub fn create_cnx_internal(
-    _quic: &mut Quic,
-    _initial_cnx_id: ConnectionId,
-    _remote_cnx_id: ConnectionId,
-    _addr_to: Option<&SocketAddr>,
-    _start_time: Instant,
-    _preferred_version: u32,
-    _sni: Option<&str>,
-    _alpn: Option<&str>,
-    _client_mode: bool,
-    _initial_aead_dec: Option<Box<dyn crate::tls::PacketKey>>,
-    _initial_pn_dec: Option<Box<dyn crate::tls::HeaderKey>>,
-) -> Result<ConnectionToken, crate::Error> {
-    todo!()
+impl Quic {
+    pub fn create_cnx_internal(
+        &mut self,
+        _initial_cnx_id: ConnectionId,
+        _remote_cnx_id: ConnectionId,
+        _addr_to: Option<&SocketAddr>,
+        _start_time: Instant,
+        _preferred_version: u32,
+        _sni: Option<&str>,
+        _alpn: Option<&str>,
+        _client_mode: bool,
+        _initial_aead_dec: Option<Box<dyn crate::tls::PacketKey>>,
+        _initial_pn_dec: Option<Box<dyn crate::tls::HeaderKey>>,
+    ) -> Result<ConnectionToken, crate::Error> {
+        todo!()
+    }
 }
 
 impl Quic {
@@ -1810,14 +1812,16 @@ pub fn init_transport_parameters(_tp: &mut TransportParameters) {
     todo!()
 }
 
-/// Insert `local_connection_id` into the QUIC context's CID lookup table so that
-/// future packets carrying it route to `connection`.
-pub fn register_cnx_id(
-    _quic: &mut Quic,
-    _connection: &mut Connection,
-    _l_cid: &mut LocalConnectionId,
-) -> Result<(), crate::Error> {
-    todo!()
+impl Quic {
+    /// Insert `local_connection_id` into the QUIC context's CID lookup table so that
+    /// future packets carrying it route to `connection`.
+    pub fn register_cnx_id(
+        &mut self,
+        _connection: &mut Connection,
+        _l_cid: &mut LocalConnectionId,
+    ) -> Result<(), crate::Error> {
+        todo!()
+    }
 }
 
 impl Connection {
@@ -1834,12 +1838,14 @@ impl Connection {
     }
 }
 
-pub fn create_local_cnx_id(
-    _quic: &mut Quic,
-    _cnx_id: &mut ConnectionId,
-    _cnx_id_remote: ConnectionId,
-) {
-    todo!()
+impl Quic {
+    pub fn create_local_cnx_id(
+        &mut self,
+        _cnx_id: &mut ConnectionId,
+        _cnx_id_remote: ConnectionId,
+    ) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2020,7 +2026,7 @@ impl Connection {
     /// `partial_match` when only one of the two addresses matched.
     /// Returns the path index, or -1 when no path matches.
     pub fn find_path_by_address(
-        &mut self,
+        &self,
         _addr_local: Option<&SocketAddr>,
         _addr_peer: Option<&SocketAddr>,
         _partial_match: &mut i32,
@@ -2029,7 +2035,7 @@ impl Connection {
     }
 
     /// Look up a path by its unique-path-id; returns -1 when absent.
-    pub fn find_path_by_unique_id(&mut self, _unique_path_id: u64) -> i32 {
+    pub fn find_path_by_unique_id(&self, _unique_path_id: u64) -> i32 {
         todo!()
     }
 
@@ -2050,23 +2056,29 @@ impl Connection {
     }
 }
 
-pub fn reset_path_mtu(_path_x: &mut Path) {
-    todo!()
+impl Path {
+    pub fn reset_path_mtu(&mut self) {
+        todo!()
+    }
 }
 
-pub fn get_path_id_from_unique(_connection: &mut Connection, _unique_path_id: u64) -> i32 {
-    todo!()
+impl Connection {
+    pub fn get_path_id_from_unique(&self, _unique_path_id: u64) -> i32 {
+        todo!()
+    }
 }
 
-/// Find the remote-CID stash for `unique_path_id`, optionally
-/// creating one if it doesn't exist.  Returns the index into
-/// `connection.remote_connection_id_stashes`.  C: `find_or_create_remote_connection_id_stash`.
-pub fn find_or_create_remote_connection_id_stash(
-    _connection: &mut Connection,
-    _unique_path_id: u64,
-    _do_create: bool,
-) -> Option<usize> {
-    todo!()
+impl Connection {
+    /// Find the remote-CID stash for `unique_path_id`, optionally
+    /// creating one if it doesn't exist.  Returns the index into
+    /// `connection.remote_connection_id_stashes`.  C: `find_or_create_remote_connection_id_stash`.
+    pub fn find_or_create_remote_connection_id_stash(
+        &self,
+        _unique_path_id: u64,
+        _do_create: bool,
+    ) -> Option<usize> {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2088,48 +2100,56 @@ pub struct StashResult {
     pub stashed_index: Option<usize>,
 }
 
-pub fn add_remote_connection_id_to_stash(
-    _connection: &mut Connection,
-    _stash_index: usize,
-    _retire_before_next: u64,
-    _sequence: u64,
-    _connection_id_bytes: &[u8],
-    _secret_bytes: &[u8],
-) -> StashResult {
-    todo!()
+impl Connection {
+    pub fn add_remote_connection_id_to_stash(
+        &mut self,
+        _stash_index: usize,
+        _retire_before_next: u64,
+        _sequence: u64,
+        _connection_id_bytes: &[u8],
+        _secret_bytes: &[u8],
+    ) -> StashResult {
+        todo!()
+    }
 }
 
-pub fn stash_remote_connection_id(
-    _connection: &mut Connection,
-    _retire_before_next: u64,
-    _unique_path_id: u64,
-    _sequence: u64,
-    _connection_id_bytes: &[u8],
-    _secret_bytes: &[u8],
-) -> StashResult {
-    todo!()
+impl Connection {
+    pub fn stash_remote_connection_id(
+        &mut self,
+        _retire_before_next: u64,
+        _unique_path_id: u64,
+        _sequence: u64,
+        _connection_id_bytes: &[u8],
+        _secret_bytes: &[u8],
+    ) -> StashResult {
+        todo!()
+    }
 }
 
-/// Remove the CID at `removed_index` from
-/// `connection.remote_connection_id_stashes[stash_index].connection_ids`.  Returns the
-/// next index that is still live, if any (matches the C "return
-/// the chain successor" pattern).
-pub fn remove_connection_id_from_stash(
-    _connection: &mut Connection,
-    _stash_index: usize,
-    _removed_index: usize,
-) -> Option<usize> {
-    todo!()
+impl Connection {
+    /// Remove the CID at `removed_index` from
+    /// `connection.remote_connection_id_stashes[stash_index].connection_ids`.  Returns the
+    /// next index that is still live, if any (matches the C "return
+    /// the chain successor" pattern).
+    pub fn remove_connection_id_from_stash(
+        &mut self,
+        _stash_index: usize,
+        _removed_index: usize,
+    ) -> Option<usize> {
+        todo!()
+    }
 }
 
-/// As [`remove_connection_id_from_stash`] but locates the stash by
-/// `unique_path_id`.
-pub fn remove_stashed_connection_id(
-    _connection: &mut Connection,
-    _unique_path_id: u64,
-    _removed_index: usize,
-) -> Option<usize> {
-    todo!()
+impl Connection {
+    /// As [`remove_connection_id_from_stash`] but locates the stash by
+    /// `unique_path_id`.
+    pub fn remove_stashed_connection_id(
+        &mut self,
+        _unique_path_id: u64,
+        _removed_index: usize,
+    ) -> Option<usize> {
+        todo!()
+    }
 }
 
 /// Return a reference to the first available CID in `stash`, if any.
@@ -2139,54 +2159,63 @@ pub fn get_connection_id_from_stash(
     todo!()
 }
 
-/// Reserve a stashed CID for use on `unique_path_id`.  Returns the
-/// stash index of the chosen CID, or `None` when none are
-/// available.
-pub fn obtain_stashed_connection_id(
-    _connection: &mut Connection,
-    _unique_path_id: u64,
-) -> Option<(usize, usize)> {
-    todo!()
+impl Connection {
+    /// Reserve a stashed CID for use on `unique_path_id`.  Returns the
+    /// stash index of the chosen CID, or `None` when none are
+    /// available.
+    pub fn obtain_stashed_connection_id(&mut self, _unique_path_id: u64) -> Option<(usize, usize)> {
+        todo!()
+    }
 }
 
-pub fn dereference_stashed_connection_id(
-    _connection: &mut Connection,
-    _path_x: &mut Path,
-    _is_deleting_connection: i32,
-) {
-    todo!()
+impl Connection {
+    pub fn dereference_stashed_connection_id(
+        &mut self,
+        _path_x: &mut Path,
+        _is_deleting_connection: i32,
+    ) {
+        todo!()
+    }
 }
 
-pub fn dereference_stashed_connection_id_tuple(
-    _connection: &mut Connection,
-    _path_x: &mut Path,
-    _tuple: &mut Tuple,
-    _is_deleting_connection: i32,
-) {
-    todo!()
+impl Connection {
+    pub fn dereference_stashed_connection_id_tuple(
+        &mut self,
+        _path_x: &mut Path,
+        _tuple: &mut Tuple,
+        _is_deleting_connection: i32,
+    ) {
+        todo!()
+    }
 }
 
-pub fn remove_not_before_from_stash(
-    _connection: &mut Connection,
-    _connection_id_stash: &mut RemoteConnectionIdStash,
-    _not_before: u64,
-    _current_time: Instant,
-) -> u64 {
-    todo!()
+impl Connection {
+    pub fn remove_not_before_from_stash(
+        &mut self,
+        _connection_id_stash: &mut RemoteConnectionIdStash,
+        _not_before: u64,
+        _current_time: Instant,
+    ) -> u64 {
+        todo!()
+    }
 }
 
-/// Remove the stash at `connection.remote_connection_id_stashes[stash_index]`.
-pub fn delete_remote_connection_id_stash(_connection: &mut Connection, _stash_index: usize) {
-    todo!()
+impl Connection {
+    /// Remove the stash at `connection.remote_connection_id_stashes[stash_index]`.
+    pub fn delete_remote_connection_id_stash(&mut self, _stash_index: usize) {
+        todo!()
+    }
 }
 
-pub fn remove_not_before_cid(
-    _connection: &mut Connection,
-    _unique_path_id: u64,
-    _not_before: u64,
-    _current_time: Instant,
-) -> u64 {
-    todo!()
+impl Connection {
+    pub fn remove_not_before_cid(
+        &mut self,
+        _unique_path_id: u64,
+        _not_before: u64,
+        _current_time: Instant,
+    ) -> u64 {
+        todo!()
+    }
 }
 
 impl Connection {
@@ -2200,36 +2229,42 @@ impl Connection {
 // ---------------------------------------------------------------------------
 // Retransmission queue management.
 
-pub fn queue_for_retransmit(
-    _connection: &mut Connection,
-    _path_x: &mut Path,
-    _packet: &mut Packet,
-    _length: usize,
-    _current_time: Instant,
-) {
-    todo!()
+impl Connection {
+    pub fn queue_for_retransmit(
+        &mut self,
+        _path_x: &mut Path,
+        _packet: &mut Packet,
+        _length: usize,
+        _current_time: Instant,
+    ) {
+        todo!()
+    }
 }
 
-/// Remove the in-flight packet at `token` from `pkt_ctx.pending`.
-/// Returns the next packet token (sequence-wise successor) for the
-/// caller to chain onto.  C: `dequeue_retransmit_packet` returning
-/// the next pointer.
-pub fn dequeue_retransmit_packet(
-    _connection: &mut Connection,
-    _pkt_ctx: &mut PacketContextState,
-    _packet: PacketToken,
-    _should_free: bool,
-    _add_to_data_repeat_queue: bool,
-) -> Option<PacketToken> {
-    todo!()
+impl Connection {
+    /// Remove the in-flight packet at `token` from `pkt_ctx.pending`.
+    /// Returns the next packet token (sequence-wise successor) for the
+    /// caller to chain onto.  C: `dequeue_retransmit_packet` returning
+    /// the next pointer.
+    pub fn dequeue_retransmit_packet(
+        &mut self,
+        _pkt_ctx: &mut PacketContextState,
+        _packet: PacketToken,
+        _should_free: bool,
+        _add_to_data_repeat_queue: bool,
+    ) -> Option<PacketToken> {
+        todo!()
+    }
 }
 
-pub fn dequeue_retransmitted_packet(
-    _connection: &mut Connection,
-    _pkt_ctx: &mut PacketContextState,
-    _packet: PacketToken,
-) {
-    todo!()
+impl Connection {
+    pub fn dequeue_retransmitted_packet(
+        &mut self,
+        _pkt_ctx: &mut PacketContextState,
+        _packet: PacketToken,
+    ) {
+        todo!()
+    }
 }
 
 impl Connection {
@@ -2322,14 +2357,14 @@ impl Pacing {
     }
 
     /// True when the pacer is currently throttling sends.
-    pub fn is_blocked(&mut self) -> bool {
+    pub fn is_blocked(&self) -> bool {
         todo!()
     }
 
     /// Decide whether sending right now is authorized by the pacer.
     /// Writes the next authorized time into `next_time` when blocked.
     pub fn is_authorized(
-        &mut self,
+        &self,
         _current_time: Instant,
         _next_time: &mut Instant,
         _packet_train_mode: bool,
@@ -2399,7 +2434,7 @@ impl Connection {
     /// `current_time`.  Updates `next_time` with the earliest pacer
     /// fire if blocked.  C: `is_sending_authorized_by_pacing`.
     pub fn is_sending_authorized_by_pacing(
-        &mut self,
+        &self,
         _path_x: &mut Path,
         _current_time: Instant,
         _next_time: &mut Instant,
@@ -2510,18 +2545,20 @@ pub fn parse_long_packet_type(_flags: u8, _version_index: i32) -> PacketType {
     todo!()
 }
 
-/// Parse a packet header.  C `int picoquic_parse_packet_header(...,
-/// picoquic_cnx_t** pcnx, int receiving)`: the C `pcnx`
-/// out-parameter folds into the `Ok` payload here, the C `int`
-/// status into `Result`.
-pub fn parse_packet_header(
-    _quic: &mut Quic,
-    _bytes: &[u8],
-    _addr_from: Option<&SocketAddr>,
-    _ph: &mut PacketHeader,
-    _receiving: bool,
-) -> Result<Option<ConnectionToken>, crate::Error> {
-    todo!()
+impl Quic {
+    /// Parse a packet header.  C `int picoquic_parse_packet_header(...,
+    /// picoquic_cnx_t** pcnx, int receiving)`: the C `pcnx`
+    /// out-parameter folds into the `Ok` payload here, the C `int`
+    /// status into `Result`.
+    pub fn parse_packet_header(
+        &mut self,
+        _bytes: &[u8],
+        _addr_from: Option<&SocketAddr>,
+        _ph: &mut PacketHeader,
+        _receiving: bool,
+    ) -> Result<Option<ConnectionToken>, crate::Error> {
+        todo!()
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2541,26 +2578,30 @@ pub fn create_long_header(
     todo!()
 }
 
-pub fn create_packet_header(
-    _connection: &mut Connection,
-    _packet_type: PacketType,
-    _sequence_number: u64,
-    _path_x: &mut Path,
-    _tuple: &mut Tuple,
-    _header_length: usize,
-    _bytes: &mut [u8],
-    _pn_offset: &mut usize,
-    _pn_length: &mut usize,
-) -> usize {
-    todo!()
+impl Connection {
+    pub fn create_packet_header(
+        &mut self,
+        _packet_type: PacketType,
+        _sequence_number: u64,
+        _path_x: &mut Path,
+        _tuple: &mut Tuple,
+        _header_length: usize,
+        _bytes: &mut [u8],
+        _pn_offset: &mut usize,
+        _pn_length: &mut usize,
+    ) -> usize {
+        todo!()
+    }
 }
 
-pub fn predict_packet_header_length(
-    _connection: &mut Connection,
-    _packet_type: PacketType,
-    _pkt_ctx: &mut PacketContextState,
-) -> usize {
-    todo!()
+impl Connection {
+    pub fn predict_packet_header_length(
+        &mut self,
+        _packet_type: PacketType,
+        _pkt_ctx: &mut PacketContextState,
+    ) -> usize {
+        todo!()
+    }
 }
 
 pub fn update_payload_length(
@@ -2572,8 +2613,10 @@ pub fn update_payload_length(
     todo!()
 }
 
-pub fn get_checksum_length(_connection: &mut Connection, _is_cleartext_mode: Epoch) -> usize {
-    todo!()
+impl Connection {
+    pub fn get_checksum_length(&self, _is_cleartext_mode: Epoch) -> usize {
+        todo!()
+    }
 }
 
 pub fn protect_packet_header(
@@ -2585,22 +2628,24 @@ pub fn protect_packet_header(
     todo!()
 }
 
-pub fn protect_packet(
-    _connection: &mut Connection,
-    _ptype: PacketType,
-    _bytes: &mut [u8],
-    _sequence_number: u64,
-    _length: usize,
-    _header_length: usize,
-    _send_buffer: &mut [u8],
-    _send_buffer_max: usize,
-    _aead_context: &dyn crate::tls::PacketKey,
-    _pn_enc: &dyn crate::tls::HeaderKey,
-    _path_x: &mut Path,
-    _tuple: &mut Tuple,
-    _current_time: Instant,
-) -> usize {
-    todo!()
+impl Connection {
+    pub fn protect_packet(
+        &mut self,
+        _ptype: PacketType,
+        _bytes: &mut [u8],
+        _sequence_number: u64,
+        _length: usize,
+        _header_length: usize,
+        _send_buffer: &mut [u8],
+        _send_buffer_max: usize,
+        _aead_context: &dyn crate::tls::PacketKey,
+        _pn_enc: &dyn crate::tls::HeaderKey,
+        _path_x: &mut Path,
+        _tuple: &mut Tuple,
+        _current_time: Instant,
+    ) -> usize {
+        todo!()
+    }
 }
 
 pub fn get_packet_number64(_highest: u64, _mask: u64, _pn: u32) -> u64 {
@@ -2623,132 +2668,148 @@ pub fn pad_to_target_length(_bytes: &mut [u8], _length: usize, _target: usize) -
     todo!()
 }
 
-pub fn finalize_and_protect_packet_tuple(
-    _connection: &mut Connection,
-    _packet: &mut Packet,
-    _ret: i32,
-    _length: usize,
-    _header_length: usize,
-    _checksum_overhead: usize,
-    _send_length: &mut usize,
-    _send_buffer: &mut [u8],
-    _send_buffer_max: usize,
-    _path_x: &mut Path,
-    _current_time: Instant,
-    _tuple: &mut Tuple,
-) {
-    todo!()
+impl Connection {
+    pub fn finalize_and_protect_packet_tuple(
+        &mut self,
+        _packet: &mut Packet,
+        _ret: i32,
+        _length: usize,
+        _header_length: usize,
+        _checksum_overhead: usize,
+        _send_length: &mut usize,
+        _send_buffer: &mut [u8],
+        _send_buffer_max: usize,
+        _path_x: &mut Path,
+        _current_time: Instant,
+        _tuple: &mut Tuple,
+    ) {
+        todo!()
+    }
 }
 
-pub fn finalize_and_protect_packet(
-    _connection: &mut Connection,
-    _packet: &mut Packet,
-    _ret: i32,
-    _length: usize,
-    _header_length: usize,
-    _checksum_overhead: usize,
-    _send_length: &mut usize,
-    _send_buffer: &mut [u8],
-    _send_buffer_max: usize,
-    _path_x: &mut Path,
-    _current_time: Instant,
-) {
-    todo!()
+impl Connection {
+    pub fn finalize_and_protect_packet(
+        &mut self,
+        _packet: &mut Packet,
+        _ret: i32,
+        _length: usize,
+        _header_length: usize,
+        _checksum_overhead: usize,
+        _send_length: &mut usize,
+        _send_buffer: &mut [u8],
+        _send_buffer_max: usize,
+        _path_x: &mut Path,
+        _current_time: Instant,
+    ) {
+        todo!()
+    }
 }
 
-pub fn implicit_handshake_ack(
-    _connection: &mut Connection,
-    _pc: PacketContext,
-    _current_time: Instant,
-) {
-    todo!()
+impl Connection {
+    pub fn implicit_handshake_ack(&mut self, _pc: PacketContext, _current_time: Instant) {
+        todo!()
+    }
 }
 
-pub fn false_start_transition(_connection: &mut Connection, _current_time: Instant) {
-    todo!()
+impl Connection {
+    pub fn false_start_transition(&mut self, _current_time: Instant) {
+        todo!()
+    }
 }
 
-pub fn client_almost_ready_transition(_connection: &mut Connection) {
-    todo!()
+impl Connection {
+    pub fn client_almost_ready_transition(&mut self) {
+        todo!()
+    }
 }
 
-pub fn ready_state_transition(_connection: &mut Connection, _current_time: Instant) {
-    todo!()
+impl Connection {
+    pub fn ready_state_transition(&mut self, _current_time: Instant) {
+        todo!()
+    }
 }
 
 /// Parse a packet header and decrypt its payload.  C: `pcnx` and
 /// `new_context_created` out-parameters fold into the `Ok` payload.
 #[allow(clippy::too_many_arguments)]
-pub fn parse_header_and_decrypt(
-    _quic: &mut Quic,
-    _bytes: &[u8],
-    _packet_length: usize,
-    _addr_from: Option<&SocketAddr>,
-    _current_time: Instant,
-    _decrypted_data: &mut StreamDataNode,
-    _ph: &mut PacketHeader,
-    _consumed: &mut usize,
-) -> Result<(Option<ConnectionToken>, bool), crate::Error> {
-    todo!()
+impl Quic {
+    pub fn parse_header_and_decrypt(
+        &mut self,
+        _bytes: &[u8],
+        _packet_length: usize,
+        _addr_from: Option<&SocketAddr>,
+        _current_time: Instant,
+        _decrypted_data: &mut StreamDataNode,
+        _ph: &mut PacketHeader,
+        _consumed: &mut usize,
+    ) -> Result<(Option<ConnectionToken>, bool), crate::Error> {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Packet number / ACK shortcuts.
 
-pub fn get_sequence_number(
-    _connection: &mut Connection,
-    _path_x: &mut Path,
-    _pc: PacketContext,
-) -> u64 {
-    todo!()
+impl Connection {
+    pub fn get_sequence_number(&self, _path_x: &mut Path, _pc: PacketContext) -> u64 {
+        todo!()
+    }
 }
 
-pub fn get_ack_number(_connection: &mut Connection, _path_x: &mut Path, _pc: PacketContext) -> u64 {
-    todo!()
+impl Connection {
+    pub fn get_ack_number(&self, _path_x: &mut Path, _pc: PacketContext) -> u64 {
+        todo!()
+    }
 }
 
-pub fn get_last_packet(
-    _connection: &mut Connection,
-    _path_x: &mut Path,
-    _pc: PacketContext,
-) -> Option<PacketToken> {
-    todo!()
+impl Connection {
+    pub fn get_last_packet(&self, _path_x: &mut Path, _pc: PacketContext) -> Option<PacketToken> {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // ACK logic.
 
-pub fn init_ack_ctx(_connection: &mut Connection, _ack_ctx: &mut AckContext) {
-    todo!()
+impl Connection {
+    pub fn init_ack_ctx(&mut self, _ack_ctx: &mut AckContext) {
+        todo!()
+    }
 }
 
-pub fn is_ack_needed(
-    _connection: &mut Connection,
-    _current_time: Instant,
-    _next_wake_time: &mut Instant,
-    _pc: PacketContext,
-    _is_opportunistic: i32,
-) -> bool {
-    todo!()
+impl Connection {
+    pub fn is_ack_needed(
+        &self,
+        _current_time: Instant,
+        _next_wake_time: &mut Instant,
+        _pc: PacketContext,
+        _is_opportunistic: i32,
+    ) -> bool {
+        todo!()
+    }
 }
 
-pub fn is_pn_already_received(
-    _connection: &mut Connection,
-    _pc: PacketContext,
-    _l_cid: Option<LocalConnectionIdToken>,
-    _pn64: u64,
-) -> bool {
-    todo!()
+impl Connection {
+    pub fn is_pn_already_received(
+        &self,
+        _pc: PacketContext,
+        _l_cid: Option<LocalConnectionIdToken>,
+        _pn64: u64,
+    ) -> bool {
+        todo!()
+    }
 }
 
-pub fn record_pn_received(
-    _connection: &mut Connection,
-    _pc: PacketContext,
-    _l_cid: Option<LocalConnectionIdToken>,
-    _pn64: u64,
-    _current_microsec: Instant,
-) -> i32 {
-    todo!()
+impl Connection {
+    pub fn record_pn_received(
+        &mut self,
+        _pc: PacketContext,
+        _l_cid: Option<LocalConnectionIdToken>,
+        _pn64: u64,
+        _current_microsec: Instant,
+    ) -> i32 {
+        todo!()
+    }
 }
 
 impl SackList {
@@ -2800,12 +2861,12 @@ impl SackList {
     }
 
     /// First range in the list (highest PN), or `None` when empty.
-    pub fn first_item(&mut self) -> Option<SackItemToken> {
+    pub fn first_item(&self) -> Option<SackItemToken> {
         todo!()
     }
 
     /// Last range in the list (lowest PN), or `None` when empty.
-    pub fn last_item(&mut self) -> Option<SackItemToken> {
+    pub fn last_item(&self) -> Option<SackItemToken> {
         todo!()
     }
 
@@ -2820,54 +2881,62 @@ impl SackList {
     }
 
     /// True when no ranges have been recorded.
-    pub fn is_empty(&mut self) -> bool {
+    pub fn is_empty(&self) -> bool {
         todo!()
     }
 }
 
-/// Splay-tree successor of `sack` in `list`.  C: `sack_next_item`.
-pub fn sack_next_item(_list: &mut SackList, _sack: SackItemToken) -> Option<SackItemToken> {
-    todo!()
+impl SackList {
+    /// Splay-tree successor of `sack` in `list`.  C: `sack_next_item`.
+    pub fn sack_next_item(&mut self, _sack: SackItemToken) -> Option<SackItemToken> {
+        todo!()
+    }
 }
 
-/// Splay-tree predecessor of `sack` in `list`.
-pub fn sack_previous_item(_list: &mut SackList, _sack: SackItemToken) -> Option<SackItemToken> {
-    todo!()
+impl SackList {
+    /// Splay-tree predecessor of `sack` in `list`.
+    pub fn sack_previous_item(&mut self, _sack: SackItemToken) -> Option<SackItemToken> {
+        todo!()
+    }
 }
 
-/// Borrow the ACK context for `(packet_context, local_connection_id)`
-/// on `connection`.  Returns `None` when the requested context isn't installed.
-pub fn ack_ctx_from_cnx_context(
-    _connection: &mut Connection,
-    _packet_context: PacketContext,
-    _local_connection_id: Option<LocalConnectionIdToken>,
-) -> Option<&mut AckContext> {
-    todo!()
+impl Connection {
+    /// Borrow the ACK context for `(packet_context, local_connection_id)`
+    /// on `connection`.  Returns `None` when the requested context isn't installed.
+    pub fn ack_ctx_from_cnx_context(
+        &mut self,
+        _packet_context: PacketContext,
+        _local_connection_id: Option<LocalConnectionIdToken>,
+    ) -> Option<&mut AckContext> {
+        todo!()
+    }
 }
 
-/// Borrow the SACK list for `(packet_context, local_connection_id)`
-/// on `connection`.  Returns `None` when the requested context isn't installed.
-pub fn sack_list_from_cnx_context(
-    _connection: &mut Connection,
-    _packet_context: PacketContext,
-    _local_connection_id: Option<LocalConnectionIdToken>,
-) -> Option<&mut SackList> {
-    todo!()
+impl Connection {
+    /// Borrow the SACK list for `(packet_context, local_connection_id)`
+    /// on `connection`.  Returns `None` when the requested context isn't installed.
+    pub fn sack_list_from_cnx_context(
+        &mut self,
+        _packet_context: PacketContext,
+        _local_connection_id: Option<LocalConnectionIdToken>,
+    ) -> Option<&mut SackList> {
+        todo!()
+    }
 }
 
 impl SackList {
     /// Highest packet number currently sacked.
-    pub fn first(&mut self) -> u64 {
+    pub fn first(&self) -> u64 {
         todo!()
     }
 
     /// Lowest packet number currently sacked.
-    pub fn last(&mut self) -> u64 {
+    pub fn last(&self) -> u64 {
         todo!()
     }
 
     /// Topmost range, or `None` when empty.
-    pub fn first_range(&mut self) -> Option<SackItemToken> {
+    pub fn first_range(&self) -> Option<SackItemToken> {
         todo!()
     }
 
@@ -2892,7 +2961,7 @@ impl SackList {
     }
 
     /// Number of ranges currently stored.
-    pub fn size(&mut self) -> usize {
+    pub fn size(&self) -> usize {
         todo!()
     }
 }
@@ -2933,12 +3002,10 @@ pub fn record_ack_packet_data(_packet_data: &mut PacketData, _acked_packet: &mut
     todo!()
 }
 
-pub fn init_packet_ctx(
-    _connection: &mut Connection,
-    _pkt_ctx: &mut PacketContextState,
-    _pc: PacketContext,
-) {
-    todo!()
+impl Connection {
+    pub fn init_packet_ctx(&mut self, _pkt_ctx: &mut PacketContextState, _pc: PacketContext) {
+        todo!()
+    }
 }
 
 pub fn process_ack_of_ack_frame(
@@ -2951,40 +3018,43 @@ pub fn process_ack_of_ack_frame(
     todo!()
 }
 
-pub fn compute_ack_gap_and_delay(
-    _connection: &mut Connection,
-    _rtt: Duration,
-    _remote_min_ack_delay: u64,
-    _data_rate: u64,
-    _ack_gap: &mut u64,
-    _ack_delay_max: &mut u64,
-) {
-    todo!()
+impl Connection {
+    pub fn compute_ack_gap_and_delay(
+        &self,
+        _rtt: Duration,
+        _remote_min_ack_delay: u64,
+        _data_rate: u64,
+        _ack_gap: &mut u64,
+        _ack_delay_max: &mut u64,
+    ) {
+        todo!()
+    }
 }
 
-pub fn seed_bandwidth(
-    _connection: &mut Connection,
-    _rtt_min: Duration,
-    _cwin: u64,
-    _ip_addr: core::net::IpAddr,
-) {
-    todo!()
+impl Connection {
+    pub fn seed_bandwidth(&mut self, _rtt_min: Duration, _cwin: u64, _ip_addr: core::net::IpAddr) {
+        todo!()
+    }
 }
 
-pub fn current_retransmit_timer(_connection: &mut Connection, _path_x: &mut Path) -> u64 {
-    todo!()
+impl Connection {
+    pub fn current_retransmit_timer(&self, _path_x: &mut Path) -> u64 {
+        todo!()
+    }
 }
 
-pub fn update_path_rtt(
-    _connection: &mut Connection,
-    _old_path: &mut Path,
-    _epoch: i32,
-    _send_time: Instant,
-    _current_time: Instant,
-    _ack_delay: u64,
-    _time_stamp: u64,
-) {
-    todo!()
+impl Connection {
+    pub fn update_path_rtt(
+        &mut self,
+        _old_path: &mut Path,
+        _epoch: i32,
+        _send_time: Instant,
+        _current_time: Instant,
+        _ack_delay: u64,
+        _time_stamp: u64,
+    ) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3037,17 +3107,17 @@ impl Connection {
     }
 
     /// First stream in this connection's stream tree.
-    pub fn first_stream(&mut self) -> Option<StreamToken> {
+    pub fn first_stream(&self) -> Option<StreamToken> {
         todo!()
     }
 
     /// Last stream in this connection's stream tree.
-    pub fn last_stream(&mut self) -> Option<StreamToken> {
+    pub fn last_stream(&self) -> Option<StreamToken> {
         todo!()
     }
 
     /// Look up a stream by id.
-    pub fn find_stream(&mut self, _stream_id: u64) -> Option<StreamToken> {
+    pub fn find_stream(&self, _stream_id: u64) -> Option<StreamToken> {
         todo!()
     }
 
@@ -3061,7 +3131,7 @@ impl Connection {
     /// `path_x`.  `is_coalesced` selects whether to consider streams
     /// already partially placed in the current packet.
     pub fn find_ready_stream_path(
-        &mut self,
+        &self,
         _path_x: &mut Path,
         _is_coalesced: bool,
     ) -> Option<StreamToken> {
@@ -3069,12 +3139,12 @@ impl Connection {
     }
 
     /// As [`Self::find_ready_stream_path`] but path-agnostic.
-    pub fn find_ready_stream(&mut self) -> Option<StreamToken> {
+    pub fn find_ready_stream(&self) -> Option<StreamToken> {
         todo!()
     }
 
     /// True when the TLS handshake stream has data to send.
-    pub fn is_tls_stream_ready(&mut self) -> bool {
+    pub fn is_tls_stream_ready(&self) -> bool {
         todo!()
     }
 }
@@ -3090,9 +3160,11 @@ pub fn is_stream_closed(_stream: &mut StreamHead, _client_mode: bool) -> bool {
 // the `Connection::stream_tree.get(token)` path is one indirection
 // rather than offset arithmetic.
 
-/// Splay-tree successor of `stream` in `connection.stream_tree`.
-pub fn next_stream(_connection: &mut Connection, _stream: StreamToken) -> Option<StreamToken> {
-    todo!()
+impl Connection {
+    /// Splay-tree successor of `stream` in `connection.stream_tree`.
+    pub fn next_stream(&self, _stream: StreamToken) -> Option<StreamToken> {
+        todo!()
+    }
 }
 
 pub fn decode_stream_frame<'a>(
@@ -3116,23 +3188,27 @@ pub fn format_stream_frame<'a>(
     todo!()
 }
 
-pub fn update_max_stream_id_local(_connection: &mut Connection, _stream: &mut StreamHead) {
-    todo!()
+impl Connection {
+    pub fn update_max_stream_id_local(&mut self, _stream: &mut StreamHead) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Frame retransmission.
 
-pub fn check_frame_needs_repeat(
-    _connection: &mut Connection,
-    _bytes: &[u8],
-    _bytes_max: usize,
-    _p_type: PacketType,
-    _no_need_to_repeat: &mut i32,
-    _do_not_detect_spurious: &mut i32,
-    _is_preemptive_needed: &mut i32,
-) -> i32 {
-    todo!()
+impl Connection {
+    pub fn check_frame_needs_repeat(
+        &mut self,
+        _bytes: &[u8],
+        _bytes_max: usize,
+        _p_type: PacketType,
+        _no_need_to_repeat: &mut i32,
+        _do_not_detect_spurious: &mut i32,
+        _is_preemptive_needed: &mut i32,
+    ) -> i32 {
+        todo!()
+    }
 }
 
 pub fn format_available_stream_frames<'a>(
@@ -3148,20 +3224,28 @@ pub fn format_available_stream_frames<'a>(
     todo!()
 }
 
-pub fn queue_data_repeat_init(_connection: &mut Connection) {
-    todo!()
+impl Connection {
+    pub fn queue_data_repeat_init(&mut self) {
+        todo!()
+    }
 }
 
-pub fn queue_data_repeat_packet(_connection: &mut Connection, _packet: &mut Packet) {
-    todo!()
+impl Connection {
+    pub fn queue_data_repeat_packet(&mut self, _packet: &mut Packet) {
+        todo!()
+    }
 }
 
-pub fn dequeue_data_repeat_packet(_connection: &mut Connection, _packet: &mut Packet) {
-    todo!()
+impl Connection {
+    pub fn dequeue_data_repeat_packet(&mut self, _packet: &mut Packet) {
+        todo!()
+    }
 }
 
-pub fn first_data_repeat_packet(_connection: &mut Connection) -> Option<PacketToken> {
-    todo!()
+impl Connection {
+    pub fn first_data_repeat_packet(&self) -> Option<PacketToken> {
+        todo!()
+    }
 }
 
 pub fn copy_stream_frame_for_retransmit<'a>(
@@ -3196,31 +3280,37 @@ pub fn copy_before_retransmit(
     todo!()
 }
 
-pub fn retransmit_needed(
-    _connection: &mut Connection,
-    _pc: PacketContext,
-    _path_x: &mut Path,
-    _current_time: Instant,
-    _next_wake_time: &mut Instant,
-    _packet: &mut Packet,
-    _send_buffer_max: usize,
-    _header_length: &mut usize,
-) -> i32 {
-    todo!()
+impl Connection {
+    pub fn retransmit_needed(
+        &mut self,
+        _pc: PacketContext,
+        _path_x: &mut Path,
+        _current_time: Instant,
+        _next_wake_time: &mut Instant,
+        _packet: &mut Packet,
+        _send_buffer_max: usize,
+        _header_length: &mut usize,
+    ) -> i32 {
+        todo!()
+    }
 }
 
-pub fn set_ack_needed(
-    _connection: &mut Connection,
-    _current_time: Instant,
-    _pc: PacketContext,
-    _path_x: &mut Path,
-    _is_immediate_ack_required: i32,
-) {
-    todo!()
+impl Connection {
+    pub fn set_ack_needed(
+        &mut self,
+        _current_time: Instant,
+        _pc: PacketContext,
+        _path_x: &mut Path,
+        _is_immediate_ack_required: i32,
+    ) {
+        todo!()
+    }
 }
 
-pub fn process_ack_of_frames(_connection: &mut Connection, _p: &mut Packet, _is_spurious: i32) {
-    todo!()
+impl Connection {
+    pub fn process_ack_of_frames(&mut self, _p: &mut Packet, _is_spurious: i32) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3357,8 +3447,10 @@ pub fn format_max_stream_data_frame<'a>(
     todo!()
 }
 
-pub fn cc_increased_window(_connection: &mut Connection, _previous_window: u64) -> u64 {
-    todo!()
+impl Connection {
+    pub fn cc_increased_window(&self, _previous_window: u64) -> u64 {
+        todo!()
+    }
 }
 
 pub fn format_max_streams_frame_if_needed<'a>(
@@ -3374,81 +3466,95 @@ pub fn stream_data_node_recycle(_stream_data: &mut StreamDataNode) {
     todo!()
 }
 
-pub fn stream_data_node_alloc(_quic: &mut Quic) -> Result<StreamDataNode, crate::Error> {
-    todo!()
+impl Quic {
+    pub fn stream_data_node_alloc(&mut self) -> Result<StreamDataNode, crate::Error> {
+        todo!()
+    }
 }
 
 pub fn clear_stream(_stream: &mut StreamHead) {
     todo!()
 }
 
-pub fn delete_stream(_connection: &mut Connection, _stream: &mut StreamHead) {
-    todo!()
+impl Connection {
+    pub fn delete_stream(&mut self, _stream: &mut StreamHead) {
+        todo!()
+    }
 }
 
-/// Find the local-CID list for `unique_path_id` (the index into
-/// `connection.local_connection_id_lists`), optionally creating one when absent.
-pub fn find_or_create_local_connection_id_list(
-    _connection: &mut Connection,
-    _unique_path_id: u64,
-    _do_create: bool,
-) -> Option<usize> {
-    todo!()
+impl Connection {
+    /// Find the local-CID list for `unique_path_id` (the index into
+    /// `connection.local_connection_id_lists`), optionally creating one when absent.
+    pub fn find_or_create_local_connection_id_list(
+        &self,
+        _unique_path_id: u64,
+        _do_create: bool,
+    ) -> Option<usize> {
+        todo!()
+    }
 }
 
-pub fn create_local_connection_id(
-    _connection: &mut Connection,
-    _unique_path_id: u64,
-    _suggested_value: Option<&ConnectionId>,
-    _current_time: Instant,
-) -> Result<LocalConnectionIdToken, crate::Error> {
-    todo!()
+impl Connection {
+    pub fn create_local_connection_id(
+        &mut self,
+        _unique_path_id: u64,
+        _suggested_value: Option<&ConnectionId>,
+        _current_time: Instant,
+    ) -> Result<LocalConnectionIdToken, crate::Error> {
+        todo!()
+    }
 }
 
-pub fn demote_local_connection_id_list(
-    _connection: &mut Connection,
-    _unique_path_id: u64,
-    _reason: u64,
-) -> i32 {
-    todo!()
+impl Connection {
+    pub fn demote_local_connection_id_list(&mut self, _unique_path_id: u64, _reason: u64) -> i32 {
+        todo!()
+    }
 }
 
-pub fn delete_local_connection_id(_connection: &mut Connection, _l_cid: LocalConnectionIdToken) {
-    todo!()
+impl Connection {
+    pub fn delete_local_connection_id(&mut self, _l_cid: LocalConnectionIdToken) {
+        todo!()
+    }
 }
 
-/// Remove `connection.local_connection_id_lists[list_index]`.
-pub fn delete_local_connection_id_list(_connection: &mut Connection, _list_index: usize) {
-    todo!()
+impl Connection {
+    /// Remove `connection.local_connection_id_lists[list_index]`.
+    pub fn delete_local_connection_id_list(&mut self, _list_index: usize) {
+        todo!()
+    }
 }
 
-pub fn delete_local_connection_id_lists(_connection: &mut Connection) {
-    todo!()
+impl Connection {
+    pub fn delete_local_connection_id_lists(&mut self) {
+        todo!()
+    }
 }
 
-pub fn retire_local_connection_id(
-    _connection: &mut Connection,
-    _unique_path_id: u64,
-    _sequence: u64,
-) {
-    todo!()
+impl Connection {
+    pub fn retire_local_connection_id(&mut self, _unique_path_id: u64, _sequence: u64) {
+        todo!()
+    }
 }
 
-pub fn check_local_connection_id_ttl(
-    _connection: &mut Connection,
-    _local_connection_id_list: &mut LocalConnectionIdList,
-    _current_time: Instant,
-    _next_wake_time: &mut Instant,
-) {
-    todo!()
+impl Connection {
+    pub fn check_local_connection_id_ttl(
+        &mut self,
+        _local_connection_id_list: &mut LocalConnectionIdList,
+        _current_time: Instant,
+        _next_wake_time: &mut Instant,
+    ) {
+        todo!()
+    }
 }
 
-pub fn find_local_connection_id(
-    _connection: &mut Connection,
-    _unique_path_id: u64,
-    _connection_id: &ConnectionId,
-) -> Option<LocalConnectionIdToken> {
-    todo!()
+impl Connection {
+    pub fn find_local_connection_id(
+        &self,
+        _unique_path_id: u64,
+        _connection_id: &ConnectionId,
+    ) -> Option<LocalConnectionIdToken> {
+        todo!()
+    }
 }
 
 pub fn format_path_challenge_frame<'a>(
@@ -3469,12 +3575,10 @@ pub fn format_path_response_frame<'a>(
     todo!()
 }
 
-pub fn should_repeat_path_response_frame(
-    _connection: &mut Connection,
-    _bytes: &[u8],
-    _bytes_max: usize,
-) -> bool {
-    todo!()
+impl Connection {
+    pub fn should_repeat_path_response_frame(&self, _bytes: &[u8], _bytes_max: usize) -> bool {
+        todo!()
+    }
 }
 
 pub fn format_new_connection_id_frame<'a>(
@@ -3545,13 +3649,15 @@ pub fn format_first_misc_or_dg_frame<'a>(
     todo!()
 }
 
-/// Borrow the next misc-frame header in `connection` for the given
-/// packet context.  C: `find_first_misc_frame`.
-pub fn find_first_misc_frame(
-    _connection: &mut Connection,
-    _packet_context: PacketContext,
-) -> Option<&mut MiscFrameHeader> {
-    todo!()
+impl Connection {
+    /// Borrow the next misc-frame header in `connection` for the given
+    /// packet context.  C: `find_first_misc_frame`.
+    pub fn find_first_misc_frame(
+        &self,
+        _packet_context: PacketContext,
+    ) -> Option<&mut MiscFrameHeader> {
+        todo!()
+    }
 }
 
 pub fn format_misc_frames_in_context<'a>(
@@ -3564,21 +3670,25 @@ pub fn format_misc_frames_in_context<'a>(
     todo!()
 }
 
-/// Push a fresh misc/datagram frame onto `queue`.  C took two
-/// `*mut *mut MiscFrameHeader` head/tail out-pointers; the Rust
-/// shape just takes the queue and pushes at the back.
-pub fn queue_misc_or_dg_frame(
-    _connection: &mut Connection,
-    _queue: &mut VecDeque<MiscFrameHeader>,
-    _bytes: &[u8],
-    _is_pure_ack: bool,
-    _pc: PacketContext,
-) -> Result<(), crate::Error> {
-    todo!()
+impl Connection {
+    /// Push a fresh misc/datagram frame onto `queue`.  C took two
+    /// `*mut *mut MiscFrameHeader` head/tail out-pointers; the Rust
+    /// shape just takes the queue and pushes at the back.
+    pub fn queue_misc_or_dg_frame(
+        &mut self,
+        _queue: &mut VecDeque<MiscFrameHeader>,
+        _bytes: &[u8],
+        _is_pure_ack: bool,
+        _pc: PacketContext,
+    ) -> Result<(), crate::Error> {
+        todo!()
+    }
 }
 
-pub fn purge_misc_frames_after_ready(_connection: &mut Connection) {
-    todo!()
+impl Connection {
+    pub fn purge_misc_frames_after_ready(&mut self) {
+        todo!()
+    }
 }
 
 /// Remove the entry at `index` from `queue`.  C: `delete_misc_or_dg`
@@ -3666,8 +3776,10 @@ pub fn format_time_stamp_frame<'a>(
     todo!()
 }
 
-pub fn encode_time_stamp_length(_connection: &mut Connection, _current_time: Instant) -> usize {
-    todo!()
+impl Connection {
+    pub fn encode_time_stamp_length(&self, _current_time: Instant) -> usize {
+        todo!()
+    }
 }
 
 pub fn format_bdp_frame<'a>(
@@ -3701,20 +3813,22 @@ impl Connection {
     }
 }
 
-pub fn decode_frames(
-    _connection: &mut Connection,
-    _path_x: &mut Path,
-    _bytes: &[u8],
-    _bytes_max: usize,
-    _received_data: &mut StreamDataNode,
-    _epoch: i32,
-    _addr_from: Option<&SocketAddr>,
-    _addr_to: Option<&SocketAddr>,
-    _pn64: u64,
-    _path_is_not_allocated: i32,
-    _current_time: Instant,
-) -> i32 {
-    todo!()
+impl Connection {
+    pub fn decode_frames(
+        &mut self,
+        _path_x: &mut Path,
+        _bytes: &[u8],
+        _bytes_max: usize,
+        _received_data: &mut StreamDataNode,
+        _epoch: i32,
+        _addr_from: Option<&SocketAddr>,
+        _addr_to: Option<&SocketAddr>,
+        _pn64: u64,
+        _path_is_not_allocated: i32,
+        _current_time: Instant,
+    ) -> i32 {
+        todo!()
+    }
 }
 
 /// Output of [`parse_observed_address_frame`].  Replaces the
@@ -3756,8 +3870,10 @@ pub fn prepare_observed_address_frame<'a>(
     todo!()
 }
 
-pub fn update_peer_addr(_path_x: &mut Path, _peer_addr: Option<&SocketAddr>) {
-    todo!()
+impl Path {
+    pub fn update_peer_addr(&mut self, _peer_addr: Option<&SocketAddr>) {
+        todo!()
+    }
 }
 
 pub fn skip_frame(
@@ -3793,8 +3909,10 @@ impl Connection {
     }
 }
 
-pub fn test_and_signal_new_path_allowed(_connection: &mut Connection) {
-    todo!()
+impl Connection {
+    pub fn test_and_signal_new_path_allowed(&mut self) {
+        todo!()
+    }
 }
 
 pub fn decode_closing_frames(
@@ -3805,12 +3923,16 @@ pub fn decode_closing_frames(
     todo!()
 }
 
-pub fn process_sooner_packets(_connection: &mut Connection, _current_time: Instant) {
-    todo!()
+impl Connection {
+    pub fn process_sooner_packets(&mut self, _current_time: Instant) {
+        todo!()
+    }
 }
 
-pub fn delete_sooner_packets(_connection: &mut Connection) {
-    todo!()
+impl Connection {
+    pub fn delete_sooner_packets(&mut self) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3827,24 +3949,28 @@ pub fn process_tp_version_negotiation<'a>(
     todo!()
 }
 
-pub fn prepare_transport_extensions(
-    _connection: &mut Connection,
-    _extension_mode: i32,
-    _bytes: &mut [u8],
-    _bytes_max: usize,
-    _consumed: &mut usize,
-) -> i32 {
-    todo!()
+impl Connection {
+    pub fn prepare_transport_extensions(
+        &mut self,
+        _extension_mode: i32,
+        _bytes: &mut [u8],
+        _bytes_max: usize,
+        _consumed: &mut usize,
+    ) -> i32 {
+        todo!()
+    }
 }
 
-pub fn receive_transport_extensions(
-    _connection: &mut Connection,
-    _extension_mode: i32,
-    _bytes: &mut [u8],
-    _bytes_max: usize,
-    _consumed: &mut usize,
-) -> i32 {
-    todo!()
+impl Connection {
+    pub fn receive_transport_extensions(
+        &mut self,
+        _extension_mode: i32,
+        _bytes: &mut [u8],
+        _bytes_max: usize,
+        _consumed: &mut usize,
+    ) -> i32 {
+        todo!()
+    }
 }
 
 pub fn create_misc_frame(
@@ -3855,12 +3981,14 @@ pub fn create_misc_frame(
     todo!()
 }
 
-pub fn process_version_upgrade(
-    _connection: &mut Connection,
-    _old_version_index: i32,
-    _new_version_index: i32,
-) -> i32 {
-    todo!()
+impl Connection {
+    pub fn process_version_upgrade(
+        &mut self,
+        _old_version_index: i32,
+        _new_version_index: i32,
+    ) -> i32 {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
