@@ -437,30 +437,29 @@ pub struct StatelessPacket {
 }
 
 impl Quic {
-    /// Allocate (or recycle from the per-context pool) a stateless
-    /// packet buffer.  Returns null on allocation failure.
-    pub fn create_stateless_packet(&mut self) -> *mut StatelessPacket {
+    /// Allocate a fresh stateless-packet buffer.  C:
+    /// `create_stateless_packet` plus the per-context pool;
+    /// `Quic.connections.alloc()`-style — Rust uses normal heap
+    /// allocation and lets `Drop` free.
+    pub fn create_stateless_packet(&mut self) -> Result<StatelessPacket, crate::Error> {
         todo!()
     }
 
     /// Hand `sp` to the QUIC context's pending stateless-packet
-    /// queue; the next `dequeue_stateless_packet` call will return it.
-    pub fn queue_stateless_packet(&mut self, _sp: *mut StatelessPacket) {
+    /// queue.  C: `queue_stateless_packet`.
+    pub fn queue_stateless_packet(&mut self, _sp: StatelessPacket) {
         todo!()
     }
 
-    /// Pop the next pending stateless packet, or return null when the
-    /// queue is empty.
-    pub fn dequeue_stateless_packet(&mut self) -> *mut StatelessPacket {
+    /// Pop the next pending stateless packet.  Returns `None` when
+    /// the queue is empty.  C: `dequeue_stateless_packet`.
+    pub fn dequeue_stateless_packet(&mut self) -> Option<StatelessPacket> {
         todo!()
     }
 }
 
-/// Free a stateless-packet buffer that was returned by
-/// [`Quic::dequeue_stateless_packet`].
-pub fn delete_stateless_packet(_sp: *mut StatelessPacket) {
-    todo!()
-}
+// `delete_stateless_packet` is gone -- StatelessPacket falls out
+// of scope (the VecDeque drains it); `Drop` does the C `free`.
 
 // ---------------------------------------------------------------------------
 // Stream data nodes (received) and queue nodes (queued for send).
@@ -534,14 +533,10 @@ pub struct Packet {
 }
 
 impl Quic {
-    /// Allocate (or recycle from the pool) an outbound packet
-    /// buffer.  Returns null on allocation failure.
-    pub fn create_packet(&mut self) -> *mut Packet {
-        todo!()
-    }
-
-    /// Return a packet buffer to the pool for reuse.
-    pub fn recycle_packet(&mut self, _packet: *mut Packet) {
+    /// Allocate a fresh outbound packet buffer.  C: `create_packet`
+    /// plus the per-context pool; the Rust port lets the allocator
+    /// handle reuse.  `Drop` replaces `recycle_packet`.
+    pub fn create_packet(&mut self) -> Result<Packet, crate::Error> {
         todo!()
     }
 }
@@ -626,78 +621,68 @@ impl Quic {
     }
 
     /// Retrieve a cached ticket record (without consuming it).
-    /// `need_unused` is non-zero to skip already-used tickets.
+    /// `need_unused` skips already-used tickets.
     pub fn get_stored_ticket(
         &mut self,
         _sni: Option<&str>,
-        _sni_length: u16,
         _alpn: Option<&str>,
-        _alpn_length: u16,
         _version: u32,
-        _need_unused: i32,
+        _need_unused: bool,
         _ticket_id: u64,
-    ) -> *mut StoredTicket {
+    ) -> Option<&mut StoredTicket> {
         todo!()
     }
 
-    /// Retrieve a cached ticket payload and the saved transport
-    /// parameters for `(sni, alpn, version)`.
+    /// Output of [`Self::get_ticket`] / [`Self::get_ticket_and_version`].
+    /// Replaces the C trio of out-parameters
+    /// (`uint8_t** ticket`, `uint16_t* ticket_length`,
+    /// `picoquic_tp_t* tp`).  The byte slice borrows from the
+    /// cached ticket entry.
     #[allow(clippy::too_many_arguments)]
     pub fn get_ticket(
         &mut self,
         _sni: Option<&str>,
-        _sni_length: u16,
         _alpn: Option<&str>,
-        _alpn_length: u16,
         _version: u32,
-        _ticket: &mut *mut u8,
-        _ticket_length: &mut u16,
-        _tp: &mut TransportParameters,
-        _mark_used: i32,
-    ) -> Result<(), crate::Error> {
+        _mark_used: bool,
+    ) -> Result<(&[u8], TransportParameters), crate::Error> {
         todo!()
     }
 
     /// As [`Self::get_ticket`] but also returns the QUIC version
-    /// the ticket was issued for.
-    #[allow(clippy::too_many_arguments)]
+    /// the ticket was issued for (in the first tuple slot).
     pub fn get_ticket_and_version(
         &mut self,
         _sni: Option<&str>,
-        _sni_length: u16,
         _alpn: Option<&str>,
-        _alpn_length: u16,
         _version: u32,
-        _ticket_version: &mut u32,
-        _ticket: &mut *mut u8,
-        _ticket_length: &mut u16,
-        _tp: &mut TransportParameters,
-        _mark_used: i32,
-    ) -> Result<(), crate::Error> {
+        _mark_used: bool,
+    ) -> Result<(u32, &[u8], TransportParameters), crate::Error> {
         todo!()
     }
 
     /// Load cached tickets from `ticket_file_name`.
-    pub fn load_tickets(&mut self, _ticket_file_name: &str) -> Result<(), crate::Error> {
+    pub fn load_tickets(
+        &mut self,
+        _ticket_file_name: &(impl AsRef<std::path::Path> + ?Sized),
+    ) -> Result<(), crate::Error> {
+        todo!()
+    }
+
+    /// Persist the cached ticket vector to `ticket_file_name`,
+    /// dropping entries that expired before `current_time`.  C:
+    /// `save_tickets` (operated on the C linked-list head).
+    pub fn save_tickets(
+        &self,
+        _current_time: u64,
+        _ticket_file_name: &(impl AsRef<std::path::Path> + ?Sized),
+    ) -> Result<(), crate::Error> {
         todo!()
     }
 }
 
-/// Persist the ticket linked-list to `ticket_file_name`, dropping
-/// entries that expired before `current_time`.
-pub fn save_tickets(
-    _first_ticket: *const StoredTicket,
-    _current_time: u64,
-    _ticket_file_name: &str,
-) -> Result<(), crate::Error> {
-    todo!()
-}
-
-/// Drop every cached ticket in the linked list rooted at
-/// `pp_first_ticket`, setting it to null.
-pub fn free_tickets(_pp_first_ticket: &mut *mut StoredTicket) {
-    todo!()
-}
+// `free_tickets` is gone -- `Quic.stored_tickets.clear()` is the
+// Rust equivalent (Drop frees each entry).
 
 impl Connection {
     /// Stash this connection's RTT and CWIN into the issued-ticket
@@ -729,46 +714,43 @@ impl Quic {
     pub fn store_token(
         &mut self,
         _sni: Option<&str>,
-        _sni_length: u16,
         _ip_addr: &[u8],
-        _ip_addr_length: u8,
         _token: &[u8],
-        _token_length: u16,
     ) -> Result<(), crate::Error> {
         todo!()
     }
 
-    /// Retrieve a cached retry token for `(sni, ip_addr)`, optionally
-    /// marking it as used so subsequent calls don't return it again.
+    /// Retrieve a cached retry token for `(sni, ip_addr)`,
+    /// optionally marking it as used so subsequent calls don't
+    /// return it again.  Returned slice borrows from the cached
+    /// entry.
     pub fn get_token(
         &mut self,
         _sni: Option<&str>,
-        _sni_length: u16,
         _ip_addr: &[u8],
-        _ip_addr_length: u8,
-        _token: &mut *mut u8,
-        _token_length: &mut u16,
-        _mark_used: i32,
-    ) -> Result<(), crate::Error> {
+        _mark_used: bool,
+    ) -> Result<&[u8], crate::Error> {
         todo!()
     }
 
     /// Persist cached tokens to `token_file_name`.
-    pub fn save_tokens(&mut self, _token_file_name: &str) -> Result<(), crate::Error> {
+    pub fn save_tokens(
+        &mut self,
+        _token_file_name: &(impl AsRef<std::path::Path> + ?Sized),
+    ) -> Result<(), crate::Error> {
         todo!()
     }
 
     /// Load cached tokens from `token_file_name`.
-    pub fn load_tokens(&mut self, _token_file_name: &str) -> Result<(), crate::Error> {
+    pub fn load_tokens(
+        &mut self,
+        _token_file_name: &(impl AsRef<std::path::Path> + ?Sized),
+    ) -> Result<(), crate::Error> {
         todo!()
     }
 }
 
-/// Drop every cached token in the linked list rooted at
-/// `pp_first_token`, setting it to null.
-pub fn free_tokens(_pp_first_token: &mut *mut StoredToken) {
-    todo!()
-}
+// `free_tokens` is gone -- `Quic.stored_tokens.clear()` does the same.
 
 // ---------------------------------------------------------------------------
 // Issued-tickets bookkeeping (server side, per ticket-id index).
@@ -794,14 +776,13 @@ impl Quic {
         _rtt: u64,
         _cwin: u64,
         _ip_addr: &[u8],
-        _ip_addr_length: u8,
     ) -> Result<(), crate::Error> {
         todo!()
     }
 
-    /// Look up a previously-remembered issued ticket by id.  Returns
-    /// null when no such ticket is on file.
-    pub fn retrieve_issued_ticket(&mut self, _ticket_id: u64) -> *mut IssuedTicket {
+    /// Look up a previously-remembered issued ticket by id.
+    /// Returns `None` when no such ticket is on file.
+    pub fn retrieve_issued_ticket(&mut self, _ticket_id: u64) -> Option<&mut IssuedTicket> {
         todo!()
     }
 }
@@ -1842,16 +1823,22 @@ pub fn create_cnx_internal(
     _sni: Option<&str>,
     _alpn: Option<&str>,
     _client_mode: bool,
+    // Phase 2 plan: replace these *mut c_void crypto-handle
+    // parameters with `Box<dyn AeadCipher>` / `Box<dyn PnEncrypt>`
+    // once the crypto provider abstraction lands.
     _initial_aead_dec: *mut c_void,
     _initial_pn_dec: *mut c_void,
-) -> *mut Connection {
+) -> Result<ConnectionToken, crate::Error> {
     todo!()
 }
 
 impl Quic {
     /// Read tokens from `token_file_name` into the cache, replacing
     /// any previous contents.
-    pub fn load_token_file(&mut self, _token_file_name: &str) -> Result<(), crate::Error> {
+    pub fn load_token_file(
+        &mut self,
+        _token_file_name: &(impl AsRef<std::path::Path> + ?Sized),
+    ) -> Result<(), crate::Error> {
         todo!()
     }
 }
@@ -1895,12 +1882,13 @@ pub fn create_local_cnx_id(
 // ---------------------------------------------------------------------------
 // Tuple/path management.
 
+/// Add a tuple to `path_x.tuples` and return its index there.
 pub fn create_tuple(
     _path_x: &mut Path,
     _local_addr: Option<&SocketAddr>,
     _peer_addr: Option<&SocketAddr>,
     _if_index: i32,
-) -> *mut Tuple {
+) -> Result<usize, crate::Error> {
     todo!()
 }
 
@@ -1908,11 +1896,14 @@ pub fn delete_demoted_tuples(_cnx: &mut Connection, _current_time: u64, _next_wa
     todo!()
 }
 
-pub fn delete_tuple(_path_x: &mut Path, _tuple: *mut Tuple, _is_deleting_path: i32) {
+/// Remove the tuple at `path_x.tuples[index]`.  C: `delete_tuple`.
+pub fn delete_tuple(_path_x: &mut Path, _index: usize, _is_deleting_path: bool) {
     todo!()
 }
 
-pub fn set_first_tuple(_path_x: &mut Path, _tuple: *mut Tuple) {
+/// Move the tuple at `index` to the head of `path_x.tuples`.  C:
+/// `set_first_tuple`.
+pub fn set_first_tuple(_path_x: &mut Path, _index: usize) {
     todo!()
 }
 
@@ -1974,9 +1965,7 @@ pub fn select_next_path_tuple(
     _cnx: &mut Connection,
     _current_time: u64,
     _next_wake_time: &mut u64,
-    _next_path: &mut *mut Path,
-    _next_tuple: &mut *mut Tuple,
-) {
+) -> Option<(PathToken, usize)> {
     todo!()
 }
 
@@ -2068,11 +2057,14 @@ pub fn get_path_id_from_unique(_cnx: &mut Connection, _unique_path_id: u64) -> i
     todo!()
 }
 
+/// Find the remote-CID stash for `unique_path_id`, optionally
+/// creating one if it doesn't exist.  Returns the index into
+/// `cnx.remote_cnxid_stashes`.  C: `find_or_create_remote_cnxid_stash`.
 pub fn find_or_create_remote_cnxid_stash(
     _cnx: &mut Connection,
     _unique_path_id: u64,
-    _do_create: i32,
-) -> *mut RemoteCnxidStash {
+    _do_create: bool,
+) -> Option<usize> {
     todo!()
 }
 
@@ -2086,16 +2078,23 @@ impl Connection {
     }
 }
 
+/// Output of [`add_remote_cnxid_to_stash`] / [`stash_remote_cnxid`]:
+/// a status code (matching the C `uint64_t` return) and the index
+/// of the newly-stashed CID inside the stash's `cnxids` vector,
+/// or `None` if no CID was stashed.
+pub struct StashResult {
+    pub status: u64,
+    pub stashed_index: Option<usize>,
+}
+
 pub fn add_remote_cnxid_to_stash(
     _cnx: &mut Connection,
-    _remote_cnxid_stash: &mut RemoteCnxidStash,
+    _stash_index: usize,
     _retire_before_next: u64,
     _sequence: u64,
-    _cid_length: u8,
-    _cnxid_bytes: *const u8,
-    _secret_bytes: *const u8,
-    _pstashed: &mut *mut RemoteCnxid,
-) -> u64 {
+    _cnxid_bytes: &[u8],
+    _secret_bytes: &[u8],
+) -> StashResult {
     todo!()
 }
 
@@ -2104,37 +2103,43 @@ pub fn stash_remote_cnxid(
     _retire_before_next: u64,
     _unique_path_id: u64,
     _sequence: u64,
-    _cid_length: u8,
-    _cnxid_bytes: *const u8,
-    _secret_bytes: *const u8,
-    _pstashed: &mut *mut RemoteCnxid,
-) -> u64 {
+    _cnxid_bytes: &[u8],
+    _secret_bytes: &[u8],
+) -> StashResult {
     todo!()
 }
 
+/// Remove the CID at `removed_index` from
+/// `cnx.remote_cnxid_stashes[stash_index].cnxids`.  Returns the
+/// next index that is still live, if any (matches the C "return
+/// the chain successor" pattern).
 pub fn remove_cnxid_from_stash(
     _cnx: &mut Connection,
-    _remote_cnxid_stash: &mut RemoteCnxidStash,
-    _removed: *mut RemoteCnxid,
-    _previous: *mut RemoteCnxid,
-) -> *mut RemoteCnxid {
+    _stash_index: usize,
+    _removed_index: usize,
+) -> Option<usize> {
     todo!()
 }
 
+/// As [`remove_cnxid_from_stash`] but locates the stash by
+/// `unique_path_id`.
 pub fn remove_stashed_cnxid(
     _cnx: &mut Connection,
     _unique_path_id: u64,
-    _removed: *mut RemoteCnxid,
-    _previous: *mut RemoteCnxid,
-) -> *mut RemoteCnxid {
+    _removed_index: usize,
+) -> Option<usize> {
     todo!()
 }
 
-pub fn get_cnxid_from_stash(_stash: &mut RemoteCnxidStash) -> *mut RemoteCnxid {
+/// Return a reference to the first available CID in `stash`, if any.
+pub fn get_cnxid_from_stash(_stash: &mut RemoteCnxidStash) -> Option<&mut RemoteCnxid> {
     todo!()
 }
 
-pub fn obtain_stashed_cnxid(_cnx: &mut Connection, _unique_path_id: u64) -> *mut RemoteCnxid {
+/// Reserve a stashed CID for use on `unique_path_id`.  Returns the
+/// stash index of the chosen CID, or `None` when none are
+/// available.
+pub fn obtain_stashed_cnxid(_cnx: &mut Connection, _unique_path_id: u64) -> Option<(usize, usize)> {
     todo!()
 }
 
@@ -2160,7 +2165,8 @@ pub fn remove_not_before_from_stash(
     todo!()
 }
 
-pub fn delete_remote_cnxid_stash(_cnx: &mut Connection, _cnxid_stash: *mut RemoteCnxidStash) {
+/// Remove the stash at `cnx.remote_cnxid_stashes[stash_index]`.
+pub fn delete_remote_cnxid_stash(_cnx: &mut Connection, _stash_index: usize) {
     todo!()
 }
 
@@ -2194,20 +2200,24 @@ pub fn queue_for_retransmit(
     todo!()
 }
 
+/// Remove the in-flight packet at `token` from `pkt_ctx.pending`.
+/// Returns the next packet token (sequence-wise successor) for the
+/// caller to chain onto.  C: `dequeue_retransmit_packet` returning
+/// the next pointer.
 pub fn dequeue_retransmit_packet(
     _cnx: &mut Connection,
     _pkt_ctx: &mut PacketContextState,
-    _p: *mut Packet,
-    _should_free: i32,
-    _add_to_data_repeat_queue: i32,
-) -> *mut Packet {
+    _packet: PacketToken,
+    _should_free: bool,
+    _add_to_data_repeat_queue: bool,
+) -> Option<PacketToken> {
     todo!()
 }
 
 pub fn dequeue_retransmitted_packet(
     _cnx: &mut Connection,
     _pkt_ctx: &mut PacketContextState,
-    _p: *mut Packet,
+    _packet: PacketToken,
 ) {
     todo!()
 }
@@ -2255,40 +2265,39 @@ impl Connection {
 // Connection lookup.
 
 impl Quic {
-    /// Look up a connection by destination CID.  `l_cid_sequence` is
-    /// filled in with the matching local CID record on success.
-    /// Returns null when no connection is registered for `cnx_id`.
+    /// Look up a connection by destination CID, returning both the
+    /// connection token and the matching local CID token (the C
+    /// out-parameter `l_cid_sequence` collapses into the second
+    /// tuple slot).  C: `cnx_by_id`.
     pub fn cnx_by_id(
         &mut self,
         _cnx_id: ConnectionId,
-        _l_cid_sequence: &mut *mut LocalCnxid,
-    ) -> *mut Connection {
+    ) -> Option<(ConnectionToken, LocalCnxidToken)> {
         todo!()
     }
 
-    /// Look up a connection by peer address.  Returns null when
-    /// nothing matches.
-    pub fn cnx_by_net(&mut self, _addr: Option<&SocketAddr>) -> *mut Connection {
+    /// Look up a connection by peer address.  C: `cnx_by_net`.
+    pub fn cnx_by_net(&mut self, _addr: Option<&SocketAddr>) -> Option<ConnectionToken> {
         todo!()
     }
 
-    /// Look up a connection by initial CID and peer address.  Returns
-    /// null when nothing matches.
+    /// Look up a connection by initial CID and peer address.  C:
+    /// `cnx_by_icid`.
     pub fn cnx_by_icid(
         &mut self,
         _icid: &ConnectionId,
         _addr: Option<&SocketAddr>,
-    ) -> *mut Connection {
+    ) -> Option<ConnectionToken> {
         todo!()
     }
 
     /// Look up a connection by stateless-reset secret and peer
-    /// address.  Returns null when nothing matches.
+    /// address.  C: `cnx_by_secret`.
     pub fn cnx_by_secret(
         &mut self,
         _reset_secret: &[u8],
         _addr: Option<&SocketAddr>,
-    ) -> *mut Connection {
+    ) -> Option<ConnectionToken> {
         todo!()
     }
 }
@@ -2326,7 +2335,7 @@ impl Pacing {
         _quantum: u64,
         _send_mtu: usize,
         _smoothed_rtt: u64,
-        _signalled_path: *mut Path,
+        _signalled_path: Option<PathToken>,
     ) {
         todo!()
     }
@@ -2338,7 +2347,7 @@ impl Pacing {
         _cwin: u64,
         _send_mtu: usize,
         _smoothed_rtt: u64,
-        _signalled_path: *mut Path,
+        _signalled_path: Option<PathToken>,
     ) {
         todo!()
     }
@@ -2472,28 +2481,30 @@ pub fn parse_long_packet_type(_flags: u8, _version_index: i32) -> PacketType {
     todo!()
 }
 
+/// Parse a packet header.  C `int picoquic_parse_packet_header(...,
+/// picoquic_cnx_t** pcnx, int receiving)`: the C `pcnx`
+/// out-parameter folds into the `Ok` payload here, the C `int`
+/// status into `Result`.
 pub fn parse_packet_header(
     _quic: &mut Quic,
     _bytes: &[u8],
-    _length: usize,
     _addr_from: Option<&SocketAddr>,
     _ph: &mut PacketHeader,
-    _pcnx: &mut *mut Connection,
-    _receiving: i32,
-) -> i32 {
+    _receiving: bool,
+) -> Result<Option<ConnectionToken>, crate::Error> {
     todo!()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create_long_header(
     _packet_type: PacketType,
     _dest_cnx_id: &ConnectionId,
     _srce_cnx_id: &ConnectionId,
-    _do_grease_quic_bit: i32,
+    _do_grease_quic_bit: bool,
     _version: u32,
     _version_index: i32,
     _sequence_number: u64,
-    _retry_token_length: usize,
-    _retry_token: *mut u8,
+    _retry_token: &[u8],
     _bytes: &mut [u8],
     _pn_offset: &mut usize,
     _pn_length: &mut usize,
@@ -2540,6 +2551,7 @@ pub fn protect_packet_header(
     _send_buffer: &mut [u8],
     _pn_offset: usize,
     _first_mask: u8,
+    // Phase 2: replace with `&mut dyn PnEncrypt`.
     _pn_enc: *mut c_void,
 ) {
     todo!()
@@ -2554,6 +2566,7 @@ pub fn protect_packet(
     _header_length: usize,
     _send_buffer: &mut [u8],
     _send_buffer_max: usize,
+    // Phase 2: replace with `&mut dyn AeadCipher` + `&mut dyn PnEncrypt`.
     _aead_context: *mut c_void,
     _pn_enc: *mut c_void,
     _path_x: &mut Path,
@@ -2572,6 +2585,7 @@ pub fn remove_header_protection_inner(
     _length: usize,
     _decrypted_bytes: &mut [u8],
     _ph: &mut PacketHeader,
+    // Phase 2: replace with `&mut dyn PnEncrypt`.
     _pn_enc: *mut c_void,
     _is_loss_bit_enabled_incoming: bool,
     _sack_list_last: u64,
@@ -2632,19 +2646,19 @@ pub fn ready_state_transition(_cnx: &mut Connection, _current_time: u64) {
     todo!()
 }
 
+/// Parse a packet header and decrypt its payload.  C: `pcnx` and
+/// `new_context_created` out-parameters fold into the `Ok` payload.
+#[allow(clippy::too_many_arguments)]
 pub fn parse_header_and_decrypt(
     _quic: &mut Quic,
     _bytes: &[u8],
-    _length: usize,
     _packet_length: usize,
     _addr_from: Option<&SocketAddr>,
     _current_time: u64,
     _decrypted_data: &mut StreamDataNode,
     _ph: &mut PacketHeader,
-    _pcnx: &mut *mut Connection,
     _consumed: &mut usize,
-    _new_context_created: &mut i32,
-) -> i32 {
+) -> Result<(Option<ConnectionToken>, bool), crate::Error> {
     todo!()
 }
 
@@ -2663,7 +2677,7 @@ pub fn get_last_packet(
     _cnx: &mut Connection,
     _path_x: &mut Path,
     _pc: PacketContext,
-) -> *mut Packet {
+) -> Option<PacketToken> {
     todo!()
 }
 
@@ -2687,7 +2701,7 @@ pub fn is_ack_needed(
 pub fn is_pn_already_received(
     _cnx: &mut Connection,
     _pc: PacketContext,
-    _l_cid: *mut LocalCnxid,
+    _l_cid: Option<LocalCnxidToken>,
     _pn64: u64,
 ) -> bool {
     todo!()
@@ -2696,7 +2710,7 @@ pub fn is_pn_already_received(
 pub fn record_pn_received(
     _cnx: &mut Connection,
     _pc: PacketContext,
-    _l_cid: *mut LocalCnxid,
+    _l_cid: Option<LocalCnxidToken>,
     _pn64: u64,
     _current_microsec: u64,
 ) -> i32 {
@@ -2705,10 +2719,11 @@ pub fn record_pn_received(
 
 impl SackList {
     /// Choose at most `max_ranges` ACK ranges to put on the wire,
-    /// updating per-range send counters.
+    /// updating per-range send counters.  `first_sack` selects the
+    /// starting range; `None` starts at the highest-PN range.
     pub fn select_ack_ranges(
         &mut self,
-        _first_sack: *mut SackItem,
+        _first_sack: Option<SackItemToken>,
         _max_ranges: i32,
         _is_opportunistic: i32,
         _nb_sent_max: &mut i32,
@@ -2738,10 +2753,10 @@ impl SackList {
     /// returning the new last-acked range.
     pub fn process_ack_of_ack_range(
         &mut self,
-        _previous: *mut SackItem,
+        _previous: Option<SackItemToken>,
         _start_of_range: u64,
         _end_of_range: u64,
-    ) -> *mut SackItem {
+    ) -> Option<SackItemToken> {
         todo!()
     }
 
@@ -2750,13 +2765,13 @@ impl SackList {
         todo!()
     }
 
-    /// First range in the list (highest PN), or null when empty.
-    pub fn first_item(&mut self) -> *mut SackItem {
+    /// First range in the list (highest PN), or `None` when empty.
+    pub fn first_item(&mut self) -> Option<SackItemToken> {
         todo!()
     }
 
-    /// Last range in the list (lowest PN), or null when empty.
-    pub fn last_item(&mut self) -> *mut SackItem {
+    /// Last range in the list (lowest PN), or `None` when empty.
+    pub fn last_item(&mut self) -> Option<SackItemToken> {
         todo!()
     }
 
@@ -2776,29 +2791,33 @@ impl SackList {
     }
 }
 
-/// Splay-tree successor of `sack`.
-pub fn sack_next_item(_sack: *mut SackItem) -> *mut SackItem {
+/// Splay-tree successor of `sack` in `list`.  C: `sack_next_item`.
+pub fn sack_next_item(_list: &mut SackList, _sack: SackItemToken) -> Option<SackItemToken> {
     todo!()
 }
 
-/// Splay-tree predecessor of `sack`.
-pub fn sack_previous_item(_sack: *mut SackItem) -> *mut SackItem {
+/// Splay-tree predecessor of `sack` in `list`.
+pub fn sack_previous_item(_list: &mut SackList, _sack: SackItemToken) -> Option<SackItemToken> {
     todo!()
 }
 
+/// Borrow the ACK context for `(pc, l_cid)` on `cnx`.  Returns
+/// `None` when the requested context isn't installed.
 pub fn ack_ctx_from_cnx_context(
     _cnx: &mut Connection,
     _pc: PacketContext,
-    _l_cid: *mut LocalCnxid,
-) -> *mut AckContext {
+    _l_cid: Option<LocalCnxidToken>,
+) -> Option<&mut AckContext> {
     todo!()
 }
 
+/// Borrow the SACK list for `(pc, l_cid)` on `cnx`.  Returns
+/// `None` when the requested context isn't installed.
 pub fn sack_list_from_cnx_context(
     _cnx: &mut Connection,
     _pc: PacketContext,
-    _l_cid: *mut LocalCnxid,
-) -> *mut SackList {
+    _l_cid: Option<LocalCnxidToken>,
+) -> Option<&mut SackList> {
     todo!()
 }
 
@@ -2813,8 +2832,8 @@ impl SackList {
         todo!()
     }
 
-    /// Topmost range, or null when empty.
-    pub fn first_range(&mut self) -> *mut SackItem {
+    /// Topmost range, or `None` when empty.
+    pub fn first_range(&mut self) -> Option<SackItemToken> {
         todo!()
     }
 
@@ -2940,15 +2959,19 @@ pub fn update_path_rtt(
 
 impl Connection {
     /// Create and register a new application stream with the given
-    /// id.  Returns a borrowed pointer (the stream lives in the
-    /// connection's stream tree).
-    pub fn create_stream(&mut self, _stream_id: u64) -> *mut StreamHead {
+    /// id.  Returns the stream's token in `self.streams`.
+    pub fn create_stream(&mut self, _stream_id: u64) -> Result<StreamToken, crate::Error> {
         todo!()
     }
 
     /// Open every stream from "next remote stream" up through
-    /// `stream_id` so the receiver sees a contiguous prefix.
-    pub fn create_missing_streams(&mut self, _stream_id: u64, _is_remote: i32) -> *mut StreamHead {
+    /// `stream_id` so the receiver sees a contiguous prefix.  The
+    /// token returned names the highest-id stream just created.
+    pub fn create_missing_streams(
+        &mut self,
+        _stream_id: u64,
+        _is_remote: bool,
+    ) -> Result<StreamToken, crate::Error> {
         todo!()
     }
 
@@ -2981,17 +3004,17 @@ impl Connection {
     }
 
     /// First stream in this connection's stream tree.
-    pub fn first_stream(&mut self) -> *mut StreamHead {
+    pub fn first_stream(&mut self) -> Option<StreamToken> {
         todo!()
     }
 
     /// Last stream in this connection's stream tree.
-    pub fn last_stream(&mut self) -> *mut StreamHead {
+    pub fn last_stream(&mut self) -> Option<StreamToken> {
         todo!()
     }
 
-    /// Look up a stream by id; returns null when not present.
-    pub fn find_stream(&mut self, _stream_id: u64) -> *mut StreamHead {
+    /// Look up a stream by id.
+    pub fn find_stream(&mut self, _stream_id: u64) -> Option<StreamToken> {
         todo!()
     }
 
@@ -3007,13 +3030,13 @@ impl Connection {
     pub fn find_ready_stream_path(
         &mut self,
         _path_x: &mut Path,
-        _is_coalesced: i32,
-    ) -> *mut StreamHead {
+        _is_coalesced: bool,
+    ) -> Option<StreamToken> {
         todo!()
     }
 
     /// As [`Self::find_ready_stream_path`] but path-agnostic.
-    pub fn find_ready_stream(&mut self) -> *mut StreamHead {
+    pub fn find_ready_stream(&mut self) -> Option<StreamToken> {
         todo!()
     }
 
@@ -3024,7 +3047,7 @@ impl Connection {
 }
 
 /// True when `stream` has finished sending and receiving all data.
-pub fn is_stream_closed(_stream: &mut StreamHead, _client_mode: i32) -> bool {
+pub fn is_stream_closed(_stream: &mut StreamHead, _client_mode: bool) -> bool {
     todo!()
 }
 
@@ -3034,8 +3057,8 @@ pub fn is_stream_closed(_stream: &mut StreamHead, _client_mode: i32) -> bool {
 // the `Connection::stream_tree.get(token)` path is one indirection
 // rather than offset arithmetic.
 
-/// Splay-tree successor of `stream`.
-pub fn next_stream(_stream: *mut StreamHead) -> *mut StreamHead {
+/// Splay-tree successor of `stream` in `cnx.stream_tree`.
+pub fn next_stream(_cnx: &mut Connection, _stream: StreamToken) -> Option<StreamToken> {
     todo!()
 }
 
@@ -3104,7 +3127,7 @@ pub fn dequeue_data_repeat_packet(_cnx: &mut Connection, _packet: &mut Packet) {
     todo!()
 }
 
-pub fn first_data_repeat_packet(_cnx: &mut Connection) -> *mut Packet {
+pub fn first_data_repeat_packet(_cnx: &mut Connection) -> Option<PacketToken> {
     todo!()
 }
 
@@ -3318,7 +3341,7 @@ pub fn stream_data_node_recycle(_stream_data: &mut StreamDataNode) {
     todo!()
 }
 
-pub fn stream_data_node_alloc(_quic: &mut Quic) -> *mut StreamDataNode {
+pub fn stream_data_node_alloc(_quic: &mut Quic) -> Result<StreamDataNode, crate::Error> {
     todo!()
 }
 
@@ -3330,20 +3353,22 @@ pub fn delete_stream(_cnx: &mut Connection, _stream: &mut StreamHead) {
     todo!()
 }
 
+/// Find the local-CID list for `unique_path_id` (the index into
+/// `cnx.local_cnxid_lists`), optionally creating one when absent.
 pub fn find_or_create_local_cnxid_list(
     _cnx: &mut Connection,
     _unique_path_id: u64,
-    _do_create: i32,
-) -> *mut LocalCnxidList {
+    _do_create: bool,
+) -> Option<usize> {
     todo!()
 }
 
 pub fn create_local_cnxid(
     _cnx: &mut Connection,
     _unique_path_id: u64,
-    _suggested_value: *const ConnectionId,
+    _suggested_value: Option<&ConnectionId>,
     _current_time: u64,
-) -> *mut LocalCnxid {
+) -> Result<LocalCnxidToken, crate::Error> {
     todo!()
 }
 
@@ -3351,11 +3376,12 @@ pub fn demote_local_cnxid_list(_cnx: &mut Connection, _unique_path_id: u64, _rea
     todo!()
 }
 
-pub fn delete_local_cnxid(_cnx: &mut Connection, _l_cid: *mut LocalCnxid) {
+pub fn delete_local_cnxid(_cnx: &mut Connection, _l_cid: LocalCnxidToken) {
     todo!()
 }
 
-pub fn delete_local_cnxid_list(_cnx: &mut Connection, _local_cnxid_list: *mut LocalCnxidList) {
+/// Remove `cnx.local_cnxid_lists[list_index]`.
+pub fn delete_local_cnxid_list(_cnx: &mut Connection, _list_index: usize) {
     todo!()
 }
 
@@ -3380,7 +3406,7 @@ pub fn find_local_cnxid(
     _cnx: &mut Connection,
     _unique_path_id: u64,
     _cnxid: &ConnectionId,
-) -> *mut LocalCnxid {
+) -> Option<LocalCnxidToken> {
     todo!()
 }
 
@@ -3416,7 +3442,7 @@ pub fn format_new_connection_id_frame<'a>(
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-    _l_cid: *mut LocalCnxid,
+    _l_cid: Option<LocalCnxidToken>,
 ) -> Option<&'a mut [u8]> {
     todo!()
 }
@@ -3450,11 +3476,7 @@ impl Connection {
     }
 
     /// Enqueue a NEW_TOKEN frame carrying `token`.
-    pub fn queue_new_token_frame(
-        &mut self,
-        _token: *mut u8,
-        _token_length: usize,
-    ) -> Result<(), crate::Error> {
+    pub fn queue_new_token_frame(&mut self, _token: &[u8]) -> Result<(), crate::Error> {
         todo!()
     }
 }
@@ -3469,18 +3491,25 @@ pub fn format_one_blocked_frame<'a>(
     todo!()
 }
 
+/// Pop the head of a misc/datagram queue, encode it into `bytes`,
+/// and return the remaining write tail.  Replaces the C "splice
+/// the head out of a doubly-linked list" pattern -- the queue is
+/// now a `VecDeque` and the front element is consumed by value.
 pub fn format_first_misc_or_dg_frame<'a>(
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-    _misc_frame: *mut MiscFrameHeader,
-    _first: &mut *mut MiscFrameHeader,
-    _last: &mut *mut MiscFrameHeader,
+    _queue: &mut VecDeque<MiscFrameHeader>,
 ) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn find_first_misc_frame(_cnx: &mut Connection, _pc: PacketContext) -> *mut MiscFrameHeader {
+/// Borrow the next misc-frame header in `cnx` for packet context
+/// `pc`.  C: `find_first_misc_frame`.
+pub fn find_first_misc_frame(
+    _cnx: &mut Connection,
+    _pc: PacketContext,
+) -> Option<&mut MiscFrameHeader> {
     todo!()
 }
 
@@ -3494,15 +3523,16 @@ pub fn format_misc_frames_in_context<'a>(
     todo!()
 }
 
+/// Push a fresh misc/datagram frame onto `queue`.  C took two
+/// `*mut *mut MiscFrameHeader` head/tail out-pointers; the Rust
+/// shape just takes the queue and pushes at the back.
 pub fn queue_misc_or_dg_frame(
     _cnx: &mut Connection,
-    _first: &mut *mut MiscFrameHeader,
-    _last: &mut *mut MiscFrameHeader,
+    _queue: &mut VecDeque<MiscFrameHeader>,
     _bytes: &[u8],
-    _length: usize,
-    _is_pure_ack: i32,
+    _is_pure_ack: bool,
     _pc: PacketContext,
-) -> i32 {
+) -> Result<(), crate::Error> {
     todo!()
 }
 
@@ -3510,11 +3540,9 @@ pub fn purge_misc_frames_after_ready(_cnx: &mut Connection) {
     todo!()
 }
 
-pub fn delete_misc_or_dg(
-    _first: &mut *mut MiscFrameHeader,
-    _last: &mut *mut MiscFrameHeader,
-    _frame: *mut MiscFrameHeader,
-) {
+/// Remove the entry at `index` from `queue`.  C: `delete_misc_or_dg`
+/// (which spliced the node out of a doubly-linked list).
+pub fn delete_misc_or_dg(_queue: &mut VecDeque<MiscFrameHeader>, _index: usize) {
     todo!()
 }
 
@@ -3648,13 +3676,19 @@ pub fn decode_frames(
     todo!()
 }
 
+/// Output of [`parse_observed_address_frame`].  Replaces the
+/// `*const u8 addr` + `u16 port` pair-as-out-parameters with a
+/// borrowed slice into the input buffer.
+pub struct ObservedAddress<'a> {
+    pub sequence: u64,
+    pub addr: &'a [u8],
+    pub port: u16,
+}
+
 pub fn parse_observed_address_frame<'a>(
     _bytes: &'a [u8],
     _ftype: u64,
-    _sequence: &mut u64,
-    _addr: &mut *const u8,
-    _port: &mut u16,
-) -> Option<&'a [u8]> {
+) -> Option<(ObservedAddress<'a>, &'a [u8])> {
     todo!()
 }
 
@@ -3774,10 +3808,9 @@ pub fn receive_transport_extensions(
 
 pub fn create_misc_frame(
     _bytes: &[u8],
-    _length: usize,
-    _is_pure_ack: i32,
+    _is_pure_ack: bool,
     _pc: PacketContext,
-) -> *mut MiscFrameHeader {
+) -> Result<MiscFrameHeader, crate::Error> {
     todo!()
 }
 

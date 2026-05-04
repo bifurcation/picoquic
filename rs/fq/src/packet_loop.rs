@@ -91,7 +91,6 @@
 //!   field as `Option<Box<[u8]>>` so the unused state is `None`;
 //!   Phase 3 will tighten once the loop is implemented.
 
-use core::ffi::c_void;
 use core::net::SocketAddr;
 
 use crate::Error;
@@ -221,47 +220,40 @@ impl Default for SocketCtx {
 // ---------------------------------------------------------------------------
 // Callback enum + companion arg structs.
 
-/// Tag identifying which event fired the
-/// [`PacketLoopCbFn`] callback.  The expected type of
-/// the `callback_argv` payload is documented per-variant.
+/// Loop-callback event delivered to [`PacketLoopCbFn::callback`].
+/// Replaces the C `(packet_loop_cb_enum cb_mode, void* callback_argv)`
+/// pair: the enum carries the per-event payload directly, so
+/// implementors no longer cast a `void*`.
 /// C: `packet_loop_cb_enum`.
-///
-/// `repr(C)` is dropped — variants are inspected only through Rust
-/// pattern matching, never through FFI.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum LoopEvent {
-    /// Loop has finished initializing.  `callback_argv:
-    /// *mut LoopOptions`.
-    /// C: `packet_loop_ready`.
-    Ready,
-    /// `callback_argv: *mut size_t` — number of packets received this
-    /// iteration.  C: `packet_loop_after_receive`.
-    AfterReceive,
-    /// `callback_argv: *mut size_t` — number of packets sent this
-    /// iteration.  C: `packet_loop_after_send`.
-    AfterSend,
-    /// `callback_argv: *mut sockaddr` — new local address advertised
-    /// by the application after a port update.
-    /// C: `packet_loop_port_update`.
-    PortUpdate,
-    /// `callback_argv: *mut TimeCheckArg`.  Optional;
-    /// only fires when the application set
-    /// [`LoopOptions::do_time_check`].
-    /// C: `packet_loop_time_check`.
-    TimeCheck,
-    /// `callback_argv: *mut SystemCallDuration`.
-    /// Optional; only fires when the application set
-    /// [`LoopOptions::do_system_call_duration`].
+#[derive(Debug)]
+pub enum LoopEvent<'a> {
+    /// Loop has finished initializing.  C: `packet_loop_ready`,
+    /// `callback_argv: *mut LoopOptions`.
+    Ready(&'a mut LoopOptions),
+    /// Number of packets received this iteration.  C:
+    /// `packet_loop_after_receive`, `callback_argv: *mut size_t`.
+    AfterReceive(usize),
+    /// Number of packets sent this iteration.  C:
+    /// `packet_loop_after_send`, `callback_argv: *mut size_t`.
+    AfterSend(usize),
+    /// New local address advertised by the application after a
+    /// port update.  C: `packet_loop_port_update`,
+    /// `callback_argv: *mut sockaddr`.
+    PortUpdate(core::net::SocketAddr),
+    /// Optional check-in fired when the application set
+    /// [`LoopOptions::do_time_check`].  C:
+    /// `packet_loop_time_check`.
+    TimeCheck(&'a mut TimeCheckArg),
+    /// Optional system-call duration report fired when the
+    /// application set [`LoopOptions::do_system_call_duration`].
     /// C: `packet_loop_system_call_duration`.
-    SystemCallDuration,
+    SystemCallDuration(&'a mut SystemCallDuration),
     /// Wake-up event triggered by [`NetworkThreadCtx::wake_up`].
-    /// `callback_argv: NULL`.
-    /// C: `packet_loop_wake_up`.
+    /// C: `packet_loop_wake_up` with `callback_argv: NULL`.
     WakeUp,
-    /// `callback_argv: *mut sockaddr` — alt-port address surfaced for
-    /// multipath / migration tests.
+    /// Alt-port address surfaced for multipath / migration tests.
     /// C: `packet_loop_alt_port`.
-    AltPort,
+    AltPort(core::net::SocketAddr),
 }
 
 /// System-call duration statistics surfaced through the optional
@@ -298,27 +290,13 @@ pub struct TimeCheckArg {
 ///
 /// C: `int (*packet_loop_cb_fn)(picoquic_quic_t* quic,
 /// packet_loop_cb_enum cb_mode, void* callback_ctx, void*
-/// callback_argv)`.  The `void* callback_ctx` companion folds into
-/// the trait implementor's state per the Phase 1 rules.
+/// callback_argv)`.  The `callback_ctx` companion folds into the
+/// trait implementor's state; the `(cb_mode, callback_argv)` tagged
+/// union folds into [`LoopEvent`].
 ///
-/// `callback_argv` keeps `*mut c_void` because its concrete type is
-/// selected by `cb_mode` at runtime; safer reinterpretation lands
-/// in Phase 3.  Implementors must consult [`LoopEvent`]
-/// to know what to cast it to.
-///
-/// The return value is the C `int`: `0` for success, non-zero to
-/// signal an error and break out of the loop.  Phase 3 may refine
-/// the raw `i32` to a `Result<(), Error>`.
+/// Returns `Ok(())` on success, or an error to break the loop.
 pub trait PacketLoopCbFn {
-    /// Loop-event callback.  See trait docs for `callback_argv`
-    /// dispatch.
-    ///
-    /// # Safety
-    ///
-    /// The caller (the loop) must pass an `argv` pointer that is
-    /// either null or points to a value of the type associated with
-    /// `cb_mode` per [`LoopEvent`].
-    unsafe fn callback(&mut self, quic: &mut Quic, cb_mode: LoopEvent, argv: *mut c_void) -> i32;
+    fn callback(&mut self, quic: &mut Quic, event: LoopEvent<'_>) -> Result<(), Error>;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,25 +423,14 @@ pub trait CustomThreadDeleteFn {
 /// flags through the same single-threaded code path the rest of the
 /// crate assumes.
 pub struct NetworkThreadCtx {
-    /// QUIC context the loop drives.  Always set; the lifetime is
-    /// owned by the caller — the foreground case borrows from a
-    /// `&mut Quic` on the spawning stack, and the background case
-    /// keeps the [`Quic`] alive externally for as long as the loop
-    /// runs.
-    ///
-    /// Stays a raw pointer because the C original passes the same
-    /// `picoquic_quic_t*` across the OS thread boundary, where
-    /// neither lifetime parameters nor `&'a mut` borrows survive.
-    /// Phase 3 will revisit when threading is re-introduced (see
-    /// `TRANSLATE_PLAN.md`).
-    ///
-    /// # Safety
-    ///
-    /// Any code that dereferences this pointer (Phase 3+) must
-    /// uphold the standard `&mut Quic` rules: no aliasing for the
-    /// duration of the borrow, and the pointee must outlive the
-    /// loop iteration.
-    pub quic: *mut Quic,
+    // The C field `picoquic_quic_t* quic` is gone.  v1 is
+    // single-threaded (per `TRANSLATE_PLAN.md`), so the loop's
+    // entry points (`Quic::run_loop` etc.) take `&mut Quic`
+    // explicitly rather than threading a back-pointer through
+    // this struct.  v2 will reintroduce a typed cross-thread
+    // handle (`Arc<Mutex<Quic>>` or whatever the threading model
+    // ends up using); the placeholder here is intentionally
+    // absent.
     /// Loop parameters, optionally owned (`is_param_allocated`).
     /// Phase 1 collapses the C borrowed-or-owned discriminant into
     /// a single `Option<Box<…>>`; the borrowed case stores `None`
@@ -517,7 +484,6 @@ pub struct NetworkThreadCtx {
 impl Default for NetworkThreadCtx {
     fn default() -> Self {
         NetworkThreadCtx {
-            quic: core::ptr::null_mut(),
             param: None,
             loop_callback: None,
             thread_delete_fn: None,

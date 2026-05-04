@@ -662,7 +662,7 @@ pub trait StreamDataCb {
         stream_id: u64,
         bytes: &[u8],
         fin_or_event: CallbackEvent,
-        stream_ctx: *mut c_void,
+        stream_ctx: Option<&mut dyn core::any::Any>,
     ) -> i32;
 }
 
@@ -971,8 +971,9 @@ pub fn frame_name(_frame_type: u64) -> Option<&'static str> {
 }
 
 /// C: `add_proposed_alpn`.  Provision an ALPN context
-/// during the TLS callback.  `tls_context` is the opaque pointer
-/// the TLS stack passed to the application callback.
+/// during the TLS callback.  `tls_context` is the opaque handle
+/// the TLS stack passed to the application callback; Phase 2's
+/// dependency abstraction replaces it with a typed reference.
 pub fn add_proposed_alpn(_tls_context: *mut c_void, _alpn: &str) -> Result<(), Error> {
     todo!()
 }
@@ -1584,7 +1585,7 @@ impl Connection {
     pub fn set_app_path_ctx(
         &mut self,
         _unique_path_id: u64,
-        _app_path_ctx: *mut c_void,
+        _app_path_ctx: Option<Box<dyn core::any::Any>>,
     ) -> Result<(), Error> {
         todo!()
     }
@@ -2039,13 +2040,11 @@ impl Connection {
         todo!()
     }
 
-    /// Attach opaque application data to a stream.  `app_stream_ctx`
-    /// stays a raw pointer because it is produced and consumed by
-    /// the application without the stack interpreting it.
+    /// Attach opaque application data to a stream.
     pub fn set_app_stream_ctx(
         &mut self,
         _stream_id: u64,
-        _app_stream_ctx: *mut c_void,
+        _app_stream_ctx: Option<Box<dyn core::any::Any>>,
     ) -> Result<(), Error> {
         todo!()
     }
@@ -2062,7 +2061,7 @@ impl Connection {
         &mut self,
         _stream_id: u64,
         _is_active: bool,
-        _v_stream_ctx: *mut c_void,
+        _v_stream_ctx: Option<Box<dyn core::any::Any>>,
     ) -> Result<(), Error> {
         todo!()
     }
@@ -2116,19 +2115,18 @@ impl Quic {
 }
 
 /// C: `provide_stream_data_buffer`.  `context` is the
-/// opaque stack-supplied pointer the application receives in the
-/// `callback_prepare_to_send` callback.  Returns the
+/// `context` is the stack-supplied handle the application receives
+/// in the `callback_prepare_to_send` callback (a wrapper around
+/// the internal `StreamDataBufferArgument`).  Returns the
 /// borrowed buffer the application should fill, or `None` on
-/// error.  The returned slice borrows from the stack-internal
-/// packet-build buffer; the lifetime here is `'static` only as a
-/// Phase 1 stand-in — Phase 3 will tie it to the callback frame
-/// lifetime, possibly via a wrapper handle type.
-pub fn provide_stream_data_buffer(
-    _context: *mut c_void,
+/// error.  Lifetime ties the returned slice to `context` so the
+/// borrow ends with the callback.
+pub fn provide_stream_data_buffer<'a>(
+    _context: &'a mut crate::internal::StreamDataBufferArgument<'a>,
     _nb_bytes: usize,
     _is_fin: bool,
     _is_still_active: bool,
-) -> Option<&'static mut [u8]> {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
@@ -2156,7 +2154,7 @@ impl Connection {
         _stream_id: u64,
         _data: &[u8],
         _set_fin: bool,
-        _app_stream_ctx: *mut c_void,
+        _app_stream_ctx: Option<Box<dyn core::any::Any>>,
     ) -> Result<(), Error> {
         todo!()
     }
@@ -2233,15 +2231,18 @@ impl Connection {
 
 /// C: `provide_datagram_buffer`.  Old API, prefer
 /// [`provide_datagram_buffer_ex`].
-pub fn provide_datagram_buffer(_context: *mut c_void, _length: usize) -> Option<&'static mut [u8]> {
+pub fn provide_datagram_buffer<'a>(
+    _context: &'a mut crate::internal::StreamDataBufferArgument<'a>,
+    _length: usize,
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 
-pub fn provide_datagram_buffer_ex(
-    _context: *mut c_void,
+pub fn provide_datagram_buffer_ex<'a>(
+    _context: &'a mut crate::internal::StreamDataBufferArgument<'a>,
     _length: usize,
     _is_active: DatagramActive,
-) -> Option<&'static mut [u8]> {
+) -> Option<&'a mut [u8]> {
     todo!()
 }
 

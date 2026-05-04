@@ -795,7 +795,6 @@ pub fn uint8_to_str<'a>(_text: &'a mut [u8], _data: &[u8]) -> &'a [u8] {
 ///   `[u8; MAX_PACKET_SIZE]` because the C struct
 ///   declares it inline at that exact size.
 pub struct TestSimPacket {
-    pub next_packet: *mut TestSimPacket,
     pub arrival_time: u64,
     pub length: usize,
     pub addr_from: Option<SocketAddr>,
@@ -806,9 +805,8 @@ pub struct TestSimPacket {
 
 impl TestSimPacket {
     /// Allocate a fresh, empty packet.  C:
-    /// `picoquictest_sim_link_create_packet`.  Returns `None` on
-    /// allocation failure.
-    pub fn create() -> Option<Box<TestSimPacket>> {
+    /// `picoquictest_sim_link_create_packet`.
+    pub fn create() -> Result<Self, crate::Error> {
         todo!()
     }
 }
@@ -859,14 +857,14 @@ pub enum JitterMode {
 /// Pointer-shape choices, derived from the bodies in
 /// `picoquictest/sim_link.c`:
 ///
-/// * `first_packet` / `last_packet` stay raw pointers — head/tail
-///   of the intrusive linked list whose nodes are
-///   [`TestSimPacket`].  Phase 3 dereferences in `unsafe` blocks
-///   (or refactors to `VecDeque`).
-/// * `loss_mask: *mut u64` — the test owns a 64-bit error mask
-///   and passes its address; staying raw mirrors the C contract
-///   without forcing a struct lifetime.  `None`-equivalent is the
-///   null pointer (the C "no mask" sentinel).
+/// * `packets` replaces the C `first_packet` / `last_packet`
+///   doubly-linked list head pair plus the per-`TestSimPacket`
+///   `next_packet` chain.
+/// * `loss_mask` — the C field was `*mut u64`, an externally-owned
+///   error mask the link reads on every enqueue.  In the Rust port
+///   the link owns its own copy: tests `&mut link.loss_mask` to
+///   shift the mask between operations.  `None` matches the C
+///   `NULL` sentinel.
 /// * `aqm_state` becomes `Option<Box<dyn TestAqm>>` —
 ///   `None` matches the C `NULL` (no AQM installed).
 /// * `is_switched_off` / `is_unreachable` / `is_suspended` were
@@ -884,10 +882,11 @@ pub struct TestSimLink {
     pub jitter_mode: JitterMode,
     pub jitter_seed: u64,
     pub path_mtu: usize,
-    pub first_packet: *mut TestSimPacket,
-    pub last_packet: *mut TestSimPacket,
-    /// 64-bit error mask used in unit tests.  `null` ↔ "no mask".
-    pub loss_mask: *mut u64,
+    /// Packets in flight on this link.  FIFO; the head is the
+    /// next packet to deliver.
+    pub packets: std::collections::VecDeque<TestSimPacket>,
+    /// 64-bit error mask used in unit tests.  `None` ↔ "no mask".
+    pub loss_mask: Option<u64>,
     pub nb_loss_in_burst: u64,
     pub packets_between_losses: u64,
     pub packets_sent_next_burst: u64,
@@ -904,18 +903,15 @@ impl TestSimLink {
     /// rate (in gigabits per second) and one-way latency (in
     /// microseconds).  C: `picoquictest_sim_link_create`.
     ///
-    /// `loss_mask` is the test's 64-bit error mask; the null
-    /// pointer matches the C `NULL` (no mask).  The pointer is
-    /// stored as-is in the link and read on every packet enqueue,
-    /// so the caller must keep its `u64` allocation alive for the
-    /// life of the link (C contract).
+    /// `loss_mask` is the test's 64-bit error mask; `None` matches
+    /// the C `NULL` (no mask).
     pub fn create(
         _data_rate_in_gbps: f64,
         _microsec_latency: u64,
-        _loss_mask: *mut u64,
+        _loss_mask: Option<u64>,
         _queue_delay_max: u64,
         _current_time: u64,
-    ) -> Option<Box<TestSimLink>> {
+    ) -> Result<Self, crate::Error> {
         todo!()
     }
 
