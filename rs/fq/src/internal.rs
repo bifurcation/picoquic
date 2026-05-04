@@ -1436,7 +1436,12 @@ pub struct Path {
     pub last_sender_limited_time: u64,
     pub last_cwin_blocked_time: u64,
     pub last_time_acked_data_frame_sent: u64,
-    pub congestion_alg_state: *mut c_void,
+    /// Per-path state owned by the congestion-control algorithm.
+    /// The C side stored an opaque `void*`; in Rust each algo impl
+    /// stashes its own typed state in a `Box<dyn Any>` so we get
+    /// type-erasure without `unsafe`.  Phase 2 may push this onto
+    /// `CongestionControl` as an associated `State` type.
+    pub congestion_alg_state: Option<Box<dyn Any>>,
     pub pacing: Pacing,
 
     pub nb_mtu_losses: u64,
@@ -3834,7 +3839,7 @@ pub trait MaskOps {
     fn intercept(
         &self,
         quic: &mut Quic,
-        mask_ctx: *mut c_void,
+        mask_ctx: Option<&mut dyn Any>,
         current_time: u64,
         send_buffer: &mut [u8],
         send_length: &mut usize,
@@ -3847,7 +3852,7 @@ pub trait MaskOps {
     /// C: `mask_redirect_fn`.
     fn redirect(
         &self,
-        mask_ctx: *mut c_void,
+        mask_ctx: Option<&mut dyn Any>,
         bytes: &[u8],
         packet_length: usize,
         addr_from: Option<&SocketAddr>,
