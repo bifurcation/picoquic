@@ -15,7 +15,7 @@
 //! Translation policy notes for this module:
 //!
 //! * The C vtable struct `picoquictest_aqm_t` is already a Rust
-//!   trait ([`TestAqm`](crate::utils::TestAqm)) in
+//!   trait ([`TestAqm`](crate::tests::util::TestAqm)) in
 //!   [`crate::utils`].  The C "embed `super` and cast pointer"
 //!   inheritance pattern collapses to `impl TestAqm for Dualq`; the
 //!   C `super` field is dropped.
@@ -35,7 +35,7 @@
 //!   `release` itself only handles the queue drain.
 
 use crate::Error;
-use crate::utils::{TestAqm, TestSimLink, TestSimPacket};
+use crate::tests::util::{TestAqm, TestSimLink, TestSimPacket};
 
 // ---------------------------------------------------------------------------
 // Tunables.
@@ -53,7 +53,7 @@ pub const DUALQ_MAX_LINK_RATE: u64 = 125_000_000;
 /// Pointer-shape choices:
 ///
 /// * `queue_first` / `queue_last` stay raw pointers — same intrusive
-///   list pattern as [`crate::utils::TestSimLink`].  The queue does
+///   list pattern as [`crate::tests::util::TestSimLink`].  The queue does
 ///   not own the node allocations on its own; the parent [`Dualq`]
 ///   reaches them through these raw heads and hands ownership back
 ///   to callers via [`Dualq::dequeue_one`].

@@ -1,0 +1,306 @@
+//! Test-only utilities split out of [`crate::utils`].
+//!
+//! Contents:
+//!
+//! * **Deterministic test RNG** (`test_random`, `test_random_bytes`,
+//!   `test_uniform_random`, `test_gauss_random`,
+//!   `test_poisson_random`) — picoquic uses these to make
+//!   simulator runs reproducible.  The production RNG
+//!   (`crate::utils::uniform_random`) stays in `utils.rs`.
+//!
+//! * **Network simulator** (`TestSimPacket`, `TestSimLink`,
+//!   `TestAqm`, `JitterMode`) — the in-process sim-link used by
+//!   the test suite to exercise the QUIC stack without real sockets.
+//!   The C bodies live in `picoquictest/sim_link.c`.
+//!
+//! * **Test-fixture certificate / SNI constants** — paths to PEM
+//!   files baked into the test tree (`certs/...`).
+//!
+//! All `pub` items in this module ride on the parent's
+//! `#[cfg(test)]` gate, so they don't bloat the production build.
+
+use core::net::SocketAddr;
+
+use crate::MAX_PACKET_SIZE;
+
+// ---------------------------------------------------------------------------
+// Deterministic test RNG.
+//
+// The production `uniform_random` reads from the platform RNG
+// (and stays in `crate::utils`).  These deterministic helpers
+// thread their state through the explicit `&mut u64` context
+// so simulator runs reproduce bit-for-bit.
+
+/// Deterministic test RNG: advance the 64-bit context and return
+/// the new value.  C: `uint64_t test_random(uint64_t*
+/// random_context)`.
+pub fn test_random(_random_context: &mut u64) -> u64 {
+    todo!()
+}
+
+/// Fill `bytes` with deterministic test RNG output.  C:
+/// `void test_random_bytes(uint64_t* random_context,
+/// uint8_t* bytes, size_t bytes_max)` — `bytes_max` folds into the
+/// slice length.
+pub fn test_random_bytes(_random_context: &mut u64, _bytes: &mut [u8]) {
+    todo!()
+}
+
+/// Uniform test RNG in `[0, rnd_max)`.  C:
+/// `test_uniform_random`.
+pub fn test_uniform_random(_random_context: &mut u64, _rnd_max: u64) -> u64 {
+    todo!()
+}
+
+/// Gaussian-distributed test RNG (variance 1, mean 0).  C:
+/// `double test_gauss_random(uint64_t* random_context)`.
+pub fn test_gauss_random(_random_context: &mut u64) -> f64 {
+    todo!()
+}
+
+/// Poisson-distributed test RNG.  C:
+/// `uint64_t test_poisson_random(uint64_t*, uint64_t)`
+/// where the second argument is `(uint64_t)(exp(-lambda) * 0x40000000)`.
+pub fn test_poisson_random(_random_context: &mut u64, _exp_minus_lambda_2_30: u64) -> u64 {
+    todo!()
+}
+
+// ---------------------------------------------------------------------------
+// Network simulator (sim_link).
+
+/// One simulated packet flowing through a sim link.  C:
+/// `picoquictest_sim_packet_t`.
+///
+/// Pointer-shape choices:
+///
+/// * Packets live in `TestSimLink.packets: VecDeque<TestSimPacket>`
+///   (and `tests::dualq::DualqQueue.packets` for the AQM); the C
+///   `next_packet` intrusive chain is gone.
+/// * The two `sockaddr_storage` fields fold into
+///   `Option<SocketAddr>` (the C zero-initialised storage maps to
+///   `None`).
+/// * The flexible-array-style `bytes` is a fixed
+///   `[u8; MAX_PACKET_SIZE]` because the C struct
+///   declares it inline at that exact size.
+pub struct TestSimPacket {
+    pub arrival_time: u64,
+    pub length: usize,
+    pub addr_from: Option<SocketAddr>,
+    pub addr_to: Option<SocketAddr>,
+    pub ecn_mark: u8,
+    pub bytes: [u8; MAX_PACKET_SIZE],
+}
+
+impl TestSimPacket {
+    /// Allocate a fresh, empty packet.  C:
+    /// `picoquictest_sim_link_create_packet`.
+    pub fn create() -> Result<Self, crate::Error> {
+        todo!()
+    }
+}
+
+/// Active queue management vtable.  C: the `picoquictest_aqm_t`
+/// struct of function pointers — folded into a single trait per
+/// the Phase 1 rule on function pointers.  The `self` parameter
+/// of each C method becomes the implicit `&mut self`; the
+/// `picoquictest_sim_link_t*` link pointer stays explicit because
+/// the AQM lives inside the link (taking the link by `&mut` in
+/// each call would conflict with the `&mut self` borrow).  Phase 4
+/// will resolve the borrow with a take-replace pattern or an
+/// `unsafe` raw-pointer access.
+pub trait TestAqm {
+    /// Submit a packet to the AQM.  C: `submit`.
+    fn submit(&mut self, link: &mut TestSimLink, packet: TestSimPacket, current_time: u64);
+
+    /// Reset the AQM state at `current_time`.  C: `reset`.
+    fn reset(&mut self, link: &mut TestSimLink, current_time: u64);
+
+    /// Release any resources held by the AQM, e.g. when the link
+    /// is being torn down.  C: `release`.
+    fn release(&mut self, link: &mut TestSimLink);
+
+    /// Whether the AQM has at least one pending packet ready to
+    /// admit.  C: `has_pending` returning a 0/1 flag, mapped to
+    /// `bool`.
+    fn has_pending(&mut self) -> bool;
+
+    /// Move any AQM-pending packets onto the link's main queue.
+    /// C: `admit_pending`.
+    fn admit_pending(&mut self, link: &mut TestSimLink, current_time: u64);
+}
+
+/// Jitter model used by the sim link.  C: `picoquic_jitter_mode`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub enum JitterMode {
+    /// Gaussian jitter.  C: `jitter_gauss`.
+    #[default]
+    Gauss = 0,
+    /// Wi-Fi-style jitter.  C: `jitter_wifi`.
+    Wifi = 1,
+}
+
+/// One simulated network link with an embedded queue plus AQM
+/// hook.  C: `picoquictest_sim_link_t`.
+///
+/// Pointer-shape choices, derived from the bodies in
+/// `picoquictest/sim_link.c`:
+///
+/// * `packets` replaces the C `first_packet` / `last_packet`
+///   doubly-linked list head pair plus the per-`TestSimPacket`
+///   `next_packet` chain.
+/// * `loss_mask` — the C field was `*mut u64`, an externally-owned
+///   error mask the link reads on every enqueue.  In the Rust port
+///   the link owns its own copy: tests `&mut link.loss_mask` to
+///   shift the mask between operations.  `None` matches the C
+///   `NULL` sentinel.
+/// * `aqm_state` becomes `Option<Box<dyn TestAqm>>` —
+///   `None` matches the C `NULL` (no AQM installed).
+/// * `is_switched_off` / `is_unreachable` / `is_suspended` were
+///   `int` flags in C; promoted to `bool`.
+pub struct TestSimLink {
+    pub next_send_time: u64,
+    pub queue_time: u64,
+    pub resume_time: u64,
+    pub queue_delay_max: u64,
+    pub picosec_per_byte: u64,
+    pub microsec_latency: u64,
+    pub packets_dropped: u64,
+    pub packets_sent: u64,
+    pub jitter: u64,
+    pub jitter_mode: JitterMode,
+    pub jitter_seed: u64,
+    pub path_mtu: usize,
+    /// Packets in flight on this link.  FIFO; the head is the
+    /// next packet to deliver.
+    pub packets: std::collections::VecDeque<TestSimPacket>,
+    /// 64-bit error mask used in unit tests.  `None` ↔ "no mask".
+    pub loss_mask: Option<u64>,
+    pub nb_loss_in_burst: u64,
+    pub packets_between_losses: u64,
+    pub packets_sent_next_burst: u64,
+    pub nb_losses_this_burst: u64,
+    pub end_of_burst_time: u64,
+    pub aqm_state: Option<Box<dyn TestAqm>>,
+    pub is_switched_off: bool,
+    pub is_unreachable: bool,
+    pub is_suspended: bool,
+}
+
+impl TestSimLink {
+    /// Create a sim link at `current_time`, with the given data
+    /// rate (in gigabits per second) and one-way latency (in
+    /// microseconds).  C: `picoquictest_sim_link_create`.
+    ///
+    /// `loss_mask` is the test's 64-bit error mask; `None` matches
+    /// the C `NULL` (no mask).
+    pub fn create(
+        _data_rate_in_gbps: f64,
+        _microsec_latency: u64,
+        _loss_mask: Option<u64>,
+        _queue_delay_max: u64,
+        _current_time: u64,
+    ) -> Result<Self, crate::Error> {
+        todo!()
+    }
+
+    // C: `picoquictest_sim_link_delete`.  Dropped from the Rust
+    // API: `Box<TestSimLink>` going out of scope will free the
+    // link and its queued packets via Drop in Phase 4.
+
+    /// Time at which the next packet will arrive (or `current_time`
+    /// if the queue is empty).  C:
+    /// `picoquictest_sim_link_next_arrival`.
+    pub fn next_arrival(&mut self, _current_time: u64) -> u64 {
+        todo!()
+    }
+
+    /// Drain any AQM-pending packets onto the main queue at
+    /// `current_time`.  C: `picoquictest_sim_link_admit_pending`.
+    pub fn admit_pending(&mut self, _current_time: u64) {
+        todo!()
+    }
+
+    /// Time at which the AQM will admit its next packet (or
+    /// `next_time` if nothing is pending).  C:
+    /// `picoquictest_sim_link_next_admission`.
+    pub fn next_admission(&mut self, _current_time: u64, _next_time: u64) -> u64 {
+        todo!()
+    }
+
+    /// Pop the next-due packet, if any.  C:
+    /// `picoquictest_sim_link_dequeue` returning `NULL` when
+    /// nothing is ready, mapped to `Option<TestSimPacket>`.
+    pub fn dequeue(&mut self, _current_time: u64) -> Option<TestSimPacket> {
+        todo!()
+    }
+
+    /// Submit a packet to the queue with normal AQM processing and
+    /// length check.  C: `picoquictest_sim_link_submit`.  Takes
+    /// ownership of the packet — the link is responsible for
+    /// either freeing it (drop) or returning it via
+    /// [`TestSimLink::dequeue`].
+    pub fn submit(&mut self, _packet: TestSimPacket, _current_time: u64) {
+        todo!()
+    }
+
+    /// Submit a packet straight to the latency queue, bypassing the
+    /// AQM.  When `should_drop` is `true` the packet is dropped
+    /// instead of queued (and freed by the function).  C:
+    /// `picoquictest_sim_link_enqueue` with the C `int
+    /// should_drop` promoted to `bool`.
+    pub fn enqueue(&mut self, _packet: TestSimPacket, _current_time: u64, _should_drop: bool) {
+        todo!()
+    }
+
+    /// Compute the transmission time of `packet` (a function of
+    /// the link's data rate and the packet length).  C:
+    /// `picoquictest_sim_link_transmit_time`.
+    pub fn transmit_time(&mut self, _packet: &TestSimPacket) -> u64 {
+        todo!()
+    }
+
+    /// Queueing delay of the next packet at `current_time`.  C:
+    /// `picoquictest_sim_link_queue_delay`.
+    pub fn queue_delay(&mut self, _current_time: u64) -> u64 {
+        todo!()
+    }
+
+    /// Simulate a transmission interruption until
+    /// `time_end_of_interval`.  When `simulate_receive` is `true`
+    /// the link suspends *reception* (pending packets are
+    /// delivered at the end of the interval); when `false` it
+    /// suspends transmission (packets are queued as if transmitted
+    /// in sequence after the interval).  C:
+    /// `picoquic_test_simlink_suspend` with the C `int
+    /// simulate_receive` promoted to `bool`.
+    pub fn suspend(&mut self, _time_end_of_interval: u64, _simulate_receive: bool) {
+        todo!()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SNI / certificate paths used by the test suite.  Linux/macOS
+// layout only; `_WINDOWS` paths are dropped per the v1 scope.
+
+/// Default SNI string for the test fixtures.
+pub const TEST_SNI: &str = "test.example.com";
+
+pub const TEST_FILE_SERVER_CERT: &str = "certs/cert.pem";
+pub const TEST_FILE_SERVER_BAD_CERT: &str = "certs/badcert.pem";
+pub const TEST_FILE_SERVER_KEY: &str = "certs/key.pem";
+pub const TEST_FILE_CERT_STORE: &str = "certs/test-ca.crt";
+pub const TEST_FILE_SERVER_CERT_ECDSA: &str = "certs/ecdsa/cert.pem";
+pub const TEST_FILE_SERVER_KEY_ECDSA: &str = "certs/ecdsa/key.pem";
+pub const TEST_ECH_PUB_KEY: &str = "certs/ech/public.pem";
+pub const TEST_ECH_PRIVATE_KEY: &str = "certs/ech/private.pem";
+pub const TEST_ECH_CONFIG: &str = "certs/ech/ech_config.txt";
+pub const TEST_ECH_CERT: &str = "certs/ech/ech_cert.pem";
+pub const TEST_ECH_RR_REF: &str = "certs/ech/ech_rr.txt";
+pub const TEST_ECH_CONFIG_REF: &str = "certs/ech/ech_config.txt";
+pub const TEST_FILE_SERVER_CERT_RSA: &str = "certs/rsa/cert.pem";
+pub const TEST_FILE_SERVER_KEY_RSA: &str = "certs/rsa/key.pem";
+pub const TEST_FILE_SERVER_CERT_ED25519: &str = "certs/mtls_ed25519/server.crt";
+pub const TEST_FILE_SERVER_KEY_ED25519: &str = "certs/mtls_ed25519/server.key";
+pub const TEST_FILE_CLIENT_CERT_ED25519: &str = "certs/mtls_ed25519/client.crt";
+pub const TEST_FILE_CLIENT_KEY_ED25519: &str = "certs/mtls_ed25519/client.key";
+pub const TEST_FILE_CERT_STORE_ED25519: &str = "certs/mtls_ed25519/ca.crt";

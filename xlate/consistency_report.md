@@ -1,8 +1,8 @@
 # Cross-module consistency report
 
-Generated: 2026-05-03T21:06:28
-Files scanned: 22
-Total lines: 13284
+Generated: 2026-05-03T21:27:43
+Files scanned: 23
+Total lines: 13321
 
 **How to use this report.**  Read each section.  Where you
 see inconsistency that should be reconciled, decide a
@@ -52,16 +52,16 @@ else is a refactor candidate.
 | `CustomThreadCreateFn` | `rs/fq/src/packet_loop.rs` | 369 |
 | `CustomThreadSetnameFn` | `rs/fq/src/packet_loop.rs` | 388 |
 | `CustomThreadDeleteFn` | `rs/fq/src/packet_loop.rs` | 396 |
+| `TestAqm` | `rs/fq/src/tests/util.rs` | 111 |
 | `ThreadFn` | `rs/fq/src/utils.rs` | 654 |
-| `TestAqm` | `rs/fq/src/utils.rs` | 821 |
 
 ## Module-level lint allowances
 
-Lints suppressed at module scope across 22 files:
+Lints suppressed at module scope across 23 files:
 
 | Lint | Modules using it | Modules NOT using it |
 |---|---|---|
-| `clippy::too_many_arguments` | 1: lib.rs | 21: arena.rs, binlog.rs, bytestream.rs, cc_common.rs, config.rs, crypto_provider_api.rs, hash.rs, internal.rs… |
+| `clippy::too_many_arguments` | 1: lib.rs | 22: arena.rs, binlog.rs, bytestream.rs, cc_common.rs, config.rs, crypto_provider_api.rs, hash.rs, internal.rs… |
 
 Lints used in only some modules are the interesting ones.
 Either the lint is appropriate for those modules and not
@@ -123,7 +123,7 @@ Use this to see at a glance which module owns each type.
 | `InitialAeadContext` | `struct` | `rs/fq/src/tls_api.rs:563` |
 | `IssuedTicket` | `struct` | `rs/fq/src/internal.rs:759` |
 | `IssuedTicketToken` | `type` | `rs/fq/src/internal.rs:78` |
-| `JitterMode` | `enum` | `rs/fq/src/utils.rs:844` |
+| `JitterMode` | `enum` | `rs/fq/src/tests/util.rs:134` |
 | `LocalCnxid` | `struct` | `rs/fq/src/internal.rs:1258` |
 | `LocalCnxidList` | `struct` | `rs/fq/src/internal.rs:1269` |
 | `LocalCnxidToken` | `type` | `rs/fq/src/internal.rs:86` |
@@ -204,8 +204,8 @@ Use this to see at a glance which module owns each type.
 | `StreamQueueNode` | `struct` | `rs/fq/src/internal.rs:482` |
 | `StreamToken` | `type` | `rs/fq/src/internal.rs:82` |
 | `SystemCallDuration` | `struct` | `rs/fq/src/packet_loop.rs:263` |
-| `TestSimLink` | `struct` | `rs/fq/src/utils.rs:870` |
-| `TestSimPacket` | `struct` | `rs/fq/src/utils.rs:795` |
+| `TestSimLink` | `struct` | `rs/fq/src/tests/util.rs:160` |
+| `TestSimPacket` | `struct` | `rs/fq/src/tests/util.rs:85` |
 | `Thread` | `struct` | `rs/fq/src/utils.rs:634` |
 | `TimeCheckArg` | `struct` | `rs/fq/src/packet_loop.rs:281` |
 | `TlsCtx` | `struct` | `rs/fq/src/crypto_provider_api.rs:555` |
@@ -231,6 +231,7 @@ two different source paths is a smell.
 | `Connection` | `*` | 1: crypto_provider_api.rs |
 | `ConnectionId` | `*` | 1: bytestream.rs |
 | `Error` | `*` | 14: arena.rs, binlog.rs, bytestream.rs, config.rs, crypto_provider_api.rs, … (9 more) |
+| `MAX_PACKET_SIZE` | `*` | 1: util.rs |
 | `Quic` | `*` | 2: performance_log.rs, textlog.rs |
 | `arena` | `Arena`, `Token` | 1: internal.rs |
 | `config::Config` | `*` | 1: packet_loop.rs |
@@ -242,8 +243,9 @@ two different source paths is a smell.
 | `logger::Logger` | `*` | 1: internal.rs |
 | `socks::OsError` | `*` | 1: packet_loop.rs |
 | `splay` | `SplayToken`, `SplayTree` | 1: internal.rs |
+| `tests::util` | `TestAqm`, `TestSimLink`, `TestSimPacket` | 1: dualq.rs |
 | `tls_api::Aes128EcbContext` | `*` | 1: lb.rs |
-| `utils` | `TestAqm`, `TestSimLink`, `TestSimPacket`, `Thread`, `ThreadFn` | 2: packet_loop.rs, dualq.rs |
+| `utils` | `Thread`, `ThreadFn` | 1: packet_loop.rs |
 
 ## Per-file summary
 
@@ -267,8 +269,9 @@ two different source paths is a smell.
 | `rs/fq/src/socks.rs` | 391 | 0 | 8 | 1 | 0 | 18 | 0 |
 | `rs/fq/src/splay.rs` | 226 | 0 | 2 | 0 | 0 | 15 | 0 |
 | `rs/fq/src/tests/dualq.rs` | 234 | 0 | 2 | 0 | 0 | 3 | 0 |
-| `rs/fq/src/tests/mod.rs` | 14 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `rs/fq/src/tests/mod.rs` | 10 | 0 | 0 | 0 | 0 | 0 | 0 |
+| `rs/fq/src/tests/util.rs` | 306 | 1 | 2 | 1 | 0 | 16 | 0 |
 | `rs/fq/src/textlog.rs` | 67 | 0 | 0 | 0 | 0 | 2 | 0 |
 | `rs/fq/src/tls_api.rs` | 1060 | 0 | 4 | 0 | 0 | 54 | 0 |
-| `rs/fq/src/utils.rs` | 1019 | 2 | 5 | 1 | 0 | 86 | 0 |
+| `rs/fq/src/utils.rs` | 754 | 1 | 3 | 0 | 0 | 70 | 0 |
 
