@@ -260,23 +260,17 @@ pub struct KeyPair {
 // ---------------------------------------------------------------------------
 // Header protection.
 
-/// One direction of header protection.  Backends supply
-/// `HeaderKey`s; the concrete implementation typically wraps a
-/// [`crate::header_protection::HeaderProtector`] from this
-/// crate (header protection is QUIC logic, not TLS).
-// REVIEW: This is still wrong!  HeaderKey should just do the bare AES encryption operation [u8;16]
-// -> [u8; 16].  EVERYTHING ELSE should be in picoquic.
+/// Header-protection key.  All QUIC cipher suites use a single AES
+/// (or ChaCha20) ECB-style transform: feed it a 16-byte sample of
+/// ciphertext and it returns a 16-byte mask whose first 5 bytes
+/// XOR into the protected header.  The trait surface here is
+/// exactly that bare cipher op — picoquic-side logic
+/// ([`crate::header_protection`]) handles sampling, slicing the
+/// header, and applying the mask.
 pub trait HeaderKey: Send {
-    /// Decrypt the protected portion of `packet`.  `pn_offset`
-    /// is the byte offset of the packet number within `packet`.
-    fn decrypt(&self, pn_offset: usize, packet: &mut [u8]);
-
-    /// Encrypt the protected portion of `packet`.
-    fn encrypt(&self, pn_offset: usize, packet: &mut [u8]);
-
-    /// Bytes of ciphertext after the packet-number field that
-    /// the protector samples (16 for every QUIC cipher suite).
-    fn sample_size(&self) -> usize;
+    /// Apply the ECB-style block to `sample`, producing the 16-byte
+    /// header-protection mask.  RFC 9001 §5.4.
+    fn mask(&self, sample: [u8; 16]) -> [u8; 16];
 }
 
 /// Bundle of keys associated with a single epoch.

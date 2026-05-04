@@ -43,7 +43,7 @@
 
 use crate::Error;
 use crate::Instant;
-use crate::{LossbitVersion, Quic, SpinbitVersion, StreamDataCb};
+use crate::{LossbitVersion, Quic, SpinbitVersion, StreamDataCallback};
 
 // ---------------------------------------------------------------------------
 // Option identifiers.
@@ -331,7 +331,7 @@ impl Config {
     ///   downstream owned state, but it does not free the struct
     ///   itself — ownership stays with the caller.
     /// * `default_callback_fn` + `default_callback_ctx` collapse to
-    ///   one `Option<Box<dyn StreamDataCb>>` per the
+    ///   one `Option<Box<dyn StreamDataCallback>>` per the
     ///   function-pointers-map-to-traits rule, with the `void*`
     ///   context folded into the trait implementor's state.  `None`
     ///   matches the C "no default callback" case where the function
@@ -343,7 +343,7 @@ impl Config {
     ///   context type is real.
     pub fn create_and_configure(
         &mut self,
-        _default_callback: Option<Box<dyn StreamDataCb>>,
+        _default_callback: Option<Box<dyn StreamDataCallback>>,
         _current_time: Instant,
         _p_simulated_time: Option<&mut u64>,
     ) -> Option<Box<Quic>> {

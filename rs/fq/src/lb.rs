@@ -19,7 +19,7 @@
 //!   down (no-op when none is installed).
 //! * [`ConnectionIdContext::generate`] / [`ConnectionIdContext::verify`]
 //!   are the per-CID callback bodies.  They are exposed as inherent methods
-//!   so the eventual [`crate::ConnectionIdCb`] trait impl can
+//!   so the eventual [`crate::ConnectionIdCallback`] trait impl can
 //!   delegate to them; the C `void* connection_id_cb_data` parameter is
 //!   recovered as `&mut self`.
 //!
@@ -124,7 +124,7 @@ impl Config {
 /// Per-server context attached to a [`Quic`] once a load-balancer
 /// config has been applied.  Built from a [`Config`] by
 /// [`Quic::set_lb_cid_config`] and consumed by the
-/// [`crate::ConnectionIdCb`] hook.
+/// [`crate::ConnectionIdCallback`] hook.
 /// C: `load_balancer_cid_context_t`.
 ///
 /// The two AES contexts are method-dependent: [`ConnectionIdMethod::Clear`]
@@ -168,7 +168,7 @@ impl ConnectionIdContext {
     /// is read for `local_connection_id_length`; the unused `connection_id_local` /
     /// `connection_id_remote` parameters of the C signature are dropped
     /// here and reintroduced (if needed) by the
-    /// [`crate::ConnectionIdCb`] adapter.
+    /// [`crate::ConnectionIdCallback`] adapter.
     pub fn generate(&mut self, _quic: &Quic, _nonce: &ConnectionId) -> ConnectionId {
         todo!()
     }

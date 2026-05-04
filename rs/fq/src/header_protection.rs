@@ -108,16 +108,8 @@ impl<C> HeaderKey for AesHeaderKey<C>
 where
     C: KeyInit + BlockEncrypt + Send,
 {
-    fn decrypt(&self, _pn_offset: usize, _packet: &mut [u8]) {
-        todo!()
-    }
-
-    fn encrypt(&self, _pn_offset: usize, _packet: &mut [u8]) {
-        todo!()
-    }
-
-    fn sample_size(&self) -> usize {
-        16
+    fn mask(&self, sample: [u8; 16]) -> [u8; 16] {
+        self.protector.mask(&sample)
     }
 }
 
@@ -139,16 +131,8 @@ impl ChaCha20HeaderKey {
 }
 
 impl HeaderKey for ChaCha20HeaderKey {
-    fn decrypt(&self, _pn_offset: usize, _packet: &mut [u8]) {
-        todo!()
-    }
-
-    fn encrypt(&self, _pn_offset: usize, _packet: &mut [u8]) {
-        todo!()
-    }
-
-    fn sample_size(&self) -> usize {
-        16
+    fn mask(&self, sample: [u8; 16]) -> [u8; 16] {
+        self.protector.mask(&sample)
     }
 }
 

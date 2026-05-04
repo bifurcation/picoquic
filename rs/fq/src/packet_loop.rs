@@ -98,7 +98,7 @@ use crate::Error;
 use crate::Instant;
 use crate::config::Config;
 use crate::socks::OsError;
-use crate::{AlpnSelect, Quic, StreamDataCb};
+use crate::{AlpnSelect, Quic, StreamDataCallback};
 
 // ---------------------------------------------------------------------------
 // Compile-time limits.
@@ -671,7 +671,7 @@ impl Quic {
     pub fn create_server(
         _config: &mut Config,
         _current_time: Instant,
-        _default_callback: Option<Box<dyn StreamDataCb>>,
+        _default_callback: Option<Box<dyn StreamDataCallback>>,
         _alpn_select_fn: Option<Box<dyn AlpnSelect>>,
     ) -> Result<Box<Quic>, Error> {
         todo!()
@@ -694,7 +694,7 @@ impl Config {
         &mut self,
         _current_time: Instant,
         _alpn_select_fn: Option<Box<dyn AlpnSelect>>,
-        _default_callback: Option<Box<dyn StreamDataCb>>,
+        _default_callback: Option<Box<dyn StreamDataCallback>>,
         _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
         _thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
         _thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,

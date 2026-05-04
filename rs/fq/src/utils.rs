@@ -58,7 +58,7 @@ use core::cmp::Ordering;
 use core::net::SocketAddr;
 
 use crate::Error;
-use crate::{ConnectionId, TpPreferredAddress};
+use crate::{ConnectionId, PreferredAddress};
 
 // ---------------------------------------------------------------------------
 // Tracing / file-id constants.
@@ -412,7 +412,7 @@ pub fn store_loopback_addr(_addr_family: i32, _port: u16) -> Result<SocketAddr, 
 /// place; on `Err(())` the partial state is unspecified, matching
 /// the C behaviour.
 pub fn set_preferred_address(
-    _preferred: &mut TpPreferredAddress,
+    _preferred: &mut PreferredAddress,
     _v4_text: Option<&str>,
     _v6_text: Option<&str>,
     _preferred_port: u16,

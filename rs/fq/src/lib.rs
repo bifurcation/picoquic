@@ -55,6 +55,8 @@ pub mod bytestream;
 pub mod cc_common;
 pub mod config;
 pub mod crypto;
+pub mod errors;
+pub mod frames;
 pub mod hash;
 pub mod header_protection;
 pub mod internal;
@@ -67,13 +69,19 @@ pub mod siphash;
 pub mod socks;
 pub mod socks_socket2;
 pub mod splay;
+pub mod stream;
 pub mod sys;
 #[cfg(test)]
 pub mod tests;
 pub mod textlog;
 pub mod tls;
 pub mod tls_api;
+pub mod tp;
 pub mod utils;
+
+// Re-export the TP shapes from the public crate root for backwards
+// compatibility with callers that already wrote `crate::TransportParameters`.
+pub use tp::{PreferredAddress, TransportParameter, TransportParameters, VersionNegotiation};
 
 use core::net::SocketAddr;
 
@@ -155,118 +163,9 @@ pub type Instant = fugit::Instant<u64, 1, 1_000_000>;
 /// `microsec_latency`, …); the typed alias makes the unit explicit.
 pub type Duration = fugit::Duration<u64, 1, 1_000_000>;
 
-// REVIEW: Turn these into a Rust enum.
-/// Base offset for quic's internal error codes.  Allocated in
-/// the `0x400`+ range so they never collide with QUIC transport or
-/// TLS alert codes.
-pub const ERROR_CLASS: u64 = 0x400;
-
-pub const ERROR_DUPLICATE: u64 = ERROR_CLASS + 1;
-pub const ERROR_AEAD_CHECK: u64 = ERROR_CLASS + 3;
-pub const ERROR_UNEXPECTED_PACKET: u64 = ERROR_CLASS + 4;
-pub const ERROR_MEMORY: u64 = ERROR_CLASS + 5;
-pub const ERROR_CNXID_CHECK: u64 = ERROR_CLASS + 7;
-pub const ERROR_INITIAL_TOO_SHORT: u64 = ERROR_CLASS + 8;
-pub const ERROR_VERSION_NEGOTIATION_SPOOFED: u64 = ERROR_CLASS + 9;
-pub const ERROR_MALFORMED_TRANSPORT_EXTENSION: u64 = ERROR_CLASS + 10;
-pub const ERROR_EXTENSION_BUFFER_TOO_SMALL: u64 = ERROR_CLASS + 11;
-pub const ERROR_ILLEGAL_TRANSPORT_EXTENSION: u64 = ERROR_CLASS + 12;
-pub const ERROR_CANNOT_RESET_STREAM_ZERO: u64 = ERROR_CLASS + 13;
-pub const ERROR_INVALID_STREAM_ID: u64 = ERROR_CLASS + 14;
-pub const ERROR_STREAM_ALREADY_CLOSED: u64 = ERROR_CLASS + 15;
-pub const ERROR_FRAME_BUFFER_TOO_SMALL: u64 = ERROR_CLASS + 16;
-pub const ERROR_INVALID_FRAME: u64 = ERROR_CLASS + 17;
-pub const ERROR_CANNOT_CONTROL_STREAM_ZERO: u64 = ERROR_CLASS + 18;
-pub const ERROR_RETRY: u64 = ERROR_CLASS + 19;
-pub const ERROR_DISCONNECTED: u64 = ERROR_CLASS + 20;
-pub const ERROR_DETECTED: u64 = ERROR_CLASS + 21;
-pub const ERROR_INVALID_TICKET: u64 = ERROR_CLASS + 23;
-pub const ERROR_INVALID_FILE: u64 = ERROR_CLASS + 24;
-pub const ERROR_SEND_BUFFER_TOO_SMALL: u64 = ERROR_CLASS + 25;
-pub const ERROR_UNEXPECTED_STATE: u64 = ERROR_CLASS + 26;
-pub const ERROR_UNEXPECTED_ERROR: u64 = ERROR_CLASS + 27;
-pub const ERROR_TLS_SERVER_CON_WITHOUT_CERT: u64 = ERROR_CLASS + 28;
-pub const ERROR_NO_SUCH_FILE: u64 = ERROR_CLASS + 29;
-pub const ERROR_STATELESS_RESET: u64 = ERROR_CLASS + 30;
-pub const ERROR_CONNECTION_DELETED: u64 = ERROR_CLASS + 31;
-pub const ERROR_CNXID_SEGMENT: u64 = ERROR_CLASS + 32;
-pub const ERROR_CNXID_NOT_AVAILABLE: u64 = ERROR_CLASS + 33;
-pub const ERROR_MIGRATION_DISABLED: u64 = ERROR_CLASS + 34;
-pub const ERROR_CANNOT_COMPUTE_KEY: u64 = ERROR_CLASS + 35;
-pub const ERROR_CANNOT_SET_ACTIVE_STREAM: u64 = ERROR_CLASS + 36;
-pub const ERROR_CANNOT_CHANGE_ACTIVE_CONTEXT: u64 = ERROR_CLASS + 37;
-pub const ERROR_INVALID_TOKEN: u64 = ERROR_CLASS + 38;
-pub const ERROR_INITIAL_CID_TOO_SHORT: u64 = ERROR_CLASS + 39;
-pub const ERROR_KEY_ROTATION_NOT_READY: u64 = ERROR_CLASS + 40;
-pub const ERROR_AEAD_NOT_READY: u64 = ERROR_CLASS + 41;
-pub const ERROR_NO_ALPN_PROVIDED: u64 = ERROR_CLASS + 42;
-pub const ERROR_NO_CALLBACK_PROVIDED: u64 = ERROR_CLASS + 43;
-pub const STREAM_RECEIVE_COMPLETE: u64 = ERROR_CLASS + 44;
-pub const ERROR_PACKET_HEADER_PARSING: u64 = ERROR_CLASS + 45;
-pub const ERROR_QUIC_BIT_MISSING: u64 = ERROR_CLASS + 46;
-pub const NO_ERROR_TERMINATE_PACKET_LOOP: u64 = ERROR_CLASS + 47;
-pub const NO_ERROR_SIMULATE_NAT: u64 = ERROR_CLASS + 48;
-pub const NO_ERROR_SIMULATE_MIGRATION: u64 = ERROR_CLASS + 49;
-pub const ERROR_VERSION_NOT_SUPPORTED: u64 = ERROR_CLASS + 50;
-pub const ERROR_IDLE_TIMEOUT: u64 = ERROR_CLASS + 51;
-pub const ERROR_REPEAT_TIMEOUT: u64 = ERROR_CLASS + 52;
-pub const ERROR_HANDSHAKE_TIMEOUT: u64 = ERROR_CLASS + 53;
-pub const ERROR_SOCKET_ERROR: u64 = ERROR_CLASS + 54;
-pub const ERROR_VERSION_NEGOTIATION: u64 = ERROR_CLASS + 55;
-pub const ERROR_PACKET_TOO_LONG: u64 = ERROR_CLASS + 56;
-pub const ERROR_PACKET_WRONG_VERSION: u64 = ERROR_CLASS + 57;
-pub const ERROR_PORT_BLOCKED: u64 = ERROR_CLASS + 58;
-pub const ERROR_DATAGRAM_TOO_LONG: u64 = ERROR_CLASS + 59;
-pub const ERROR_PATH_ID_INVALID: u64 = ERROR_CLASS + 60;
-pub const ERROR_RETRY_NEEDED: u64 = ERROR_CLASS + 61;
-pub const ERROR_SERVER_BUSY: u64 = ERROR_CLASS + 62;
-pub const ERROR_PATH_DUPLICATE: u64 = ERROR_CLASS + 63;
-pub const ERROR_PATH_ID_BLOCKED: u64 = ERROR_CLASS + 64;
-pub const ERROR_PATH_CID_BLOCKED: u64 = ERROR_CLASS + 65;
-pub const ERROR_PATH_ADDRESS_FAMILY: u64 = ERROR_CLASS + 66;
-pub const ERROR_PATH_NOT_READY: u64 = ERROR_CLASS + 67;
-pub const ERROR_PATH_LIMIT_EXCEEDED: u64 = ERROR_CLASS + 68;
-/// Not actually an error: signals that the packet was captured by a
-/// proxy and needs no further processing.
-pub const ERROR_REDIRECTED: u64 = ERROR_CLASS + 69;
-pub const ERROR_PADDING_PACKET: u64 = ERROR_CLASS + 70;
-
-// ---------------------------------------------------------------------------
-// Protocol errors defined by the QUIC and TLS specs.
-
-// REVIEW: Make this an enum.  If you need to convert to u64, make the enum repr(u64) and use the
-// IntoPrimitive and TryFromPrimitive traits from the `num_enum` crate.
-pub const TRANSPORT_INTERNAL_ERROR: u64 = 0x1;
-pub const TRANSPORT_SERVER_BUSY: u64 = 0x2;
-pub const TRANSPORT_FLOW_CONTROL_ERROR: u64 = 0x3;
-pub const TRANSPORT_STREAM_LIMIT_ERROR: u64 = 0x4;
-pub const TRANSPORT_STREAM_STATE_ERROR: u64 = 0x5;
-pub const TRANSPORT_FINAL_OFFSET_ERROR: u64 = 0x6;
-pub const TRANSPORT_FRAME_FORMAT_ERROR: u64 = 0x7;
-pub const TRANSPORT_PARAMETER_ERROR: u64 = 0x8;
-pub const TRANSPORT_CONNECTION_ID_LIMIT_ERROR: u64 = 0x9;
-pub const TRANSPORT_PROTOCOL_VIOLATION: u64 = 0xA;
-pub const TRANSPORT_INVALID_TOKEN: u64 = 0xB;
-pub const TRANSPORT_APPLICATION_ERROR: u64 = 0xC;
-pub const TRANSPORT_CRYPTO_BUFFER_EXCEEDED: u64 = 0xD;
-pub const TRANSPORT_KEY_UPDATE_ERROR: u64 = 0xE;
-pub const TRANSPORT_AEAD_LIMIT_REACHED: u64 = 0xF;
-
-pub const TLS_ALERT_WRONG_ALPN: u64 = 0x178;
-pub const TLS_HANDSHAKE_FAILED: u64 = 0x201;
-pub const TRANSPORT_VERSION_NEGOTIATION_ERROR: u64 = 0x11;
-
-/// Per draft quic-multipath 20.
-pub const TRANSPORT_APPLICATION_ABANDON: u64 = 0x3e;
-pub const TRANSPORT_RESOURCE_LIMIT_REACHED: u64 = 0x3e75;
-pub const TRANSPORT_UNSTABLE_INTERFACE: u64 = 0x3e76;
-pub const TRANSPORT_NO_CID_AVAILABLE: u64 = 0x3e77;
-
-/// C macro `TRANSPORT_CRYPTO_ERROR(Alert)`.  Combines the
-/// TLS-alert range marker (`0x100`) with the alert byte.
-pub const fn transport_crypto_error(alert: u8) -> u16 {
-    0x100 | (alert as u16)
-}
+// Error codes (picoquic-internal `ERROR_*` and protocol-defined
+// `TRANSPORT_*` / TLS-alert) live as enums in [`crate::errors`].
+pub use errors::{InternalError, TransportError};
 
 // ---------------------------------------------------------------------------
 // Packet sizes and miscellaneous constants.
@@ -297,11 +196,10 @@ pub const ECN_ECT_0: u8 = 0x02;
 pub const ECN_ECT_1: u8 = 0x01;
 pub const ECN_CE: u8 = 0x03;
 
-// REVIEW: Can't this just be u32::from_le_bytes() ?
 /// C macro `FOURCC(a, b, c, d)`.  Produces a 32-bit code from four
 /// bytes in little-endian order.
 pub const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
-    ((d as u32) << 24) | ((c as u32) << 16) | ((b as u32) << 8) | (a as u32)
+    u32::from_le_bytes([a, b, c, d])
 }
 
 // ---------------------------------------------------------------------------
@@ -334,50 +232,9 @@ pub enum State {
     Disconnected,
 }
 
-// ---------------------------------------------------------------------------
-// Transport-parameter identifiers.
-
-/// QUIC transport-parameter identifiers.  Wire values exceed `u32`
-/// for several extension parameters, hence the `#[repr(u64)]`.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[repr(u64)]
-// REVIEW: Rename to TransportParameter and move to `tp.rs`.
-pub enum Tp {
-    OriginalConnectionId = 0,
-    IdleTimeout = 1,
-    StatelessResetToken = 2,
-    MaxPacketSize = 3,
-    InitialMaxData = 4,
-    InitialMaxStreamDataBidiLocal = 5,
-    InitialMaxStreamDataBidiRemote = 6,
-    InitialMaxStreamDataUni = 7,
-    InitialMaxStreamsBidi = 8,
-    InitialMaxStreamsUni = 9,
-    AckDelayExponent = 10,
-    MaxAckDelay = 11,
-    DisableMigration = 12,
-    ServerPreferredAddress = 13,
-    ActiveConnectionIdLimit = 14,
-    HandshakeConnectionId = 15,
-    RetryConnectionId = 16,
-    /// Per `draft-quic-multipath 20`.
-    InitialMaxPathId = 0x3e,
-    VersionNegotiation = 0x11,
-    /// Per `draft-pauly-quic-datagram-05`.
-    MaxDatagramFrameSize = 32,
-    TestLargeChello = 3127,
-    EnableLossBit = 0x1057,
-    /// `(x & 1)` ↔ "want timestamps", `(x & 2)` ↔ "can send timestamps".
-    EnableTimeStamp = 0x7158,
-    GreaseQuicBit = 0x2ab2,
-    /// Per `draft-kuhn-quic-0rtt-bdp-09`.
-    EnableBdpFrame = 0xebd9,
-    MinAckDelay = 0xff04de1b,
-    /// Per `draft-seemann-quic-address-discovery`.
-    AddressDiscovery = 0x9f81a176,
-    /// Per `draft-ietf-quic-reliable-stream-reset-07`.
-    ResetStreamAt = 0x17f7586d2cb571,
-}
+// `TransportParameter`, `PreferredAddress`, `VersionNegotiation`,
+// `TransportParameters`, and `TransportParameter0RttKind` live in
+// [`crate::tp`].
 
 // ---------------------------------------------------------------------------
 // Packet contexts and enumerated policy types.
@@ -461,22 +318,51 @@ pub enum PathStatus {
 pub const CONNECTION_ID_MIN_SIZE: usize = 0;
 pub const CONNECTION_ID_MAX_SIZE: usize = 20;
 
-// REVIEW: Make the fields of this struct non-public.  Then add an impl of the form:
-//
-// ConnectionId::clone_from_slice(&[u8]) -> Option<Self> (None if too large for storage)
-// ConnectionId::with_size(usize) -> Option<Self> (None if too large for storage)
-// ConnectionId::as_bytes() -> &[u8]
-// ConnectionId::as_bytes_mut() -> &mut [u8] (only if needed)
 /// Fixed-capacity QUIC connection ID.  C: `ConnectionId`.
 ///
 /// Stored as a 20-byte buffer plus a length so the type is `Copy`,
 /// matching the C usage where connection IDs are passed by value
 /// in many APIs (`get_local_connection_id`, `create_connection`,
-/// …).
+/// …).  Fields are private — construct via [`Self::clone_from_slice`]
+/// or [`Self::with_size`] and read via [`Self::as_bytes`].
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 pub struct ConnectionId {
-    pub id: [u8; CONNECTION_ID_MAX_SIZE],
-    pub id_len: u8,
+    id: [u8; CONNECTION_ID_MAX_SIZE],
+    id_len: u8,
+}
+
+impl ConnectionId {
+    /// Construct a connection id by copying `bytes`.  Returns `None`
+    /// when `bytes.len()` exceeds [`CONNECTION_ID_MAX_SIZE`].
+    pub fn clone_from_slice(_bytes: &[u8]) -> Option<Self> {
+        todo!()
+    }
+
+    /// Construct a zero-filled connection id of length `len`.
+    /// Returns `None` when `len` exceeds [`CONNECTION_ID_MAX_SIZE`].
+    pub fn with_size(_len: usize) -> Option<Self> {
+        todo!()
+    }
+
+    /// Borrow the live id bytes (`bytes[..len]`).
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.id[..self.id_len as usize]
+    }
+
+    /// Mutable borrow of the live id bytes.
+    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.id[..self.id_len as usize]
+    }
+
+    /// Number of bytes in the id.
+    pub fn len(&self) -> usize {
+        self.id_len as usize
+    }
+
+    /// `true` when the id has zero length.
+    pub fn is_empty(&self) -> bool {
+        self.id_len == 0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -507,7 +393,7 @@ use crate::internal::{Connection, Path, Quic};
 // Application callback events.
 
 /// Event type passed to the application's stream / connection
-/// callback (see [`StreamDataCb`]).  Identifies which sort of
+/// callback (see [`StreamDataCallback`]).  Identifies which sort of
 /// notification the stack is delivering — stream data, lifecycle
 /// transition, datagram event, path event, etc.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -541,149 +427,9 @@ pub enum CallbackEvent {
     NextPathAllowed,
 }
 
-// ---------------------------------------------------------------------------
-// Transport parameters.
+// Transport-parameter shapes live in [`crate::tp`].
 
-// REVIEW: Pull these out into a separate module `tp.rs` and drop the `Tp` prefix.
-
-/// Server's preferred address advertised in transport parameters.
-/// C: `TpPreferredAddress`.  `is_defined` was an `int`
-/// flag in C; promoted to `bool`.
-// Field names mirror the camelCase identifiers from the C struct verbatim.
-#[allow(non_snake_case)]
-#[derive(Debug, Default, Copy, Clone)]
-// REVIEW If the ipv4Address and ipv6Address fields are not mandatory, they should be Option.  If
-// only one can be set, you should use core::net::IpAddr, or more likely core::net::SocketAddr to
-// include the port.
-pub struct TpPreferredAddress {
-    pub is_defined: bool,
-    pub ipv4Address: [u8; 4],
-    pub ipv4Port: u16,
-    pub ipv6Address: [u8; 16],
-    pub ipv6Port: u16,
-    pub connection_id: ConnectionId,
-    pub statelessResetToken: [u8; 16],
-}
-
-/// Version negotiation TP payload.  C:
-/// `TpVersionNegotiation`.  The flexible-length
-/// `received` and `supported` arrays use `Vec<u32>`; the explicit
-/// `nb_received` / `nb_supported` length fields disappear (the
-/// `Vec` carries its length).
-#[derive(Debug, Default, Clone)]
-// REVIEW: Make a repr(u32) enum for versions, as discussed in internal.rs.
-pub struct TpVersionNegotiation {
-    /// Version found in TP, should match envelope.
-    pub current: u32,
-    /// Version that triggered a previous version negotiation.
-    pub previous: u32,
-    /// Versions received in a prior VN packet (client side only).
-    pub received: Vec<u32>,
-    /// Compatible versions supported by the peer (client side only).
-    pub supported: Vec<u32>,
-}
-
-/// Full set of QUIC transport parameters carried during the
-/// handshake.  C: `TransportParameters`.
-///
-/// `migration_disabled` was `unsigned int` in C, used as a Boolean
-/// flag; promoted to `bool`.  Same for `do_grease_quic_bit`,
-/// `enable_bdp_frame`, `is_reset_stream_at_enabled`.
-/// `enable_loss_bit` and `enable_time_stamp` and
-/// `address_discovery_mode` are kept as integers because callers
-/// inspect the low bits separately ("want / can" flags).
-#[derive(Debug, Clone)]
-pub struct TransportParameters {
-    pub initial_max_stream_data_bidi_local: u64,
-    pub initial_max_stream_data_bidi_remote: u64,
-    pub initial_max_stream_data_uni: u64,
-    pub initial_max_data: u64,
-    pub initial_max_stream_id_bidir: u64,
-    pub initial_max_stream_id_unidir: u64,
-    pub max_idle_timeout: Duration,
-    pub max_packet_size: u32,
-    /// Stored in microseconds for convenience.
-    pub max_ack_delay: u32,
-    pub active_connection_id_limit: u32,
-    pub ack_delay_exponent: u8,
-    pub migration_disabled: bool,
-    pub preferred_address: TpPreferredAddress,
-    pub max_datagram_frame_size: u32,
-    pub enable_loss_bit: i32,
-    /// `(x & 1)` want, `(x & 2)` can.
-    pub enable_time_stamp: i32,
-    pub min_ack_delay: Duration,
-    pub do_grease_quic_bit: bool,
-    pub version_negotiation: TpVersionNegotiation,
-    pub enable_bdp_frame: bool,
-    pub initial_max_path_id: u64,
-    /// `0`=none, `1`=provide-only, `2`=receive-only, `3`=both.
-    pub address_discovery_mode: i32,
-    pub is_reset_stream_at_enabled: bool,
-}
-
-impl Default for TransportParameters {
-    fn default() -> Self {
-        Self {
-            initial_max_stream_data_bidi_local: 0,
-            initial_max_stream_data_bidi_remote: 0,
-            initial_max_stream_data_uni: 0,
-            initial_max_data: 0,
-            initial_max_stream_id_bidir: 0,
-            initial_max_stream_id_unidir: 0,
-            max_idle_timeout: Duration::from_ticks(0),
-            max_packet_size: 0,
-            max_ack_delay: 0,
-            active_connection_id_limit: 0,
-            ack_delay_exponent: 0,
-            migration_disabled: false,
-            preferred_address: TpPreferredAddress::default(),
-            max_datagram_frame_size: 0,
-            enable_loss_bit: 0,
-            enable_time_stamp: 0,
-            min_ack_delay: Duration::from_ticks(0),
-            do_grease_quic_bit: false,
-            version_negotiation: TpVersionNegotiation::default(),
-            enable_bdp_frame: false,
-            initial_max_path_id: 0,
-            address_discovery_mode: 0,
-            is_reset_stream_at_enabled: false,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Stream-ID helpers.
-
-pub const STREAM_ID_TYPE_MASK: u64 = 3;
-pub const STREAM_ID_CLIENT_INITIATED: u64 = 0;
-pub const STREAM_ID_SERVER_INITIATED: u64 = 1;
-pub const STREAM_ID_BIDIR: u64 = 0;
-pub const STREAM_ID_UNIDIR: u64 = 2;
-
-pub const STREAM_ID_CLIENT_INITIATED_BIDIR: u64 = STREAM_ID_CLIENT_INITIATED | STREAM_ID_BIDIR;
-pub const STREAM_ID_SERVER_INITIATED_BIDIR: u64 = STREAM_ID_SERVER_INITIATED | STREAM_ID_BIDIR;
-pub const STREAM_ID_CLIENT_INITIATED_UNIDIR: u64 = STREAM_ID_CLIENT_INITIATED | STREAM_ID_UNIDIR;
-pub const STREAM_ID_SERVER_INITIATED_UNIDIR: u64 = STREAM_ID_SERVER_INITIATED | STREAM_ID_UNIDIR;
-
-pub const STREAM_ID_CLIENT_MAX_INITIAL_BIDIR: u64 =
-    STREAM_ID_CLIENT_INITIATED_BIDIR + ((65535 - 1) * 4);
-pub const STREAM_ID_SERVER_MAX_INITIAL_BIDIR: u64 =
-    STREAM_ID_SERVER_INITIATED_BIDIR + ((65535 - 1) * 4);
-pub const STREAM_ID_CLIENT_MAX_INITIAL_UNIDIR: u64 =
-    STREAM_ID_CLIENT_INITIATED_UNIDIR + ((65535 - 1) * 4);
-pub const STREAM_ID_SERVER_MAX_INITIAL_UNIDIR: u64 =
-    STREAM_ID_SERVER_INITIATED_UNIDIR + ((65535 - 1) * 4);
-
-/// C macro `IS_CLIENT_STREAM_ID(id)`.
-pub const fn is_client_stream_id(id: u64) -> bool {
-    (id & 1) == 0
-}
-
-/// C macro `IS_BIDIR_STREAM_ID(id)`.
-pub const fn is_bidir_stream_id(id: u64) -> bool {
-    (id & 2) == 0
-}
+// Stream-id decomposition lives on [`crate::stream::StreamId`].
 
 // ---------------------------------------------------------------------------
 // Time management.
@@ -724,7 +470,7 @@ impl Quic {
 ///
 /// `bytes` is `&[u8]` rather than `*const u8 + size_t`; events that
 /// carry no payload pass `&[]`.
-pub trait StreamDataCb {
+pub trait StreamDataCallback {
     fn callback(
         &mut self,
         connection: &mut Connection,
@@ -740,18 +486,21 @@ pub trait StreamDataCb {
 /// proposed ALPNs is supported".  C: `AlpnSelect` (the C `_v2`
 /// flavour is folded in — it only differed in the iovec type, which
 /// is now just `&[u8]`).
-// REVIEW: Other parts of the API refer to ALPNs as &str or enum.  Which is it?  It would be nice
-// if we could just use the enum everywhere above the TLS layer.
-// REVIEW: DO NOT return out-of-bounds to signal failure.  Return Option<usize>.
+/// Application hook the TLS backend invokes to choose one of the
+/// client's proposed ALPN values.  Returns the chosen index into
+/// `list`, or `None` to reject the handshake.
+///
+/// `list` carries the raw bytes off the wire; mapping to the
+/// strongly-typed [`Alpn`] enum is up to the implementor (most
+/// applications keep a small whitelist by string identifier).
 pub trait AlpnSelect {
-    fn select(&mut self, quic: &mut Quic, list: &[&[u8]]) -> usize;
+    fn select(&mut self, quic: &mut Quic, list: &[&[u8]]) -> Option<usize>;
 }
 
 /// Callback that produces a server-environment-compatible CID.
 /// Folds the C `void* connection_id_cb_data` into the implementor's state.
-/// C: `ConnectionIdCb`.
-// REVIEW: Change "Cb" to "Callback" globally.
-pub trait ConnectionIdCb {
+/// C: `ConnectionIdCallback`.
+pub trait ConnectionIdCallback {
     fn produce(
         &mut self,
         quic: &mut Quic,
@@ -1026,29 +775,33 @@ pub fn congestion_control_algorithms() -> &'static [&'static CongestionAlgorithm
 /// Application-protocol identifiers used during session
 /// negotiation.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
-#[repr(u8)] // REVIEW: You probably don't need this `repr`.  And you probably do want `as_str()`
-            // and core::str::FromStr.  Stub those in.
 pub enum Alpn {
     /// No ALPN selected / unrecognised.
     #[default]
-    Undef = 0,
+    Undef,
     Http0_9,
     Http3,
     Quicperf,
 }
 
-/// One entry in the ALPN dispatch table.  `len` is implicit in
-/// `alpn_val.len()` but kept as a separate field for source-level
-/// parity with the C struct; Phase 3 may collapse to a single
-/// `&'static [u8]` slice.
-// REVIEW: Anywhere you have done something for "source-level parity with C", you should not do
-// that.
-// REVIEW: Delete this struct, and replace it with an as_str() method on Alpn
-#[derive(Debug, Copy, Clone)]
-pub struct AlpnEntry {
-    pub alpn_code: Alpn,
-    pub alpn_val: &'static str,
-    pub len: usize,
+impl Alpn {
+    /// Wire string for this ALPN, or `None` for [`Self::Undef`].
+    pub const fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::Undef => None,
+            Self::Http0_9 => Some("hq-interop"),
+            Self::Http3 => Some("h3"),
+            Self::Quicperf => Some("perf"),
+        }
+    }
+}
+
+impl core::str::FromStr for Alpn {
+    type Err = ();
+
+    fn from_str(_s: &str) -> Result<Self, Self::Err> {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1073,27 +826,11 @@ pub fn is_handshake_error(_error_code: u64) -> bool {
     todo!()
 }
 
-/// C: `error_name`.  Returns a short textual name for
-/// `error_code`, or `None` if unrecognised.
-// REVIEW: Make this a `name()` method on the appropriate error enum
-pub fn error_name(_error_code: u64) -> Option<&'static str> {
-    todo!()
-}
+// `error_name` lives on [`crate::errors::InternalError::name`].
 
-/// C: `tp_name`.  Returns a textual name for transport
-/// parameter `tp_number`.  Takes a raw `u64` (rather than `Tp`)
-/// because the C function answers for unknown / extension IDs too.
-// REVIEW: Move to tp.rs and make it a `name()` method on the TransportParameter enum.
-pub fn tp_name(_tp_number: u64) -> Option<&'static str> {
-    todo!()
-}
+// `tp_name` lives on [`crate::tp::TransportParameter::name`].
 
-/// C: `frame_name`.  Returns a textual name for frame type
-/// `frame_type`.
-// REVIEW: Move to frames.rs and make it a `name()` method on the FrameType enum
-pub fn frame_name(_frame_type: u64) -> Option<&'static str> {
-    todo!()
-}
+// `frame_name` lives on [`crate::frames::FrameType::name`].
 
 // `add_proposed_alpn` is gone.  In the C source this was the
 // hook for the application's ALPN-select callback to push a
@@ -1102,10 +839,8 @@ pub fn frame_name(_frame_type: u64) -> Option<&'static str> {
 // instead; the TLS backend provisions internally.
 
 impl Connection {
-    /// Negotiated ALPN value (borrowed), or `None` when none was
-    /// selected.
-    // REVIEW: Return `Alpn`
-    pub fn tls_negotiated_alpn(&self) -> Option<&str> {
+    /// Negotiated ALPN, or [`Alpn::Undef`] when no ALPN was selected.
+    pub fn tls_negotiated_alpn(&self) -> Alpn {
         todo!()
     }
 
@@ -1115,25 +850,33 @@ impl Connection {
         todo!()
     }
 
-    /// Reasons the connection closed.  Returns `(local_reason,
-    /// remote_reason, local_application_reason,
-    /// remote_application_reason)`; the C signature exposed these as
-    /// four `uint64_t*` out-parameters.
-    // REVIEW: It seems like these reasons are indices into some registry.  Make enums for the
-    // reasons and use try_from() in implementation.  So this signature would be something like
-    //
-    //   fn close_reasons(&self) -> (LocalReason, RemoteReason, LocalAppReason, RemoteAppReason)
-    //
-    // Also, is there a reason to provide all four?  It seems like only one would be populated in
-    // any given case.  So you might have a single enum of the following form:
-    //
-    //   enum CloseReason {
-    //      Local(LocalReason), // Including an App case
-    //      Remote(RemoteReason), // Including an App case
-    //   }
-    pub fn close_reasons(&self) -> (u64, u64, u64, u64) {
+    /// Reason this connection closed.  Only one of the four C
+    /// out-parameters (`local_reason`, `remote_reason`,
+    /// `local_application_reason`, `remote_application_reason`) was
+    /// populated in any given case; that "which side, transport
+    /// vs. application" choice folds into [`CloseReason`].
+    /// Returns `None` when the connection has not (yet) closed.
+    pub fn close_reason(&self) -> Option<CloseReason> {
         todo!()
     }
+}
+
+/// Outcome reported by [`Connection::close_reason`].  Mirrors the
+/// "(side, layer)" choice from the four C out-parameters.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum CloseReason {
+    /// Local close at the QUIC transport layer.  Code is one of the
+    /// [`crate::errors::TransportError`] / [`crate::errors::InternalError`]
+    /// values, or a `CRYPTO_ERROR(alert)` from
+    /// [`crate::errors::transport_crypto_error`].
+    Local(u64),
+    /// Local close at the application layer (CONNECTION_CLOSE frame
+    /// type 0x1d).  Code is application-defined.
+    LocalApp(u64),
+    /// Peer closed at the QUIC transport layer.
+    Remote(u64),
+    /// Peer closed at the application layer.
+    RemoteApp(u64),
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,9 +1010,9 @@ impl Quic {
     /// * Every `char const*` parameter is `Option<&str>` (the C
     ///   source passes `NULL` to mean "absent").
     /// * `default_callback_fn` + `default_callback_ctx` collapse to
-    ///   one `Option<Box<dyn StreamDataCb>>`.
+    ///   one `Option<Box<dyn StreamDataCallback>>`.
     /// * `connection_id_callback` + `connection_id_callback_data` collapse to
-    ///   `Option<Box<dyn ConnectionIdCb>>`.
+    ///   `Option<Box<dyn ConnectionIdCallback>>`.
     /// * `reset_seed[16]` is `[u8; RESET_SECRET_SIZE]` taken by
     ///   value (the C body deep-copies it into the context).
     /// * `ticket_encryption_key` + `ticket_encryption_key_length`
@@ -1287,8 +1030,8 @@ impl Quic {
         _key_file_name: Option<&str>,
         _cert_root_file_name: Option<&str>,
         _default_alpn: Option<&str>,
-        _default_callback: Option<Box<dyn StreamDataCb>>,
-        _cnx_id_callback: Option<Box<dyn ConnectionIdCb>>,
+        _default_callback: Option<Box<dyn StreamDataCallback>>,
+        _cnx_id_callback: Option<Box<dyn ConnectionIdCallback>>,
         _reset_seed: [u8; RESET_SECRET_SIZE],
         _current_time: Instant,
         _ticket_file_name: Option<&str>,
@@ -1539,7 +1282,7 @@ impl Quic {
     /// Install (or remove, with `None`) the default stream/event
     /// callback applied to new connections.  The `(callback_fn,
     /// callback_ctx)` pair from C collapses into one trait object.
-    pub fn set_default_callback(&mut self, _callback: Option<Box<dyn StreamDataCb>>) {
+    pub fn set_default_callback(&mut self, _callback: Option<Box<dyn StreamDataCallback>>) {
         todo!()
     }
 
@@ -1596,7 +1339,7 @@ impl Quic {
         _preferred_version: u32,
         _sni: Option<&str>,
         _alpn: Option<&str>,
-        _callback: Option<Box<dyn StreamDataCb>>,
+        _callback: Option<Box<dyn StreamDataCallback>>,
     ) -> Option<&mut Connection> {
         todo!()
     }
@@ -1945,13 +1688,13 @@ impl Connection {
     /// Install a per-connection stream/event callback (the
     /// `callback_fn` + `callback_ctx` pair from C collapse to a
     /// single trait object).  See [`Quic::set_default_callback`].
-    pub fn set_callback(&mut self, _callback: Option<Box<dyn StreamDataCb>>) {
+    pub fn set_callback(&mut self, _callback: Option<Box<dyn StreamDataCallback>>) {
         todo!()
     }
 
     /// Borrow this connection's callback (`None` when none was
     /// installed).
-    pub fn callback(&self) -> Option<&dyn StreamDataCb> {
+    pub fn callback(&self) -> Option<&dyn StreamDataCallback> {
         todo!()
     }
 
@@ -2000,7 +1743,7 @@ impl Quic {
     }
 
     /// Borrow the default stream callback installed on this context.
-    pub fn default_callback(&self) -> Option<&dyn StreamDataCb> {
+    pub fn default_callback(&self) -> Option<&dyn StreamDataCallback> {
         todo!()
     }
 }
@@ -2495,9 +2238,12 @@ impl Quic {
     }
 
     /// Convenience: select the default algorithm by name (looking up
-    /// in the registry).
-    // REVIEW: This method should be fallible, in case the algorithm doesn't exist.
-    pub fn set_default_congestion_algorithm_by_name(&mut self, _alg_name: &str) {
+    /// in the registry).  Returns `Err` when no registered algorithm
+    /// matches `alg_name`.
+    pub fn set_default_congestion_algorithm_by_name(
+        &mut self,
+        _alg_name: &str,
+    ) -> Result<(), Error> {
         todo!()
     }
 }
@@ -2610,26 +2356,8 @@ pub fn ech_create_config_file(
     todo!()
 }
 
-// ---------------------------------------------------------------------------
-// Base64 helpers.
-
-// REVIEW: Do not translate these methods. Calls to these should be replaced with calls to the
-// appropriate engine in the `base64` crate.
-
-/// C: `base64_decode`.  The C signature output an owned
-/// buffer via `uint8_t** v` + `size_t* v_len`; the Rust translation
-/// returns the decoded bytes by value.
-pub fn base64_decode(_b64_txt: &str) -> Result<Vec<u8>, Error> {
-    todo!()
-}
-
-/// C: `base64_encode`.  The C signature wrote into a
-/// caller-supplied buffer with a fallible "buffer too small" path;
-/// the Rust translation owns the result `String` and reports
-/// errors only when the input is malformed.
-pub fn base64_encode(_v: &[u8]) -> Result<String, Error> {
-    todo!()
-}
+// The C `base64_decode` / `base64_encode` helpers are gone:
+// callers use the standard `base64` crate's engines directly.
 
 #[cfg(test)]
 mod test {}

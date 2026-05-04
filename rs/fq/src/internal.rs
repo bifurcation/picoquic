@@ -86,13 +86,13 @@ pub type StreamToken = Token<StreamHead>;
 pub type StreamDataToken = Token<StreamDataNode>;
 pub type PacketToken = Token<Packet>;
 pub type SackItemToken = Token<SackItem>;
-pub type LocalCnxidToken = Token<LocalCnxid>;
+pub type LocalConnectionIdToken = Token<LocalConnectionId>;
 pub type PathToken = Token<Path>;
 use crate::logger::Logger;
 use crate::{
-    AlpnSelect, CongestionAlgorithm, ConnectionId, ConnectionIdCb, Fuzz, LossbitVersion,
-    PacketContext, PathStatus, PmtudPolicy, SpinbitVersion, State, StreamDataCb,
-    StreamDirectReceive, TransportParameters, RESET_SECRET_SIZE,
+    AlpnSelect, CongestionAlgorithm, ConnectionId, ConnectionIdCallback, Fuzz, LossbitVersion,
+    PacketContext, PathStatus, PmtudPolicy, RESET_SECRET_SIZE, SpinbitVersion, State,
+    StreamDataCallback, StreamDirectReceive, TransportParameters,
 };
 
 // ---------------------------------------------------------------------------
@@ -110,7 +110,6 @@ pub const DEFAULT_0RTT_WINDOW: usize = 10 * ENFORCED_INITIAL_MTU;
 pub const NB_PATH_TARGET: usize = 8;
 pub const NB_PATH_DEFAULT: usize = 2;
 pub const MAX_PACKETS_IN_POOL: i32 = 0x2000;
-pub const STORED_IP_MAX: usize = 16;
 pub const INITIAL_FLOW_CONTROL_MAX: u64 = 0x100000;
 
 pub const INITIAL_RTT: Duration = Duration::from_ticks(250_000);
@@ -183,7 +182,7 @@ pub const LOSS_BIT_Q_HALF_PERIOD: u64 = 64;
 pub const NUMBER_OF_EPOCHS: usize = 4;
 pub const NUMBER_OF_EPOCH_OFFSETS: usize = NUMBER_OF_EPOCHS + 1;
 
-pub const NB_TP_0RTT: usize = 10;
+pub use crate::tp::NB_TP_0RTT;
 
 // ---------------------------------------------------------------------------
 // Range / bitfield helper macros.
@@ -211,62 +210,7 @@ pub const fn bits_clear_in_range(v: u64, min: u64, max: u64, bits: u64) -> bool 
 // ---------------------------------------------------------------------------
 // Frame types.
 
-/// QUIC frame-type tags.
-///
-/// Wire values exceed `u32` for some extension frame types, hence
-/// the `#[repr(u64)]`.  `StreamRangeMin`/`StreamRangeMax` mark the
-/// inclusive bounds of the eight-variant STREAM frame block
-/// (0x08-0x0f); the bit-flag-encoded variants in between aren't
-/// individually named in the C source either.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[repr(u64)]
-// REVIEW: Move to a `frames.rs` module, along with encode/decode logic.
-pub enum FrameType {
-    Padding = 0,
-    Ping = 1,
-    Ack = 0x02,
-    AckEcn = 0x03,
-    ResetStream = 0x04,
-    StopSending = 0x05,
-    CryptoHs = 0x06,
-    NewToken = 0x07,
-    StreamRangeMin = 0x08,
-    StreamRangeMax = 0x0f,
-    MaxData = 0x10,
-    MaxStreamData = 0x11,
-    MaxStreamsBidir = 0x12,
-    MaxStreamsUnidir = 0x13,
-    DataBlocked = 0x14,
-    StreamDataBlocked = 0x15,
-    StreamsBlockedBidir = 0x16,
-    StreamsBlockedUnidir = 0x17,
-    NewConnectionId = 0x18,
-    RetireConnectionId = 0x19,
-    PathChallenge = 0x1a,
-    PathResponse = 0x1b,
-    ConnectionClose = 0x1c,
-    ApplicationClose = 0x1d,
-    HandshakeDone = 0x1e,
-    ImmediateAck = 0x1F,
-    ResetStreamAt = 0x24,
-    Datagram = 0x30,
-    DatagramL = 0x31,
-    PathAck = 0x3e,
-    PathAckEcn = 0x3f,
-    AckFrequency = 0xAF,
-    TimeStamp = 757,
-    PathAbandon = 0x3e75,
-    PathBackup = 0x3e76,
-    PathAvailable = 0x3e77,
-    PathNewConnectionId = 0x3e78,
-    PathRetireConnectionId = 0x3e79,
-    MaxPathId = 0x3e7a,
-    PathsBlocked = 0x3e7b,
-    PathCidBlocked = 0x3e7c,
-    Bdp = 0xebd9,
-    ObservedAddressV4 = 0x9f81a6,
-    ObservedAddressV6 = 0x9f81a7,
-}
+// `FrameType` lives in [`crate::frames`].
 
 // ---------------------------------------------------------------------------
 // PMTU discovery requirement status.
@@ -281,59 +225,64 @@ pub enum PmtuDiscoveryStatus {
 }
 
 // ---------------------------------------------------------------------------
-// Supported versions.
+// Supported QUIC versions.
 
-// REVIEW: Turn these versions into a repr(u32) enum.
-pub const SEVENTEENTH_INTEROP_VERSION: u32 = 0xFF00001B;
-pub const EIGHTEENTH_INTEROP_VERSION: u32 = 0xFF00001C;
-pub const NINETEENTH_INTEROP_VERSION: u32 = 0xFF00001D;
-pub const NINETEENTH_BIS_INTEROP_VERSION: u32 = 0xFF00001E;
-pub const TWENTIETH_PRE_INTEROP_VERSION: u32 = 0xFF00001F;
-pub const TWENTIETH_INTEROP_VERSION: u32 = 0xFF000020;
-pub const TWENTYFIRST_INTEROP_VERSION: u32 = 0xFF000021;
-pub const POST_IESG_VERSION: u32 = 0xFF000022;
-pub const V1_VERSION: u32 = 0x00000001;
-pub const V2_VERSION: u32 = 0x6b3343cf;
-pub const V2_VERSION_DRAFT: u32 = 0x709a50c4;
-pub const INTERNAL_TEST_VERSION_1: u32 = 0x50435130;
-pub const INTERNAL_TEST_VERSION_2: u32 = 0x50435131;
+/// QUIC version codes recognised by this build.  Wire values are the
+/// `u32` `Initial` packet version field; `TryFrom<u32>` converts an
+/// arbitrary wire value to a [`Version`] (or fails when the version
+/// isn't recognised).
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u32)]
+pub enum Version {
+    SeventeenthInterop = 0xFF00001B,
+    EighteenthInterop = 0xFF00001C,
+    NineteenthInterop = 0xFF00001D,
+    NineteenthBisInterop = 0xFF00001E,
+    TwentiethPreInterop = 0xFF00001F,
+    TwentiethInterop = 0xFF000020,
+    TwentyFirstInterop = 0xFF000021,
+    PostIesg = 0xFF000022,
+    V1 = 0x00000001,
+    V2 = 0x6b3343cf,
+    V2Draft = 0x709a50c4,
+    InternalTest1 = 0x50435130,
+    InternalTest2 = 0x50435131,
+}
 
-pub const INTEROP_VERSION_INDEX: usize = 0;
-pub const INTEROP_VERSION_LATEST: u32 = NINETEENTH_INTEROP_VERSION;
+/// First entry in `Version`'s declaration order — the canonical
+/// interop version reported by `INTEROP_VERSION_LATEST` in C.
+pub const INTEROP_VERSION_LATEST: Version = Version::NineteenthInterop;
+
+impl Version {
+    /// Resolve `proposed` to a known [`Version`] (RFC 9000 §15
+    /// "Versions").  C: `get_version_index`.
+    pub fn try_from_wire(_proposed: u32) -> Option<Self> {
+        todo!()
+    }
+
+    /// Per-version cryptographic and label parameters.  C:
+    /// `picoquic_supported_versions[]`'s row for this version.
+    pub fn parameters(self) -> VersionParameters {
+        todo!()
+    }
+}
 
 /// Per-version cryptographic and label parameters.  C:
 /// `VersionParameters`.
 ///
-/// `*aead_key` and `*retry_key` are static byte tables in the
-/// C source — Rust models them as borrowed slices.  `upgrade_from`
-/// is a `NULL`-terminated list in C; here it is a borrowed
-/// slice, with an empty slice for "no upgrade path".
+/// `version_aead_key` and `version_retry_key` are static byte
+/// tables in the C source — Rust models them as borrowed slices.
+/// `upgrade_from` is a `NULL`-terminated list in C; here it is a
+/// borrowed slice, with an empty slice for "no upgrade path".
 #[derive(Debug)]
 pub struct VersionParameters {
-    pub version: u32,
+    pub version: Version,
     pub version_aead_key: &'static [u8],
     pub version_retry_key: &'static [u8],
     pub tls_prefix_label: &'static str,
     pub tls_traffic_update_label: &'static str,
     pub packet_type_version: u32,
-    pub upgrade_from: &'static [u32],
-}
-
-// `supported_versions[]` and `nb_supported_versions`
-// in C — exposed here as a single accessor returning a borrowed
-// slice (length implicit).
-// REVIEW Instead of returning VersionParameters here, just return Version, and have a
-// `parameters()` method that looks up parameters for an algorithm.  The body of the method will
-// just be a `match self` mapping to a set of constants for the version parameters.
-pub fn supported_versions() -> &'static [VersionParameters] {
-    todo!()
-}
-
-// REVIEW If the purpose of this is to determine whether a version is supported, then `try_from()`
-// on the enum should suffice.  Or if not all defined enum values are supported, a `supported()`
-// method.
-pub fn get_version_index(_proposed_version: u32) -> i32 {
-    todo!()
+    pub upgrade_from: &'static [Version],
 }
 
 // ---------------------------------------------------------------------------
@@ -369,19 +318,22 @@ pub enum PacketType {
 /// The C struct uses a packed bitfield for eight single-bit
 /// flags; Rust stores them as plain `bool` fields (one per flag).
 pub struct PacketHeader {
-    pub dest_cnx_id: ConnectionId, // REVIEW: `cnd` should be `connection` everywhere
-    pub srce_cnx_id: ConnectionId,
-    pub pn: u32, // REVIEW: Expand abbreviated fields to something semantic.  `packet_number`?
-    pub vn: u32, // REVIEW: `version_number`?  Should be an enum
+    pub dest_connection_id: ConnectionId,
+    pub src_connection_id: ConnectionId,
+    /// Truncated packet number as it appeared on the wire (1-4 bytes,
+    /// extended to `u32`).  Reconstructed full PN is in
+    /// [`Self::packet_number_full`].
+    pub packet_number_truncated: u32,
+    pub version: u32,
     pub offset: usize,
-    pub pn_offset: usize,  // REVIEW: `packet_number_offset`
-    pub ptype: PacketType, // REVIEW: `packet_type`
-    pub pnmask: u64,
-    pub pn64: u64,
+    pub packet_number_offset: usize,
+    pub packet_type: PacketType,
+    pub packet_number_mask: u64,
+    pub packet_number_full: u64,
     pub payload_length: usize,
-    pub version_index: i32, // REVIEW: Delete this field if it's not needed
+    pub version_index: i32,
     pub epoch: Epoch,
-    pub pc: PacketContext, // REVIEW: `packet_context`
+    pub packet_context: PacketContext,
 
     pub key_phase: bool,
     pub spin: bool,
@@ -397,10 +349,10 @@ pub struct PacketHeader {
     /// `token_length` field is gone (it lived only as the slice's
     /// length).
     pub token_bytes: Vec<u8>,
-    pub pl_val: usize, // REVIEW: semantic name
+    pub payload_length_value: usize,
     /// Token into [`Quic`]'s arena for the local CID this packet
-    /// targets, if any.  C: `*mut LocalCnxid` back-pointer.
-    pub l_cid: Option<LocalCnxidToken>, // REVIEW: `local_connection_id`, `LocalConnectionIdToken`
+    /// targets, if any.  C: `*mut LocalConnectionId` back-pointer.
+    pub local_connection_id: Option<LocalConnectionIdToken>,
 }
 
 // ---------------------------------------------------------------------------
@@ -411,7 +363,7 @@ pub struct PacketHeader {
 /// policy is two function pointers grouped into
 /// `SpinbitDef`; the two are always installed
 /// together so they share one Rust trait.
-pub trait SpinBitPolicy {
+pub trait SpinBitPolicy: Sync {
     /// C: `spinbit_incoming_fn`.
     fn incoming(&self, connection: &mut Connection, path_x: &mut Path, ph: &PacketHeader);
 
@@ -419,35 +371,21 @@ pub trait SpinBitPolicy {
     fn outgoing(&self, connection: &mut Connection) -> u8;
 }
 
-/// One row of the spin-bit policy dispatch table.  C:
-/// `SpinbitDef`.
-// REVIEW: Delete this struct and make the table `[&'static dyn SpinBitPolicy]` if possible.
-pub struct SpinbitDef {
-    pub policy: &'static dyn SpinBitPolicy,
-}
-
-/// Replacement for `extern SpinbitDef
-/// spin_function_table[]`.  Returns the policy table as
-/// a borrowed slice — length is implicit.
-// REVIEW: It should be possible to make this a `const` instead of dynamically constructing.
-//
-// mod spinbit { // probably in spinbit.rs
-//
-// struct BasicPolicy;
-// impl SpinBitPolicy for BasicPolicy { ... }
-//
-// const FUNCTION_TABLE: [&'static dyn SpinBitPolicy; 3] = [
-//      &BasicPolicy,
-//      &RandomPolicy,
-//      &NullPolicy,
-// ];
-//
-// }
-//
-// That probably means we eliminate this function and SpinbitDef, and just
-pub fn spin_function_table() -> &'static [SpinbitDef] {
-    todo!()
-}
+/// Spin-bit policy dispatch table.  Replaces `extern SpinbitDef
+/// spin_function_table[]` from the C source.  Each row is a
+/// `&'static dyn` to a stateless policy implementor; the wrapper
+/// `SpinbitDef` struct from C is gone (the trait object carries
+/// the same information).
+///
+/// Indices match [`crate::SpinbitVersion`] values:
+/// * 0 = Basic
+/// * 1 = Random
+/// * 2 = Null
+/// * 3 = On (test-only, server side)
+///
+/// The concrete policy types and the populated table land in
+/// `crate::spinbit` (Phase 4).
+pub static SPIN_FUNCTION_TABLE: &[&dyn SpinBitPolicy] = &[];
 
 // ---------------------------------------------------------------------------
 // Stateless packet, queued at the QUIC context until sendable.
@@ -460,8 +398,8 @@ pub struct StatelessPacket {
     pub length: usize,
     pub receive_time: Instant,
     pub connection_id_log64: u64,
-    pub initial_cid: ConnectionId, // REVIEW: `cid` should be `connection_id` everywhere
-    pub ptype: PacketType,
+    pub initial_connection_id: ConnectionId,
+    pub packet_type: PacketType,
     pub bytes: [u8; MAX_PACKET_SIZE],
 }
 
@@ -541,8 +479,8 @@ pub struct Packet {
     pub length: usize,
     pub checksum_overhead: usize,
     pub offset: usize,
-    pub ptype: PacketType,
-    pub pc: PacketContext,
+    pub packet_type: PacketType,
+    pub packet_context: PacketContext,
 
     pub is_evaluated: bool,
     pub is_ack_eliciting: bool,
@@ -593,34 +531,19 @@ pub struct RegisteredToken {
 
 // ---------------------------------------------------------------------------
 // 0-RTT remembered transport parameters.
-
-// REVIEW: Rename to TransportParameter0RttKind
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Tp0rttKind {
-    MaxData = 0,
-    MaxStreamDataBidiLocal = 1,
-    MaxStreamDataBidiRemote = 2,
-    MaxStreamDataUni = 3,
-    MaxStreamsIdBidir = 4,
-    MaxStreamsIdUnidir = 5,
-    RttLocal = 6,
-    CwinLocal = 7,
-    RttRemote = 8,
-    CwinRemote = 9,
-}
+// `TransportParameter0RttKind` (and its `NB_TP_0RTT` count) live in [`crate::tp`].
 
 pub struct StoredTicket {
     /// Owned SNI string (C: `sni: *mut c_char` plus `sni_length`).
     pub sni: Option<String>,
     /// Owned ALPN string (C: `alpn: *mut c_char` plus `alpn_length`).
-    pub alpn: Option<String>, // REVIEW: Use `Alpn`
-    // REVIEW These IP address types should instead use core::net::IpAddr
-    /// Owned server IP bytes (C: `ip_addr: *mut u8` plus `ip_addr_length`).
-    pub ip_addr: Vec<u8>,
-    /// Owned client IP bytes (C: `ip_addr_client: *mut u8` plus
-    /// `ip_addr_client_length`).
-    pub ip_addr_client: Vec<u8>,
+    pub alpn: Option<String>,
+    /// Server IP address.  C kept it as `(ip_addr: *mut u8,
+    /// ip_addr_length: u8)`; `core::net::IpAddr` carries the family
+    /// and the bytes.
+    pub ip_addr: core::net::IpAddr,
+    /// Client IP address (same encoding as [`Self::ip_addr`]).
+    pub ip_addr_client: core::net::IpAddr,
     pub tp_0rtt: [u64; NB_TP_0RTT],
     /// Owned session ticket (C: `ticket: *mut u8` plus `ticket_length`).
     pub ticket: Vec<u8>,
@@ -636,16 +559,11 @@ impl Quic {
     pub fn store_ticket(
         &mut self,
         _sni: Option<&str>,
-        _sni_length: u16,
         _alpn: Option<&str>,
-        _alpn_length: u16,
         _version: u32,
-        _ip_addr: &[u8], // REVIEW same comment about core::net::IpAddr
-        _ip_addr_length: u8,
-        _ip_addr_client: &[u8],
-        _ip_addr_client_length: u8,
+        _ip_addr: core::net::IpAddr,
+        _ip_addr_client: core::net::IpAddr,
         _ticket: &[u8],
-        _ticket_length: u16,
         _tp: &TransportParameters,
     ) -> Result<(), crate::Error> {
         todo!()
@@ -732,10 +650,8 @@ pub struct StoredToken {
     /// Owned retry-token bytes (C: `token: *const u8` plus
     /// `token_length`).
     pub token: Vec<u8>,
-    // REVIEW: core::net::IpAddr
-    /// Owned server IP bytes (C: `ip_addr: *const u8` plus
-    /// `ip_addr_length`).
-    pub ip_addr: Vec<u8>,
+    /// Server IP address.
+    pub ip_addr: core::net::IpAddr,
     pub time_valid_until: Instant,
     pub was_used: bool,
 }
@@ -746,7 +662,7 @@ impl Quic {
     pub fn store_token(
         &mut self,
         _sni: Option<&str>,
-        _ip_addr: &[u8], // REVIEW: core::net::IpAddr
+        _ip_addr: core::net::IpAddr,
         _token: &[u8],
     ) -> Result<(), crate::Error> {
         todo!()
@@ -759,7 +675,7 @@ impl Quic {
     pub fn get_token(
         &mut self,
         _sni: Option<&str>,
-        _ip_addr: &[u8], // REVIEW: core::net::IpAddr
+        _ip_addr: core::net::IpAddr,
         _mark_used: bool,
     ) -> Result<&[u8], crate::Error> {
         todo!()
@@ -795,8 +711,7 @@ pub struct IssuedTicket {
     pub creation_time: Instant,
     pub rtt: Duration,
     pub cwin: u64,
-    /// 4 bytes for IPv4, 16 for IPv6.
-    pub ip_addr: Vec<u8>, // REVIEW: core::net::IpAddr
+    pub ip_addr: core::net::IpAddr,
 }
 
 impl Quic {
@@ -807,7 +722,7 @@ impl Quic {
         _ticket_id: u64,
         _rtt: Duration,
         _cwin: u64,
-        _ip_addr: &[u8], // REVIEW: core::net::IpAddr
+        _ip_addr: core::net::IpAddr,
     ) -> Result<(), crate::Error> {
         todo!()
     }
@@ -824,18 +739,17 @@ impl Quic {
 
 /// C: `autoqlog_fn` — invoked at end of connection to
 /// turn the binlog into a qlog file.  Returns 0 on success, an
-/// errno-style negative on failure.
+/// errno-style negative on failure.  The callback only reads
+/// connection state, so the borrow is shared.
 pub trait AutoQlog {
-    // REVIEW: `connection` should not be mutable here.
-    fn run(&mut self, connection: &mut Connection) -> i32;
+    fn run(&mut self, connection: &Connection) -> i32;
 }
 
 /// C: `performance_log_fn` — emit a per-connection
 /// performance log row.  `should_delete` is `true` on connection
-/// teardown.
+/// teardown.  Callback is read-only over `quic` / `connection`.
 pub trait PerformanceLog {
-    // REVIEW: `connection` and `quic` should not be mutable here.
-    fn emit(&mut self, quic: &mut Quic, connection: &mut Connection, should_delete: bool) -> i32;
+    fn emit(&mut self, quic: &Quic, connection: &Connection, should_delete: bool) -> i32;
 }
 
 // ---------------------------------------------------------------------------
@@ -843,12 +757,12 @@ pub trait PerformanceLog {
 
 /// C: `void (*memlog_call_back)(Connection*, Path*,
 /// void* v_memlog, int op_code, uint64_t current_time)` field on
-/// `Connection`.
+/// `Connection`.  Read-only over `connection`; the path may
+/// mutate (the C body updates per-path counters).
 pub trait MemLogHook {
-    // REVIEW: `connection` should not be mutable here.
     fn callback(
         &mut self,
-        connection: &mut Connection,
+        connection: &Connection,
         path: &mut Path,
         op_code: i32,
         current_time: Instant,
@@ -872,11 +786,11 @@ pub struct Quic {
     /// store, certificate verification).  Replaces the C-style
     /// `register_*` global function-pointer registry.
     pub tls_callbacks: Option<Box<dyn crate::tls::TlsCallbacks>>,
-    pub default_callback_fn: Option<Box<dyn StreamDataCb>>,
+    pub default_callback_fn: Option<Box<dyn StreamDataCallback>>,
     /// Application-supplied state forwarded to the default
     /// stream-data callback.  Opaque to the library (the C side
     /// passed it through as `void*`).  Phase 4 may push the state
-    /// into the `StreamDataCb` impl itself, at which point this
+    /// into the `StreamDataCallback` impl itself, at which point this
     /// field disappears.
     pub default_callback_ctx: Option<Box<dyn Any>>,
     /// State for the DCID-mask callbacks; opaque to the library.
@@ -995,7 +909,7 @@ pub struct Quic {
 
     /// Lookup by local CID (each connection registers one CID per
     /// active path).  Phase 4 plan: the value type may end up as
-    /// `LocalCnxidToken` rather than `ConnectionToken` once the
+    /// `LocalConnectionIdToken` rather than `ConnectionToken` once the
     /// per-path CID arena is wired up; a CID does not uniquely
     /// identify a connection — paths within a connection have
     /// distinct CIDs.  Stub assumes the simpler shape for now.
@@ -1028,7 +942,7 @@ pub struct Quic {
     pub nb_data_nodes_allocated: i32,
     pub nb_data_nodes_allocated_max: i32,
 
-    pub connection_id_callback_fn: Option<Box<dyn ConnectionIdCb>>,
+    pub connection_id_callback_fn: Option<Box<dyn ConnectionIdCallback>>,
     /// Application-supplied state for the CID callback.  Opaque
     /// to the library.
     pub connection_id_callback_ctx: Option<Box<dyn Any>>,
@@ -1198,61 +1112,11 @@ pub struct StreamHead {
     pub is_not_coalesced: bool,
 }
 
-/// True if the stream ID belongs to the client side (client opens
-/// even-numbered streams).
-// REVIEW: These functions are duplicative with functions in lib.rs.
-// REVIEW: The `inline` annotations are unnecessary.  The compiler will figure it out.
-// REVIEW: Let's define a newtype StreamId(pub u64), and then we can define methods on it for
-// client(), bidir(), local(),
-#[inline]
-pub const fn is_client_stream_id(id: u64) -> bool {
-    (id & 1) == 0
-}
-
-/// True if the stream ID identifies a bidirectional stream
-/// (bit 1 cleared per RFC 9000 §2.1).
-#[inline]
-pub const fn is_bidir_stream_id(id: u64) -> bool {
-    (id & 2) == 0
-}
-
-/// True if the stream ID was opened locally given the connection's
-/// `client_mode` flag (1 ↔ client, 0 ↔ server).
-// REVIEW: No magic ints!  If there are only two values, use an enum stream::Role
-#[inline]
-pub const fn is_local_stream_id(id: u64, client_mode: u64) -> bool {
-    ((id ^ client_mode) & 1) != 0
-}
-
-/// Build a stream ID from its 1-based rank, client/server role, and
-/// uni/bidi flag.
-// REVIEW: StreamId::from_parts();
-#[inline]
-pub const fn stream_id_from_rank(rank: u64, client_mode: u64, is_unidir: u64) -> u64 {
-    ((rank - 1) << 2) | (is_unidir << 1) | (client_mode ^ 1)
-}
-
-/// Recover the 1-based rank from a stream ID.
-#[inline]
-// REVIEW: StreamId::rank();
-pub const fn stream_rank_from_id(id: u64) -> u64 {
-    (id + 4) >> 2
-}
-
-/// Extract the two type bits (bidi/unidir × client/server) from a
-/// stream ID.
-#[inline]
-// REVIEW: StreamId::type() -> (Direction, Role)
-pub const fn stream_type_from_id(id: u64) -> u64 {
-    id & 3
-}
-
-/// Next stream ID with the same type bits as `id`.
-#[inline]
-// REVIEW:: StreamId::next_with_same_type() -> Self
-pub const fn next_stream_id_for_type(id: u64) -> u64 {
-    id + 4
-}
+// The stream-id helpers from picoquic.h (`is_client_stream_id`,
+// `is_bidir_stream_id`, `is_local_stream_id`, `stream_id_from_rank`,
+// `stream_rank_from_id`, `stream_type_from_id`,
+// `next_stream_id_for_type`) live in [`crate::stream`] as inherent
+// methods on the [`crate::stream::StreamId`] newtype.
 
 // ---------------------------------------------------------------------------
 // Misc-frame queue.
@@ -1268,7 +1132,7 @@ pub struct MiscFrameHeader {
     /// same allocation; Rust owns the bytes inline).  `length` is
     /// implicit in `bytes.len()`.
     pub bytes: Vec<u8>,
-    pub pc: PacketContext,
+    pub packet_context: PacketContext,
     pub is_pure_ack: i32,
 }
 
@@ -1328,8 +1192,7 @@ pub struct AckContext {
 // ---------------------------------------------------------------------------
 // CID state — local and remote.
 
-pub struct LocalCnxid {
-    // REVIEW: LocalConnectionId
+pub struct LocalConnectionId {
     /// Membership in `Quic::connection_by_id`.  Phase 4 uses this for
     /// O(1) removal when a CID is retired.
     pub connection_by_id_membership: Option<HashToken>,
@@ -1340,8 +1203,7 @@ pub struct LocalCnxid {
     pub is_acked: bool,
 }
 
-pub struct LocalCnxidList {
-    // REVIEW: LocalConnectionIdList
+pub struct LocalConnectionIdList {
     pub unique_path_id: u64,
     pub local_connection_id_sequence_next: u64,
     pub local_connection_id_retire_before: u64,
@@ -1352,11 +1214,10 @@ pub struct LocalCnxidList {
     /// Local CIDs registered for this path (replaces the C
     /// `local_connection_id_first` head + per-node `next` chain plus the
     /// redundant `nb_local_connection_id` count, which is now `len()`).
-    pub cnxids: Vec<LocalCnxidToken>,
+    pub connection_ids: Vec<LocalConnectionIdToken>,
 }
 
-pub struct RemoteCnxid {
-    // REVIEW: RemoteConnectionId
+pub struct RemoteConnectionId {
     pub sequence: u64,
     pub connection_id: ConnectionId,
     pub reset_secret: [u8; RESET_SECRET_SIZE],
@@ -1367,13 +1228,12 @@ pub struct RemoteCnxid {
     pub pkt_ctx: PacketContextState,
 }
 
-pub struct RemoteCnxidStash {
-    // REVIEW: RemoteConnectionIdStash
+pub struct RemoteConnectionIdStash {
     pub unique_path_id: u64,
     pub retire_connection_id_before: u64,
     /// Remote CIDs stashed for this path.  Replaces the C
     /// `connection_id_stash_first` head + per-node `next` chain.
-    pub cnxids: Vec<RemoteCnxid>, // REVIEW: `connection_ids`
+    pub connection_ids: Vec<RemoteConnectionId>,
     pub is_in_use: bool,
 }
 
@@ -1399,7 +1259,7 @@ pub struct Tuple {
     pub if_index: core::ffi::c_ulong,
     pub observed_addr: SocketAddr,
     pub remote_connection_id_index: Option<usize>,
-    pub local_connection_id: Option<LocalCnxidToken>,
+    pub local_connection_id: Option<LocalConnectionIdToken>,
     pub nb_observed_repeat: i32,
     pub observed_time: Instant,
     pub challenge_response: u64,
@@ -1652,8 +1512,7 @@ pub struct Connection {
     pub remote_parameters: TransportParameters,
     pub padding_multiple: u32,
     pub padding_minsize: u32,
-    pub seed_ip_addr: [u8; STORED_IP_MAX], // REVIEW: core::net::IpAddr
-    pub seed_ip_addr_length: u8,
+    pub seed_ip_addr: Option<core::net::IpAddr>,
     pub seed_rtt_min: Duration,
     pub seed_cwin: u64,
 
@@ -1664,7 +1523,7 @@ pub struct Connection {
     pub alpn: Option<String>,
     pub max_early_data_size: usize,
 
-    pub callback_fn: Option<Box<dyn StreamDataCb>>,
+    pub callback_fn: Option<Box<dyn StreamDataCallback>>,
     /// Application-supplied state for the per-connection callback.
     pub callback_ctx: Option<Box<dyn Any>>,
 
@@ -1836,7 +1695,7 @@ pub struct Connection {
     /// Per-path stashes of remote CIDs.  Replaces the C
     /// `first_remote_connection_id_stash` head + per-stash `next_stash`
     /// chain.
-    pub remote_connection_id_stashes: Vec<RemoteCnxidStash>,
+    pub remote_connection_id_stashes: Vec<RemoteConnectionIdStash>,
 
     pub next_path_id_in_lists: u64,
     pub max_path_id_in_connection_id_lists: u64,
@@ -1844,7 +1703,7 @@ pub struct Connection {
     /// `first_local_connection_id_list` head + per-list `next_list` chain
     /// plus the redundant `nb_local_connection_id_lists` count
     /// (now `len()`).
-    pub local_connection_id_lists: Vec<LocalCnxidList>,
+    pub local_connection_id_lists: Vec<LocalConnectionIdList>,
 
     pub ack_frequency_sequence_local: u64,
     pub ack_gap_local: u64,
@@ -1951,12 +1810,12 @@ pub fn init_transport_parameters(_tp: &mut TransportParameters) {
     todo!()
 }
 
-/// Insert `l_cid` into the QUIC context's CID lookup table so that
+/// Insert `local_connection_id` into the QUIC context's CID lookup table so that
 /// future packets carrying it route to `connection`.
 pub fn register_cnx_id(
     _quic: &mut Quic,
     _connection: &mut Connection,
-    _l_cid: &mut LocalCnxid,
+    _l_cid: &mut LocalConnectionId,
 ) -> Result<(), crate::Error> {
     todo!()
 }
@@ -1986,107 +1845,121 @@ pub fn create_local_cnx_id(
 // ---------------------------------------------------------------------------
 // Tuple/path management.
 
-/// Add a tuple to `path_x.tuples` and return its index there.
-// REVIEW: It seems like these should be methods on `Path`.
-pub fn create_tuple(
-    _path_x: &mut Path,
-    _local_addr: Option<&SocketAddr>,
-    _peer_addr: Option<&SocketAddr>,
-    _if_index: i32,
-) -> Result<usize, crate::Error> {
-    todo!()
+impl Path {
+    /// Add a tuple to `self.tuples` and return its index there.
+    /// C: `create_tuple`.
+    pub fn create_tuple(
+        &mut self,
+        _local_addr: Option<&SocketAddr>,
+        _peer_addr: Option<&SocketAddr>,
+        _if_index: i32,
+    ) -> Result<usize, crate::Error> {
+        todo!()
+    }
+
+    /// Remove the tuple at `self.tuples[index]`.  C: `delete_tuple`.
+    pub fn delete_tuple(&mut self, _index: usize, _is_deleting_path: bool) {
+        todo!()
+    }
+
+    /// Move the tuple at `index` to the head of `self.tuples`.
+    /// C: `set_first_tuple`.
+    pub fn set_first_tuple(&mut self, _index: usize) {
+        todo!()
+    }
+
+    /// Construct a fresh path on `connection`.  C: `create_path`.
+    pub fn new(
+        _connection: &mut Connection,
+        _start_time: Instant,
+        _local_addr: Option<&SocketAddr>,
+        _peer_addr: Option<&SocketAddr>,
+        _if_index: i32,
+        _unique_path_id: u64,
+    ) -> Result<Self, crate::Error> {
+        todo!()
+    }
 }
 
-// REVIEW: Method on `Path`
-pub fn delete_demoted_tuples(
-    _connection: &mut Connection,
-    _current_time: Instant,
-    _next_wake_time: &mut Instant,
-) {
-    todo!()
+/// Result of [`Connection::find_incoming_path`].  Replaces the C
+/// signature's `*p_path_id` out-parameter and i32 status return.
+pub struct IncomingPathLookup {
+    /// Index into the connection's path array where the packet
+    /// belongs.
+    pub path_id: usize,
+    /// `true` when the lookup created a fresh path for an unknown
+    /// 4-tuple (vs. matching an existing one).
+    pub created: bool,
 }
 
-/// Remove the tuple at `path_x.tuples[index]`.  C: `delete_tuple`.
-// REVIEW: Method on `Path`
-pub fn delete_tuple(_path_x: &mut Path, _index: usize, _is_deleting_path: bool) {
-    todo!()
-}
+impl Connection {
+    /// Sweep paths whose demotion timer has fired and free their
+    /// tuples.  C: `delete_demoted_tuples`.
+    pub fn delete_demoted_tuples(&mut self, _current_time: Instant, _next_wake_time: &mut Instant) {
+        todo!()
+    }
 
-/// Move the tuple at `index` to the head of `path_x.tuples`.  C:
-/// `set_first_tuple`.
-// REVIEW: Method on `Path`
-pub fn set_first_tuple(_path_x: &mut Path, _index: usize) {
-    todo!()
-}
+    /// Register `path_x` with this connection.  C: `register_path`.
+    pub fn register_path(&mut self, _path_x: &mut Path) {
+        todo!()
+    }
 
-// REVIEW: Method on `Path`.  Path::new
-pub fn create_path(
-    _connection: &mut Connection,
-    _start_time: Instant,
-    _local_addr: Option<&SocketAddr>,
-    _peer_addr: Option<&SocketAddr>,
-    _if_index: i32,
-    _unique_path_id: u64,
-) -> i32 {
-    todo!()
-}
+    /// Resolve which path an incoming packet belongs to.  C:
+    /// `find_incoming_path` (returned `int` plus a `*p_path_id`
+    /// out-parameter).  Returns `Err` when the packet has no
+    /// matching path and no fresh one could be allocated.
+    pub fn find_incoming_path(
+        &mut self,
+        _ph: &mut PacketHeader,
+        _addr_from: &SocketAddr,
+        _addr_to: &SocketAddr,
+        _if_index_to: i32,
+        _current_time: Instant,
+    ) -> Result<IncomingPathLookup, crate::Error> {
+        todo!()
+    }
 
-// REVIEW: Method on `Connection`
-pub fn register_path(_connection: &mut Connection, _path_x: &mut Path) {
-    todo!()
-}
+    /// Format a path-control packet (PATH_CHALLENGE / PATH_RESPONSE
+    /// etc.) into `send_buffer`.  Returns the number of bytes
+    /// written.  C: `prepare_path_control_packet` (returned `int`
+    /// plus a `*send_length` out-parameter).
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_path_control_packet(
+        &mut self,
+        _path_x: &mut Path,
+        _tuple: &mut Tuple,
+        _packet: &mut Packet,
+        _current_time: Instant,
+        _send_buffer: &mut [u8],
+        _next_wake_time: &mut Instant,
+    ) -> Result<usize, crate::Error> {
+        todo!()
+    }
 
-// REVIEW: Method on `Connection`.
-// REVIEW: i32 return value has strong code smell, especially with all the `mut` parameters.  Seems like you probably need a semantic return value Result<Something>.
-pub fn find_incoming_path(
-    _connection: &mut Connection,
-    _ph: &mut PacketHeader,
-    _addr_from: &mut SocketAddr,
-    _addr_to: &mut SocketAddr,
-    _if_index_to: i32,
-    _current_time: Instant,
-    _p_path_id: &mut i32,
-) -> i32 {
-    todo!()
-}
+    /// Append PATH_CHALLENGE frames into `bytes` for `path_x`.
+    /// C: `prepare_path_challenge_frames`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_path_challenge_frames<'a>(
+        &mut self,
+        _path_x: &mut Path,
+        _bytes: &'a mut [u8],
+        _more_data: &mut i32,
+        _is_pure_ack: &mut i32,
+        _is_challenge_padding_needed: &mut i32,
+        _current_time: Instant,
+        _next_wake_time: &mut Instant,
+    ) -> Option<&'a mut [u8]> {
+        todo!()
+    }
 
-// REVIEW: Method on `Connection`
-// REVIEW: i32 return value has strong code smell, especially with all the `mut` parameters.  Seems like you probably need a semantic return value Result<Something>.
-pub fn prepare_path_control_packet(
-    _connection: &mut Connection,
-    _path_x: &mut Path,
-    _tuple: &mut Tuple,
-    _packet: &mut Packet,
-    _current_time: Instant,
-    _send_buffer: &mut [u8],
-    _send_buffer_max: usize,
-    _send_length: &mut usize,
-    _next_wake_time: &mut Instant,
-) -> i32 {
-    todo!()
-}
-
-// REVIEW: Method on `Connection`
-pub fn prepare_path_challenge_frames<'a>(
-    _connection: &mut Connection,
-    _path_x: &mut Path,
-    _bytes: &'a mut [u8],
-    _more_data: &mut i32,
-    _is_pure_ack: &mut i32,
-    _is_challenge_padding_needed: &mut i32,
-    _current_time: Instant,
-    _next_wake_time: &mut Instant,
-) -> Option<&'a mut [u8]> {
-    todo!()
-}
-
-// REVIEW: Method on `Connection`
-pub fn select_next_path_tuple(
-    _connection: &mut Connection,
-    _current_time: Instant,
-    _next_wake_time: &mut Instant,
-) -> Option<(PathToken, usize)> {
-    todo!()
+    /// Pick the next path/tuple ready to send.  C: `select_next_path_tuple`.
+    pub fn select_next_path_tuple(
+        &mut self,
+        _current_time: Instant,
+        _next_wake_time: &mut Instant,
+    ) -> Option<(PathToken, usize)> {
+        todo!()
+    }
 }
 
 impl Connection {
@@ -2208,7 +2081,7 @@ impl Connection {
 
 /// Output of [`add_remote_connection_id_to_stash`] / [`stash_remote_connection_id`]:
 /// a status code (matching the C `uint64_t` return) and the index
-/// of the newly-stashed CID inside the stash's `cnxids` vector,
+/// of the newly-stashed CID inside the stash's `connection_ids` vector,
 /// or `None` if no CID was stashed.
 pub struct StashResult {
     pub status: u64,
@@ -2238,7 +2111,7 @@ pub fn stash_remote_connection_id(
 }
 
 /// Remove the CID at `removed_index` from
-/// `connection.remote_connection_id_stashes[stash_index].cnxids`.  Returns the
+/// `connection.remote_connection_id_stashes[stash_index].connection_ids`.  Returns the
 /// next index that is still live, if any (matches the C "return
 /// the chain successor" pattern).
 pub fn remove_connection_id_from_stash(
@@ -2260,7 +2133,9 @@ pub fn remove_stashed_connection_id(
 }
 
 /// Return a reference to the first available CID in `stash`, if any.
-pub fn get_connection_id_from_stash(_stash: &mut RemoteCnxidStash) -> Option<&mut RemoteCnxid> {
+pub fn get_connection_id_from_stash(
+    _stash: &mut RemoteConnectionIdStash,
+) -> Option<&mut RemoteConnectionId> {
     todo!()
 }
 
@@ -2293,7 +2168,7 @@ pub fn dereference_stashed_connection_id_tuple(
 
 pub fn remove_not_before_from_stash(
     _connection: &mut Connection,
-    _connection_id_stash: &mut RemoteCnxidStash,
+    _connection_id_stash: &mut RemoteConnectionIdStash,
     _not_before: u64,
     _current_time: Instant,
 ) -> u64 {
@@ -2407,7 +2282,7 @@ impl Quic {
     pub fn connection_by_id(
         &mut self,
         _cnx_id: ConnectionId,
-    ) -> Option<(ConnectionToken, LocalCnxidToken)> {
+    ) -> Option<(ConnectionToken, LocalConnectionIdToken)> {
         todo!()
     }
 
@@ -2493,91 +2368,101 @@ impl Pacing {
     }
 }
 
-// REVIEW: IN GENERAL: There is a bunch of non-idiomatic translation in this file.  Do a re-review
-// to see (a) when free functions should be struct methods, (b) when out parameters are used
-// instead of return values, and (c) when parameters are unnecessarily mutable.
+impl Path {
+    /// Recompute the pacer's bucket / target rate from the current
+    /// CWIN and RTT.  C: `update_pacing_data`.
+    pub fn update_pacing_data(&mut self, _slow_start: i32) {
+        todo!()
+    }
 
-pub fn update_pacing_data(_path_x: &mut Path, _slow_start: i32) {
-    todo!()
+    /// Update pacer state after sending `length` bytes at
+    /// `current_time`.  C: `update_pacing_after_send`.
+    pub fn update_pacing_after_send(&mut self, _length: usize, _current_time: Instant) {
+        todo!()
+    }
+
+    /// Force the pacer to a specific target `rate` and bucket
+    /// `quantum`.  C: `update_pacing_rate`.
+    pub fn update_pacing_rate(&mut self, _pacing_rate: f64, _quantum: u64) {
+        todo!()
+    }
+
+    /// Recompute the path-quality notification thresholds from the
+    /// current pacing rate / RTT.  C: `refresh_path_quality_thresholds`.
+    pub fn refresh_quality_thresholds(&mut self) {
+        todo!()
+    }
 }
 
-pub fn update_pacing_after_send(_path_x: &mut Path, _length: usize, _current_time: Instant) {
-    todo!()
+impl Connection {
+    /// Whether the pacer permits sending on `path_x` at
+    /// `current_time`.  Updates `next_time` with the earliest pacer
+    /// fire if blocked.  C: `is_sending_authorized_by_pacing`.
+    pub fn is_sending_authorized_by_pacing(
+        &mut self,
+        _path_x: &mut Path,
+        _current_time: Instant,
+        _next_time: &mut Instant,
+    ) -> bool {
+        todo!()
+    }
+
+    /// Notify the application of a quality update for `path_x` if
+    /// the change crosses any subscribed threshold.  C:
+    /// `issue_path_quality_update`.
+    pub fn issue_path_quality_update(&mut self, _path_x: &mut Path) -> i32 {
+        todo!()
+    }
 }
 
-pub fn is_sending_authorized_by_pacing(
-    _connection: &mut Connection,
-    _path_x: &mut Path,
-    _current_time: Instant,
-    _next_time: &mut Instant,
-) -> bool {
-    todo!()
-}
-
-// REVIEW: Method on `Path`
-pub fn update_pacing_rate(_path_x: &mut Path, _pacing_rate: f64, _quantum: u64) {
-    todo!()
-}
-
-// REVIEW: Method on `Path`
-pub fn refresh_path_quality_thresholds(_path_x: &mut Path) {
-    todo!()
-}
-
-pub fn issue_path_quality_update(_connection: &mut Connection, _path_x: &mut Path) -> i32 {
-    todo!()
-}
-
-pub fn reinsert_by_wake_time(_quic: &mut Quic, _connection: &mut Connection, _next_time: Instant) {
-    todo!()
+impl Quic {
+    /// Re-position `connection` in the wake-time queue using the
+    /// supplied next firing time.  C: `reinsert_by_wake_time`.
+    pub fn reinsert_by_wake_time(&mut self, _connection: &mut Connection, _next_time: Instant) {
+        todo!()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Integer parsing / formatting helpers (translated from `PARSE_*` and
 // `format_*`).
 
-// REVIEW: These integer functions should not do manual encoding, and should instead use
-// `to_be_bytes` / `from_be_bytes`.
-
 /// Read a big-endian `u16` from the first two bytes of `b`.
-#[inline]
 pub const fn parse_16(b: &[u8]) -> u16 {
-    ((b[0] as u16) << 8) | (b[1] as u16)
+    u16::from_be_bytes([b[0], b[1]])
 }
 
 /// Read a 24-bit big-endian unsigned integer (zero-extended into a
-/// `u32`) from the first three bytes of `b`.
-#[inline]
+/// `u32`) from the first three bytes of `b`.  No native `u24`, so
+/// the body keeps the explicit shift.
 pub const fn parse_24(b: &[u8]) -> u32 {
-    (parse_16(b) as u32) << 8 | (b[2] as u32)
+    u32::from_be_bytes([0, b[0], b[1], b[2]])
 }
 
 /// Read a big-endian `u32` from the first four bytes of `b`.
-#[inline]
 pub const fn parse_32(b: &[u8]) -> u32 {
-    ((parse_16(b) as u32) << 16) | parse_16(&[b[2], b[3]]) as u32
+    u32::from_be_bytes([b[0], b[1], b[2], b[3]])
 }
 
 /// Read a big-endian `u64` from the first eight bytes of `b`.
-#[inline]
 pub const fn parse_64(b: &[u8]) -> u64 {
-    ((parse_32(b) as u64) << 32) | parse_32(&[b[4], b[5], b[6], b[7]]) as u64
+    u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
 }
 
-pub fn format_16(_bytes: &mut [u8], _n16: u16) {
-    todo!()
+pub fn format_16(bytes: &mut [u8], n16: u16) {
+    bytes[..2].copy_from_slice(&n16.to_be_bytes());
 }
 
-pub fn format_24(_bytes: &mut [u8], _n24: u32) {
-    todo!()
+pub fn format_24(bytes: &mut [u8], n24: u32) {
+    bytes[..3].copy_from_slice(&n24.to_be_bytes()[1..]);
 }
 
-pub fn format_32(_bytes: &mut [u8], _n32: u32) {
-    todo!()
+pub fn format_32(bytes: &mut [u8], n32: u32) {
+    bytes[..4].copy_from_slice(&n32.to_be_bytes());
 }
 
-pub fn format_64(_bytes: &mut [u8], _n64: u64) {
-    todo!()
+pub fn format_64(bytes: &mut [u8], n64: u64) {
+    bytes[..8].copy_from_slice(&n64.to_be_bytes());
 }
 
 pub fn varint_encode(_bytes: &mut [u8], _n64: u64) -> usize {
@@ -2850,7 +2735,7 @@ pub fn is_ack_needed(
 pub fn is_pn_already_received(
     _connection: &mut Connection,
     _pc: PacketContext,
-    _l_cid: Option<LocalCnxidToken>,
+    _l_cid: Option<LocalConnectionIdToken>,
     _pn64: u64,
 ) -> bool {
     todo!()
@@ -2859,7 +2744,7 @@ pub fn is_pn_already_received(
 pub fn record_pn_received(
     _connection: &mut Connection,
     _pc: PacketContext,
-    _l_cid: Option<LocalCnxidToken>,
+    _l_cid: Option<LocalConnectionIdToken>,
     _pn64: u64,
     _current_microsec: Instant,
 ) -> i32 {
@@ -2950,22 +2835,22 @@ pub fn sack_previous_item(_list: &mut SackList, _sack: SackItemToken) -> Option<
     todo!()
 }
 
-/// Borrow the ACK context for `(pc, l_cid)` on `connection`.  Returns
-/// `None` when the requested context isn't installed.
+/// Borrow the ACK context for `(packet_context, local_connection_id)`
+/// on `connection`.  Returns `None` when the requested context isn't installed.
 pub fn ack_ctx_from_cnx_context(
     _connection: &mut Connection,
-    _pc: PacketContext,
-    _l_cid: Option<LocalCnxidToken>,
+    _packet_context: PacketContext,
+    _local_connection_id: Option<LocalConnectionIdToken>,
 ) -> Option<&mut AckContext> {
     todo!()
 }
 
-/// Borrow the SACK list for `(pc, l_cid)` on `connection`.  Returns
-/// `None` when the requested context isn't installed.
+/// Borrow the SACK list for `(packet_context, local_connection_id)`
+/// on `connection`.  Returns `None` when the requested context isn't installed.
 pub fn sack_list_from_cnx_context(
     _connection: &mut Connection,
-    _pc: PacketContext,
-    _l_cid: Option<LocalCnxidToken>,
+    _packet_context: PacketContext,
+    _local_connection_id: Option<LocalConnectionIdToken>,
 ) -> Option<&mut SackList> {
     todo!()
 }
@@ -3081,8 +2966,7 @@ pub fn seed_bandwidth(
     _connection: &mut Connection,
     _rtt_min: Duration,
     _cwin: u64,
-    _ip_addr: &[u8], // REVIEW: core::net::IpAddr
-    _ip_addr_length: u8,
+    _ip_addr: core::net::IpAddr,
 ) {
     todo!()
 }
@@ -3517,7 +3401,7 @@ pub fn create_local_connection_id(
     _unique_path_id: u64,
     _suggested_value: Option<&ConnectionId>,
     _current_time: Instant,
-) -> Result<LocalCnxidToken, crate::Error> {
+) -> Result<LocalConnectionIdToken, crate::Error> {
     todo!()
 }
 
@@ -3529,7 +3413,7 @@ pub fn demote_local_connection_id_list(
     todo!()
 }
 
-pub fn delete_local_connection_id(_connection: &mut Connection, _l_cid: LocalCnxidToken) {
+pub fn delete_local_connection_id(_connection: &mut Connection, _l_cid: LocalConnectionIdToken) {
     todo!()
 }
 
@@ -3552,7 +3436,7 @@ pub fn retire_local_connection_id(
 
 pub fn check_local_connection_id_ttl(
     _connection: &mut Connection,
-    _local_connection_id_list: &mut LocalCnxidList,
+    _local_connection_id_list: &mut LocalConnectionIdList,
     _current_time: Instant,
     _next_wake_time: &mut Instant,
 ) {
@@ -3563,7 +3447,7 @@ pub fn find_local_connection_id(
     _connection: &mut Connection,
     _unique_path_id: u64,
     _connection_id: &ConnectionId,
-) -> Option<LocalCnxidToken> {
+) -> Option<LocalConnectionIdToken> {
     todo!()
 }
 
@@ -3595,11 +3479,11 @@ pub fn should_repeat_path_response_frame(
 
 pub fn format_new_connection_id_frame<'a>(
     _connection: &mut Connection,
-    _local_connection_id_list: &mut LocalCnxidList,
+    _local_connection_id_list: &mut LocalConnectionIdList,
     _bytes: &'a mut [u8],
     _more_data: &mut i32,
     _is_pure_ack: &mut i32,
-    _l_cid: Option<LocalCnxidToken>,
+    _l_cid: Option<LocalConnectionIdToken>,
 ) -> Option<&'a mut [u8]> {
     todo!()
 }
@@ -3661,11 +3545,11 @@ pub fn format_first_misc_or_dg_frame<'a>(
     todo!()
 }
 
-/// Borrow the next misc-frame header in `connection` for packet context
-/// `pc`.  C: `find_first_misc_frame`.
+/// Borrow the next misc-frame header in `connection` for the given
+/// packet context.  C: `find_first_misc_frame`.
 pub fn find_first_misc_frame(
     _connection: &mut Connection,
-    _pc: PacketContext,
+    _packet_context: PacketContext,
 ) -> Option<&mut MiscFrameHeader> {
     todo!()
 }
