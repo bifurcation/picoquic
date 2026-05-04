@@ -92,7 +92,6 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::ffi::c_void;
 use core::net::SocketAddr;
 
 use crate::Instant;
@@ -229,24 +228,11 @@ impl Connection {
     }
 }
 
-/// Free a per-connection TLS context.  C took `void* vctx` because
-/// the connection stores the context as `void* tls_ctx`; the
-/// `client_mode` flag toggles the ECH-config cleanup path.
-///
-/// Phase 1 keeps the `*mut c_void` shape: `tls_ctx` is `*mut c_void`
-/// in [`Connection`] (see `internal.rs`), and the cast back to `tls_ctx_t*`
-/// happens inside the body.  The eventual safe shape (an owning
-/// `Box`, drop-managed) lands once `tls_ctx`'s storage is reshaped.
-/// C: `tlscontext_free`.
-///
-/// # Safety
-///
-/// `ctx` must be a non-null pointer to a `tls_ctx_t` previously
-/// returned by [`Connection::create_tls_context`] and not yet freed.  After
-/// the call the pointer is dangling.
-pub unsafe fn tls_context_free(_ctx: *mut c_void, _client_mode: bool) {
-    todo!()
-}
+// `tls_context_free` is gone -- `Connection.tls_ctx` is now an
+// `Option<Box<dyn Session>>`, and `Drop` on the boxed Session
+// runs the backend's teardown automatically.  The C
+// `client_mode` flag is unnecessary too: the `Session` impl
+// knows whether it's a client or server session internally.
 
 // ---------------------------------------------------------------------------
 // TLS stream processing.
@@ -312,20 +298,12 @@ impl Quic {
 // pointer (e.g. AEAD nonce) — the Rust shape uses `&mut` to capture
 // that.
 
-/// Length of the authentication tag for the AEAD context (capped at
-/// 16 bytes per the workaround in `tls_api.c` for an old tls
-/// regression).  C: `aead_get_checksum_length`.  This is the only
-/// AEAD wrapper that survives Phase 2 (the rest are subsumed by
-/// `crate::tls::PacketKey`); it's queried at cipher-suite
-/// negotiation time, before any packet keys exist.
-///
-/// # Safety
-///
-/// `aead_context` must be a non-null pointer to a valid
-/// `ptls_aead_context_t`.
-pub unsafe fn aead_get_checksum_length(_aead_context: *mut c_void) -> usize {
-    todo!()
-}
+/// Length of the QUIC AEAD authentication tag.  All TLS 1.3
+/// cipher suites used by QUIC (RFC 9001 §5.3) produce a 16-byte
+/// tag, so the value is fixed.  Replaces the C
+/// `aead_get_checksum_length(void*)` accessor; once a
+/// [`crate::tls::PacketKey`] exists, prefer `key.tag_len()`.
+pub const QUIC_AEAD_TAG_LEN: usize = 16;
 
 // The AEAD wrappers (`aead_encrypt_generic`, `aead_decrypt_generic`,
 // `aead_encrypt_mp` / `aead_decrypt_mp`, `aead_integrity_limit`,

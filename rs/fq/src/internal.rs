@@ -55,7 +55,6 @@ use std::fs::File;
 use std::path::PathBuf;
 
 use core::any::Any;
-use core::ffi::c_void;
 use core::net::SocketAddr;
 
 use crate::Instant;
@@ -828,7 +827,17 @@ pub trait MemLogHook {
 /// Top-level QUIC context.  C: `Quic`.  Single-threaded
 /// scope (per the translation plan): no `Send`/`Sync`.
 pub struct Quic {
-    pub tls_master_ctx: *mut c_void,
+    /// Client-side TLS configuration (set when this `Quic` is
+    /// being used to make outbound connections).  Replaces the C
+    /// `tls_master_ctx` opaque handle for the client role.
+    pub tls_client_config: Option<Box<dyn crate::tls::DynClientConfig>>,
+    /// Server-side TLS configuration (set when this `Quic` is
+    /// being used to accept inbound connections).
+    pub tls_server_config: Option<Box<dyn crate::tls::DynServerConfig>>,
+    /// Application-supplied TLS callbacks (ALPN selection, ticket
+    /// store, certificate verification).  Replaces the C-style
+    /// `register_*` global function-pointer registry.
+    pub tls_callbacks: Option<Box<dyn crate::tls::TlsCallbacks>>,
     pub default_callback_fn: Option<Box<dyn StreamDataCb>>,
     /// Application-supplied state forwarded to the default
     /// stream-data callback.  Opaque to the library (the C side
@@ -1643,11 +1652,16 @@ pub struct Connection {
     pub connection_wake_membership: Option<SplayToken>,
     pub app_wake_time: u64,
 
-    pub tls_ctx: *mut c_void,
+    /// Per-connection TLS state (the handshake state machine,
+    /// negotiated keys, etc.).  Replaces the C `tls_ctx: void*`.
+    pub tls_ctx: Option<Box<dyn crate::tls::Session>>,
     pub crypto_epoch_length_max: u64,
     pub crypto_epoch_sequence: u64,
     pub crypto_rotation_time_guard: u64,
-    pub tls_sendbuf: *mut c_void,
+    /// Buffer the TLS layer fills with bytes destined for the peer.
+    /// Replaces the C `tls_sendbuf: void*`; in Rust it's just an
+    /// owned `Vec<u8>` the caller drains.
+    pub tls_sendbuf: Vec<u8>,
     pub psk_cipher_suite_id: u16,
 
     pub tls_stream: [StreamHead; NUMBER_OF_EPOCHS],

@@ -73,7 +73,6 @@ pub mod tls;
 pub mod tls_api;
 pub mod utils;
 
-use core::ffi::c_void;
 use core::net::SocketAddr;
 
 // ---------------------------------------------------------------------------
@@ -991,13 +990,11 @@ pub fn frame_name(_frame_type: u64) -> Option<&'static str> {
     todo!()
 }
 
-/// C: `add_proposed_alpn`.  Provision an ALPN context
-/// during the TLS callback.  `tls_context` is the opaque handle
-/// the TLS stack passed to the application callback; Phase 2's
-/// dependency abstraction replaces it with a typed reference.
-pub fn add_proposed_alpn(_tls_context: *mut c_void, _alpn: &str) -> Result<(), Error> {
-    todo!()
-}
+// `add_proposed_alpn` is gone.  In the C source this was the
+// hook for the application's ALPN-select callback to push a
+// proposed value into the picotls handshake state.  Phase 2's
+// `TlsCallbacks::select_alpn` model returns the chosen index
+// instead; the TLS backend provisions internally.
 
 impl Connection {
     /// Negotiated ALPN value (borrowed), or `None` when none was
