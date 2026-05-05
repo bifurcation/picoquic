@@ -773,38 +773,113 @@ Phase 2 is complete when:
 
 ## Phase 3 — Translate tests
 
-For each C test:
+Phase 3 turns the C `picoquictest/` test suite into Rust `#[test]`
+bodies under `rs/fq/src/tests/`.  Bodies are written **against the
+Rust API as designed in Phases 1 / 2** — i.e. as if the methods the
+test calls already work — even when those methods are still
+`todo!()` stubs.  A test that compiles and panics inside the API on
+its first call is the expected outcome until Phase 4 fills bodies.
 
-1. Identify the API symbols it calls.
-2. Look those symbols up in the Phase 1 module map.  If they all live in
-   one module, the test goes into that module's `#[cfg(test)] mod test`.
-   Otherwise, it goes into a top-level `src/tests.rs` (a sibling module
-   file under `src/`, not the `tests/` integration-test directory — that
-   directory isn't used in this plan).
-3. Translate the *semantics* of the test, not the harness.  C custom
-   asserts (`TEST_ASSERT_EQUAL_INT`, etc.) become `assert_eq!` /
-   `assert!`.  Tests are written as if the API returned real values —
-   the fact that those calls currently `todo!()`-panic is incidental.
-4. Tests that depend on undefined or platform-specific C behavior
-   (signed overflow, `memcmp` on padded structs, specific `errno`
-   values) are flagged for rewriting.
-5. Test fixtures (golden files, sample inputs) live under
-   `tests/fixtures/` (or `src/test_fixtures/` if we want everything
-   under `src/`), reached via a small helper anchored to
-   `env!("CARGO_MANIFEST_DIR")`.
+### Per-source layout
 
-### Scripting
+* One Rust file per `picoquictest/<src>.c`, at
+  `rs/fq/src/tests/<rust>.rs` where `<rust>` is `<src>` with any
+  trailing `_test` / `_tests` stripped (e.g. `bytestream_test.c`
+  → `tests/bytestream.rs`).  Collisions with existing
+  test-infrastructure module names (`util.rs`, `dualq.rs`) keep
+  the suffix (`util_test.rs`).
+* Per-test-name sanitization: lowercase, non-`[A-Za-z0-9_]`
+  collapsed to `_`, leading-digit prefixed with `_`, Rust-keyword
+  collisions get `r#`.
+* Cross-source helpers live in `rs/fq/src/tests/util.rs` (the
+  test-infrastructure module).  Common patterns to port:
+  `picoquic_test_set_minimal_cnx*`, `tls_api_init_ctx*`, the
+  deterministic test RNG, certificate-fixture path constants, the
+  `TestSimLink` / `TestAqm` simulator, etc.
+* Test fixtures (binlog references, qlog templates, certificate
+  PEMs, etc.) live under `rs/fq/tests/fixtures/`, reached via
+  `concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/<name>")`.
 
-* From the Phase 0 inventory, generate one stub `#[test] fn name() {
-  todo!() }` per C test case, placed by the rule above.
-* A script reads each C test file, extracts API symbols, looks them up
-  in the Phase 1 module map, and picks the destination module.
+### Translation rules
+
+* **Faithful, idiomatic.**  Walk the C body and write the
+  equivalent Rust.  C `int` 0/-1 → `Result<…, Error>`.  C `int`
+  flag → `bool`.  `(uint8_t* buf, size_t len)` → `&[u8]` /
+  `&mut [u8]`.  `cnx`/`cid` → `connection`/`connection_id`
+  uniformly.  `assert_eq!` / `assert!` over the C `if (…) ret = -1`
+  pattern.  Use `?` for fallibility; don't transcribe goto-style ret
+  tracking.
+* **Use the Rust API as designed, not as currently implemented.**
+  Most `Quic` / `Connection` / `Path` methods are still `todo!()`;
+  call them anyway.  The first `todo!()` panic is the test's
+  fail signal.  This is **test-driven development**: the tests
+  document what Phase 4 must satisfy.
+* **API gaps are filled by `todo!()` stubs in non-test source.**
+  When a test body needs a method that doesn't yet exist on a
+  public type, add it to the appropriate source file
+  (`rs/fq/src/internal.rs` / `lib.rs`) as a fresh
+  `pub fn name(...) { todo!() }` stub with a `/// C: `picoquic_xxx``
+  doc comment.  This is the only authorized non-test edit during
+  Phase 3.  Never rename / reshape existing items.
+* **Platform-specific or UB-dependent C tests** (signed overflow,
+  `memcmp` on padded structs, specific `errno` values) are flagged
+  for rewriting.
+
+### Pipeline (Phase 3A)
+
+The bulk of the work is automated by a per-batch claude-driven
+pipeline (`scripts/phase3a.py`).  Stages:
+
+1. **Stub generation** (`scripts/phase3.py`): parse the
+   `picoquic_t/picoquic_t.c` `test_table[]`, group entries by C
+   source file, emit one `#[test] fn <name>() { todo!("<entry_fn>") }`
+   per row to `rs/fq/src/tests/<rust>.rs`, register the modules in
+   `rs/fq/src/tests/mod.rs`.  Run once.
+2. **Translation guide** (`xlate/test_translation_guide.md`):
+   handwritten reference summarising the Rust API surface, naming
+   conventions, helper inventory, and translation patterns.  Each
+   agent reads this once instead of re-grepping `lib.rs` /
+   `internal.rs` from scratch.
+3. **Body translation** (`scripts/phase3a.py`):
+     * Per-source mode (`--batch 1`): one `claude -p` invocation
+       per `picoquictest/<src>.c`.  Higher fidelity, but each
+       invocation pays the full guide / `util.rs` re-read cost.
+     * Batched mode (`--batch N`, default 1): one invocation per
+       group of N sources.  Amortises guide / `util.rs` reads
+       across the batch and lets the agent re-use helpers it
+       added earlier in the same session.
+   The script invokes `claude -p` with stream-json output, surfaces
+   each tool call to stdout, runs the build gate (`cargo fmt` +
+   `cargo test --no-run` + `cargo clippy --tests --all-features --
+   -D warnings`), and records ok/fail per source in
+   `xlate/phase3a_state.json`.
+4. **Completion check** (`scripts/phase3_check.py`): for every
+   `#[test] fn` listed in `test_table[]`, verifies the Rust body
+   is anything other than the auto-stub `todo!("<entry_fn>")`.
+   Both the agent and the parent script call this; the parent
+   re-runs sources whose checks fail.
+5. **Rate-limit handling**: HTTP 429 from the Anthropic API
+   surfaces as a distinct exit code; the sweep aborts cleanly
+   without polluting the state file.  Re-run after the quota
+   resets.
+
+State, logs, and artifacts:
+* `xlate/phase3a_state.json` — per-source ok/fail.
+* `xlate/phase3a_runs/<timestamp>.log` — run-level stdout.
+* `xlate/claude_logs/phase3a/<src>.log` — per-source claude
+  stream-json transcript.
+* `xlate/prompts/phase3a/<src>.md` — composed prompts.
 
 ### Phase 3 acceptance gate
 
-`cargo test` runs to completion.  Every test fails by panicking on a
-`todo!()` (or matching panic message).  No segfault, no abort, no
-compile error.  The panic *is* the clean fail.
+* `cargo test --no-run` compiles cleanly.
+* `cargo test` runs to completion.  Every test that hasn't been
+  validated against a real implementation panics on a `todo!()`
+  (or matching panic message).  No segfault, no abort, no compile
+  error.
+* `cargo fmt --check` clean.
+* `cargo clippy --tests --all-features -- -D warnings` clean.
+* `python3 scripts/phase3_check.py` reports no remaining stubs.
 
 ## Phase 4 — Translate implementations
 

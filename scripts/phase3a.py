@@ -72,7 +72,8 @@ ALLOWED_TOOLS = (
     "Bash(cargo check:*) "
     "Bash(cargo test:*) "
     "Bash(cargo fmt:*) "
-    "Bash(cargo clippy:*)"
+    "Bash(cargo clippy:*) "
+    "Bash(python3 scripts/phase3_check.py:*)"
 )
 
 # Filename mapping for picoquictest/<src>.c → rs/fq/src/tests/<rust>.rs.
@@ -211,6 +212,122 @@ def is_done(src: str, state: dict) -> bool:
 
 # ---------------------------------------------------------------------------
 # Prompt composition.
+
+def compose_batch_prompt(batch: list[tuple[str, list[tuple[str, str]]]]) -> str:
+    """Compose a single-claude-invocation prompt that translates
+    multiple source files in one go.  Amortises the guide / API-surface
+    reads across the whole batch.
+    """
+    sources_section: list[str] = []
+    for src, entries in batch:
+        rust_target = rust_test_path(src).relative_to(REPO_ROOT)
+        c_src = c_source_path(src)
+        c_src_rel = c_src.relative_to(REPO_ROOT) if c_src else "(driver)"
+        entry_list = "\n".join(
+            f"     - `#[test] fn {name}()` ← C `{fn}`"
+            for name, fn in entries
+        )
+        sources_section.append(
+            f"### `{src}` ({len(entries)} test(s))\n"
+            f"   * C source: `{c_src_rel}`\n"
+            f"   * Rust target: `{rust_target}`\n"
+            f"   * Entries:\n{entry_list}\n"
+        )
+
+    src_basenames = [src for src, _ in batch]
+
+    parts: list[str] = [
+        f"# Phase 3A batch translation: {len(batch)} source files",
+        "",
+        "You're translating C test bodies in `picoquictest/` into Rust",
+        "`#[test]` bodies under `rs/fq/src/tests/`.  This is a **batch**",
+        "invocation — handle every source listed below in one session,",
+        "amortising the read of the translation guide / API surface",
+        "and the additions to `rs/fq/src/tests/util.rs`.",
+        "",
+        "## What this is",
+        "",
+        "**Test-driven development.**  Tests don't have to *pass* yet.",
+        "They must be *expressed* against the Rust API as it is",
+        "designed today.  A test that compiles and panics inside",
+        "`Quic::new` (or any `todo!()` API) on its first call is a",
+        "clean fail.  Do **not** sidestep work by leaving the body as",
+        "`todo!()` — translate the C body faithfully and let the panic",
+        "happen wherever it naturally does.",
+        "",
+        "## Required reading (in order, once for the whole batch)",
+        "",
+        "1. **`xlate/test_translation_guide.md`** — focused summary of",
+        "   the Rust API surface, naming conventions, helper inventory,",
+        "   and translation patterns.  Substitutes for grepping",
+        "   `lib.rs` / `internal.rs`.",
+        "2. `rs/fq/src/tests/util.rs` — test infrastructure; add helpers",
+        "   here when more than one source needs them, then re-use",
+        "   across this batch.  Keep one canonical name per helper.",
+        "3. Module sources (`rs/fq/src/<X>.rs`) only when you need to",
+        "   verify a specific signature the guide didn't quote.",
+        "",
+        "Do **not** re-read the guide or `util.rs` once per source —",
+        "read each once and use what you remember across sources.",
+        "",
+        "## Sources to translate (this batch)",
+        "",
+        *sources_section,
+        "## Translation rules",
+        "",
+        "- **Faithful, idiomatic.**  Walk the C body and write the",
+        "  equivalent Rust.  Use Rust idioms (`assert_eq!`, `Vec`,",
+        "  `Option`, iterators, `?`-propagation).",
+        "- **Use the Rust public API as designed.**  If a method",
+        "  doesn't exist yet, **add it as a `todo!()` stub** to the",
+        "  appropriate source (`rs/fq/src/internal.rs` / `lib.rs`)",
+        "  with a `/// C: `picoquic_xxx`` doc-comment.  Match the",
+        "  C signature translated to Rust types.  This is the only",
+        "  authorized non-test edit.",
+        "- **Helpers go in `tests/util.rs`.**  Port `tls_api_init_ctx*`,",
+        "  `picoquic_test_set_minimal_cnx`, etc. once and re-use.",
+        "- **Golden / fixture files** — copy from `picoquictest/` to",
+        "  `rs/fq/tests/fixtures/` and reach via",
+        "  `concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/tests/fixtures/<name>\")`.",
+        "- **No placeholder bodies.**  Every test gets a translated body.",
+        "- **No `unsafe`.**  No edits outside `rs/fq/src/tests/`,",
+        "  `rs/fq/tests/fixtures/`, or `todo!()` stubs in",
+        "  `rs/fq/src/{internal,lib}.rs`.",
+        "",
+        "## Stop spinning",
+        "",
+        "If 5 grep/read tool calls into the same file haven't found",
+        "what you need, **stop searching**.  The API doesn't exist.",
+        "Add it as a `todo!()` stub and move on.  Aim to start writing",
+        "edits within the first 10 tool calls of EACH source.",
+        "",
+        "## Verification",
+        "",
+        "After translating each source, run:",
+        "    python3 scripts/phase3_check.py <source_basename>",
+        "to confirm every `#[test]` in that source has a non-stub body.",
+        "If the check reports stubs, fix them before moving on.",
+        "",
+        "After the whole batch, run:",
+        f"    python3 scripts/phase3_check.py {' '.join(src_basenames)}",
+        "    cd rs/fq && cargo fmt",
+        "    cd rs/fq && cargo test --no-run",
+        "    cd rs/fq && cargo clippy --tests --all-features -- -D warnings",
+        "All four must succeed.  Iterate until they do.",
+        "",
+        "## Process",
+        "",
+        "1. Read the translation guide and `tests/util.rs` once.",
+        "2. For each source in the batch:",
+        "   a. Read the C source and the Rust target.",
+        "   b. Translate every entry (use existing util.rs helpers, add",
+        "      new ones when shared across sources).",
+        "   c. Run `python3 scripts/phase3_check.py <src>`; iterate.",
+        "3. Run the gate (fmt + test --no-run + clippy) once at the end.",
+        "4. Report on stdout: a one-paragraph summary per source.",
+    ]
+    return "\n".join(parts) + "\n"
+
 
 def compose_prompt(src_basename: str, entries: list[tuple[str, str]]) -> str:
     rust_target = rust_test_path(src_basename).relative_to(REPO_ROOT)
@@ -354,14 +471,30 @@ def write_prompt(src_basename: str, entries: list[tuple[str, str]]) -> Path:
     return out
 
 
+def write_batch_prompt(batch: list[tuple[str, list[tuple[str, str]]]]) -> Path:
+    """Write the batch prompt to disk under a deterministic filename
+    keyed on the source basenames so the file can be inspected /
+    re-used across runs."""
+    key = "_".join(src for src, _ in batch)
+    if len(key) > 80:
+        # Hash long keys to avoid filesystem-name limits.
+        import hashlib
+        key = hashlib.sha1(key.encode()).hexdigest()[:16] + f"_{len(batch)}srcs"
+    out = PROMPTS_DIR / f"batch_{key}.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(compose_batch_prompt(batch))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Claude invocation.
 
 def invoke_claude(src: str, prompt_file: Path,
-                  max_turns: int, model: str) -> tuple[int, str]:
+                  max_turns: int, model: str,
+                  log_path_override: Path | None = None) -> tuple[int, str]:
     if shutil.which("claude") is None:
         return 127, "claude CLI not found on PATH"
-    log = claude_log_path(src)
+    log = log_path_override if log_path_override is not None else claude_log_path(src)
     log.parent.mkdir(parents=True, exist_ok=True)
     prompt = prompt_file.read_text()
     cmd = [
@@ -504,6 +637,67 @@ def run_one(src: str, entries: list[tuple[str, str]], *,
 # ---------------------------------------------------------------------------
 # Status / driver glue.
 
+def run_batch(batch: list[tuple[str, list[tuple[str, str]]]], *,
+              dry_run: bool, max_turns: int, model: str,
+              state: dict) -> tuple[list[str], list[str]]:
+    """Run one batched claude invocation over `batch` sources.
+    Returns (succeeded, failed) lists keyed by source basename.
+    """
+    src_basenames = [src for src, _ in batch]
+    print(f"\n=== batch ({len(batch)} src): "
+          f"{', '.join(src_basenames)} ===")
+    prompt_file = write_batch_prompt(batch)
+    print(f"  prompt  → {prompt_file.relative_to(REPO_ROOT)}")
+    if dry_run:
+        print("  (dry-run; skipping claude + check)")
+        return [], []
+    batch_key = "_".join(src_basenames)[:80]
+    batch_log = LOG_DIR / f"batch_{batch_key}.log"
+    print(f"  claude  → invoking ({model}, max-turns={max_turns}) …")
+    code, stdout = invoke_claude(
+        f"batch_{batch_key}", prompt_file, max_turns, model,
+        log_path_override=batch_log,
+    )
+    if code == 99:
+        print(f"    RATE-LIMITED: {stdout.strip()[:200]}")
+        # Caller treats this as abort.
+        return [], []
+    if code != 0:
+        print(f"    FAIL: claude exit {code} (see {batch_log})")
+        # Don't mark sources as fail yet — let the checker decide.
+    # Run the completion check to determine which sources are done.
+    print("  check   → python3 scripts/phase3_check.py "
+          + " ".join(src_basenames))
+    res = subprocess.run(
+        ["python3", "scripts/phase3_check.py", *src_basenames],
+        cwd=REPO_ROOT, capture_output=True, text=True,
+    )
+    sys.stdout.write(res.stdout)
+    sys.stdout.flush()
+    succeeded: list[str] = []
+    failed: list[str] = []
+    for line in res.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("OK    "):
+            succeeded.append(line.split(None, 1)[1])
+        elif line.startswith("FAIL  "):
+            failed.append(line.split(None, 1)[1].split()[0])
+    # Run the build gate; failures here belong to the whole batch.
+    print("  gate    → cargo fmt + cargo test --no-run + cargo clippy")
+    if run_gate() != 0:
+        print("    FAIL: gate failed; treating all as fail")
+        for src in src_basenames:
+            if src in succeeded:
+                succeeded.remove(src)
+            if src not in failed:
+                failed.append(src)
+    for src in succeeded:
+        record(state, src, "ok", changed=True)
+    for src in failed:
+        record(state, src, "fail", stage="batch", reason="check or gate failed")
+    return succeeded, failed
+
+
 def cmd_status(by_src: list[tuple[str, list[tuple[str, str]]]]) -> None:
     state = load_state(PHASE3A_STATE)
     eligible = [s for s, _ in by_src]
@@ -570,10 +764,15 @@ def main() -> int:
     p.add_argument("--status", action="store_true",
                    help="Print progress and exit.")
     p.add_argument("--max-turns", type=int, default=200,
-                   help="Per-source turn limit for claude (default 200).")
+                   help="Per-source / per-batch turn limit for claude (default 200).")
     p.add_argument("--model", default="sonnet",
                    help="Model passed to `claude -p --model` "
                         "(default: sonnet).")
+    p.add_argument("--batch", type=int, default=1,
+                   help="Pack N sources per claude invocation "
+                        "(default: 1, i.e. per-source).  Larger values "
+                        "amortise context-warmup but require higher "
+                        "max-turns and may hit context-window limits.")
     args = p.parse_args()
 
     by_src = group_by_source()
@@ -617,24 +816,46 @@ def main() -> int:
     failed: list[str] = []
     succeeded: list[str] = []
     rate_limited_at: str | None = None
-    for src, entries in targets:
-        result = run_one(src, entries, dry_run=args.dry_run,
-                         max_turns=args.max_turns, model=args.model,
-                         state=state)
-        if result == "rate-limited":
-            rate_limited_at = src
-            print(f"\nABORTING SWEEP: rate-limited at {src}.  "
-                  f"Re-run later; state file is unchanged for this "
-                  f"and pending sources.")
-            break
-        if result == "fail":
-            failed.append(src)
-            if args.stop_on_failure:
-                print(f"\nStopped at {src} (--stop-on-failure).  "
-                      f"Re-run to retry.")
+
+    if args.batch > 1:
+        # Pack targets into batches of args.batch, run each via run_batch.
+        idx = 0
+        while idx < len(targets):
+            batch = targets[idx:idx + args.batch]
+            ok, bad = run_batch(batch, dry_run=args.dry_run,
+                                max_turns=args.max_turns, model=args.model,
+                                state=state)
+            succeeded.extend(ok)
+            failed.extend(bad)
+            # If neither succeeded nor failed, the batch hit rate-limit.
+            if not ok and not bad and not args.dry_run:
+                rate_limited_at = batch[0][0]
+                print(f"\nABORTING SWEEP: rate-limited around batch "
+                      f"starting at {rate_limited_at}.")
                 break
-        elif result == "ok":
-            succeeded.append(src)
+            if bad and args.stop_on_failure:
+                print(f"\nStopped after batch with failures.")
+                break
+            idx += args.batch
+    else:
+        for src, entries in targets:
+            result = run_one(src, entries, dry_run=args.dry_run,
+                             max_turns=args.max_turns, model=args.model,
+                             state=state)
+            if result == "rate-limited":
+                rate_limited_at = src
+                print(f"\nABORTING SWEEP: rate-limited at {src}.  "
+                      f"Re-run later; state file is unchanged for this "
+                      f"and pending sources.")
+                break
+            if result == "fail":
+                failed.append(src)
+                if args.stop_on_failure:
+                    print(f"\nStopped at {src} (--stop-on-failure).  "
+                          f"Re-run to retry.")
+                    break
+            elif result == "ok":
+                succeeded.append(src)
 
     elapsed = time.monotonic() - t_run_start
     print(f"\n=== Phase 3A run summary ===")
