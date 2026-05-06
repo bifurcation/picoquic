@@ -1,0 +1,62 @@
+Phase 4: 39 target(s) to translate (batch=3)
+  agent:   codex (model=default)
+  run log: xlate/phase4_runs/20260506T135842.log
+  state:   xlate/phase4_state.json
+
+=== batch (3 src): tests/harness.rs, sys/mod.rs, tests/mod.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__harness_sys__mod_tests__mod.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): tests/qlog_frame.rs, crypto.rs, tests/dualq_aqm.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__qlog_frame_crypto_tests__dualq_aqm.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): sys/openssl.rs, sys/picotls.rs, tests/socket.rs ===
+  prompt  → xlate/prompts/phase4/batch_sys__openssl_sys__picotls_tests__socket.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): tests/picolog.rs, tests/delay_tolerant.rs, tests/memlog.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__picolog_tests__delay_tolerant_tests__memlog.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): socks_socket2.rs, tests/ech.rs, tests/util_test.rs ===
+  prompt  → xlate/prompts/phase4/batch_socks_socket2_tests__ech_tests__util_test.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): tests/stresstest.rs, tests/stream0_frame.rs, tests/netperf.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__stresstest_tests__stream0_frame_tests__netperf.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): tests/sockloop.rs, tests/datagram.rs, arena.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__sockloop_tests__datagram_arena.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): tests/mediatest.rs, tests/dualq.rs, tests/mbedtls.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__mediatest_tests__dualq_tests__mbedtls.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): tests/skip_frame.rs, tests/flow_control.rs, tls.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__skip_frame_tests__flow_control_tls.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): bytestream.rs, tests/edge_cases.rs, tests/cnxstress.rs ===
+  prompt  → xlate/prompts/phase4/batch_bytestream_tests__edge_cases_tests__cnxstress.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): utils.rs, tests/multipath.rs, tests/parseheadertest.rs ===
+  prompt  → xlate/prompts/phase4/batch_utils_tests__multipath_tests__parseheadertest.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): tests/tls_api.rs, packet_loop.rs, tls_api.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__tls_api_packet_loop_tls_api.md
+  (dry-run; skipping agent + gate)
+
+=== batch (3 src): lib.rs, tests/util.rs, internal.rs ===
+  prompt  → xlate/prompts/phase4/batch_lib_tests__util_internal.md
+  (dry-run; skipping agent + gate)
+
+=== Phase 4 run summary ===
+  elapsed:   1.5s
+  succeeded: 0
+  failed:    0
+  log:       xlate/phase4_runs/20260506T135842.log

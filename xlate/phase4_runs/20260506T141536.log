@@ -1,0 +1,125 @@
+Phase 4: 32 target(s) to translate (batch=3)
+  agent:   codex (model=default)
+  run log: xlate/phase4_runs/20260506T141536.log
+  state:   xlate/phase4_state.json
+
+=== batch (3 src): sys/openssl.rs, sys/picotls.rs, tests/socket.rs ===
+  prompt  → xlate/prompts/phase4/batch_sys__openssl_sys__picotls_tests__socket.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   sys/openssl.rs: 0 incomplete markers left
+    OK   sys/picotls.rs: 0 incomplete markers left
+    OK   tests/socket.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.48s
+
+=== batch (3 src): tests/picolog.rs, tests/delay_tolerant.rs, tests/memlog.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__picolog_tests__delay_tolerant_tests__memlog.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   tests/picolog.rs: 0 incomplete markers left
+    OK   tests/delay_tolerant.rs: 0 incomplete markers left
+    OK   tests/memlog.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.46s
+
+=== batch (3 src): socks_socket2.rs, tests/ech.rs, tests/util_test.rs ===
+  prompt  → xlate/prompts/phase4/batch_socks_socket2_tests__ech_tests__util_test.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   socks_socket2.rs: 0 incomplete markers left
+    OK   tests/ech.rs: 0 incomplete markers left
+    OK   tests/util_test.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.03s
+
+=== batch (3 src): tests/stresstest.rs, tests/stream0_frame.rs, tests/netperf.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__stresstest_tests__stream0_frame_tests__netperf.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   tests/stresstest.rs: 0 incomplete markers left
+    OK   tests/stream0_frame.rs: 0 incomplete markers left
+    OK   tests/netperf.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.89s
+
+=== batch (3 src): tests/sockloop.rs, tests/datagram.rs, arena.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__sockloop_tests__datagram_arena.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   tests/sockloop.rs: 0 incomplete markers left
+    OK   tests/datagram.rs: 0 incomplete markers left
+    OK   arena.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.85s
+
+=== batch (3 src): tests/mediatest.rs, tests/mbedtls.rs, tests/skip_frame.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__mediatest_tests__mbedtls_tests__skip_frame.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   tests/mediatest.rs: 0 incomplete markers left
+    OK   tests/mbedtls.rs: 0 incomplete markers left
+    OK   tests/skip_frame.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 10.21s
+
+=== batch (3 src): tests/flow_control.rs, tls.rs, bytestream.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__flow_control_tls_bytestream.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   tests/flow_control.rs: 0 incomplete markers left
+    OK   tls.rs: 0 incomplete markers left
+    OK   bytestream.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 7.28s
+
+=== batch (3 src): tests/edge_cases.rs, tests/cnxstress.rs, utils.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__edge_cases_tests__cnxstress_utils.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   tests/edge_cases.rs: 0 incomplete markers left
+    OK   tests/cnxstress.rs: 0 incomplete markers left
+    OK   utils.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.01s
+
+=== batch (3 src): tests/multipath.rs, tests/parseheadertest.rs, tests/tls_api.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__multipath_tests__parseheadertest_tests__tls_api.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   tests/multipath.rs: 0 incomplete markers left
+    OK   tests/parseheadertest.rs: 0 incomplete markers left
+    OK   tests/tls_api.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.97s
+
+=== batch (3 src): packet_loop.rs, tls_api.rs, lib.rs ===
+  prompt  → xlate/prompts/phase4/batch_packet_loop_tls_api_lib.md
+  codex   → invoking (model=default, max-turns=400) …

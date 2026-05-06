@@ -1,0 +1,22 @@
+Phase 4: 2 target(s) to translate (batch=3)
+  agent:   codex (model=default)
+  run log: xlate/phase4_runs/20260506T163745.log
+  state:   xlate/phase4_state.json
+
+=== batch (2 src): tests/util.rs, internal.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__util_internal.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   tests/util.rs: 0 incomplete markers left
+    OK   internal.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.42s
+
+=== Phase 4 run summary ===
+  elapsed:   1040.1s
+  succeeded: 2
+  failed:    0
+  log:       xlate/phase4_runs/20260506T163745.log

@@ -1,0 +1,21 @@
+Phase 4: 5 target(s) to translate (batch=3)
+  agent:   codex (model=default)
+  run log: xlate/phase4_runs/20260506T161548.log
+  state:   xlate/phase4_state.json
+
+=== batch (3 src): packet_loop.rs, tls_api.rs, lib.rs ===
+  prompt  → xlate/prompts/phase4/batch_packet_loop_tls_api_lib.md
+  codex   → invoking (model=default, max-turns=400) …
+  check   → counting incomplete markers in each batch source
+    OK   packet_loop.rs: 0 incomplete markers left
+    OK   tls_api.rs: 0 incomplete markers left
+    OK   lib.rs: 0 incomplete markers left
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 23.07s
+
+=== batch (2 src): tests/util.rs, internal.rs ===
+  prompt  → xlate/prompts/phase4/batch_tests__util_internal.md
+  codex   → invoking (model=default, max-turns=400) …

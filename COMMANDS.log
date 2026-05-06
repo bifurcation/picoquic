@@ -1312,6 +1312,14 @@
 2026-05-06 Codex: inspect updated logwriter and packet ingress mappings with jq and numbered source excerpts
 2026-05-06 Codex: validate whitespace and worktree state for Phase 4A mapper artifacts
 2026-05-06 Codex: inspect full worktree status after Phase 4A mapper changes
+2026-05-06 Codex: inspect worktree before final commit: git status --short; git diff --stat; git diff --cached --stat
+2026-05-06 Codex: inspect recent commit history and untracked generated artifacts before staging
+2026-05-06 Codex: inspect ignore rules and artifact sizes before staging all non-ignored files
+2026-05-06 Codex: stage all non-ignored outstanding files: git add -A
+2026-05-06 Codex: inspect staged artifact commit: git diff --cached --stat; git status --short; git diff --cached --name-status
+2026-05-06 Codex: commit generated Phase 4 artifacts: git commit -m "Checkpoint Phase 4 generated artifacts"
+2026-05-06 Codex: amend generated artifact commit to include command log entry: git commit --amend --no-edit
+2026-05-06 Codex: inspect final worktree status after commits: git status --short
 2026-05-06 Codex: full marker scan after final phase4 batch accepted: python3 scripts/phase4_check.py --quiet
 2026-05-06 Codex: inspect worktree before requested commit: git status --short
 2026-05-06 Codex: inspect staged/unstaged diff stats before commit: git diff --stat
@@ -1326,3 +1334,4 @@
 2026-05-06 Codex: inspect staged diff stat before commit: git diff --cached --stat
 2026-05-06 Codex: restage command log before commit: git add COMMANDS.log
 2026-05-06 Codex: commit Phase 4 marker cleanup: git commit -m "Complete Phase 4 marker cleanup"
+2026-05-06 Codex: run full Rust test suite after Phase 4 marker cleanup: cd rs/fq && CARGO_INCREMENTAL=0 cargo test
