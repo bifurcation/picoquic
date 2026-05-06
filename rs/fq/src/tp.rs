@@ -56,8 +56,38 @@ pub enum TransportParameter {
 impl TransportParameter {
     /// Textual name for `tp_number`, taking a raw `u64` so callers
     /// can name unknown / extension parameter IDs too.  C: `tp_name`.
-    pub fn name(_tp_number: u64) -> Option<&'static str> {
-        todo!()
+    pub fn name(tp_number: u64) -> Option<&'static str> {
+        match tp_number {
+            0 => Some("original_connection_id"),
+            1 => Some("idle_timeout"),
+            2 => Some("stateless_reset_token"),
+            3 => Some("max_packet_size"),
+            4 => Some("initial_max_data"),
+            5 => Some("initial_max_stream_data_bidi_local"),
+            6 => Some("initial_max_stream_data_bidi_remote"),
+            7 => Some("initial_max_stream_data_uni"),
+            8 => Some("initial_max_streams_bidi"),
+            9 => Some("initial_max_streams_uni"),
+            10 => Some("ack_delay_exponent"),
+            11 => Some("max_ack_delay"),
+            12 => Some("disable_migration"),
+            13 => Some("server_preferred_address"),
+            14 => Some("active_connection_id_limit"),
+            15 => Some("handshake_connection_id"),
+            16 => Some("retry_connection_id"),
+            0x11 => Some("version_negotiation"),
+            32 => Some("max_datagram_frame_size"),
+            3127 => Some("large_chello"),
+            0x1057 => Some("enable_loss_bit"),
+            0x7158 => Some("enable_time_stamp"),
+            0x2ab2 => Some("grease_quic_bit"),
+            0xebd9 => Some("enable_bdp_frame"),
+            0x3e => Some("initial_max_path_id"),
+            0xff04de1b => Some("min_ack_delay"),
+            0x9f81a176 => Some("address_discovery"),
+            0x17f7586d2cb571 => Some("reset_stream_at"),
+            _ => None,
+        }
     }
 }
 

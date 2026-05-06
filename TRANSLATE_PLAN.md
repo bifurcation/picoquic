@@ -883,53 +883,98 @@ State, logs, and artifacts:
 
 ## Phase 4 — Translate implementations
 
-### Order
+After Phase 3 lands, every public test is expressed as Rust against the
+designed API surface, and the body of every API method is `todo!()`.
+Phase 4 fills those bodies by translating the matching C body from
+`picoquic/<src>.c`.  The Phase 3 test suite is the gate: a function is
+"done" when the tests that exercise it stop panicking on `todo!()`.
 
-Tests are ordered by the maximum height (per Phase 0) of any function
-they reach.  Lowest height first.  Mutually recursive function pairs are
-translated together regardless of nominal heights.
+### Order (default: file size; opt-in: call-graph height)
 
-### Inner loop
+Targets are the `.rs` files under `rs/fq/src/` that still contain
+`todo!()` bodies (test files, sys/loglib stubs, and out-of-v1-scope
+modules are skipped — see `SKIP_FILES` in `scripts/phase4.py`).
 
-For each test, in order:
+Default ordering is by file size (smallest first) — a crude but
+effective leaf-first proxy.  Leaf modules (`siphash`, `splay`, `hash`,
+`bytestream`) are short; `Connection` / `Quic` core in `internal.rs` is
+huge.
 
-1. Pick a `todo!()` function in the call tree below the test.  Prefer
-   the one with the lowest height (closest to a leaf).
-2. Translate it.  If it calls a function not yet defined, create a
-   `todo!()` stub for that function.
-3. Run `cargo check`.  Fix until it passes.
-4. Repeat until no `todo!()`s remain in the test's call tree.
-5. Run `cargo test`.  The current test should pass; previously passing
-   tests should still pass; not-yet-translated tests should still fail
-   cleanly.
+Opt-in ordering with `--order callgraph` reads `xlate/call_graph.json`
+(`height_of`) and sorts by the *minimum* C call-graph height of any
+function whose name appears in `/// C: \`name\`` doc comments inside the
+file.  Files with no matched names fall through to size order.  Use
+this when the size proxy gets fooled by a big file full of
+independent leaves (e.g. `utils.rs`).
 
-`cargo test` is run only at the *end* of a test's call tree, not after
-every function — until the sub-tree is complete, every `cargo test` run
-reports the same `todo!()` panic regardless of which leaf was last
-translated, so it adds no signal over `cargo check`.
+### Pipeline (`scripts/phase4.py`)
+
+For each Rust source file:
+
+1. **Compose a prompt** that:
+   * names the Rust target and its `todo!()` count;
+   * points at `xlate/impl_translation_guide.md` for C → Rust idiom
+     mappings (memory, control flow, errors, strings, time, network,
+     logging, crypto);
+   * names the matching C source(s) — the doc comments in the Rust
+     file already encode this as `/// C: \`picoquic_xxx\``;
+   * spells out the translation contract (faithful, idiomatic, no
+     signature changes, no `unsafe`, no edits outside `rs/fq/src/`).
+2. **Invoke `claude -p`** with a tight allowlist (Read / Edit /
+   Glob / Grep / Bash for `cargo` and the Phase 4 completion check).
+3. **Verify** with `scripts/phase4_check.py <rs file>` (zero
+   `todo!()`s remain in the named files).
+4. **Build gate** — `cargo fmt` + `cargo test --no-run` + `cargo
+   clippy --tests --all-features -- -D warnings`.  Failure penalises
+   the run.
+
+A `--batch N` mode packs N source files per claude invocation,
+amortising the guide read and any cross-module API lookups.  The
+build gate runs once at the end of each batch.
+
+State / log artifacts:
+
+* `xlate/phase4_state.json` — per-file `{status, at, …}`.  `ok` /
+  `partial` / `fail`; `partial` records `remaining` count.
+* `xlate/phase4_runs/<timestamp>.log` — per-sweep tee of stdout.
+* `xlate/claude_logs/phase4/<basename>.log` — per-run stream-json
+  transcript of the claude invocation.
+* `xlate/prompts/phase4/<basename>.md` — the composed prompt
+  (regenerated on each run).
+
+Re-running with no flags resumes from `phase4_state.json` (already-`ok`
+files are skipped).  `--force` redoes everything; `--src <file>`
+targets one file; `--limit N` caps the sweep.  HTTP 429 is detected
+(both `api_error_status==429` *and* `is_error`) and aborts cleanly
+without polluting state.
 
 ### Signature drift
 
 When translating function `f`, the translator may discover that the
-Phase 1 signature for some callee `g` is wrong.  Refining signatures
-mid-Phase-3 is allowed — they were always first-guesses.
+Phase 1 signature for some callee `g` is wrong.  Surface it on
+stdout and stop — that's a human design call, not Phase 4 work.
+Phase 1 / 2 / 3 settled the surface; Phase 4 only fills bodies.
 
 ### Discovered call edges
 
-Static analysis under-approximates call edges through function pointers
-and trait objects.  When `cargo test` reveals a `todo!()` panic in a
-function the call graph called a leaf, the translator implements the
-required trait method and moves on — no need to regenerate the call
-graph.
+Static analysis under-approximates call edges through function
+pointers and trait objects.  When `cargo test` reveals a `todo!()`
+panic in a function the call graph thought was a leaf, the
+translator implements the required trait method and moves on — no
+need to regenerate the call graph.
 
-### Tooling for Phase 4
+### Acceptance gate
 
-* `scripts/next_todo.py` — prints remaining `todo!()`s with file/line and
-  which still-failing tests need them, surfaces the next function to
-  translate.
-* The progress dashboard (built in Phase 0) is regenerated as a static
-  artifact whenever it's useful — no continuous CI integration, no file
-  watcher, no `cargo-watch`.
+* Every `todo!()` body in non-skipped Rust modules has been replaced
+  with a translation.  Verified by
+  `python3 scripts/phase4_check.py` (exit 0).
+* `cargo test --no-run` succeeds.
+* `cargo clippy --tests --all-features -- -D warnings` succeeds.
+* `cargo test` runs, panics only in not-yet-replaced `todo!()`s
+  (zero by acceptance) — a green or near-green run is the goal.
+
+The remaining red tests (if any) are real failures, not stub panics
+— they get a separate triage pass.
 
 ## Tooling stack
 
@@ -938,8 +983,9 @@ graph.
   target's flags.
 * libclang + Python — Phase 0 AST analysis, call graph, dashboard.
 * `bindgen` — per-file allowlisted reference output (never shipped).
-* Python scripts — driver for Phase 1 module skeletons; `next_todo.py`
-  for Phase 4.
+* Python scripts — driver for Phase 1 module skeletons; `phase3a.py`
+  / `phase4.py` AI-driven translation pipelines for tests and
+  implementations.
 * `cargo check` and `cargo test` — inner loop, manually invoked.
 * `cargo fmt` and `cargo clippy` — style and lint gates.
 

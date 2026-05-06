@@ -1,0 +1,42 @@
+
+"787878787878787878787878787878... coding error!"
+"\"\\\ff z\7f... coding error!"
+"\"\\\ff z\7f"
+
+"ip_v4": "10.0.0.1", "port_v4":260, "ip_v6": "201:304:506:708:90a:b0c:d0e:f10", "port_v6" : 520, "connection_id": "0f0e0d0c", "stateless_reset_token": "000102030405060708090a0b0c0d0e0f"", "extra_bytes": "10111213"
+
+{ "chosen": "00000002"}
+{ "chosen": "00000002", "others": ["00000001"]}
+{ "chosen": "00000002", "others": ["00000001", "01020304"]}
+{ "chosen": "00000002", "others": ["00000001", "01020304", "05060708"]}
+,
+    "vnego_parameter_length": 20,
+    "bytes_available": 16
+{ "bad_length": "0}
+{ "bad_length": "15}
+
+,
+    "ack_delay_exponent" : 3,
+    "server_preferred_address": "ip_v4": "10.0.0.1", "port_v4":260, "ip_v6": "201:304:506:708:90a:b0c:d0e:f10", "port_v6" : 520, "connection_id": "0f0e0d0c", "stateless_reset_token": "000102030405060708090a0b0c0d0e0f"},
+    "disable_migration" : "",
+    "retry_connection_id": "0a0b0c0d0e",
+    "grease_quic_bit" : "",
+    "version_negotiation": { "chosen": "00000002", "others": ["00000001"]},
+    "enable_bdp_frame" : 1,
+    "abbacadaba": "abbacadaba"
+,
+    "transport_parameter_length": 184,
+    "bytes_available": 92
+,
+    "Parameter_coding_error": "0a"
+,
+    "Parameter_coding_error": "0a01"
+,
+    "ack_delay_exponent" : 3,
+    "server_preferred_address": "ip_v4": "10.0.0.1", "port_v4":260, "ip_v6": "201:304:506:708:90a:b0c:d0e:f10", "port_v6" : 520, "connection_id": "0f0e0d0c", "stateless_reset_token": "000102030405060708090a0b0c0d0e0f"},
+    "disable_migration" : "",
+    "retry_connection_id": "0a0b0c0d0e",
+    "grease_quic_bit" : "",
+    "version_negotiation": { "chosen": "00000002", "others": ["00000001"]},
+    "enable_bdp_frame" : 1,
+    "Parameter_coding_error": "c00000abbacadaba05abbacada"

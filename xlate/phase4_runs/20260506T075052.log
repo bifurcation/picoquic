@@ -1,0 +1,45 @@
+Phase 4: 9 target(s) to translate (batch=1)
+  run log: xlate/phase4_runs/20260506T075052.log
+  state:   xlate/phase4_state.json
+
+=== textlog.rs (3 todos) ===
+  prompt  → xlate/prompts/phase4/textlog.md
+  (dry-run; skipping claude + gate)
+
+=== qlog.rs (7 todos) ===
+  prompt  → xlate/prompts/phase4/qlog.md
+  (dry-run; skipping claude + gate)
+
+=== performance_log.rs (3 todos) ===
+  prompt  → xlate/prompts/phase4/performance_log.md
+  (dry-run; skipping claude + gate)
+
+=== binlog.rs (15 todos) ===
+  prompt  → xlate/prompts/phase4/binlog.md
+  (dry-run; skipping claude + gate)
+
+=== logger.rs (18 todos) ===
+  prompt  → xlate/prompts/phase4/logger.md
+  (dry-run; skipping claude + gate)
+
+=== tls_api.rs (30 todos) ===
+  prompt  → xlate/prompts/phase4/tls_api.md
+  (dry-run; skipping claude + gate)
+
+=== packet_loop.rs (9 todos) ===
+  prompt  → xlate/prompts/phase4/packet_loop.md
+  (dry-run; skipping claude + gate)
+
+=== tests/util.rs (8 todos) ===
+  prompt  → xlate/prompts/phase4/tests__util.md
+  (dry-run; skipping claude + gate)
+
+=== internal.rs (126 todos) ===
+  prompt  → xlate/prompts/phase4/internal.md
+  (dry-run; skipping claude + gate)
+
+=== Phase 4 run summary ===
+  elapsed:   0.0s
+  succeeded: 0
+  failed:    0
+  log:       xlate/phase4_runs/20260506T075052.log

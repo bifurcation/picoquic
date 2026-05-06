@@ -5,9 +5,11 @@
 //! window-growth helpers, and the standalone New Reno simulator that
 //! several other algorithms run as a lower-bound estimator.
 //!
-//! Phase 1: signatures only — every function body is `todo!()`.
+//! Phase 4: all function bodies are implemented.
 
-use crate::internal::{Connection, Path};
+use crate::internal::{
+    CWIN_INITIAL, CWIN_MINIMUM, Connection, Path, TARGET_RENO_RTT, TARGET_SATELLITE_RTT,
+};
 use crate::{CongestionNotification, Duration, Instant, PerAckState};
 
 // ---------------------------------------------------------------------------
@@ -94,8 +96,28 @@ impl Default for MinMaxRtt {
 impl MinMaxRtt {
     /// Append `rtt` to the rolling sample window and recompute
     /// `sample_min` / `sample_max`.  C: `picoquic_cc_filter_rtt_min_max`.
-    pub fn filter_rtt_min_max(&mut self, _rtt: Duration) {
-        todo!()
+    pub fn filter_rtt_min_max(&mut self, rtt: Duration) {
+        let x = self.sample_current;
+        self.samples[x] = rtt;
+        self.sample_current = x + 1;
+        if self.sample_current >= MIN_MAX_RTT_SCOPE {
+            self.is_init = true;
+            self.sample_current = 0;
+        }
+        let x_max = if self.is_init {
+            MIN_MAX_RTT_SCOPE
+        } else {
+            x + 1
+        };
+        self.sample_min = self.samples[0];
+        self.sample_max = self.samples[0];
+        for i in 1..x_max {
+            if self.samples[i] < self.sample_min {
+                self.sample_min = self.samples[i];
+            } else if self.samples[i] > self.sample_max {
+                self.sample_max = self.samples[i];
+            }
+        }
     }
 
     /// HyStart loss-count test: `true` when the smoothed loss rate
@@ -105,11 +127,35 @@ impl MinMaxRtt {
     /// purely boolean here.
     pub fn hystart_loss_test(
         &mut self,
-        _event: CongestionNotification,
-        _lost_packet_number: u64,
-        _error_rate_max: f64,
+        event: CongestionNotification,
+        lost_packet_number: u64,
+        error_rate_max: f64,
     ) -> bool {
-        todo!()
+        let mut ret = false;
+        let mut next_number = self.last_lost_packet_number;
+
+        if lost_packet_number > next_number {
+            if next_number + SMOOTHED_LOSS_SCOPE < lost_packet_number {
+                next_number = lost_packet_number - SMOOTHED_LOSS_SCOPE;
+            }
+            while next_number < lost_packet_number {
+                self.smoothed_drop_rate *= 1.0 - SMOOTHED_LOSS_FACTOR;
+                next_number += 1;
+            }
+            self.smoothed_drop_rate += (1.0 - self.smoothed_drop_rate) * SMOOTHED_LOSS_FACTOR;
+            self.last_lost_packet_number = lost_packet_number;
+
+            match event {
+                CongestionNotification::Repeat => {
+                    ret = self.smoothed_drop_rate > error_rate_max;
+                }
+                CongestionNotification::Timeout => {
+                    ret = true;
+                }
+                _ => {}
+            }
+        }
+        ret
     }
 
     /// HyStart loss-volume test, parallel to [`Self::hystart_loss_test`]
@@ -117,11 +163,29 @@ impl MinMaxRtt {
     /// C: `picoquic_cc_hystart_loss_volume_test`.
     pub fn hystart_loss_volume_test(
         &mut self,
-        _event: CongestionNotification,
-        _nb_bytes_newly_acked: u64,
-        _nb_bytes_newly_lost: u64,
+        event: CongestionNotification,
+        nb_bytes_newly_acked: u64,
+        nb_bytes_newly_lost: u64,
     ) -> bool {
-        todo!()
+        self.smoothed_bytes_lost_16 -= self.smoothed_bytes_lost_16 / 16;
+        self.smoothed_bytes_lost_16 += nb_bytes_newly_lost;
+        self.smoothed_bytes_sent_16 -= self.smoothed_bytes_sent_16 / 16;
+        self.smoothed_bytes_sent_16 += nb_bytes_newly_acked + nb_bytes_newly_lost;
+
+        if self.smoothed_bytes_sent_16 > 0 {
+            self.smoothed_drop_rate =
+                self.smoothed_bytes_lost_16 as f64 / self.smoothed_bytes_sent_16 as f64;
+        } else {
+            self.smoothed_drop_rate = 0.0;
+        }
+
+        match event {
+            CongestionNotification::Acknowledgement => {
+                self.smoothed_drop_rate > SMOOTHED_LOSS_THRESHOLD
+            }
+            CongestionNotification::Timeout => true,
+            _ => false,
+        }
     }
 
     /// HyStart RTT-rise test: `true` when the filtered RTT has grown
@@ -130,12 +194,58 @@ impl MinMaxRtt {
     /// was an `int` in C; promoted to `bool`.
     pub fn hystart_test(
         &mut self,
-        _rtt_measurement: Duration,
-        _packet_time: Instant,
-        _current_time: Instant,
-        _is_one_way_delay_enabled: bool,
+        rtt_measurement: Duration,
+        packet_time: Instant,
+        current_time: Instant,
+        is_one_way_delay_enabled: bool,
     ) -> bool {
-        todo!()
+        if is_one_way_delay_enabled && rtt_measurement == Duration::from_ticks(0) {
+            return false;
+        }
+
+        let threshold = match self.last_rtt_sample_time {
+            None => true,
+            Some(t) => current_time > t + Duration::from_ticks(1000),
+        };
+
+        if !threshold {
+            return false;
+        }
+
+        self.filter_rtt_min_max(rtt_measurement);
+        self.last_rtt_sample_time = Some(current_time);
+
+        if !self.is_init {
+            return false;
+        }
+
+        let mut ret = false;
+        if self.rtt_filtered_min == Duration::from_ticks(0)
+            || self.rtt_filtered_min > self.sample_max
+        {
+            self.rtt_filtered_min = self.sample_max;
+        }
+
+        let delta_max = {
+            let q = self.rtt_filtered_min / 4;
+            // packet_time is an Instant; treat it as a Duration value
+            // for the comparison (both are ticks-based u64 wrappers)
+            let pt = Duration::from_ticks(packet_time.ticks());
+            if q < pt { pt } else { q }
+        };
+
+        if self.sample_min > self.rtt_filtered_min {
+            if self.sample_min > self.rtt_filtered_min + delta_max {
+                self.nb_rtt_excess += 1;
+                if self.nb_rtt_excess >= MIN_MAX_RTT_SCOPE as u32 {
+                    ret = true;
+                }
+            }
+        } else {
+            self.nb_rtt_excess = 0;
+        }
+
+        ret
     }
 }
 
@@ -168,16 +278,28 @@ pub trait ConnectionCc {
 }
 
 impl ConnectionCc for Connection {
-    fn sequence_number(&self, _path_x: &Path) -> u64 {
-        todo!()
+    fn sequence_number(&self, path_x: &Path) -> u64 {
+        if self.is_multipath_enabled {
+            path_x.pkt_ctx.send_sequence
+        } else {
+            self.pkt_ctx[crate::PacketContext::Application as usize].send_sequence
+        }
     }
 
-    fn ack_number(&self, _path_x: &Path) -> u64 {
-        todo!()
+    fn ack_number(&self, path_x: &Path) -> u64 {
+        if self.is_multipath_enabled {
+            path_x.pkt_ctx.highest_acknowledged
+        } else {
+            self.pkt_ctx[crate::PacketContext::Application as usize].highest_acknowledged
+        }
     }
 
-    fn ack_sent_time(&self, _path_x: &Path) -> Instant {
-        todo!()
+    fn ack_sent_time(&self, path_x: &Path) -> Instant {
+        if self.is_multipath_enabled {
+            path_x.pkt_ctx.latest_time_acknowledged
+        } else {
+            self.pkt_ctx[crate::PacketContext::Application as usize].latest_time_acknowledged
+        }
     }
 }
 
@@ -223,32 +345,75 @@ pub trait PathCc {
 
 impl PathCc for Path {
     fn lowest_not_ack(&self) -> u64 {
-        todo!()
+        // C reads cnx->pkt_ctx[app] for single-path, path->pkt_ctx for multipath.
+        // Path has no back-pointer to Connection, so we always use path->pkt_ctx
+        // (exact for multipath; conservative approximation for single-path).
+        self.pkt_ctx
+            .pending
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(self.pkt_ctx.highest_acknowledged + 1)
     }
 
-    fn slow_start_increase(&self, _nb_delivered: u64) -> u64 {
-        todo!()
+    fn slow_start_increase(&self, nb_delivered: u64) -> u64 {
+        // C body checks cnx->cwin_blocked.  Path has no back-pointer to
+        // Connection, so approximate with bytes_in_transit >= cwin, which is
+        // the condition that sets cwin_blocked in the C library.
+        if self.bytes_in_transit < self.cwin {
+            0
+        } else {
+            nb_delivered
+        }
     }
 
-    fn slow_start_increase_ex(&self, _nb_delivered: u64, _in_css: bool) -> u64 {
-        todo!()
+    fn slow_start_increase_ex(&self, nb_delivered: u64, in_css: bool) -> u64 {
+        if in_css {
+            self.slow_start_increase(nb_delivered / HYSTART_PP_CSS_GROWTH_DIVISOR)
+        } else {
+            self.slow_start_increase(nb_delivered)
+        }
     }
 
-    fn slow_start_increase_ex2(
-        &self,
-        _nb_delivered: u64,
-        _in_css: bool,
-        _prague_alpha: u64,
-    ) -> u64 {
-        todo!()
+    fn slow_start_increase_ex2(&self, nb_delivered: u64, in_css: bool, prague_alpha: u64) -> u64 {
+        if prague_alpha != 0 {
+            let delta = if self.smoothed_rtt <= TARGET_RENO_RTT {
+                nb_delivered * (1024 - prague_alpha) / 1024
+            } else {
+                nb_delivered * self.smoothed_rtt.ticks() * (1024 - prague_alpha)
+                    / TARGET_RENO_RTT.ticks()
+                    / 1024
+            };
+            self.slow_start_increase_ex(delta, in_css)
+        } else {
+            self.slow_start_increase_ex(nb_delivered, in_css)
+        }
     }
 
     fn update_target_cwin_estimation(&self) -> u64 {
-        todo!()
+        // BYTES_FROM_RATE(smoothed_rtt, peak_bandwidth_estimate) = rtt_us * bps / 1_000_000
+        let max_win = self.smoothed_rtt.ticks() * self.peak_bandwidth_estimate / 1_000_000;
+        let min_win = max_win / 2;
+        if min_win > self.cwin {
+            min_win
+        } else {
+            self.cwin
+        }
     }
 
     fn update_cwin_for_long_rtt(&self) -> u64 {
-        todo!()
+        let rtt_cap = if self.rtt_min > TARGET_SATELLITE_RTT {
+            TARGET_SATELLITE_RTT
+        } else {
+            self.rtt_min
+        };
+        let min_cwnd =
+            (CWIN_INITIAL as f64 * rtt_cap.ticks() as f64 / TARGET_RENO_RTT.ticks() as f64) as u64;
+        if min_cwnd > self.cwin {
+            min_cwnd
+        } else {
+            self.cwin
+        }
     }
 }
 
@@ -285,7 +450,9 @@ impl NewRenoSimState {
     /// Reset the simulator to its initial state.
     /// C: `picoquic_newreno_sim_reset`.
     pub fn reset(&mut self) {
-        todo!()
+        *self = Self::default();
+        self.ssthresh = u64::MAX;
+        self.cwin = CWIN_INITIAL;
     }
 
     /// Drive the simulator with a congestion-control event.
@@ -296,13 +463,95 @@ impl NewRenoSimState {
     /// `picoquic_newreno_sim_notify`.
     pub fn notify(
         &mut self,
-        _connection: &Connection,
-        _path_x: &Path,
-        _notification: CongestionNotification,
-        _ack_state: &PerAckState,
-        _current_time: Instant,
+        connection: &Connection,
+        path_x: &Path,
+        notification: CongestionNotification,
+        ack_state: &PerAckState,
+        current_time: Instant,
     ) {
-        todo!()
+        match notification {
+            CongestionNotification::Acknowledgement => match self.alg_state {
+                NewRenoAlgState::SlowStart => {
+                    self.cwin += ack_state.nb_bytes_acknowledged;
+                    if self.cwin >= self.ssthresh {
+                        self.alg_state = NewRenoAlgState::CongestionAvoidance;
+                    }
+                }
+                NewRenoAlgState::CongestionAvoidance => {
+                    let complete_delta = ack_state.nb_bytes_acknowledged * path_x.send_mtu as u64
+                        + self.residual_ack;
+                    self.residual_ack = complete_delta % self.cwin;
+                    self.cwin += complete_delta / self.cwin;
+                }
+            },
+            CongestionNotification::EcnEc
+            | CongestionNotification::Repeat
+            | CongestionNotification::Timeout => {
+                if self.recovery_sequence <= ack_state.lost_packet_number {
+                    self.enter_recovery(connection, path_x, notification, current_time);
+                }
+            }
+            CongestionNotification::SpuriousRepeat => {
+                if !connection.is_multipath_enabled {
+                    if current_time.ticks() - self.recovery_start < path_x.smoothed_rtt.ticks()
+                        && self.recovery_sequence > connection.ack_number(path_x)
+                        && self.ssthresh != u64::MAX
+                        && self.cwin < 2 * self.ssthresh
+                    {
+                        self.cwin = 2 * self.ssthresh;
+                        self.alg_state = NewRenoAlgState::CongestionAvoidance;
+                    }
+                } else if current_time.ticks() - self.recovery_start < path_x.smoothed_rtt.ticks()
+                    && self.recovery_start > connection.ack_sent_time(path_x).ticks()
+                    && self.ssthresh != u64::MAX
+                    && self.cwin < 2 * self.ssthresh
+                {
+                    self.cwin = 2 * self.ssthresh;
+                    self.alg_state = NewRenoAlgState::CongestionAvoidance;
+                }
+            }
+            CongestionNotification::Reset => {
+                self.reset();
+            }
+            CongestionNotification::SeedCwin => {
+                self.seed_cwin(ack_state.nb_bytes_acknowledged);
+            }
+            _ => {}
+        }
+    }
+
+    fn enter_recovery(
+        &mut self,
+        connection: &Connection,
+        path_x: &Path,
+        notification: CongestionNotification,
+        current_time: Instant,
+    ) {
+        self.ssthresh = self.cwin / 2;
+        if self.ssthresh < CWIN_MINIMUM {
+            self.ssthresh = CWIN_MINIMUM;
+        }
+        if notification == CongestionNotification::Timeout {
+            self.cwin = CWIN_MINIMUM;
+            self.alg_state = NewRenoAlgState::SlowStart;
+        } else {
+            self.cwin = self.ssthresh;
+            self.alg_state = NewRenoAlgState::CongestionAvoidance;
+        }
+        self.recovery_start = current_time.ticks();
+        self.recovery_sequence = connection.sequence_number(path_x);
+        self.residual_ack = 0;
+    }
+
+    fn seed_cwin(&mut self, seed_cwin: u64) {
+        if self.alg_state == NewRenoAlgState::SlowStart
+            && self.ssthresh == u64::MAX
+            && seed_cwin > self.cwin
+        {
+            self.cwin = seed_cwin;
+            self.ssthresh = seed_cwin;
+            self.alg_state = NewRenoAlgState::CongestionAvoidance;
+        }
     }
 }
 

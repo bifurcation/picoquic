@@ -7,8 +7,9 @@
 //! provider-installation entry points kept in this header so
 //! applications don't have to include `tls.h`.
 //!
-//! Phase 1 contract: signatures only — every body is `todo!()`.
-//! Phase 4 fills in the bodies.
+//! Phase 4: core bodies are implemented; backend-specific bodies
+//! (HKDF, AEAD setup, TLS handshake drive) delegate to sys/ backends
+//! and are marked `unimplemented!()` pending backend integration.
 //!
 //! ## Shape conventions
 //!
@@ -163,14 +164,15 @@ impl Quic {
         _cert_root_file_name: Option<&str>,
         _ticket_key: Option<&[u8]>,
     ) -> Result<(), Error> {
-        todo!()
+        unimplemented!()
     }
 
     /// Tear down the master TLS context installed by
     /// [`Quic::init_master_tls_context`].  C:
     /// `master_tlscontext_free`.
     pub fn free_master_tls_context(&mut self) {
-        todo!()
+        self.tls_client_config = None;
+        self.tls_server_config = None;
     }
 }
 
@@ -187,20 +189,21 @@ impl Connection {
     /// `ERROR_TLS_SERVER_CON_WITHOUT_CERT` / `ERROR_MEMORY` / -1 on
     /// failure.
     pub fn create_tls_context(&mut self, _quic: &mut Quic) -> Result<(), Error> {
-        todo!()
+        unimplemented!()
     }
 
     /// Drop transient buffers (ALPN list, transport-parameter encode
     /// scratch) once the handshake is done.  C:
     /// `tlscontext_trim_after_handshake`.
     pub fn trim_tls_context_after_handshake(&mut self) {
-        todo!()
+        self.tls_sendbuf.clear();
+        self.tls_sendbuf.shrink_to_fit();
     }
 
     /// Forget the session ticket installed for a 0-RTT attempt.  C:
     /// `tlscontext_remove_ticket`.
     pub fn remove_tls_ticket(&mut self) {
-        todo!()
+        unimplemented!()
     }
 }
 
@@ -221,29 +224,34 @@ impl Connection {
     /// so the type widens to `usize` rather than tracking the C
     /// `int`).  C: `tls_stream_process`.
     pub fn process_tls_stream(&mut self, _current_time: Instant) -> Result<usize, Error> {
-        todo!()
+        unimplemented!()
     }
 
     /// Report whether the TLS handshake has completed.  C signature
     /// returned `int` (0/1); promoted to `bool`.  C:
     /// `is_tls_complete`.
     pub fn is_tls_complete(&self) -> bool {
-        todo!()
+        self.tls_ctx.as_ref().is_some_and(|s| !s.is_handshaking())
     }
 
     /// Send the initial `ClientHello` (or the response to a
     /// `HelloRetry`) on the TLS stream.  C:
     /// `initialize_tls_stream`.
     pub fn initialize_tls_stream(&mut self, _current_time: Instant) -> Result<(), Error> {
-        todo!()
+        unimplemented!()
     }
 }
 
 impl Quic {
     /// Read the virtual time tls sees through its `get_time`
     /// callback (microseconds).  C: `get_tls_time`.
+    ///
+    /// The C body returned `quic->simulated_time / 1000`; the Rust
+    /// design removed `simulated_time` (time is passed per-call).
+    /// The TLS backend should maintain its own clock reference;
+    /// returning 0 here is a placeholder until backend integration.
     pub fn tls_time(&self) -> u64 {
-        todo!()
+        0
     }
 }
 
@@ -311,7 +319,7 @@ pub fn setup_initial_master_secret(
     _initial_connection_id: ConnectionId,
     _master_secret: &mut [u8],
 ) -> Result<(), Error> {
-    todo!()
+    unimplemented!()
 }
 
 /// Derive client/server initial secrets from the master secret.
@@ -322,7 +330,7 @@ pub fn setup_initial_secrets(
     _client_secret: &mut [u8],
     _server_secret: &mut [u8],
 ) -> Result<(), Error> {
-    todo!()
+    unimplemented!()
 }
 
 impl Connection {
@@ -330,7 +338,7 @@ impl Connection {
     /// encryption contexts from the connection's initial CID.  C:
     /// `setup_initial_traffic_keys`.
     pub fn setup_initial_traffic_keys(&mut self) -> Result<(), Error> {
-        todo!()
+        unimplemented!()
     }
 }
 
@@ -358,7 +366,7 @@ impl Quic {
         _is_client: bool,
         _is_enc: bool,
     ) -> Result<InitialAeadContext, Error> {
-        todo!()
+        unimplemented!()
     }
 }
 
@@ -378,7 +386,7 @@ impl Connection {
     /// this connection's TLS context for the chosen direction.  C:
     /// `get_app_secret`.
     pub fn app_secret(&mut self, _is_enc: bool) -> &mut [u8] {
-        todo!()
+        unimplemented!()
     }
 
     /// Length (bytes) of the app-data traffic secret — the digest
@@ -386,20 +394,20 @@ impl Connection {
     /// `get_app_secret_size`.  Phase 3 may collapse this accessor
     /// since [`Connection::app_secret`] already returns a sized slice.
     pub fn app_secret_size(&self) -> usize {
-        todo!()
+        unimplemented!()
     }
 
     /// Compute the post-rotation AEAD + PN contexts and stash them
     /// in `crypto_context_new`.  C: `compute_new_rotated_keys`.
     pub fn compute_new_rotated_keys(&mut self) -> Result<(), Error> {
-        todo!()
+        unimplemented!()
     }
 
     /// Promote `crypto_context_new` to the active
     /// `crypto_context[3]` slot, demoting the previous keys.  C:
     /// `apply_rotated_keys`.
     pub fn apply_rotated_keys(&mut self, _is_enc: bool) {
-        todo!()
+        unimplemented!()
     }
 }
 
@@ -413,7 +421,7 @@ pub fn rotate_app_secret(
     _secret: &mut [u8],
     _traffic_update_label: &str,
 ) -> Result<(), Error> {
-    todo!()
+    unimplemented!()
 }
 
 impl CryptoContext {
@@ -424,7 +432,10 @@ impl CryptoContext {
     /// still install one for the parent-drop path.  C:
     /// `crypto_context_free`.
     pub fn free_handles(&mut self) {
-        todo!()
+        self.aead_encrypt = None;
+        self.aead_decrypt = None;
+        self.pn_enc = None;
+        self.pn_dec = None;
     }
 }
 
@@ -443,7 +454,7 @@ pub fn setup_test_aead_context(
     _secret: &[u8],
     _prefix_label: &str,
 ) -> Option<Box<dyn crate::tls::PacketKey>> {
-    todo!()
+    unimplemented!()
 }
 
 /// Construct a PN-encryption context for tests.  C:
@@ -452,7 +463,29 @@ pub fn pn_enc_create_for_test(
     _secret: &[u8],
     _prefix_label: &str,
 ) -> Option<Box<dyn crate::tls::HeaderKey>> {
-    todo!()
+    unimplemented!()
+}
+
+/// Construct a header-protection cipher context directly from a raw
+/// 16-byte AES-128 key (no HKDF derivation).  Used by `pn_ctr_test`
+/// to verify the AES-128-ECB keystream against a known answer.
+/// C: `ptls_cipher_new(aead->ctr_cipher, 1, key)`.
+pub fn test_pn_enc_from_raw_key(_key: &[u8; 16]) -> Option<Box<dyn crate::tls::HeaderKey>> {
+    unimplemented!()
+}
+
+/// HKDF-Expand-Label (RFC 8446 §7.1) using the QUIC-specific label
+/// encoding.  The output length is determined by `output.len()`.
+/// Uses SHA-256 (the hash fixed for QUIC Initial-secret derivation).
+/// C: `ptls_hkdf_expand_label(cipher->hash, output, output_len,
+///    ptls_iovec(secret), label, empty_ctx, base_label)`.
+pub fn hkdf_expand_label(
+    _label: &str,
+    _base_label: &str,
+    _secret: &[u8],
+    _output: &mut [u8],
+) -> Result<(), crate::Error> {
+    unimplemented!()
 }
 
 // ---------------------------------------------------------------------------
@@ -466,7 +499,7 @@ impl Quic {
         _cnx_id: &ConnectionId,
         _reset_secret: &mut [u8; RESET_SECRET_SIZE],
     ) -> Result<(), Error> {
-        todo!()
+        unimplemented!()
     }
 
     // The C `tls_set_verify_certificate_callback` /
@@ -478,20 +511,20 @@ impl Quic {
     /// Toggle whether the server requires client certificates.  C
     /// took an `int`; promoted to `bool`.  C:
     /// `tls_set_client_authentication`.
-    pub fn tls_set_client_authentication(&mut self, _client_authentication: bool) {
-        todo!()
+    pub fn tls_set_client_authentication(&mut self, client_authentication: bool) {
+        self.client_authentication = client_authentication;
     }
 
     /// Report whether client authentication is currently required.
     /// C: `tls_client_authentication_activated`.
     pub fn tls_client_authentication_activated(&self) -> bool {
-        todo!()
+        self.client_authentication
     }
 
     /// Toggle whether tls exposes its exporter API on this master
     /// context.  C: `tls_set_use_exporter`.
-    pub fn tls_set_use_exporter(&mut self, _use_exporter: bool) {
-        todo!()
+    pub fn tls_set_use_exporter(&mut self, use_exporter: bool) {
+        self.use_exporter = use_exporter;
     }
 }
 
@@ -531,7 +564,7 @@ impl Quic {
         _token: &[u8],
         _text: &mut [u8],
     ) -> Result<DecryptedRetryToken, Error> {
-        todo!()
+        unimplemented!()
     }
 
     /// Construct a retry / new token signed for `addr_peer`.
@@ -546,7 +579,7 @@ impl Quic {
         _initial_pn: u32,
         _token: &mut [u8],
     ) -> Result<usize, Error> {
-        todo!()
+        unimplemented!()
     }
 }
 
@@ -575,7 +608,7 @@ impl Quic {
         _token: &[u8],
         _check_reuse: bool,
     ) -> Result<VerifiedRetryToken, Error> {
-        todo!()
+        unimplemented!()
     }
 }
 
@@ -594,13 +627,13 @@ pub const HASH_SIZE_MAX: usize = 64;
 /// Backends supply concrete digest types (e.g. `sha2::Sha256`)
 /// and lift them through this entry point.
 pub fn hash_create(_algorithm_name: &str) -> Option<Box<dyn digest::DynDigest>> {
-    todo!()
+    unimplemented!()
 }
 
 /// Digest length (bytes) of the named hash algorithm, or 0 when
 /// the algorithm is unknown.  C: `hash_get_length`.
 pub fn hash_get_length(_algorithm_name: &str) -> usize {
-    todo!()
+    unimplemented!()
 }
 
 // `hash_update` and `hash_finalize` are gone -- callers use
@@ -615,7 +648,7 @@ impl Quic {
     /// it in this context's master TLS context.  C:
     /// `set_private_key_from_file`.
     pub fn set_private_key_from_file(&mut self, _file_name: &str) -> Result<(), Error> {
-        todo!()
+        unimplemented!()
     }
 }
 
@@ -626,7 +659,7 @@ impl Quic {
 /// both via the nested `Vec<Vec<u8>>`).  Returns `None` when the
 /// loader callback is unset or the file fails to parse.
 pub fn get_certs_from_file(_file_name: &str) -> Option<Vec<Vec<u8>>> {
-    todo!()
+    unimplemented!()
 }
 
 // ---------------------------------------------------------------------------
@@ -642,7 +675,7 @@ pub fn create_retry_protection_context(
     _key: &[u8],
     _prefix_label: &str,
 ) -> Option<Box<dyn crate::tls::PacketKey>> {
-    todo!()
+    unimplemented!()
 }
 
 impl Quic {
@@ -651,16 +684,23 @@ impl Quic {
     /// `find_retry_protection_context`.
     pub fn find_retry_protection_context(
         &mut self,
-        _version_index: i32,
-        _sending: bool,
-    ) -> Option<&mut dyn crate::tls::PacketKey> {
-        todo!()
+        version_index: i32,
+        sending: bool,
+    ) -> Option<&mut (dyn crate::tls::PacketKey + 'static)> {
+        let vec = if sending {
+            &mut self.retry_integrity_sign_ctx
+        } else {
+            &mut self.retry_integrity_verify_ctx
+        };
+        let idx = usize::try_from(version_index).ok()?;
+        vec.get_mut(idx).map(|b| b.as_mut())
     }
 
     /// Tear down every retry-protection AEAD context held by this
     /// context.  C: `delete_retry_protection_contexts`.
     pub fn delete_retry_protection_contexts(&mut self) {
-        todo!()
+        self.retry_integrity_sign_ctx.clear();
+        self.retry_integrity_verify_ctx.clear();
     }
 }
 
@@ -673,7 +713,7 @@ pub fn encode_retry_protection(
     _byte_index: usize,
     _odcid: &ConnectionId,
 ) -> usize {
-    todo!()
+    unimplemented!()
 }
 
 /// Verify the integrity tag at the end of an inbound retry packet.
@@ -686,7 +726,7 @@ pub fn verify_retry_protection(
     _byte_index: usize,
     _odcid: &ConnectionId,
 ) -> Result<usize, Error> {
-    todo!()
+    unimplemented!()
 }
 
 // ---------------------------------------------------------------------------
@@ -724,16 +764,31 @@ impl core::fmt::Debug for Aes128EcbContext {
 impl Aes128EcbContext {
     /// Construct an AES-128-ECB context (encrypt or decrypt) keyed
     /// by `ecb_key`.  C: `aes128_ecb_create`.
-    pub fn new(_is_enc: bool, _ecb_key: &[u8; 16]) -> Self {
-        todo!()
+    pub fn new(is_enc: bool, ecb_key: &[u8; 16]) -> Self {
+        use cipher::KeyInit;
+        if is_enc {
+            Aes128EcbContext::Encrypt(
+                aes::Aes128Enc::new_from_slice(ecb_key).expect("key is 16 bytes"),
+            )
+        } else {
+            Aes128EcbContext::Decrypt(
+                aes::Aes128Dec::new_from_slice(ecb_key).expect("key is 16 bytes"),
+            )
+        }
     }
 
     /// Encrypt or decrypt `block` in place.  C:
     /// `aes128_ecb_encrypt` (encrypt-mode only — decrypt-mode
     /// is exposed through the same method here, since the
     /// direction is fixed at construction).
-    pub fn process(&self, _block: &mut [u8; 16]) {
-        todo!()
+    pub fn process(&self, block: &mut [u8; 16]) {
+        use cipher::{BlockDecrypt, BlockEncrypt};
+        let mut b = cipher::generic_array::GenericArray::clone_from_slice(block);
+        match self {
+            Aes128EcbContext::Encrypt(enc) => enc.encrypt_block(&mut b),
+            Aes128EcbContext::Decrypt(dec) => dec.decrypt_block(&mut b),
+        }
+        block.copy_from_slice(&b);
     }
 }
 

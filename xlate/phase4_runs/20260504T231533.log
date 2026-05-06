@@ -1,0 +1,29 @@
+Phase 4: 5 target(s) to translate
+  run log: xlate/phase4_runs/20260504T231533.log
+  state:   xlate/phase4_state.json
+
+=== siphash.rs (2 todos) ===
+  prompt  → xlate/prompts/phase4/siphash.md
+  (dry-run; skipping claude + gate)
+
+=== frames.rs (1 todos) ===
+  prompt  → xlate/prompts/phase4/frames.md
+  (dry-run; skipping claude + gate)
+
+=== socks_socket2.rs (9 todos) ===
+  prompt  → xlate/prompts/phase4/socks_socket2.md
+  (dry-run; skipping claude + gate)
+
+=== sys/openssl.rs (13 todos) ===
+  prompt  → xlate/prompts/phase4/sys__openssl.md
+  (dry-run; skipping claude + gate)
+
+=== sys/picotls.rs (13 todos) ===
+  prompt  → xlate/prompts/phase4/sys__picotls.md
+  (dry-run; skipping claude + gate)
+
+=== Phase 4 run summary ===
+  elapsed:   0.0s
+  succeeded: 0
+  failed:    0
+  log:       xlate/phase4_runs/20260504T231533.log

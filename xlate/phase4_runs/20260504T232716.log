@@ -1,0 +1,17 @@
+Phase 4: 6 target(s) to translate (batch=3)
+  run log: xlate/phase4_runs/20260504T232716.log
+  state:   xlate/phase4_state.json
+
+=== batch (3 src): siphash.rs, frames.rs, socks_socket2.rs ===
+  prompt  → xlate/prompts/phase4/batch_siphash_frames_socks_socket2.md
+  (dry-run; skipping claude + gate)
+
+=== batch (3 src): sys/openssl.rs, sys/picotls.rs, header_protection.rs ===
+  prompt  → xlate/prompts/phase4/batch_sys__openssl_sys__picotls_header_protection.md
+  (dry-run; skipping claude + gate)
+
+=== Phase 4 run summary ===
+  elapsed:   0.0s
+  succeeded: 0
+  failed:    0
+  log:       xlate/phase4_runs/20260504T232716.log

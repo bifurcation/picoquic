@@ -47,7 +47,37 @@
 
 use crate::Error;
 use crate::tls_api::Aes128EcbContext;
-use crate::{ConnectionId, Quic};
+use crate::{CONNECTION_ID_MAX_SIZE, ConnectionId, Quic};
+
+// ---------------------------------------------------------------------------
+// Private hex-parsing helpers.
+
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Decode hex bytes from `hex` into `out`, returning bytes written.
+/// C: `picoquic_parse_hexa`.
+fn parse_hex_bytes(hex: &[u8], out: &mut [u8]) -> usize {
+    let mut i = 0;
+    let mut written = 0;
+    while i + 1 < hex.len() && written < out.len() {
+        match (hex_nibble(hex[i]), hex_nibble(hex[i + 1])) {
+            (Some(hi), Some(lo)) => {
+                out[written] = (hi << 4) | lo;
+                written += 1;
+                i += 2;
+            }
+            _ => break,
+        }
+    }
+    written
+}
 
 /// CID-encoding method selected by the load-balancer config.
 /// C: `load_balancer_cid_method_enum`.
@@ -113,8 +143,137 @@ impl Config {
     /// txt, size_t txt_length)` pair returning an `int`; the Rust
     /// signature returns the populated struct in the success arm
     /// and folds the explicit length into the `&str` slice.
-    pub fn parse(_txt: &str) -> Result<Self, Error> {
-        todo!()
+    pub fn parse(txt: &str) -> Result<Self, Error> {
+        let bytes = txt.as_bytes();
+        if bytes.len() < 4 {
+            return Err(Error::InvalidArgument);
+        }
+
+        let rotation_bits = match bytes[0] {
+            b'0' => RotationBits::Zero,
+            b'1' => RotationBits::One,
+            b'2' => RotationBits::Two,
+            b'3' => RotationBits::Three,
+            _ => return Err(Error::InvalidArgument),
+        };
+
+        let first_byte_encodes_length = match bytes[1] {
+            b'Y' | b'y' => true,
+            b'N' | b'n' => false,
+            _ => return Err(Error::InvalidArgument),
+        };
+
+        let mut config = Config {
+            rotation_bits,
+            first_byte_encodes_length,
+            ..Config::default()
+        };
+
+        let mut parsed = 2usize;
+
+        // Optional decimal connection_id_length.
+        let mut cid_len: usize = 0;
+        while parsed < bytes.len() && bytes[parsed].is_ascii_digit() {
+            cid_len = cid_len * 10 + (bytes[parsed] - b'0') as usize;
+            parsed += 1;
+            if cid_len >= 256 {
+                return Err(Error::InvalidArgument);
+            }
+            config.connection_id_length = cid_len;
+        }
+
+        if parsed >= bytes.len() {
+            return Err(Error::InvalidArgument);
+        }
+        let method_char = bytes[parsed];
+        parsed += 1;
+        match method_char {
+            b'c' | b'C' => {
+                config.method = ConnectionIdMethod::Clear;
+            }
+            b's' | b'S' => {
+                config.method = ConnectionIdMethod::StreamCipher;
+                let mut nonce_len: usize = 0;
+                while parsed < bytes.len() && bytes[parsed].is_ascii_digit() {
+                    nonce_len = nonce_len * 10 + (bytes[parsed] - b'0') as usize;
+                    parsed += 1;
+                    if nonce_len >= 256 {
+                        return Err(Error::InvalidArgument);
+                    }
+                    config.nonce_length = nonce_len;
+                }
+            }
+            b'b' | b'B' => {
+                config.method = ConnectionIdMethod::BlockCipher;
+            }
+            _ => return Err(Error::InvalidArgument),
+        }
+
+        // Hyphen before server ID.
+        if parsed >= bytes.len() || bytes[parsed] != b'-' {
+            return Err(Error::InvalidArgument);
+        }
+        parsed += 1;
+
+        if parsed >= bytes.len() {
+            return Err(Error::InvalidArgument);
+        }
+
+        // Server ID hex (scan to next '-' or end).
+        let hex_len = bytes[parsed..]
+            .iter()
+            .position(|&b| b == b'-')
+            .unwrap_or(bytes.len() - parsed);
+        let hex_end = parsed + hex_len;
+        let mut s_id_bin = [0u8; 8];
+        let s_id_len = parse_hex_bytes(&bytes[parsed..hex_end], &mut s_id_bin);
+        if s_id_len == 0 {
+            return Err(Error::InvalidArgument);
+        }
+        config.server_id_length = s_id_len;
+        for b in s_id_bin.iter().take(s_id_len) {
+            config.server_id <<= 8;
+            config.server_id |= *b as u64;
+        }
+        parsed += 2 * s_id_len;
+
+        // Encryption key for stream/block cipher.
+        if matches!(
+            config.method,
+            ConnectionIdMethod::StreamCipher | ConnectionIdMethod::BlockCipher
+        ) {
+            if parsed >= bytes.len() || bytes[parsed] != b'-' {
+                return Err(Error::InvalidArgument);
+            }
+            parsed += 1;
+            if bytes.len() < parsed + 32 {
+                return Err(Error::InvalidArgument);
+            }
+            let key_len = parse_hex_bytes(&bytes[parsed..], &mut config.cid_encryption_key);
+            if key_len != 16 {
+                return Err(Error::InvalidArgument);
+            }
+            parsed += 32;
+        }
+
+        if parsed != bytes.len() {
+            return Err(Error::InvalidArgument);
+        }
+
+        // Validate connection_id_length if explicitly set.
+        if config.connection_id_length != 0 {
+            let min_length = 1 + config.server_id_length + config.nonce_length;
+            if config.connection_id_length < min_length {
+                return Err(Error::InvalidArgument);
+            }
+            if matches!(config.method, ConnectionIdMethod::BlockCipher)
+                && config.connection_id_length < 17
+            {
+                return Err(Error::InvalidArgument);
+            }
+        }
+
+        Ok(config)
     }
 }
 
@@ -156,6 +315,35 @@ pub struct ConnectionIdContext {
 }
 
 impl ConnectionIdContext {
+    fn set_first_byte(&self, quic: &Quic, bytes: &mut [u8]) {
+        if self.first_byte_encodes_length {
+            bytes[0] = (self.rotation_bits as u8) << 6 | (quic.local_connection_id_length - 1);
+        } else {
+            bytes[0] &= 0x3F;
+            bytes[0] |= (self.rotation_bits as u8) << 6;
+        }
+    }
+
+    /// One pass of the stream-cipher: fill `mask` from `bytes[nonce_start..]`,
+    /// AES-encrypt it, then XOR `mask` into `bytes[target_start..]`.
+    /// C: `picoquic_lb_compat_cid_one_pass_stream`.
+    fn one_pass_stream(
+        enc: &Aes128EcbContext,
+        bytes: &mut [u8],
+        nonce_start: usize,
+        nonce_len: usize,
+        target_start: usize,
+        target_len: usize,
+    ) {
+        let mut mask = [0u8; 16];
+        let copy_len = nonce_len.min(16);
+        mask[..copy_len].copy_from_slice(&bytes[nonce_start..nonce_start + copy_len]);
+        enc.process(&mut mask);
+        for i in 0..target_len {
+            bytes[target_start + i] ^= mask[i];
+        }
+    }
+
     /// Encode a CID from `nonce` per `self.method` and return it.
     /// C: `lb_compat_cid_generate`.
     ///
@@ -169,8 +357,56 @@ impl ConnectionIdContext {
     /// `connection_id_remote` parameters of the C signature are dropped
     /// here and reintroduced (if needed) by the
     /// [`crate::ConnectionIdCallback`] adapter.
-    pub fn generate(&mut self, _quic: &Quic, _nonce: &ConnectionId) -> ConnectionId {
-        todo!()
+    pub fn generate(&mut self, quic: &Quic, nonce: &ConnectionId) -> ConnectionId {
+        let mut cid = *nonce;
+        {
+            let bytes = cid.as_bytes_mut();
+            self.set_first_byte(quic, bytes);
+            match self.method {
+                ConnectionIdMethod::Clear => {
+                    bytes[1..1 + self.server_id_length]
+                        .copy_from_slice(&self.server_id_encoded[..self.server_id_length]);
+                }
+                ConnectionIdMethod::StreamCipher => {
+                    let id_offset = 1 + self.nonce_length;
+                    bytes[id_offset..id_offset + self.server_id_length]
+                        .copy_from_slice(&self.server_id_encoded[..self.server_id_length]);
+                    let enc = self.cid_encryption_context.as_ref().unwrap();
+                    Self::one_pass_stream(
+                        enc,
+                        bytes,
+                        1,
+                        self.nonce_length,
+                        id_offset,
+                        self.server_id_length,
+                    );
+                    Self::one_pass_stream(
+                        enc,
+                        bytes,
+                        id_offset,
+                        self.server_id_length,
+                        1,
+                        self.nonce_length,
+                    );
+                    Self::one_pass_stream(
+                        enc,
+                        bytes,
+                        1,
+                        self.nonce_length,
+                        id_offset,
+                        self.server_id_length,
+                    );
+                }
+                ConnectionIdMethod::BlockCipher => {
+                    bytes[1..1 + self.server_id_length]
+                        .copy_from_slice(&self.server_id_encoded[..self.server_id_length]);
+                    let enc = self.cid_encryption_context.as_ref().unwrap();
+                    let block = <&mut [u8; 16]>::try_from(&mut bytes[1..17]).unwrap();
+                    enc.process(block);
+                }
+            }
+        }
+        cid
     }
 
     /// Decode the server ID embedded in `connection_id`.  Returns `None`
@@ -181,8 +417,72 @@ impl ConnectionIdContext {
     ///
     /// `&mut self` because the underlying AES contexts mutate
     /// cipher state in place.
-    pub fn verify(&mut self, _cnx_id: &ConnectionId) -> Option<u64> {
-        todo!()
+    pub fn verify(&mut self, cnx_id: &ConnectionId) -> Option<u64> {
+        if cnx_id.len() != self.connection_id_length {
+            return None;
+        }
+        let s_id64 = match self.method {
+            ConnectionIdMethod::Clear => {
+                let bytes = cnx_id.as_bytes();
+                let mut s_id64: u64 = 0;
+                for i in 0..self.server_id_length {
+                    s_id64 <<= 8;
+                    s_id64 += bytes[i + 1] as u64;
+                }
+                s_id64
+            }
+            ConnectionIdMethod::StreamCipher => {
+                let id_offset = 1 + self.nonce_length;
+                let mut target = [0u8; CONNECTION_ID_MAX_SIZE];
+                let len = cnx_id.len();
+                target[..len].copy_from_slice(cnx_id.as_bytes());
+                let enc = self.cid_encryption_context.as_ref().unwrap();
+                Self::one_pass_stream(
+                    enc,
+                    &mut target[..len],
+                    1,
+                    self.nonce_length,
+                    id_offset,
+                    self.server_id_length,
+                );
+                Self::one_pass_stream(
+                    enc,
+                    &mut target[..len],
+                    id_offset,
+                    self.server_id_length,
+                    1,
+                    self.nonce_length,
+                );
+                Self::one_pass_stream(
+                    enc,
+                    &mut target[..len],
+                    1,
+                    self.nonce_length,
+                    id_offset,
+                    self.server_id_length,
+                );
+                let mut s_id64: u64 = 0;
+                for i in 0..self.server_id_length {
+                    s_id64 <<= 8;
+                    s_id64 += target[id_offset + i] as u64;
+                }
+                s_id64
+            }
+            ConnectionIdMethod::BlockCipher => {
+                let bytes = cnx_id.as_bytes();
+                let mut decoded = [0u8; 16];
+                decoded.copy_from_slice(&bytes[1..17]);
+                let dec = self.cid_decryption_context.as_ref().unwrap();
+                dec.process(&mut decoded);
+                let mut s_id64: u64 = 0;
+                for b in decoded.iter().take(self.server_id_length) {
+                    s_id64 <<= 8;
+                    s_id64 += *b as u64;
+                }
+                s_id64
+            }
+        };
+        Some(s_id64)
     }
 }
 
@@ -195,8 +495,82 @@ impl Quic {
     /// callback configured, when the requested CID length doesn't
     /// fit the chosen method, or when the AES context allocation
     /// fails.
-    pub fn set_lb_cid_config(&mut self, _lb_config: &Config) -> Result<(), Error> {
-        todo!()
+    pub fn set_lb_cid_config(&mut self, lb_config: &Config) -> Result<(), Error> {
+        if !self.connections.is_empty()
+            && self.local_connection_id_length as usize != lb_config.connection_id_length
+        {
+            return Err(Error::InvalidState);
+        }
+        if self.connection_id_callback_fn.is_some() && self.connection_id_callback_ctx.is_some() {
+            return Err(Error::InvalidState);
+        }
+        if lb_config.connection_id_length > CONNECTION_ID_MAX_SIZE {
+            return Err(Error::InvalidArgument);
+        }
+        match lb_config.method {
+            ConnectionIdMethod::Clear => {
+                if lb_config.server_id_length + 1 > lb_config.connection_id_length {
+                    return Err(Error::InvalidArgument);
+                }
+            }
+            ConnectionIdMethod::StreamCipher => {
+                if lb_config.nonce_length < 8
+                    || lb_config.nonce_length > 16
+                    || lb_config.nonce_length + lb_config.server_id_length + 1
+                        > lb_config.connection_id_length
+                {
+                    return Err(Error::InvalidArgument);
+                }
+            }
+            ConnectionIdMethod::BlockCipher => {
+                if lb_config.connection_id_length < 17 || lb_config.server_id_length > 15 {
+                    return Err(Error::InvalidArgument);
+                }
+            }
+        }
+
+        // Encode server_id as big-endian bytes.
+        let mut server_id_encoded = [0u8; 16];
+        let mut s_id64 = lb_config.server_id;
+        for i in 0..lb_config.server_id_length {
+            let j = lb_config.server_id_length - i - 1;
+            server_id_encoded[j] = s_id64 as u8;
+            s_id64 >>= 8;
+        }
+        if s_id64 != 0 {
+            return Err(Error::InvalidArgument);
+        }
+
+        let cid_encryption_context = match lb_config.method {
+            ConnectionIdMethod::StreamCipher | ConnectionIdMethod::BlockCipher => Some(Box::new(
+                Aes128EcbContext::new(true, &lb_config.cid_encryption_key),
+            )),
+            ConnectionIdMethod::Clear => None,
+        };
+        let cid_decryption_context = match lb_config.method {
+            ConnectionIdMethod::BlockCipher => Some(Box::new(Aes128EcbContext::new(
+                false,
+                &lb_config.cid_encryption_key,
+            ))),
+            _ => None,
+        };
+
+        let context = ConnectionIdContext {
+            method: lb_config.method,
+            rotation_bits: lb_config.rotation_bits,
+            first_byte_encodes_length: lb_config.first_byte_encodes_length,
+            server_id_length: lb_config.server_id_length,
+            nonce_length: lb_config.nonce_length,
+            connection_id_length: lb_config.connection_id_length,
+            server_id: lb_config.server_id,
+            server_id_encoded,
+            cid_encryption_context,
+            cid_decryption_context,
+        };
+
+        self.local_connection_id_length = lb_config.connection_id_length as u8;
+        self.connection_id_callback_ctx = Some(Box::new(context));
+        Ok(())
     }
 
     /// Tear down the [`ConnectionIdContext`] previously installed by
@@ -205,7 +579,14 @@ impl Quic {
     /// `self`.  No-op when no LB CID context is installed.
     /// C: `lb_compat_cid_config_free`.
     pub fn clear_lb_cid_config(&mut self) {
-        todo!()
+        let is_lb = self
+            .connection_id_callback_ctx
+            .as_ref()
+            .is_some_and(|c| c.is::<ConnectionIdContext>());
+        if is_lb {
+            self.connection_id_callback_ctx = None;
+            self.connection_id_callback_fn = None;
+        }
     }
 }
 

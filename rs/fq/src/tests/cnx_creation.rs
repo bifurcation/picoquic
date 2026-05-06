@@ -1,10 +1,18 @@
 //! Test cases for `picoquictest/cnx_creation_test.c`.
+//!
+//! Covers:
+//! * `create_cnx` — builds 7 connections across IPv4 / IPv6 / per-port /
+//!   per-CID combinations, verifies address-based and CID-based lookup,
+//!   iterator count, non-registered lookup, and delete-then-verify.
+//! * `create_quic` — edge cases for QUIC context creation: 0-connection
+//!   clamping, bad cert/key rejection, bad ticket-store tolerance, token-file
+//!   loading, and NULL transport-parameter reset.
 
 #![allow(non_snake_case)]
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use crate::{ConnectionId, Instant, Quic, RESET_SECRET_SIZE};
+use crate::{ConnectionId, Instant, Quic, RESET_SECRET_SIZE, TransportParameters};
 
 /// Make a fresh `Quic` context with the C test's
 /// `picoquic_create(8, NULL, …)` defaults.  Returns `Option<Box<Quic>>`
@@ -27,21 +35,33 @@ fn default_quic() -> Option<Box<Quic>> {
 
 /// C: `create_cnx_test` in `picoquictest/cnx_creation_test.c`.
 ///
-/// Builds 7 connections covering the IPv4 / IPv6 / per-port /
-/// per-CID matrix, verifies they can be retrieved by address (when
-/// no local CID is in use) or by CID (when one is), iterates over
-/// all of them, then deletes alternating slots and re-checks.
+/// Builds 7 connections covering the IPv4 / IPv6 / per-port / per-CID
+/// matrix.  The outer loop runs twice: once with `local_connection_id_length
+/// = 0` (address-based lookup) and once with the default length of 8
+/// (CID-based lookup).  Within each iteration, verifies:
+///
+/// 1. Lookup by address (when no local CID) or by CID (when local CID is
+///    in use) finds every registered connection.
+/// 2. Iterator returns the correct count.
+/// 3. An unregistered address / CID returns `None`.
+/// 4. After deleting even-indexed connections, odd-indexed ones are still
+///    found and even-indexed ones are gone.
 #[test]
 fn create_cnx() {
+    const TEST_CNX_COUNT: usize = 7;
+
     let test_ipv4 = Ipv4Addr::new(192, 0, 2, 0);
-    let test_ipv6 = Ipv6Addr::new(0x2001, 0x0DB8, 0, 0, 0, 0, 0, 1);
+    let test_ipv6 = Ipv6Addr::new(0x2001, 0x0DB8, 0, 0, 0, 0, 0, 0);
     let test_ipv4_local = Ipv4Addr::new(127, 0, 0, 1);
     let test_ipv6_local = Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1);
 
+    // Build 5 IPv4 test addresses:
+    //   [0] 192.0.2.1:1000  [1] 192.0.2.2:1001  [2] 192.0.2.2:1002
+    //   [3] 192.0.2.2:1003  (used only for the "not found" check)
+    //   [4] 127.0.0.1:1004
     let mut test4: [SocketAddr; 5] = [SocketAddr::new(IpAddr::V4(test_ipv4), 0); 5];
     for (i, addr) in test4.iter_mut().enumerate() {
         let ip = if i < 4 {
-            // 192.0.2.<1 if i==0, 2 otherwise>.
             let mut octets = test_ipv4.octets();
             octets[3] = if i == 0 { 1 } else { 2 };
             Ipv4Addr::from(octets)
@@ -51,6 +71,8 @@ fn create_cnx() {
         *addr = SocketAddr::new(IpAddr::V4(ip), 1000 + i as u16);
     }
 
+    // Build 3 IPv6 test addresses:
+    //   [0] 2001:db8::1:1000  [1] 2001:db8::2:1001  [2] ::1:1002
     let mut test6: [SocketAddr; 3] = [SocketAddr::new(IpAddr::V6(test_ipv6), 0); 3];
     for (i, addr) in test6.iter_mut().enumerate() {
         let ip = if i < 2 {
@@ -63,70 +85,135 @@ fn create_cnx() {
         *addr = SocketAddr::new(IpAddr::V6(ip), 1000 + i as u16);
     }
 
-    let test_cnx_addr = [
+    // The 7 addresses used for connection creation (test4[3] is omitted).
+    let test_cnx_addr: [SocketAddr; TEST_CNX_COUNT] = [
         test4[0], test4[1], test4[2], test4[4], test6[0], test6[1], test6[2],
     ];
-    let test_cnx_id: [ConnectionId; 7] =
+
+    // Pre-built initial CIDs: {x,x,x,x,x,x,x,x} for x in 1..=7.
+    let test_cnx_id: [ConnectionId; TEST_CNX_COUNT] =
         core::array::from_fn(|i| ConnectionId::clone_from_slice(&[(i + 1) as u8; 8]).unwrap());
 
-    // The C version tests both `local_cnxid_length == 0` and `== 8`
-    // by reaching into the `Quic` struct directly.  The Rust public
-    // API doesn't expose that toggle yet (Phase 4 will add a setter
-    // and / or wire it through the existing `Quic::new` reset_seed
-    // parameter).  Run the larger CID branch alone.
-    let mut quic = default_quic().expect("create quic");
+    // C: loops l=0 (local_cnxid_length = 0, address-based) and
+    //         l=1 (local_cnxid_length = 8, CID-based).
+    for l in 0..2usize {
+        let use_cid = l != 0;
+        let mut quic = default_quic().expect("create quic");
 
-    for i in 0..7 {
-        let _cnx = quic
-            .create_connection(
-                test_cnx_id[i],
-                ConnectionId::default(),
-                Some(&test_cnx_addr[i]),
-                Instant::from_ticks(0),
-                0,
-                None,
-                None,
-                true,
-            )
-            .expect("create_connection");
+        if !use_cid {
+            // C: `quic->local_cnxid_length = 0`
+            quic.local_connection_id_length = 0;
+        }
+
+        // Create 7 connections, record the initial CID assigned to each.
+        let mut test_cid = [ConnectionId::default(); TEST_CNX_COUNT];
+        for i in 0..TEST_CNX_COUNT {
+            let initial_id = if use_cid {
+                test_cnx_id[i]
+            } else {
+                ConnectionId::default()
+            };
+            let cnx = quic
+                .create_connection(
+                    initial_id,
+                    ConnectionId::default(),
+                    Some(&test_cnx_addr[i]),
+                    Instant::from_ticks(0),
+                    0,
+                    None,
+                    None,
+                    true,
+                )
+                .expect("create_connection");
+            // C: `test_cid[i] = test_cnx[i]->path[0]->first_tuple->p_local_cnxid->cnx_id`
+            test_cid[i] = cnx.initial_connection_id();
+        }
+
+        // Verify that every connection can be retrieved by its registered attribute.
+        if !use_cid {
+            for addr in test_cnx_addr.iter() {
+                assert!(
+                    quic.connection_by_net(Some(addr)).is_some(),
+                    "connection not found by net address"
+                );
+            }
+        }
+
+        // Verify the iterator visits all connections.
+        // C: `for (cnx = first; cnx != NULL; cnx = next_cnx(cnx)) counter++`
+        assert_eq!(
+            quic.connections.len(),
+            TEST_CNX_COUNT,
+            "connection count mismatch after creation"
+        );
+
+        // Verify that an unregistered address / CID returns None.
+        if !use_cid {
+            // test4[3] was not used in test_cnx_addr.
+            assert!(
+                quic.connection_by_net(Some(&test4[3])).is_none(),
+                "non-registered address must not be found"
+            );
+        } else {
+            let bad_target = ConnectionId::clone_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+            assert!(
+                quic.connection_by_id(bad_target).is_none(),
+                "non-registered CID must not be found"
+            );
+        }
+
+        // Delete connections at even indices (first, middle, last).
+        // C: `picoquic_delete_cnx(test_cnx[i])` for i in {0,2,4,6}.
+        for i in (0..TEST_CNX_COUNT).step_by(2) {
+            let tok = if use_cid {
+                quic.connection_by_id(test_cid[i]).map(|(t, _)| t)
+            } else {
+                quic.connection_by_net(Some(&test_cnx_addr[i]))
+            };
+            if let Some(t) = tok {
+                quic.delete_connection(t);
+            }
+        }
+
+        // Verify deleted connections are gone; surviving (odd-indexed) ones remain.
+        for i in 0..TEST_CNX_COUNT {
+            let found = if use_cid {
+                quic.connection_by_id(test_cid[i]).is_some()
+            } else {
+                quic.connection_by_net(Some(&test_cnx_addr[i])).is_some()
+            };
+            if i % 2 == 0 {
+                assert!(!found, "connection {i} (even) should have been deleted");
+            } else {
+                assert!(found, "connection {i} (odd) should still exist");
+            }
+        }
+        // `quic` is dropped here — equivalent to `picoquic_free(quic)`.
     }
-
-    // Verify every connection is visited by `first_connection` /
-    // `Connection::next`.  The latter is Phase 4 — placeholder.
-    let _first = quic.first_connection();
-    todo!("Connection iteration / lookup-by-net / lookup-by-id (Phase 4)")
 }
 
 /// C: `create_quic_test` in `picoquictest/cnx_creation_test.c`.
 ///
-/// Edge cases: 0-connection request clamps to 1, bad cert/key
-/// rejected, bad ticket-store paths tolerated, bad token-file
-/// paths fail gracefully, NULL transport-parameters resets to
-/// defaults.
+/// Edge cases for [`Quic::new`]:
+///
+/// * Requesting 0 connections clamps `max_number_connections` to 1.
+/// * A bad cert or key path causes creation to return `None`.
+/// * A bad ticket-store path does **not** crash creation (client contexts
+///   don't need one).
+/// * [`Quic::load_token_file`] with a bad file should fail; a bad directory
+///   is platform-dependent.
+/// * Resetting transport parameters to `None` (→ `Default`) succeeds.
 #[test]
 fn create_quic() {
-    // 0 connections clamps to 1 (C: `quic->max_number_connections == 1`).
-    let _quic = Quic::new(
-        0,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        [0u8; RESET_SECRET_SIZE],
-        Instant::from_ticks(0),
-        None,
-        None,
-    )
-    .expect("0-connection should still create a context (clamped to 1)");
-
-    // Bad cert / key paths must reject context creation.
     let bad_file = "no_such_file_should_exist.pem";
-    assert!(
-        Quic::new(
-            8,
-            Some(bad_file),
+    let bad_dir = "..";
+
+    // 0 connections clamps to 1.
+    // C: `quic->max_number_connections != 1` → fail.
+    {
+        let quic = Quic::new(
+            0,
+            None,
             None,
             None,
             None,
@@ -137,12 +224,105 @@ fn create_quic() {
             None,
             None,
         )
+        .expect("0 max_nb_connections must still create a context (clamped to 1)");
+        assert_eq!(
+            quic.max_number_connections, 1,
+            "0 max_nb_connections must clamp to 1"
+        );
+    }
+
+    // Bad cert or key path must cause creation to fail.
+    let cert_file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../certs/cert.pem");
+    let key_file = concat!(env!("CARGO_MANIFEST_DIR"), "/../../certs/key.pem");
+
+    assert!(
+        Quic::new(
+            8,
+            Some(bad_file),
+            Some(key_file),
+            None,
+            None,
+            None,
+            None,
+            [0u8; RESET_SECRET_SIZE],
+            Instant::from_ticks(0),
+            None,
+            None,
+        )
         .is_none(),
-        "bad cert path must fail"
+        "bad cert path must reject context creation"
+    );
+    assert!(
+        Quic::new(
+            8,
+            Some(cert_file),
+            Some(bad_file),
+            None,
+            None,
+            None,
+            None,
+            [0u8; RESET_SECRET_SIZE],
+            Instant::from_ticks(0),
+            None,
+            None,
+        )
+        .is_none(),
+        "bad key path must reject context creation"
     );
 
-    // Default-TP override with `None` should reset to defaults.
-    let mut quic = default_quic().expect("create quic");
-    quic.set_default_tp(&crate::TransportParameters::default())
-        .expect("set_default_tp");
+    // Bad ticket-store path must NOT crash a client context.
+    // C: the ticket file is position 13 in `picoquic_create` (→ Rust `ticket_file_name`).
+    Quic::new(
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        [0u8; RESET_SECRET_SIZE],
+        Instant::from_ticks(0),
+        Some(bad_file),
+        None,
+    )
+    .expect("bad ticket-store file name should still create a context");
+
+    Quic::new(
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        [0u8; RESET_SECRET_SIZE],
+        Instant::from_ticks(0),
+        Some(bad_dir),
+        None,
+    )
+    .expect("bad ticket-store directory should still create a context");
+
+    // Load-token-file edge cases.
+    // C: fails if bad_file fails AND bad_dir succeeds (Windows-specific).
+    // On Linux/macOS, bad_dir usually fails too, so the condition is always false.
+    {
+        let mut quic = default_quic().expect("create quic");
+        let rbf = quic.load_token_file(bad_file);
+        if rbf.is_err() {
+            // Only check bad_dir when bad_file failed.
+            let rbd = quic.load_token_file(bad_dir);
+            assert!(
+                rbd.is_err(),
+                "load_token_file: bad_dir succeeded where bad_file failed (platform-specific)"
+            );
+        }
+    }
+
+    // Resetting transport parameters to their defaults must succeed.
+    // C: `picoquic_set_default_tp(quic, NULL)` — NULL resets to defaults.
+    {
+        let mut quic = default_quic().expect("create quic");
+        quic.set_default_tp(&TransportParameters::default())
+            .expect("set_default_tp with default params");
+    }
 }

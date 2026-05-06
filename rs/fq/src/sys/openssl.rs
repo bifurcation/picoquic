@@ -5,7 +5,7 @@
 //! [`crate::tls`] traits to the `openssl` crate's bindings; the
 //! Cargo feature `sys-openssl` gates the dependency.
 //!
-//! Phase 1 contract: signatures only — every body is `todo!()`.
+//! Phase 1 contract: signatures only — Phase 4 fills the bodies.
 
 extern crate alloc;
 use alloc::boxed::Box;
@@ -37,7 +37,9 @@ impl ClientConfig for OpenSslClientConfig {
         _server_name: &str,
         _transport_params: &[u8],
     ) -> Result<Self::Session, ConfigError> {
-        todo!()
+        Err(ConfigError {
+            message: "OpenSSL QUIC backend not yet implemented".into(),
+        })
     }
 }
 
@@ -52,7 +54,9 @@ impl ServerConfig for OpenSslServerConfig {
         _version: u32,
         _transport_params: &[u8],
     ) -> Result<Self::Session, ConfigError> {
-        todo!()
+        Err(ConfigError {
+            message: "OpenSSL QUIC backend not yet implemented".into(),
+        })
     }
 }
 
@@ -62,27 +66,27 @@ pub struct OpenSslSession;
 
 impl Session for OpenSslSession {
     fn read_handshake(&mut self, _plaintext: &[u8]) -> Result<bool, Error> {
-        todo!()
+        Err(Error::Tls)
     }
 
     fn write_handshake(&mut self, _buf: &mut Vec<u8>) -> Option<crate::tls::Keys> {
-        todo!()
+        None
     }
 
     fn is_handshaking(&self) -> bool {
-        todo!()
+        true
     }
 
     fn next_1rtt_keys(&mut self) -> Option<KeyPair> {
-        todo!()
+        None
     }
 
     fn handshake_data(&self) -> Option<HandshakeData> {
-        todo!()
+        None
     }
 
     fn peer_identity(&self) -> Option<PeerIdentity> {
-        todo!()
+        None
     }
 
     fn early_keys(
@@ -91,15 +95,15 @@ impl Session for OpenSslSession {
         Box<dyn crate::tls::HeaderKey>,
         Box<dyn crate::tls::PacketKey>,
     )> {
-        todo!()
+        None
     }
 
     fn early_data_accepted(&self) -> Option<bool> {
-        todo!()
+        None
     }
 
     fn transport_parameters(&self) -> Result<Option<Vec<u8>>, Error> {
-        todo!()
+        Ok(None)
     }
 
     fn export_keying_material(
@@ -108,7 +112,7 @@ impl Session for OpenSslSession {
         _context: &[u8],
         _output: &mut [u8],
     ) -> Result<(), Error> {
-        todo!()
+        Err(Error::Tls)
     }
 }
 

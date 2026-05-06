@@ -1,0 +1,45 @@
+Phase 3A: 42 source file(s) to translate
+  run log: xlate/phase3a_runs/20260504T225759.log
+  state:   xlate/phase3a_state.json
+
+=== batch (5 src): datagram_tests, delay_tolerant_test, dualq_aqm_test, ech_test, edge_cases ===
+  prompt  → xlate/prompts/phase3a/batch_datagram_tests_delay_tolerant_test_dualq_aqm_test_ech_test_edge_cases.md
+  (dry-run; skipping claude + check)
+
+=== batch (5 src): flow_control_test, getter_test, hashtest, high_latency_test, intformattest ===
+  prompt  → xlate/prompts/phase3a/batch_flow_control_test_getter_test_hashtest_high_latency_test_intformattest.md
+  (dry-run; skipping claude + check)
+
+=== batch (5 src): l4s_test, mbedtls_test, mediatest, memlog_test, minicrypto_test ===
+  prompt  → xlate/prompts/phase3a/batch_l4s_test_mbedtls_test_mediatest_memlog_test_minicrypto_test.md
+  (dry-run; skipping claude + check)
+
+=== batch (5 src): multipath_test, netperf_test, openssl_test, p2p_test, pacing_test ===
+  prompt  → xlate/prompts/phase3a/batch_multipath_test_netperf_test_openssl_test_p2p_test_pacing_test.md
+  (dry-run; skipping claude + check)
+
+=== batch (5 src): parseheadertest, picolog_test, picoquic_lb_test, pn2pn64test, qlog_frame_test ===
+  prompt  → xlate/prompts/phase3a/batch_parseheadertest_picolog_test_picoquic_lb_test_pn2pn64test_qlog_frame_test.md
+  (dry-run; skipping claude + check)
+
+=== batch (5 src): qlog_test, quic_tester, sacktest, satellite_test, skip_frame_test ===
+  prompt  → xlate/prompts/phase3a/batch_qlog_test_quic_tester_sacktest_satellite_test_skip_frame_test.md
+  (dry-run; skipping claude + check)
+
+=== batch (5 src): socket_test, sockloop_test, spinbit_test, splay_test, stream0_frame_test ===
+  prompt  → xlate/prompts/phase3a/batch_socket_test_sockloop_test_spinbit_test_splay_test_stream0_frame_test.md
+  (dry-run; skipping claude + check)
+
+=== batch (5 src): stresstest, ticket_store_test, tls_api_test, transport_param_test, util_test ===
+  prompt  → xlate/prompts/phase3a/batch_stresstest_ticket_store_test_tls_api_test_transport_param_test_util_test.md
+  (dry-run; skipping claude + check)
+
+=== batch (2 src): warptest, wifitest ===
+  prompt  → xlate/prompts/phase3a/batch_warptest_wifitest.md
+  (dry-run; skipping claude + check)
+
+=== Phase 3A run summary ===
+  elapsed:   0.0s
+  succeeded: 0
+  failed:    0
+  log:       xlate/phase3a_runs/20260504T225759.log

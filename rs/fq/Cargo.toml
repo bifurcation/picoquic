@@ -9,6 +9,8 @@ default = []
 # for the implementations it actually links.  See `src/sys/`.
 sys-picotls = []
 sys-openssl = ["dep:openssl"]
+sys-mbedtls = []
+sys-fusion = []
 
 [dependencies]
 fugit = { version = "0.3", default-features = false }
@@ -26,6 +28,15 @@ digest = { version = "0.10", default-features = false }
 # (QUIC packet-number encryption is QUIC logic, not TLS).
 aes = { version = "0.8", default-features = false }
 chacha20 = { version = "0.9", default-features = false }
+
+# Hash, HKDF, and AEAD implementations used by the QUIC initial-secret
+# derivation, retry-protection AEAD, and test-only crypto helpers in
+# `tls_api`.  These are pure-Rust algorithms not specific to any TLS
+# backend.
+sha2 = { version = "0.10", default-features = false }
+hkdf = { version = "0.12", default-features = false }
+hmac = { version = "0.12", default-features = false }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 
 # UDP socket abstraction.  std-only.
 socket2 = { version = "0.5", default-features = false, features = ["all"] }

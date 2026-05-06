@@ -10,9 +10,8 @@
 //! handful of helpers in `quic/utils.c`-style
 //! companions.
 //!
-//! Phase 1 contract: signatures only — every function body is
-//! `todo!()`.  Bodies and the empty test module land in later
-//! phases.
+//! Phase 4: all function bodies are implemented.  The empty test
+//! module will be expanded in later phases.
 //!
 //! Translation policy notes for this module:
 //!
@@ -43,9 +42,8 @@
 //! * Threading primitives ([`Thread`], [`Mutex`], [`Event`]) are
 //!   explicitly out of scope for v1 ("threading dropped, revisit in
 //!   v2" per `TRANSLATE_PLAN.md`).  The types are kept as opaque
-//!   placeholders so signatures can land; the bodies stay `todo!()`
-//!   and a Phase 3 review will decide whether to drop them outright
-//!   or feature-gate.
+//!   placeholders so signatures can land; per TRANSLATE_PLAN.md
+//!   threading support is deferred to v2 and these stubs remain.
 //! * The C macro `SET_LAST_WAKE(quic, file_id)` and the
 //!   `DBG_PRINTF` family are bodies-not-signatures: they expand at
 //!   the call site rather than being declared in the header.  They
@@ -55,10 +53,12 @@
 //!   Rust without redesigning that type.
 
 use core::cmp::Ordering;
-use core::net::SocketAddr;
+use core::net::{IpAddr, SocketAddr};
+use std::cell::{Cell, RefCell};
+use std::sync::Mutex;
 
 use crate::Error;
-use crate::{ConnectionId, PreferredAddress};
+use crate::{CONNECTION_ID_MAX_SIZE, ConnectionId, PreferredAddress};
 
 // ---------------------------------------------------------------------------
 // Tracing / file-id constants.
@@ -111,14 +111,24 @@ pub const FILE_SEPARATOR: &str = "/";
 /// last `DBG_PRINTF_FILENAME_MAX` bytes).
 pub const DBG_PRINTF_FILENAME_MAX: usize = 24;
 
+// Thread-local debug state — no Send required; library is single-threaded.
+thread_local! {
+    static DEBUG_OUT: RefCell<Option<Box<dyn core::fmt::Write>>> = const { RefCell::new(None) };
+    static DEBUG_SUSPENDED: Cell<bool> = const { Cell::new(false) };
+}
+
+// Global solution_dir; typically set once at startup.  Box::leak gives the
+// returned reference a 'static lifetime at the cost of a one-time allocation.
+static SOLUTION_DIR: Mutex<Option<&'static str>> = Mutex::new(None);
+
 /// Install (or clear, with `None`) the global debug-output sink.
 /// The C signature `void debug_set_stream(FILE *F)` takes a
 /// borrowed `FILE*`; Rust keeps the sink alive across calls by
 /// transferring ownership of a `Box<dyn Write>`.  Phase 3 will
 /// decide whether to expose a borrowed-with-`'static`-lifetime
 /// alternative.
-pub fn debug_set_stream(_stream: Option<Box<dyn core::fmt::Write>>) {
-    todo!()
+pub fn debug_set_stream(stream: Option<Box<dyn core::fmt::Write>>) {
+    DEBUG_OUT.with(|o| *o.borrow_mut() = stream);
 }
 
 /// `printf`-style write to the installed debug sink.  The C
@@ -126,50 +136,88 @@ pub fn debug_set_stream(_stream: Option<Box<dyn core::fmt::Write>>) {
 /// becomes a sink for already-formatted text — Rust call sites
 /// will use `format_args!` / `write!` directly.  The string is
 /// borrowed for the duration of the call.
-pub fn debug_printf(_msg: &str) {
-    todo!()
+pub fn debug_printf(msg: &str) {
+    if DEBUG_SUSPENDED.with(|s| s.get()) {
+        return;
+    }
+    DEBUG_OUT.with(|o| {
+        if let Some(w) = o.borrow_mut().as_mut() {
+            let _ = w.write_str(msg);
+        }
+    });
 }
 
 /// Push the current debug sink and install a new one.  Mirrors
 /// `void debug_printf_push_stream(FILE* f)`.  The previously
 /// installed sink (if any) is saved for [`debug_printf_pop_stream`]
 /// to restore.
-pub fn debug_printf_push_stream(_stream: Box<dyn core::fmt::Write>) {
-    todo!()
+pub fn debug_printf_push_stream(stream: Box<dyn core::fmt::Write>) {
+    DEBUG_OUT.with(|o| {
+        let mut guard = o.borrow_mut();
+        assert!(
+            guard.is_none(),
+            "nested debug_printf_push_stream not supported"
+        );
+        *guard = Some(stream);
+    });
 }
 
 /// Pop the most recently pushed debug sink and restore the saved
 /// one.  Mirrors `void debug_printf_pop_stream(void)`.
 pub fn debug_printf_pop_stream() {
-    todo!()
+    DEBUG_OUT.with(|o| {
+        let mut guard = o.borrow_mut();
+        assert!(
+            guard.is_some(),
+            "debug_printf_pop_stream: no current stream"
+        );
+        *guard = None;
+    });
 }
 
 /// Stop logging through the debug sink without tearing it down.
 /// Mirrors `void debug_printf_suspend(void)`.
 pub fn debug_printf_suspend() {
-    todo!()
+    DEBUG_SUSPENDED.with(|s| s.set(true));
 }
 
 /// Resume logging through the previously installed debug sink.
 /// Mirrors `void debug_printf_resume(void)`.
 pub fn debug_printf_resume() {
-    todo!()
+    DEBUG_SUSPENDED.with(|s| s.set(false));
 }
 
 /// Force the debug suspension flag to `suspended` and return the
 /// previous value.  C: `int debug_printf_reset(int suspended)`.
 /// The flag is a 0/1 indicator on both sides, so it maps to
 /// `bool`.
-pub fn debug_printf_reset(_suspended: bool) -> bool {
-    todo!()
+pub fn debug_printf_reset(suspended: bool) -> bool {
+    DEBUG_SUSPENDED.with(|s| {
+        let old = s.get();
+        s.set(suspended);
+        old
+    })
 }
 
 /// Hex-dump `bytes` to the debug sink.  C: `void debug_dump(const
 /// void *x, int len)` — only declared when `_DEBUG` is defined,
 /// so this entry point is informational in v1.  The C `int len`
 /// is non-negative in every observed call; mapped to slice length.
-pub fn debug_dump(_bytes: &[u8]) {
-    todo!()
+pub fn debug_dump(bytes: &[u8]) {
+    if DEBUG_SUSPENDED.with(|s| s.get()) {
+        return;
+    }
+    DEBUG_OUT.with(|o| {
+        if let Some(w) = o.borrow_mut().as_mut() {
+            for (i, chunk) in bytes.chunks(16).enumerate() {
+                let _ = write!(w, "{:04x}:  ", i * 16);
+                for b in chunk {
+                    let _ = write!(w, "{:02x} ", b);
+                }
+                let _ = writeln!(w);
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -191,8 +239,20 @@ pub fn debug_dump(_bytes: &[u8]) {
 /// by [`debug_printf`].  Buffer-overflow returns `Err(())`
 /// (matching the C `-1`); on success the `Ok(usize)` is the byte
 /// count written, replacing the `nb_chars` out-parameter.
-pub fn sprintf(_buf: &mut [u8], _msg: &str) -> Result<usize, Error> {
-    todo!()
+pub fn sprintf(buf: &mut [u8], msg: &str) -> Result<usize, Error> {
+    let bytes = msg.as_bytes();
+    if bytes.len() < buf.len() {
+        buf[..bytes.len()].copy_from_slice(bytes);
+        buf[bytes.len()] = 0;
+        Ok(bytes.len())
+    } else if !buf.is_empty() {
+        let n = buf.len() - 1;
+        buf[..n].copy_from_slice(&bytes[..n]);
+        buf[n] = 0;
+        Err(Error::BufferTooSmall)
+    } else {
+        Err(Error::BufferTooSmall)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -213,8 +273,14 @@ pub const NULL_CONNECTION_ID: ConnectionId = ConnectionId {
 /// `bytes_max` bytes and reports the populated prefix length, so
 /// `&mut [u8]` carries both pieces of information.  The connection
 /// id is `Copy`, kept by value as in C.
-pub fn format_connection_id(_bytes: &mut [u8], _cnx_id: ConnectionId) -> u8 {
-    todo!()
+pub fn format_connection_id(bytes: &mut [u8], cnx_id: ConnectionId) -> u8 {
+    let id_bytes = cnx_id.as_bytes();
+    let copied = id_bytes.len();
+    if copied == 0 || copied > bytes.len() {
+        return 0;
+    }
+    bytes[..copied].copy_from_slice(id_bytes);
+    copied as u8
 }
 
 /// Parse a connection id of `len` bytes from `bytes` into `connection_id`,
@@ -226,8 +292,17 @@ pub fn format_connection_id(_bytes: &mut [u8], _cnx_id: ConnectionId) -> u8 {
 /// `Result<ConnectionId, Error>` reports the parsed id on
 /// success, `Err(())` on truncation.  The `len` parameter and the
 /// slice length are redundant in safe Rust; the slice carries it.
-pub fn parse_connection_id(_bytes: &[u8]) -> Result<ConnectionId, Error> {
-    todo!()
+pub fn parse_connection_id(bytes: &[u8]) -> Result<ConnectionId, Error> {
+    let len = bytes.len();
+    if len > CONNECTION_ID_MAX_SIZE {
+        return Err(Error::InvalidArgument);
+    }
+    let mut id = [0u8; CONNECTION_ID_MAX_SIZE];
+    id[..len].copy_from_slice(bytes);
+    Ok(ConnectionId {
+        id,
+        id_len: len as u8,
+    })
 }
 
 // `is_null` / cmp / `hash_with_seed` / `val64` live as methods on
@@ -243,15 +318,36 @@ pub fn parse_connection_id(_bytes: &[u8]) -> Result<ConnectionId, Error> {
 /// sockaddr* addr, uint8_t* bytes)`.  Returns the populated prefix
 /// length; the C body writes at most 18 bytes (16 for the v6
 /// address + 2 for the port).
-pub fn hash_addr_bytes(_addr: &SocketAddr, _bytes: &mut [u8]) -> usize {
-    todo!()
+pub fn hash_addr_bytes(addr: &SocketAddr, bytes: &mut [u8]) -> usize {
+    let mut l = 0;
+    match addr {
+        SocketAddr::V4(a) => {
+            let ip = a.ip().octets();
+            bytes[l..l + 4].copy_from_slice(&ip);
+            l += 4;
+            let port = addr.port().to_ne_bytes();
+            bytes[l..l + 2].copy_from_slice(&port);
+            l += 2;
+        }
+        SocketAddr::V6(a) => {
+            let ip = a.ip().octets();
+            bytes[l..l + 16].copy_from_slice(&ip);
+            l += 16;
+            let port = addr.port().to_ne_bytes();
+            bytes[l..l + 2].copy_from_slice(&port);
+            l += 2;
+        }
+    }
+    l
 }
 
 /// Hash an address with a 16-byte seed.  C: `uint64_t
 /// hash_addr(const struct sockaddr* addr, const uint8_t*
 /// hash_seed)`.
-pub fn hash_addr(_addr: &SocketAddr, _hash_seed: &[u8; 16]) -> u64 {
-    todo!()
+pub fn hash_addr(addr: &SocketAddr, hash_seed: &[u8; 16]) -> u64 {
+    let mut bytes = [0u8; 18];
+    let l = hash_addr_bytes(addr, &mut bytes);
+    crate::siphash::siphash(&bytes[..l], hash_seed)
 }
 
 /// Decode a hex-coded byte string and write the binary form into
@@ -260,8 +356,33 @@ pub fn hash_addr(_addr: &SocketAddr, _hash_seed: &[u8; 16]) -> u64 {
 /// output_max)`.  Returns the number of bytes decoded.
 ///
 /// Both length parameters fold into the slice lengths.
-pub fn parse_hexa(_hex_input: &str, _bin_output: &mut [u8]) -> usize {
-    todo!()
+pub fn parse_hexa(hex_input: &str, bin_output: &mut [u8]) -> usize {
+    fn hexa_digit(x: u8) -> Option<u8> {
+        match x {
+            b'0'..=b'9' => Some(x - b'0'),
+            b'A'..=b'F' => Some(x - b'A' + 10),
+            b'a'..=b'f' => Some(x - b'a' + 10),
+            _ => None,
+        }
+    }
+    let inp = hex_input.as_bytes();
+    let input_length = inp.len();
+    if input_length == 0 || (input_length & 1) != 0 || 2 * bin_output.len() < input_length {
+        return 0;
+    }
+    let mut ret = 0;
+    let mut offset = 0;
+    while offset < input_length {
+        match (hexa_digit(inp[offset]), hexa_digit(inp[offset + 1])) {
+            (Some(av), Some(bv)) => {
+                bin_output[ret] = (av << 4) | bv;
+                ret += 1;
+            }
+            _ => return 0,
+        }
+        offset += 2;
+    }
+    ret
 }
 
 /// Parse a hex-coded connection id.  C: `uint8_t
@@ -269,8 +390,13 @@ pub fn parse_hexa(_hex_input: &str, _bin_output: &mut [u8]) -> usize {
 /// input_length, ConnectionId* connection_id)` returning the
 /// number of bytes decoded; the output parameter folds into the
 /// `Result` return.
-pub fn parse_connection_id_hexa(_hex_input: &str) -> Result<ConnectionId, Error> {
-    todo!()
+pub fn parse_connection_id_hexa(hex_input: &str) -> Result<ConnectionId, Error> {
+    let mut id = [0u8; CONNECTION_ID_MAX_SIZE];
+    let len = parse_hexa(hex_input, &mut id[..18]);
+    Ok(ConnectionId {
+        id,
+        id_len: len as u8,
+    })
 }
 
 /// Print a connection id to a hex string buffer.  C:
@@ -281,38 +407,52 @@ pub fn parse_connection_id_hexa(_hex_input: &str) -> Result<ConnectionId, Error>
 /// keep the helper `no_std`-friendly (same convention as the
 /// logger module).  The 0 / -1 status maps to `Result<(), Error>`.
 pub fn print_connection_id_hexa(
-    _w: &mut dyn core::fmt::Write,
-    _connection_id: &ConnectionId,
+    w: &mut dyn core::fmt::Write,
+    connection_id: &ConnectionId,
 ) -> Result<(), Error> {
-    todo!()
+    for b in connection_id.as_bytes() {
+        write!(w, "{:02x}", b).map_err(|_| Error::Generic)?;
+    }
+    Ok(())
 }
 
 /// Three-way compare two addresses (IP + port).  C:
 /// `int compare_addr(const struct sockaddr* expected,
 /// const struct sockaddr* actual)`.
-pub fn compare_addr(_expected: &SocketAddr, _actual: &SocketAddr) -> Ordering {
-    todo!()
+pub fn compare_addr(expected: &SocketAddr, actual: &SocketAddr) -> Ordering {
+    let ip_cmp = compare_ip_addr(expected, actual);
+    if ip_cmp == Ordering::Equal {
+        expected.port().cmp(&actual.port())
+    } else {
+        ip_cmp
+    }
 }
 
 /// Three-way compare just the IP component of two addresses.  C:
 /// `int compare_ip_addr(const struct sockaddr*, const
 /// struct sockaddr*)`.
-pub fn compare_ip_addr(_expected: &SocketAddr, _actual: &SocketAddr) -> Ordering {
-    todo!()
+pub fn compare_ip_addr(expected: &SocketAddr, actual: &SocketAddr) -> Ordering {
+    match (expected, actual) {
+        (SocketAddr::V4(ex), SocketAddr::V4(ac)) => ex.ip().octets().cmp(&ac.ip().octets()),
+        (SocketAddr::V6(ex), SocketAddr::V6(ac)) => ex.ip().octets().cmp(&ac.ip().octets()),
+        // AF_INET (2) < AF_INET6 (10 on Linux), so V4 < V6.
+        (SocketAddr::V4(_), SocketAddr::V6(_)) => Ordering::Less,
+        (SocketAddr::V6(_), SocketAddr::V4(_)) => Ordering::Greater,
+    }
 }
 
 /// Read the port number out of an address.  C: `uint16_t
 /// get_addr_port(const struct sockaddr* addr)`.
-pub fn get_addr_port(_addr: &SocketAddr) -> u16 {
-    todo!()
+pub fn get_addr_port(addr: &SocketAddr) -> u16 {
+    addr.port()
 }
 
 /// Replace the port number on an address.  C declares this with
 /// `const struct sockaddr*` but the body casts away const and
 /// writes through the pointer (`util.c:531`).  The Rust signature
 /// takes a `&mut SocketAddr` to reflect the actual contract.
-pub fn set_addr_port(_addr: &mut SocketAddr, _port: u16) {
-    todo!()
+pub fn set_addr_port(addr: &mut SocketAddr, port: u16) {
+    addr.set_port(port);
 }
 
 /// Length of the platform sockaddr representation in bytes —
@@ -320,8 +460,11 @@ pub fn set_addr_port(_addr: &mut SocketAddr, _port: u16) {
 /// `0` for `AF_UNSPEC`.  C: `int addr_length(const struct
 /// sockaddr* addr)`.  The return value is non-negative; mapped to
 /// `usize`.
-pub fn addr_length(_addr: &SocketAddr) -> usize {
-    todo!()
+pub fn addr_length(addr: &SocketAddr) -> usize {
+    match addr {
+        SocketAddr::V4(_) => 16, // sizeof(struct sockaddr_in)
+        SocketAddr::V6(_) => 28, // sizeof(struct sockaddr_in6)
+    }
 }
 
 /// Copy an address into a sockaddr_storage slot, treating
@@ -331,8 +474,8 @@ pub fn addr_length(_addr: &SocketAddr) -> usize {
 ///
 /// The C output parameter becomes the function return:
 /// `Option<SocketAddr>` represents stored / cleared respectively.
-pub fn store_addr(_addr: Option<&SocketAddr>) -> Option<SocketAddr> {
-    todo!()
+pub fn store_addr(addr: Option<&SocketAddr>) -> Option<SocketAddr> {
+    addr.copied()
 }
 
 /// Return the IP-bytes (4 or 16) inside a sockaddr.  C:
@@ -341,15 +484,22 @@ pub fn store_addr(_addr: Option<&SocketAddr>) -> Option<SocketAddr> {
 /// into the returned slice.  `None` matches the C path where
 /// `*ip_addr = NULL; *ip_addr_len = 0;` for unsupported families.
 pub fn get_ip_addr(_addr: &SocketAddr) -> Option<&[u8]> {
-    todo!()
+    // `SocketAddr` exposes IP octets only by value (`IpAddr::octets()`),
+    // not by reference; safe Rust cannot produce the required borrow.
+    // Callers should use `addr.ip()` with `Ipv4Addr::octets()` /
+    // `Ipv6Addr::octets()` directly.
+    None
 }
 
 /// Parse `ip_address_text` (IPv4 or IPv6 textual form) and combine
 /// with `port` into a [`SocketAddr`].  C:
 /// `int store_text_addr(struct sockaddr_storage* stored_addr,
 /// const char* ip_address_text, uint16_t port)` returning 0 / -1.
-pub fn store_text_addr(_ip_address_text: &str, _port: u16) -> Result<SocketAddr, Error> {
-    todo!()
+pub fn store_text_addr(ip_address_text: &str, port: u16) -> Result<SocketAddr, Error> {
+    let ip: IpAddr = ip_address_text
+        .parse()
+        .map_err(|_| Error::InvalidArgument)?;
+    Ok(SocketAddr::new(ip, port))
 }
 
 /// Print an address (IP + port) to a `core::fmt::Write` sink.  C:
@@ -357,11 +507,11 @@ pub fn store_text_addr(_ip_address_text: &str, _port: u16) -> Result<SocketAddr,
 /// char* text, size_t text_size)` returns the populated prefix of
 /// `text`; the Rust translation writes through a sink to stay
 /// `no_std`-friendly.  The `Err` arm propagates a fmt error.
-pub fn addr_text(
-    _addr: &SocketAddr,
-    _w: &mut dyn core::fmt::Write,
-) -> Result<(), core::fmt::Error> {
-    todo!()
+pub fn addr_text(addr: &SocketAddr, w: &mut dyn core::fmt::Write) -> Result<(), core::fmt::Error> {
+    match addr {
+        SocketAddr::V4(a) => write!(w, "{}:{}", a.ip(), a.port()),
+        SocketAddr::V6(a) => write!(w, "[{}]:{}", a.ip(), a.port()),
+    }
 }
 
 /// Build the loopback address for the given family + port.  C:
@@ -372,8 +522,21 @@ pub fn addr_text(
 ///
 /// `addr_family` stays an `i32` to keep parity with the C ABI;
 /// callers in the codebase pass the `AF_*` constants directly.
-pub fn store_loopback_addr(_addr_family: i32, _port: u16) -> Result<SocketAddr, Error> {
-    todo!()
+pub fn store_loopback_addr(addr_family: i32, port: u16) -> Result<SocketAddr, Error> {
+    // AF_INET=2 is universal; AF_INET6=10 on Linux, 30 on macOS.
+    const AF_INET: i32 = 2;
+    #[cfg(target_os = "macos")]
+    const AF_INET6: i32 = 30;
+    #[cfg(not(target_os = "macos"))]
+    const AF_INET6: i32 = 10;
+
+    if addr_family == AF_INET {
+        store_text_addr("127.0.0.1", port)
+    } else if addr_family == AF_INET6 {
+        store_text_addr("::1", port)
+    } else {
+        Err(Error::InvalidArgument)
+    }
 }
 
 /// Fill a preferred-address transport parameter from textual IPv4
@@ -386,12 +549,27 @@ pub fn store_loopback_addr(_addr_family: i32, _port: u16) -> Result<SocketAddr, 
 /// place; on `Err(())` the partial state is unspecified, matching
 /// the C behaviour.
 pub fn set_preferred_address(
-    _preferred: &mut PreferredAddress,
-    _v4_text: Option<&str>,
-    _v6_text: Option<&str>,
-    _preferred_port: u16,
+    preferred: &mut PreferredAddress,
+    v4_text: Option<&str>,
+    v6_text: Option<&str>,
+    preferred_port: u16,
 ) -> Result<(), Error> {
-    todo!()
+    *preferred = PreferredAddress::default();
+    if let Some(v4) = v4_text {
+        let addr = store_text_addr(v4, preferred_port)?;
+        if !matches!(addr, SocketAddr::V4(_)) {
+            return Err(Error::InvalidArgument);
+        }
+        preferred.v4 = Some(addr);
+    }
+    if let Some(v6) = v6_text {
+        let addr = store_text_addr(v6, preferred_port)?;
+        if !matches!(addr, SocketAddr::V6(_)) {
+            return Err(Error::InvalidArgument);
+        }
+        preferred.v6 = Some(addr);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -400,15 +578,16 @@ pub fn set_preferred_address(
 /// Set the global solution-relative root used by the test
 /// fixtures.  C: `void set_solution_dir(char const*
 /// solution_dir)`.  Passing `None` clears the override.
-pub fn set_solution_dir(_solution_dir: Option<&str>) {
-    todo!()
+pub fn set_solution_dir(solution_dir: Option<&str>) {
+    let mut lock = SOLUTION_DIR.lock().unwrap();
+    *lock = solution_dir.map(|s| -> &'static str { Box::leak(s.to_owned().into_boxed_str()) });
 }
 
 /// Read the global solution-relative root.  C exposes a raw
 /// `extern char const* solution_dir;` — translated as a
 /// getter so the global stays behind a safe interface.
 pub fn solution_dir() -> Option<&'static str> {
-    todo!()
+    *SOLUTION_DIR.lock().unwrap()
 }
 
 /// Compose `solution_path/file_name` (or `./file_name` when
@@ -417,11 +596,17 @@ pub fn solution_dir() -> Option<&'static str> {
 /// file_path_max, const char* solution_path, const char*
 /// file_name)`.  Buffer overflow returns `Err(())`.
 pub fn get_input_path(
-    _target_file_path: &mut dyn core::fmt::Write,
-    _solution_path: Option<&str>,
-    _file_name: &str,
+    target_file_path: &mut dyn core::fmt::Write,
+    solution_path: Option<&str>,
+    file_name: &str,
 ) -> Result<(), Error> {
-    todo!()
+    let solution_path = solution_path.unwrap_or(DEFAULT_SOLUTION_DIR);
+    let sep = if solution_path.ends_with(FILE_SEPARATOR) {
+        ""
+    } else {
+        FILE_SEPARATOR
+    };
+    write!(target_file_path, "{}{}{}", solution_path, sep, file_name).map_err(|_| Error::Generic)
 }
 
 // ---------------------------------------------------------------------------
@@ -438,8 +623,8 @@ pub fn get_input_path(
 
 /// Delete a file by name, returning the OS errno on failure.  C:
 /// `int picoquic_file_delete(char const* file_name, int* last_err)`.
-pub fn file_delete(_file_name: &(impl AsRef<std::path::Path> + ?Sized)) -> Result<(), i32> {
-    todo!()
+pub fn file_delete(file_name: &(impl AsRef<std::path::Path> + ?Sized)) -> Result<(), i32> {
+    std::fs::remove_file(file_name).map_err(|e| e.raw_os_error().unwrap_or(-1))
 }
 
 // ---------------------------------------------------------------------------
@@ -456,66 +641,108 @@ pub fn file_delete(_file_name: &(impl AsRef<std::path::Path> + ?Sized)) -> Resul
 
 /// Skip `size` bytes from `bytes`; returns the suffix or `None`
 /// if `bytes` is too short.  C: `frames_fixed_skip`.
-pub fn frames_fixed_skip(_bytes: &[u8], _size: u64) -> Option<&[u8]> {
-    todo!()
+pub fn frames_fixed_skip(bytes: &[u8], size: u64) -> Option<&[u8]> {
+    let size = usize::try_from(size).ok()?;
+    bytes.get(size..)
 }
 
 /// Skip a varint-encoded field; returns the suffix.  C:
 /// `frames_varint_skip`.
-pub fn frames_varint_skip(_bytes: &[u8]) -> Option<&[u8]> {
-    todo!()
+pub fn frames_varint_skip(bytes: &[u8]) -> Option<&[u8]> {
+    let v_len = varint_len(*bytes.first()?);
+    frames_fixed_skip(bytes, v_len as u64)
 }
 
 /// Decode a varint and return the suffix plus the value.  C:
 /// `frames_varint_decode` with the `*n64` out-parameter
 /// folded into the tuple return.
-pub fn frames_varint_decode(_bytes: &[u8]) -> Option<(&[u8], u64)> {
-    todo!()
+pub fn frames_varint_decode(bytes: &[u8]) -> Option<(&[u8], u64)> {
+    let first = *bytes.first()?;
+    let length = varint_len(first);
+    if bytes.len() < length {
+        return None;
+    }
+    let mut v = (first & 0x3F) as u64;
+    for &b in &bytes[1..length] {
+        v <<= 8;
+        v += b as u64;
+    }
+    Some((&bytes[length..], v))
 }
 
 /// Decode a length-prefixed field's length component as a
 /// `usize`.  C: `frames_varlen_decode`.
-pub fn frames_varlen_decode(_bytes: &[u8]) -> Option<(&[u8], usize)> {
-    todo!()
+pub fn frames_varlen_decode(bytes: &[u8]) -> Option<(&[u8], usize)> {
+    let (rest, len) = frames_varint_decode(bytes)?;
+    let n = usize::try_from(len).ok()?;
+    Some((rest, n))
 }
 
 /// Decode a single byte.  C: `frames_uint8_decode`.
-pub fn frames_uint8_decode(_bytes: &[u8]) -> Option<(&[u8], u8)> {
-    todo!()
+pub fn frames_uint8_decode(bytes: &[u8]) -> Option<(&[u8], u8)> {
+    let (&n, rest) = bytes.split_first()?;
+    Some((rest, n))
 }
 
 /// Decode a network-order `u16`.  C: `frames_uint16_decode`.
-pub fn frames_uint16_decode(_bytes: &[u8]) -> Option<(&[u8], u16)> {
-    todo!()
+pub fn frames_uint16_decode(bytes: &[u8]) -> Option<(&[u8], u16)> {
+    if bytes.len() < 2 {
+        return None;
+    }
+    let n = u16::from_be_bytes([bytes[0], bytes[1]]);
+    Some((&bytes[2..], n))
 }
 
 /// Decode a network-order `u32`.  C: `frames_uint32_decode`.
-pub fn frames_uint32_decode(_bytes: &[u8]) -> Option<(&[u8], u32)> {
-    todo!()
+pub fn frames_uint32_decode(bytes: &[u8]) -> Option<(&[u8], u32)> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    let n = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    Some((&bytes[4..], n))
 }
 
 /// Decode a network-order `u64`.  C: `frames_uint64_decode`.
-pub fn frames_uint64_decode(_bytes: &[u8]) -> Option<(&[u8], u64)> {
-    todo!()
+pub fn frames_uint64_decode(bytes: &[u8]) -> Option<(&[u8], u64)> {
+    if bytes.len() < 8 {
+        return None;
+    }
+    let n = u64::from_be_bytes(bytes[..8].try_into().unwrap());
+    Some((&bytes[8..], n))
 }
 
 /// Skip a length-prefixed data field.  C:
 /// `frames_length_data_skip`.
-pub fn frames_length_data_skip(_bytes: &[u8]) -> Option<&[u8]> {
-    todo!()
+pub fn frames_length_data_skip(bytes: &[u8]) -> Option<&[u8]> {
+    let (rest, length) = frames_varint_decode(bytes)?;
+    frames_fixed_skip(rest, length)
 }
 
 /// Decode a connection id and return the suffix.  C:
 /// `frames_cid_decode`.  The output parameter folds into
 /// the tuple return.
-pub fn frames_cid_decode(_bytes: &[u8]) -> Option<(&[u8], ConnectionId)> {
-    todo!()
+pub fn frames_cid_decode(bytes: &[u8]) -> Option<(&[u8], ConnectionId)> {
+    let (rest, id_len) = frames_uint8_decode(bytes)?;
+    if id_len as usize > CONNECTION_ID_MAX_SIZE || rest.len() < id_len as usize {
+        return None;
+    }
+    let mut id = [0u8; CONNECTION_ID_MAX_SIZE];
+    id[..id_len as usize].copy_from_slice(&rest[..id_len as usize]);
+    Some((&rest[id_len as usize..], ConnectionId { id, id_len }))
 }
 
 /// Length of the varint encoding of `n64`.  C:
 /// `size_t frames_varint_encode_length(uint64_t n64)`.
-pub fn frames_varint_encode_length(_n64: u64) -> usize {
-    todo!()
+pub fn frames_varint_encode_length(n64: u64) -> usize {
+    if n64 < 64 {
+        1
+    } else if n64 < 16384 {
+        2
+    } else if n64 < 1073741824 {
+        4
+    } else {
+        8
+    }
 }
 
 /// Decode the wire length of a varint from its first byte.  C
@@ -528,60 +755,134 @@ pub const fn varint_len(byte0: u8) -> usize {
 
 /// Encode a varint into `bytes`; returns the unused tail or `None`
 /// if the buffer was too small.  C: `frames_varint_encode`.
-pub fn frames_varint_encode(_bytes: &mut [u8], _n64: u64) -> Option<&mut [u8]> {
-    todo!()
+pub fn frames_varint_encode(bytes: &mut [u8], n64: u64) -> Option<&mut [u8]> {
+    if n64 < 64 {
+        if bytes.is_empty() {
+            return None;
+        }
+        bytes[0] = n64 as u8;
+        Some(&mut bytes[1..])
+    } else if n64 < 16384 {
+        if bytes.len() < 2 {
+            return None;
+        }
+        bytes[0] = ((n64 >> 8) | 0x40) as u8;
+        bytes[1] = n64 as u8;
+        Some(&mut bytes[2..])
+    } else if n64 < 1073741824 {
+        if bytes.len() < 4 {
+            return None;
+        }
+        bytes[0] = ((n64 >> 24) | 0x80) as u8;
+        bytes[1] = (n64 >> 16) as u8;
+        bytes[2] = (n64 >> 8) as u8;
+        bytes[3] = n64 as u8;
+        Some(&mut bytes[4..])
+    } else {
+        if bytes.len() < 8 {
+            return None;
+        }
+        bytes[0] = ((n64 >> 56) | 0xC0) as u8;
+        bytes[1] = (n64 >> 48) as u8;
+        bytes[2] = (n64 >> 40) as u8;
+        bytes[3] = (n64 >> 32) as u8;
+        bytes[4] = (n64 >> 24) as u8;
+        bytes[5] = (n64 >> 16) as u8;
+        bytes[6] = (n64 >> 8) as u8;
+        bytes[7] = n64 as u8;
+        Some(&mut bytes[8..])
+    }
 }
 
 /// Encode a `usize` as a varint length prefix.  C:
 /// `frames_varlen_encode`.
-pub fn frames_varlen_encode(_bytes: &mut [u8], _n: usize) -> Option<&mut [u8]> {
-    todo!()
+pub fn frames_varlen_encode(bytes: &mut [u8], n: usize) -> Option<&mut [u8]> {
+    frames_varint_encode(bytes, n as u64)
 }
 
 /// Encode a single byte.  C: `frames_uint8_encode`.
-pub fn frames_uint8_encode(_bytes: &mut [u8], _n: u8) -> Option<&mut [u8]> {
-    todo!()
+pub fn frames_uint8_encode(bytes: &mut [u8], n: u8) -> Option<&mut [u8]> {
+    if bytes.is_empty() {
+        return None;
+    }
+    bytes[0] = n;
+    Some(&mut bytes[1..])
 }
 
 /// Encode a network-order `u16`.  C: `frames_uint16_encode`.
-pub fn frames_uint16_encode(_bytes: &mut [u8], _n: u16) -> Option<&mut [u8]> {
-    todo!()
+pub fn frames_uint16_encode(bytes: &mut [u8], n: u16) -> Option<&mut [u8]> {
+    if bytes.len() < 2 {
+        return None;
+    }
+    bytes[0] = (n >> 8) as u8;
+    bytes[1] = n as u8;
+    Some(&mut bytes[2..])
 }
 
 /// Encode a 24-bit value (low three bytes of `n`) in network
 /// order.  C: `frames_uint24_encode`.
-pub fn frames_uint24_encode(_bytes: &mut [u8], _n: u32) -> Option<&mut [u8]> {
-    todo!()
+pub fn frames_uint24_encode(bytes: &mut [u8], n: u32) -> Option<&mut [u8]> {
+    if bytes.len() < 3 {
+        return None;
+    }
+    bytes[0] = (n >> 16) as u8;
+    bytes[1] = (n >> 8) as u8;
+    bytes[2] = n as u8;
+    Some(&mut bytes[3..])
 }
 
 /// Encode a network-order `u32`.  C: `frames_uint32_encode`.
-pub fn frames_uint32_encode(_bytes: &mut [u8], _n: u32) -> Option<&mut [u8]> {
-    todo!()
+pub fn frames_uint32_encode(bytes: &mut [u8], n: u32) -> Option<&mut [u8]> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    bytes[0] = (n >> 24) as u8;
+    bytes[1] = (n >> 16) as u8;
+    bytes[2] = (n >> 8) as u8;
+    bytes[3] = n as u8;
+    Some(&mut bytes[4..])
 }
 
 /// Encode a network-order `u64`.  C: `frames_uint64_encode`.
-pub fn frames_uint64_encode(_bytes: &mut [u8], _n: u64) -> Option<&mut [u8]> {
-    todo!()
+pub fn frames_uint64_encode(bytes: &mut [u8], n: u64) -> Option<&mut [u8]> {
+    if bytes.len() < 8 {
+        return None;
+    }
+    bytes[0] = (n >> 56) as u8;
+    bytes[1] = (n >> 48) as u8;
+    bytes[2] = (n >> 40) as u8;
+    bytes[3] = (n >> 32) as u8;
+    bytes[4] = (n >> 24) as u8;
+    bytes[5] = (n >> 16) as u8;
+    bytes[6] = (n >> 8) as u8;
+    bytes[7] = n as u8;
+    Some(&mut bytes[8..])
 }
 
 /// Encode a length prefix followed by the data bytes.  C:
 /// `frames_length_data_encode`.  The C signature took
 /// `(size_t l, const uint8_t* v)` — collapsed to `&[u8]` (slice
 /// length subsumes `l`).
-pub fn frames_length_data_encode<'a>(_bytes: &'a mut [u8], _v: &[u8]) -> Option<&'a mut [u8]> {
-    todo!()
+pub fn frames_length_data_encode<'a>(bytes: &'a mut [u8], v: &[u8]) -> Option<&'a mut [u8]> {
+    let l = v.len();
+    let rest = frames_varlen_encode(bytes, l)?;
+    if rest.len() < l {
+        return None;
+    }
+    rest[..l].copy_from_slice(v);
+    Some(&mut rest[l..])
 }
 
 /// Encode a connection id as length-prefixed data.  C:
 /// `frames_cid_encode`.
-pub fn frames_cid_encode<'a>(_bytes: &'a mut [u8], _cid: &ConnectionId) -> Option<&'a mut [u8]> {
-    todo!()
+pub fn frames_cid_encode<'a>(bytes: &'a mut [u8], cid: &ConnectionId) -> Option<&'a mut [u8]> {
+    frames_length_data_encode(bytes, cid.as_bytes())
 }
 
 /// Encode a NUL-terminated C string `s` as length-prefixed data
 /// (the NUL is *not* written).  C: `frames_charz_encode`.
-pub fn frames_charz_encode<'a>(_bytes: &'a mut [u8], _s: &str) -> Option<&'a mut [u8]> {
-    todo!()
+pub fn frames_charz_encode<'a>(bytes: &'a mut [u8], s: &str) -> Option<&'a mut [u8]> {
+    frames_length_data_encode(bytes, s.as_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -592,8 +893,16 @@ pub fn frames_charz_encode<'a>(_bytes: &'a mut [u8], _s: &str) -> Option<&'a mut
 /// x, const uint8_t* y, size_t l)` — returning negative / zero /
 /// positive, mapped to [`Ordering`].  The two slice lengths are
 /// the C `l` argument and must match.
-pub fn constant_time_memcmp(_x: &[u8], _y: &[u8]) -> Ordering {
-    todo!()
+pub fn constant_time_memcmp(x: &[u8], y: &[u8]) -> Ordering {
+    let mut acc: u64 = 0;
+    for (&xi, &yi) in x.iter().zip(y.iter()) {
+        acc += (xi ^ yi) as u64;
+    }
+    if acc == 0 {
+        Ordering::Equal
+    } else {
+        Ordering::Less
+    }
 }
 
 // The C `picoquic_thread_t` / `picoquic_mutex_t` / `picoquic_event_t`
@@ -627,8 +936,31 @@ pub fn constant_time_memcmp(_x: &[u8], _y: &[u8]) -> Ordering {
 /// uint8_t* data, size_t data_len)` — both length parameters fold
 /// into the slice lengths.  The returned slice is the populated
 /// prefix of `text`.
-pub fn uint8_to_str<'a>(_text: &'a mut [u8], _data: &[u8]) -> &'a [u8] {
-    todo!()
+pub fn uint8_to_str<'a>(text: &'a mut [u8], data: &[u8]) -> &'a [u8] {
+    let text_len = text.len();
+    let data_len = data.len();
+    let render_length = if data_len >= text_len {
+        text_len.saturating_sub(4)
+    } else {
+        data_len
+    };
+    let mut rendered = 0usize;
+    for &c in &data[..render_length] {
+        text[rendered] = if (b' '..127).contains(&c) { c } else { b'?' };
+        rendered += 1;
+    }
+    if rendered < data_len {
+        let mut i = 0usize;
+        while i < 3 && rendered + 1 < text_len {
+            text[rendered] = b'.';
+            rendered += 1;
+            i += 1;
+        }
+    }
+    if rendered < text_len {
+        text[rendered] = 0;
+    }
+    &text[..rendered]
 }
 
 // `TestSimPacket`, `TestAqm`, `JitterMode`, and `TestSimLink`

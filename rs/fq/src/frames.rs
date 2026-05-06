@@ -60,8 +60,51 @@ impl FrameType {
     /// Textual name for `frame_type`, taking a raw `u64` so callers
     /// can pass extension or unknown wire values too.  C:
     /// `frame_name`.
-    pub fn name(_frame_type: u64) -> Option<&'static str> {
-        todo!()
+    pub fn name(frame_type: u64) -> Option<&'static str> {
+        if frame_type >= FrameType::StreamRangeMin as u64
+            && frame_type <= FrameType::StreamRangeMax as u64
+        {
+            return Some("stream");
+        }
+        match frame_type {
+            0x00 => Some("padding"),
+            0x01 => Some("ping"),
+            0x02 | 0x03 => Some("ack"),
+            0x04 => Some("reset_stream"),
+            0x05 => Some("stop_sending"),
+            0x06 => Some("crypto"),
+            0x07 => Some("new_token"),
+            0x10 => Some("max_data"),
+            0x11 => Some("max_stream_data"),
+            0x12 | 0x13 => Some("max_streams"),
+            0x14 => Some("data_blocked"),
+            0x15 => Some("stream_data_blocked"),
+            0x16 | 0x17 => Some("streams_blocked"),
+            0x18 => Some("new_connection_id"),
+            0x19 => Some("retire_connection_id"),
+            0x1a => Some("path_challenge"),
+            0x1b => Some("path_response"),
+            0x1c | 0x1d => Some("connection_close"),
+            0x1e => Some("handshake_done"),
+            0x1f => Some("immediate_ack"),
+            0x24 => Some("reset_stream_at"),
+            0x30 | 0x31 => Some("datagram"),
+            0x3e | 0x3f => Some("path_ack"),
+            0xaf => Some("ack_frequency"),
+            757 => Some("time_stamp"),
+            0x3e75 => Some("path_abandon"),
+            0x3e76 => Some("path_backup"),
+            0x3e77 => Some("path_available"),
+            0x3e78 => Some("path_new_connection_id"),
+            0x3e79 => Some("path_retire_connection_id"),
+            0x3e7a => Some("max_path_id"),
+            0x3e7b => Some("paths_blocked"),
+            0x3e7c => Some("path_cid_blocked"),
+            0xebd9 => Some("bdp"),
+            0x9f81a6 => Some("observed_address_v4"),
+            0x9f81a7 => Some("observed_address_v6"),
+            _ => None,
+        }
     }
 }
 

@@ -6,7 +6,7 @@
 //! the one-shot constructor that turns a populated config into a
 //! fully-wired [`Quic`].
 //!
-//! Phase 1: signatures only — every body is `todo!()`.
+//! Phase 4: all function bodies are implemented.
 //!
 //! Pointer-shape decisions for the config struct were guided by
 //! reading `quic/config.c`:
@@ -43,6 +43,7 @@
 
 use crate::Error;
 use crate::Instant;
+use crate::internal::MICROSEC_HANDSHAKE_MAX;
 use crate::{LossbitVersion, Quic, SpinbitVersion, StreamDataCallback};
 
 // ---------------------------------------------------------------------------
@@ -111,6 +112,791 @@ pub enum OptionId {
     PreferredV4,
     PreferredV6,
     Help,
+}
+
+// ---------------------------------------------------------------------------
+// Option table (mirrors C static option_table[]).
+
+struct OptionEntry {
+    id: OptionId,
+    letter: char,
+    name: &'static str,
+    nb_params: usize,
+    param_sample: &'static str,
+    help: &'static str,
+}
+
+static OPTION_TABLE: &[OptionEntry] = &[
+    OptionEntry {
+        id: OptionId::Cert,
+        letter: 'c',
+        name: "cert",
+        nb_params: 1,
+        param_sample: "file",
+        help: "cert file",
+    },
+    OptionEntry {
+        id: OptionId::Key,
+        letter: 'k',
+        name: "key",
+        nb_params: 1,
+        param_sample: "file",
+        help: "key file",
+    },
+    OptionEntry {
+        id: OptionId::ServerPort,
+        letter: 'p',
+        name: "port",
+        nb_params: 1,
+        param_sample: "number",
+        help: "server port",
+    },
+    OptionEntry {
+        id: OptionId::ProposedVersion,
+        letter: 'v',
+        name: "proposed_version",
+        nb_params: 1,
+        param_sample: "",
+        help: "Version proposed by client, e.g. -v ff000012",
+    },
+    OptionEntry {
+        id: OptionId::OutDir,
+        letter: 'o',
+        name: "outdir",
+        nb_params: 1,
+        param_sample: "folder",
+        help: "Folder where client writes downloaded files, defaults to current directory.",
+    },
+    OptionEntry {
+        id: OptionId::WwwDir,
+        letter: 'w',
+        name: "wwwdir",
+        nb_params: 1,
+        param_sample: "folder",
+        help: "Folder containing web pages served by server",
+    },
+    OptionEntry {
+        id: OptionId::MaxConnections,
+        letter: 'x',
+        name: "max_connections",
+        nb_params: 1,
+        param_sample: "number",
+        help: "Maximum number of concurrent connections, default 256",
+    },
+    OptionEntry {
+        id: OptionId::DoRetry,
+        letter: 'r',
+        name: "do_retry",
+        nb_params: 0,
+        param_sample: "",
+        help: "Do Retry Request",
+    },
+    OptionEntry {
+        id: OptionId::InitialRandom,
+        letter: 'R',
+        name: "initial_random",
+        nb_params: 1,
+        param_sample: "option",
+        help: "Randomize packet number spaces: none(0), initial(1, default), all(2).",
+    },
+    OptionEntry {
+        id: OptionId::ResetSeed,
+        letter: 's',
+        name: "reset_seed",
+        nb_params: 1,
+        param_sample: "<32 hex chars>",
+        help: "Reset seed",
+    },
+    OptionEntry {
+        id: OptionId::DisablePortBlocking,
+        letter: 'X',
+        name: "disable_block",
+        nb_params: 0,
+        param_sample: "",
+        help: "Disable the check for blocked ports",
+    },
+    OptionEntry {
+        id: OptionId::SolutionDir,
+        letter: 'S',
+        name: "solution_dir",
+        nb_params: 1,
+        param_sample: "folder",
+        help: "Set the path to the source files to find the default files",
+    },
+    OptionEntry {
+        id: OptionId::CcAlgo,
+        letter: 'G',
+        name: "cc_algo",
+        nb_params: 1,
+        param_sample: "cc_algorithm",
+        help: "Use the specified congestion control algorithm. Defaults to bbr.",
+    },
+    OptionEntry {
+        id: OptionId::CcOption,
+        letter: 'H',
+        name: "cco",
+        nb_params: 1,
+        param_sample: "option",
+        help: "Set option string if required by congestion control algorithm.",
+    },
+    OptionEntry {
+        id: OptionId::Spinbit,
+        letter: 'P',
+        name: "spinbit",
+        nb_params: 1,
+        param_sample: "number",
+        help: "Set the default spinbit policy",
+    },
+    OptionEntry {
+        id: OptionId::Lossbit,
+        letter: 'O',
+        name: "lossbit",
+        nb_params: 1,
+        param_sample: "number",
+        help: "Set the default lossbit policy",
+    },
+    OptionEntry {
+        id: OptionId::Multipath,
+        letter: 'M',
+        name: "multipath",
+        nb_params: 0,
+        param_sample: "",
+        help: "Enable QUIC multipath extension",
+    },
+    OptionEntry {
+        id: OptionId::DestIf,
+        letter: 'e',
+        name: "dest_if",
+        nb_params: 1,
+        param_sample: "if",
+        help: "Send on interface (default: -1)",
+    },
+    OptionEntry {
+        id: OptionId::CipherSuite,
+        letter: 'C',
+        name: "cipher_suite",
+        nb_params: 1,
+        param_sample: "cipher_suite_id",
+        help: "specify cipher suite (e.g. -C 20 = chacha20)",
+    },
+    OptionEntry {
+        id: OptionId::InitCnxId,
+        letter: 'i',
+        name: "cnxid_params",
+        nb_params: 1,
+        param_sample: "per-text-lb-spec",
+        help: "See documentation for LB compatible CID configuration",
+    },
+    OptionEntry {
+        id: OptionId::LogFile,
+        letter: 'l',
+        name: "text_log",
+        nb_params: 1,
+        param_sample: "file",
+        help: "Log file, Log to stdout if file = \"-\". No text logging if absent.",
+    },
+    OptionEntry {
+        id: OptionId::LongLog,
+        letter: 'L',
+        name: "long_log",
+        nb_params: 0,
+        param_sample: "",
+        help: "Log all packets. If absent, log stops after 100 packets.",
+    },
+    OptionEntry {
+        id: OptionId::BinlogDir,
+        letter: 'b',
+        name: "binlog_dir",
+        nb_params: 1,
+        param_sample: "folder",
+        help: "Binary logging to this directory. No binary logging if absent.",
+    },
+    OptionEntry {
+        id: OptionId::QlogDir,
+        letter: 'q',
+        name: "qlog_dir",
+        nb_params: 1,
+        param_sample: "folder",
+        help: "Qlog logging to this directory.",
+    },
+    OptionEntry {
+        id: OptionId::MtuMax,
+        letter: 'm',
+        name: "mtu_max",
+        nb_params: 1,
+        param_sample: "mtu_max",
+        help: "Largest mtu value that can be tried for discovery.",
+    },
+    OptionEntry {
+        id: OptionId::Sni,
+        letter: 'n',
+        name: "sni",
+        nb_params: 1,
+        param_sample: "sni",
+        help: "sni (default: server name)",
+    },
+    OptionEntry {
+        id: OptionId::Alpn,
+        letter: 'a',
+        name: "alpn",
+        nb_params: 1,
+        param_sample: "alpn",
+        help: "alpn (default function of version)",
+    },
+    OptionEntry {
+        id: OptionId::RootTrustFile,
+        letter: 't',
+        name: "root_trust_file",
+        nb_params: 1,
+        param_sample: "file",
+        help: "root trust file",
+    },
+    OptionEntry {
+        id: OptionId::ForceZeroShare,
+        letter: 'z',
+        name: "force_zero_share",
+        nb_params: 0,
+        param_sample: "",
+        help: "Set TLS zero share behavior on client, to force HRR",
+    },
+    OptionEntry {
+        id: OptionId::CnxIdLength,
+        letter: 'I',
+        name: "cnxid_length",
+        nb_params: 1,
+        param_sample: "length",
+        help: "Length of CNX_ID used by the client, default=8",
+    },
+    OptionEntry {
+        id: OptionId::IdleTimeout,
+        letter: 'd',
+        name: "idle_timeout",
+        nb_params: 1,
+        param_sample: "ms",
+        help: "Duration of idle timeout in milliseconds (Default 30,000ms)",
+    },
+    OptionEntry {
+        id: OptionId::NoDisk,
+        letter: 'D',
+        name: "no_disk",
+        nb_params: 0,
+        param_sample: "",
+        help: "no disk: do not save received files on disk",
+    },
+    OptionEntry {
+        id: OptionId::LargeClientHello,
+        letter: 'Q',
+        name: "large_client_hello",
+        nb_params: 0,
+        param_sample: "",
+        help: "send a large client hello in order to test post quantum readiness",
+    },
+    OptionEntry {
+        id: OptionId::TicketFileName,
+        letter: 'T',
+        name: "ticket_file",
+        nb_params: 1,
+        param_sample: "file",
+        help: "File storing the session tickets",
+    },
+    OptionEntry {
+        id: OptionId::TokenFileName,
+        letter: 'N',
+        name: "token_file",
+        nb_params: 1,
+        param_sample: "file",
+        help: "File storing the new tokens",
+    },
+    OptionEntry {
+        id: OptionId::SocketBufferSize,
+        letter: 'B',
+        name: "so_buf_size",
+        nb_params: 1,
+        param_sample: "number",
+        help: "Set buffer size with SO_SNDBUF SO_RCVBUF",
+    },
+    OptionEntry {
+        id: OptionId::PerformanceLog,
+        letter: 'F',
+        name: "log_file_name",
+        nb_params: 1,
+        param_sample: "file",
+        help: "Append performance reports to performance log",
+    },
+    OptionEntry {
+        id: OptionId::PreemptiveRepeat,
+        letter: 'V',
+        name: "preemptive_repeat",
+        nb_params: 0,
+        param_sample: "",
+        help: "enable preemptive repeat",
+    },
+    OptionEntry {
+        id: OptionId::VersionUpgrade,
+        letter: 'U',
+        name: "version_upgrade",
+        nb_params: 1,
+        param_sample: "",
+        help: "Version upgrade if server agrees, e.g. -U 6b3343cf",
+    },
+    OptionEntry {
+        id: OptionId::NoGso,
+        letter: '0',
+        name: "no_gso",
+        nb_params: 0,
+        param_sample: "",
+        help: "Do not use UDP GSO or equivalent",
+    },
+    OptionEntry {
+        id: OptionId::BdpFrame,
+        letter: 'j',
+        name: "bdp",
+        nb_params: 1,
+        param_sample: "number",
+        help: "use bdp extension frame(1) or don't (0). Default=0",
+    },
+    OptionEntry {
+        id: OptionId::CwinMax,
+        letter: 'W',
+        name: "cwin_max",
+        nb_params: 1,
+        param_sample: "bytes",
+        help: "Max value for CWIN. Default=UINT64_MAX",
+    },
+    OptionEntry {
+        id: OptionId::SslKeyLog,
+        letter: '8',
+        name: "sslkeylog",
+        nb_params: 0,
+        param_sample: "",
+        help: "Enable SSLKEYLOG",
+    },
+    OptionEntry {
+        id: OptionId::AddressDiscovery,
+        letter: 'J',
+        name: "addr_disc",
+        nb_params: 1,
+        param_sample: "mode",
+        help: "provider (0), receiver (1) or both (2).",
+    },
+    OptionEntry {
+        id: OptionId::EchServer,
+        letter: 'E',
+        name: "ech_s",
+        nb_params: 2,
+        param_sample: "key config",
+        help: "ECH private key file, config file. Default= no ECH on server.",
+    },
+    OptionEntry {
+        id: OptionId::EchInit,
+        letter: 'y',
+        name: "ech_init",
+        nb_params: 1,
+        param_sample: "public_name",
+        help: "Create an ECH configuration before applying the `ech_s` parameter.",
+    },
+    OptionEntry {
+        id: OptionId::EchClient,
+        letter: 'K',
+        name: "ech_c",
+        nb_params: 1,
+        param_sample: "base64",
+        help: "ECH configuration for the client connection, base64 encoded.",
+    },
+    OptionEntry {
+        id: OptionId::FlowControlMax,
+        letter: 'Z',
+        name: "flow_control_max",
+        nb_params: 1,
+        param_sample: "bytes",
+        help: "Set the flow control's initial max data.",
+    },
+    OptionEntry {
+        id: OptionId::PreferredV4,
+        letter: '4',
+        name: "preferred_v4",
+        nb_params: 1,
+        param_sample: "ip[:port]",
+        help: "Preferred address for v4 connections.",
+    },
+    OptionEntry {
+        id: OptionId::PreferredV6,
+        letter: '6',
+        name: "preferred_v6",
+        nb_params: 1,
+        param_sample: "ipv6[:port]",
+        help: "Preferred address for v6 connections.",
+    },
+    OptionEntry {
+        id: OptionId::Help,
+        letter: 'h',
+        name: "help",
+        nb_params: 0,
+        param_sample: "",
+        help: "This help message",
+    },
+];
+
+fn parse_hex_version(s: &str) -> u32 {
+    u32::from_str_radix(s, 16).unwrap_or(0)
+}
+
+fn base64_decode(s: &str) -> Result<Vec<u8>, Error> {
+    let mut table = [0xFFu8; 256];
+    for (i, &c) in b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        .iter()
+        .enumerate()
+    {
+        table[c as usize] = i as u8;
+    }
+    let bytes: Vec<u8> = s.bytes().filter(|&c| c != b'=').collect();
+    let mut out = Vec::new();
+    for chunk in bytes.chunks(4) {
+        let mut v = [0u8; 4];
+        let n = chunk.len();
+        for (i, &b) in chunk.iter().enumerate() {
+            let x = table[b as usize];
+            if x == 0xFF {
+                return Err(Error::InvalidArgument);
+            }
+            v[i] = x;
+        }
+        out.push((v[0] << 2) | (v[1] >> 4));
+        if n >= 3 {
+            out.push((v[1] << 4) | (v[2] >> 2));
+        }
+        if n == 4 {
+            out.push((v[2] << 6) | v[3]);
+        }
+    }
+    Ok(out)
+}
+
+fn option_entry(id: OptionId) -> Option<&'static OptionEntry> {
+    OPTION_TABLE.iter().find(|e| e.id == id)
+}
+
+fn option_entry_by_letter(letter: char) -> Option<(usize, &'static OptionEntry)> {
+    OPTION_TABLE
+        .iter()
+        .enumerate()
+        .find(|(_, e)| e.letter == letter)
+}
+
+fn option_entry_by_name(name: &str) -> Option<(usize, &'static OptionEntry)> {
+    OPTION_TABLE
+        .iter()
+        .enumerate()
+        .find(|(_, e)| e.name == name)
+}
+
+fn apply_option(config: &mut Config, entry: &OptionEntry, params: &[&str]) -> Result<(), Error> {
+    let p0 = params.first().copied();
+    let p1 = params.get(1).copied();
+    match entry.id {
+        OptionId::Cert => {
+            config.server_cert_file = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::Key => {
+            config.server_key_file = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::ServerPort => {
+            config.set_port(p0.ok_or(Error::InvalidArgument)?)?;
+        }
+        OptionId::ProposedVersion => {
+            let v = parse_hex_version(p0.ok_or(Error::InvalidArgument)?);
+            if v == 0 {
+                return Err(Error::InvalidArgument);
+            }
+            config.proposed_version = v;
+        }
+        OptionId::OutDir => {
+            config.out_dir = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::WwwDir => {
+            config.www_dir = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::MaxConnections => {
+            let v: i32 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            if v <= 0 {
+                return Err(Error::InvalidArgument);
+            }
+            config.nb_connections = v as u32;
+        }
+        OptionId::DoRetry => {
+            config.do_retry = true;
+        }
+        OptionId::InitialRandom => {
+            let v: i32 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            if !(0..=2).contains(&v) {
+                return Err(Error::InvalidArgument);
+            }
+            config.initial_random = v as u32;
+        }
+        OptionId::ResetSeed => {
+            config.has_reset_seed = true;
+            let n =
+                crate::utils::parse_hexa(p0.ok_or(Error::InvalidArgument)?, &mut config.reset_seed);
+            if n != config.reset_seed.len() {
+                return Err(Error::InvalidArgument);
+            }
+        }
+        OptionId::DisablePortBlocking => {
+            config.disable_port_blocking = true;
+        }
+        OptionId::SslKeyLog => {
+            config.enable_sslkeylog = true;
+        }
+        OptionId::SolutionDir => {
+            config.solution_dir = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::CcAlgo => {
+            config.cc_algo_id = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::CcOption => {
+            config.cc_algo_option_string = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::Spinbit => {
+            let v: i32 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            config.spinbit_policy = match v {
+                0 => SpinbitVersion::Basic,
+                1 => SpinbitVersion::Random,
+                2 => SpinbitVersion::Null,
+                3 => SpinbitVersion::On,
+                _ => return Err(Error::InvalidArgument),
+            };
+        }
+        OptionId::Lossbit => {
+            let v: i32 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            config.lossbit_policy = match v {
+                0 => LossbitVersion::None,
+                1 => LossbitVersion::SendOnly,
+                2 => LossbitVersion::SendReceive,
+                _ => return Err(Error::InvalidArgument),
+            };
+        }
+        OptionId::Multipath => {
+            config.multipath_option = 1;
+        }
+        OptionId::DestIf => {
+            config.dest_if = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+        }
+        OptionId::CipherSuite => {
+            config.cipher_suite_id = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+        }
+        OptionId::InitCnxId => {
+            config.connection_id_cbdata = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::LogFile => {
+            config.log_file = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::LongLog => {
+            config.use_long_log = true;
+        }
+        OptionId::BinlogDir => {
+            config.bin_dir = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::QlogDir => {
+            config.qlog_dir = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::MtuMax => {
+            let v: i32 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            if v <= 0 || v > crate::internal::MAX_PACKET_SIZE as i32 {
+                return Err(Error::InvalidArgument);
+            }
+            config.mtu_max = v;
+        }
+        OptionId::Sni => {
+            config.sni = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::Alpn => {
+            config.alpn = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::RootTrustFile => {
+            config.root_trust_file = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::ForceZeroShare => {
+            config.force_zero_share = true;
+        }
+        OptionId::CnxIdLength => {
+            let v: i32 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            if v < 0 || v > crate::CONNECTION_ID_MAX_SIZE as i32 {
+                return Err(Error::InvalidArgument);
+            }
+            config.connection_id_length = v;
+        }
+        OptionId::IdleTimeout => {
+            let v: i32 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            if v < 0 {
+                return Err(Error::InvalidArgument);
+            }
+            config.idle_timeout = v;
+        }
+        OptionId::NoDisk => {
+            config.no_disk = true;
+        }
+        OptionId::LargeClientHello => {
+            config.large_client_hello = true;
+        }
+        OptionId::TicketFileName => {
+            config.ticket_file_name = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::TokenFileName => {
+            config.token_file_name = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::SocketBufferSize => {
+            let v: i32 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            if v < 0 {
+                return Err(Error::InvalidArgument);
+            }
+            config.socket_buffer_size = v;
+        }
+        OptionId::PerformanceLog => {
+            config.performance_log = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::PreemptiveRepeat => {
+            config.do_preemptive_repeat = true;
+        }
+        OptionId::VersionUpgrade => {
+            let v = parse_hex_version(p0.ok_or(Error::InvalidArgument)?);
+            if v == 0 {
+                return Err(Error::InvalidArgument);
+            }
+            config.desired_version = v;
+        }
+        OptionId::NoGso => {
+            config.do_not_use_gso = true;
+        }
+        OptionId::BdpFrame => {
+            let v: i32 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            if !(0..=1).contains(&v) {
+                return Err(Error::InvalidArgument);
+            }
+            config.bdp_frame_option = v;
+        }
+        OptionId::CwinMax => {
+            let v: i64 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            if v < 0 {
+                return Err(Error::InvalidArgument);
+            }
+            config.cwin_max = if v == 0 { u64::MAX } else { v as u64 };
+        }
+        OptionId::AddressDiscovery => {
+            let v: i32 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            if !(0..=2).contains(&v) {
+                return Err(Error::InvalidArgument);
+            }
+            config.address_discovery_mode = v + 1;
+        }
+        OptionId::EchServer => {
+            config.ech_key_file = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+            if let Some(s) = p1 {
+                config.ech_config_file = Some(s.to_string());
+            }
+        }
+        OptionId::EchInit => {
+            config.ech_public_name = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::EchClient => {
+            let s = p0.ok_or(Error::InvalidArgument)?;
+            if s == "-" {
+                config.ech_target = None;
+            } else {
+                config.ech_target = Some(base64_decode(s).map_err(|_| Error::InvalidArgument)?);
+            }
+        }
+        OptionId::FlowControlMax => {
+            let v: i64 = p0
+                .ok_or(Error::InvalidArgument)?
+                .parse()
+                .map_err(|_| Error::InvalidArgument)?;
+            if v < 0 {
+                return Err(Error::InvalidArgument);
+            }
+            config.flow_control_max = v as u64;
+        }
+        OptionId::PreferredV4 => {
+            config.preferred_address_v4 = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::PreferredV6 => {
+            config.preferred_address_v6 = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
+        }
+        OptionId::Help => {
+            return Err(Error::InvalidArgument);
+        }
+    }
+    Ok(())
+}
+
+fn collect_params<'a>(
+    entry: &OptionEntry,
+    p_optind: &mut usize,
+    argv: &[&'a str],
+    optarg: Option<&'a str>,
+) -> Result<Vec<&'a str>, Error> {
+    let mut params = Vec::new();
+    if entry.nb_params > 0 {
+        params.push(optarg.ok_or(Error::InvalidArgument)?);
+        let mut nb = 1;
+        while nb < entry.nb_params {
+            if *p_optind >= argv.len() {
+                return Err(Error::InvalidArgument);
+            }
+            params.push(argv[*p_optind]);
+            *p_optind += 1;
+            nb += 1;
+        }
+    }
+    Ok(params)
+}
+
+fn parse_option_string(opt_string: &str) -> Option<(usize, &'static OptionEntry)> {
+    if opt_string.starts_with("--") && opt_string.len() > 2 {
+        option_entry_by_name(&opt_string[2..])
+    } else if opt_string.starts_with('-') && opt_string.len() == 2 {
+        opt_string.chars().nth(1).and_then(option_entry_by_letter)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,7 +1016,65 @@ impl Default for Config {
     /// `picoquic_config_init` (which the C body invoked after a
     /// zero-initialising `memset`).
     fn default() -> Self {
-        todo!()
+        Config {
+            nb_connections: 256,
+            solution_dir: None,
+            server_cert_file: None,
+            server_key_file: None,
+            log_file: None,
+            bin_dir: None,
+            qlog_dir: None,
+            performance_log: None,
+            server_port: 0,
+            local_port: 0,
+            is_port_shared: false,
+            nb_threads: 0,
+            dest_if: 0,
+            mtu_max: 0,
+            connection_id_length: -1,
+            idle_timeout: (MICROSEC_HANDSHAKE_MAX.ticks() / 1000) as i32,
+            socket_buffer_size: 0,
+            cc_algo_id: None,
+            cc_algo_option_string: None,
+            connection_id_cbdata: None,
+            spinbit_policy: SpinbitVersion::default(),
+            lossbit_policy: LossbitVersion::default(),
+            multipath_option: 0,
+            multipath_alt_config: None,
+            bdp_frame_option: 0,
+            cwin_max: u64::MAX,
+            address_discovery_mode: 0,
+            initial_random: 3,
+            use_long_log: false,
+            do_preemptive_repeat: false,
+            do_not_use_gso: false,
+            disable_port_blocking: false,
+            enable_sslkeylog: false,
+            www_dir: None,
+            reset_seed: [0; 16],
+            ticket_encryption_key: None,
+            do_retry: false,
+            has_reset_seed: false,
+            ticket_file_name: None,
+            token_file_name: None,
+            sni: None,
+            alpn: None,
+            out_dir: None,
+            root_trust_file: None,
+            cipher_suite_id: 0,
+            proposed_version: 0,
+            desired_version: 0,
+            force_zero_share: false,
+            no_disk: false,
+            large_client_hello: false,
+            ech_key_file: None,
+            ech_config_file: None,
+            ech_public_name: None,
+            ech_target: None,
+            flow_control_max: 0,
+            preferred_address_v4: None,
+            preferred_address_v6: None,
+        }
     }
 }
 
@@ -244,8 +1088,13 @@ impl Config {
     ///
     /// The C signature returned `int` (`0` ↔ `Ok`, `-1` ↔ `Err`);
     /// mapped to `Result<(), Error>`.
-    pub fn set_option(&mut self, _option: OptionId, _value: Option<&str>) -> Result<(), Error> {
-        todo!()
+    pub fn set_option(&mut self, option: OptionId, value: Option<&str>) -> Result<(), Error> {
+        let entry = option_entry(option).ok_or(Error::InvalidArgument)?;
+        let params: &[&str] = match value {
+            Some(v) => &[v],
+            None => &[],
+        };
+        apply_option(self, entry, params)
     }
 
     /// Dispatch one option from a single-character flag (`-x`).
@@ -261,12 +1110,14 @@ impl Config {
     /// dropped (implicit in `argv.len()`).
     pub fn command_line(
         &mut self,
-        _opt: char,
-        _p_optind: &mut usize,
-        _argv: &[&str],
-        _optarg: Option<&str>,
+        opt: char,
+        p_optind: &mut usize,
+        argv: &[&str],
+        optarg: Option<&str>,
     ) -> Result<(), Error> {
-        todo!()
+        let (_, entry) = option_entry_by_letter(opt).ok_or(Error::InvalidArgument)?;
+        let params = collect_params(entry, p_optind, argv, optarg)?;
+        apply_option(self, entry, &params)
     }
 
     /// Like [`Self::command_line`] but accepts both single-character
@@ -275,12 +1126,14 @@ impl Config {
     /// C: `picoquic_config_command_line_ex`.
     pub fn command_line_ex(
         &mut self,
-        _opt_string: &str,
-        _p_optind: &mut usize,
-        _argv: &[&str],
-        _optarg: Option<&str>,
+        opt_string: &str,
+        p_optind: &mut usize,
+        argv: &[&str],
+        optarg: Option<&str>,
     ) -> Result<(), Error> {
-        todo!()
+        let (_, entry) = parse_option_string(opt_string).ok_or(Error::InvalidArgument)?;
+        let params = collect_params(entry, p_optind, argv, optarg)?;
+        apply_option(self, entry, &params)
     }
 
     /// Build the getopt-style option string from the dispatch table
@@ -294,7 +1147,14 @@ impl Config {
     /// buffer and returns it directly, so the buffer-too-small
     /// failure mode disappears.
     pub fn option_letters() -> String {
-        todo!()
+        let mut s = String::new();
+        for e in OPTION_TABLE {
+            s.push(e.letter);
+            if e.nb_params > 0 {
+                s.push(':');
+            }
+        }
+        s
     }
 
     /// Write the option help to a [`core::fmt::Write`] sink.
@@ -304,16 +1164,80 @@ impl Config {
     /// any sink (a `String` buffer, the stdout/stderr handles under
     /// the `std` feature, or a custom writer) so the function
     /// stays `no_std`-friendly.
-    pub fn write_usage(_w: &mut dyn core::fmt::Write) {
-        todo!()
+    pub fn write_usage(w: &mut dyn core::fmt::Write) {
+        let _ = w.write_str("Picoquic options:\n");
+        for e in OPTION_TABLE {
+            let _ = write!(w, "  -{} {}", e.letter, e.param_sample);
+            let pad = 12usize.saturating_sub(e.param_sample.len());
+            for _ in 0..pad {
+                let _ = w.write_char(' ');
+            }
+            let _ = writeln!(w, " {}", e.help);
+        }
     }
 
     /// Print the option help to stderr.  C: `picoquic_config_usage`.
     ///
-    /// Phase 3 will route this through `eprintln!` (std-only); for
-    /// now it is just a `todo!()`.
+    /// Routes through an intermediate `String` buffer then `eprint!`.
     pub fn print_usage() {
-        todo!()
+        let mut buf = String::new();
+        Self::write_usage(&mut buf);
+        eprint!("{}", buf);
+    }
+
+    /// Parse a port-configuration string into `server_port`,
+    /// `local_port`, `is_port_shared`, and `nb_threads`.
+    /// C: `config_set_port` (internal, called from the `-p` option
+    /// handler in `picoquic/config.c`).
+    ///
+    /// Accepted formats:
+    /// - `""` / `"0"` — clear all (port 0, not shared)
+    /// - `"4433"` — server port only
+    /// - `"443:4434"` — server:local
+    /// - `"S4433"` — shared server port
+    /// - `"S443:4434*256"` — shared server:local, 256 threads
+    /// - `"4433*7"` — server port, 7 threads
+    ///
+    /// Returns `Err` when any token cannot be parsed or a port value
+    /// exceeds 65535.
+    pub fn set_port(&mut self, port_string: &str) -> Result<(), Error> {
+        let bytes = port_string.as_bytes();
+        let mut i = 0;
+        let mut is_port_shared = false;
+        let mut p1: i32 = 0;
+        let mut p2: i32 = 0;
+        let mut nb_threads: i32 = 0;
+
+        if i < bytes.len() && bytes[i] == b'S' {
+            is_port_shared = true;
+            i += 1;
+        }
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            p1 = p1 * 10 + (bytes[i] - b'0') as i32;
+            i += 1;
+        }
+        if i < bytes.len() && bytes[i] == b':' {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                p2 = p2 * 10 + (bytes[i] - b'0') as i32;
+                i += 1;
+            }
+        }
+        if i < bytes.len() && bytes[i] == b'*' {
+            i += 1;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                nb_threads = nb_threads * 10 + (bytes[i] - b'0') as i32;
+                i += 1;
+            }
+        }
+        if i != bytes.len() || !(0..=65535).contains(&p1) || !(0..=65535).contains(&p2) {
+            return Err(Error::InvalidArgument);
+        }
+        self.server_port = p1 as u16;
+        self.local_port = p2 as u16;
+        self.is_port_shared = is_port_shared;
+        self.nb_threads = nb_threads;
+        Ok(())
     }
 
     /// Build a fully-configured QUIC context from this config plus
@@ -343,11 +1267,135 @@ impl Config {
     ///   context type is real.
     pub fn create_and_configure(
         &mut self,
-        _default_callback: Option<Box<dyn StreamDataCallback>>,
-        _current_time: Instant,
+        default_callback: Option<Box<dyn StreamDataCallback>>,
+        current_time: Instant,
         _p_simulated_time: Option<&mut u64>,
     ) -> Option<Box<Quic>> {
-        todo!()
+        let reset_seed = if self.has_reset_seed {
+            self.reset_seed
+        } else {
+            [0u8; 16]
+        };
+
+        let mut quic = Quic::new(
+            self.nb_connections,
+            self.server_cert_file.as_deref(),
+            self.server_key_file.as_deref(),
+            self.root_trust_file.as_deref(),
+            self.alpn.as_deref(),
+            default_callback,
+            None,
+            reset_seed,
+            current_time,
+            self.ticket_file_name.as_deref(),
+            self.ticket_encryption_key.as_deref(),
+        )?;
+
+        if self.do_retry {
+            quic.set_cookie_mode(1);
+        } else {
+            quic.set_cookie_mode(2);
+        }
+
+        if let Some(ref cc_id) = self.cc_algo_id {
+            let _ = quic.set_default_congestion_algorithm_by_name(cc_id);
+        }
+
+        let _ = quic.set_default_spinbit_policy(self.spinbit_policy);
+        quic.set_default_lossbit_policy(self.lossbit_policy);
+        quic.set_default_multipath_option(self.multipath_option);
+        quic.set_default_idle_timeout(crate::Duration::from_ticks(self.idle_timeout as u64 * 1000));
+        quic.set_cwin_max(self.cwin_max);
+        quic.set_default_address_discovery_mode(self.address_discovery_mode);
+
+        if let Some(ref token_file) = self.token_file_name {
+            let _ = quic.load_retry_tokens(token_file);
+        }
+
+        if self.force_zero_share {
+            quic.client_zero_share = true;
+        }
+
+        if self.mtu_max > 0 {
+            quic.set_mtu_max(self.mtu_max as u32);
+        }
+
+        if self.connection_id_length != -1 {
+            let _ = quic.set_default_connection_id_length(self.connection_id_length as u8);
+        }
+
+        quic.set_padding_policy(39, 128);
+
+        if let Some(ref bin_dir) = self.bin_dir {
+            let _ = quic.set_binlog(Some(bin_dir.as_str()));
+        }
+
+        if let Some(ref qlog_dir) = self.qlog_dir {
+            let _ = quic.set_qlog(qlog_dir.as_str());
+        }
+
+        if let Some(ref log_file) = self.log_file {
+            let _ = quic.set_textlog(Some(log_file.as_str()));
+        }
+
+        quic.set_log_level(if self.use_long_log { 1 } else { 0 });
+        quic.set_preemptive_repeat_policy(self.do_preemptive_repeat);
+        quic.set_port_blocking_disabled(self.disable_port_blocking);
+        quic.set_sslkeylog_enabled(self.enable_sslkeylog);
+
+        if self.initial_random <= 2 {
+            quic.set_random_initial(self.initial_random as i32);
+        }
+
+        if self.cipher_suite_id != 0 {
+            let iana_code = match self.cipher_suite_id {
+                20 => crate::CHACHA20_POLY1305_SHA256,
+                128 => crate::AES_128_GCM_SHA256,
+                256 => crate::AES_256_GCM_SHA384,
+                v => v as u16,
+            };
+            let _ = quic.set_cipher_suite(iana_code);
+        }
+
+        if self.do_retry {
+            quic.set_cookie_mode(1);
+        } else {
+            quic.set_cookie_mode(2);
+        }
+
+        quic.set_default_bdp_frame_option(self.bdp_frame_option != 0);
+
+        let mut failed = false;
+
+        if let Some(ref public_name) = self.ech_public_name {
+            if self.ech_key_file.is_none() || self.ech_config_file.is_none() {
+                // key file or config file not specified — cannot create ECH config
+            } else {
+                let key_file = self.ech_key_file.as_deref().unwrap();
+                let cfg_file = self.ech_config_file.as_deref().unwrap();
+                if crate::ech_create_config_file(public_name, key_file, cfg_file).is_err() {
+                    failed = true;
+                }
+            }
+        }
+
+        if !failed
+            && (self.ech_key_file.is_some() || self.ech_target.is_some())
+            && quic
+                .ech_configure(
+                    self.ech_key_file.as_deref(),
+                    self.ech_config_file.as_deref(),
+                )
+                .is_err()
+        {
+            failed = true;
+        }
+
+        if !failed && self.flow_control_max > 0 {
+            quic.set_max_data_control(self.flow_control_max);
+        }
+
+        if failed { None } else { Some(quic) }
     }
 }
 

@@ -150,7 +150,7 @@ fn util_memcmp() {
 /// translating it adds no value.
 #[test]
 fn util_sprintf() {
-    todo!("util_sprintf_test (C-ism; no Rust counterpart)")
+    todo!()
 }
 
 /// C: `util_debug_print_test` in `picoquictest/util_test.c`.
@@ -160,7 +160,7 @@ fn util_sprintf() {
 /// `core::fmt` writers, so there's no equivalent global stream.
 #[test]
 fn util_debug_print() {
-    todo!("util_debug_print_test (C-ism; no Rust counterpart)")
+    todo!()
 }
 
 /// C: `util_threading_test` in `picoquictest/util_test.c`.
@@ -171,5 +171,5 @@ fn util_debug_print() {
 /// `std::thread` harness — out of v1 scope.
 #[test]
 fn threading() {
-    todo!("util_threading_test (out-of-v1-scope; threading replaced by std)")
+    todo!()
 }

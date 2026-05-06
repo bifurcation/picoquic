@@ -1,0 +1,13 @@
+Phase 4: 1 target(s) to translate (batch=1)
+  run log: xlate/phase4_runs/20260506T071807.log
+  state:   xlate/phase4_state.json
+
+=== tests/util.rs (8 todos) ===
+  prompt  → xlate/prompts/phase4/tests__util.md
+  (dry-run; skipping claude + gate)
+
+=== Phase 4 run summary ===
+  elapsed:   0.0s
+  succeeded: 0
+  failed:    0
+  log:       xlate/phase4_runs/20260506T071807.log

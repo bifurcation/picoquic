@@ -8,8 +8,6 @@
 //! points hang as inherent methods on [`Quic`]
 //! ([`Quic::set_textlog`] / [`Quic::textlog_close`]).
 //!
-//! Phase 1 contract: signatures only — every body is `todo!()`.
-//!
 //! Pointer-shape and translation policy notes for this module:
 //!
 //! * `Quic*` — every observed caller (`config.c::963`,
@@ -30,6 +28,7 @@
 //! * `picoquic_log_fin_or_event_name` is declared in the C header
 //!   but never defined or referenced — dropped from the Rust API.
 
+use std::fs::OpenOptions;
 use std::path::Path;
 
 use crate::Error;
@@ -46,9 +45,34 @@ impl Quic {
     /// C: `int picoquic_set_textlog(picoquic_quic_t*, char const*)`.
     pub fn set_textlog(
         &mut self,
-        _textlog_file: Option<&(impl AsRef<Path> + ?Sized)>,
+        textlog_file: Option<&(impl AsRef<Path> + ?Sized)>,
     ) -> Result<(), Error> {
-        todo!()
+        self.textlog_close();
+
+        let Some(path) = textlog_file else {
+            return Ok(());
+        };
+        let path = path.as_ref();
+
+        if path == Path::new("-") {
+            self.f_log = Some(Box::new(std::io::stdout()));
+            self.should_close_log = false;
+        } else {
+            match OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)
+            {
+                Ok(f) => {
+                    self.f_log = Some(Box::new(f));
+                    self.should_close_log = true;
+                }
+                Err(_) => return Err(Error::NoSuchFile),
+            }
+        }
+
+        Ok(())
     }
 
     /// Close the text log, e.g., when closing the QUIC context.
@@ -59,7 +83,8 @@ impl Quic {
     ///
     /// C: `void picoquic_textlog_close(picoquic_quic_t*)`.
     pub fn textlog_close(&mut self) {
-        todo!()
+        self.f_log = None;
+        self.should_close_log = false;
     }
 }
 

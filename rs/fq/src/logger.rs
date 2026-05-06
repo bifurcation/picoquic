@@ -239,8 +239,11 @@ impl Quic {
     /// message at the call site with `format_args!`.
     ///
     /// C: `picoquic_log_context_free_app_message`.
-    pub fn log_app_message(&mut self, _cid: &ConnectionId, _args: core::fmt::Arguments<'_>) {
-        todo!()
+    pub fn log_app_message(&mut self, cid: &ConnectionId, args: core::fmt::Arguments<'_>) {
+        if let Some(mut text) = self.text_log_fns.take() {
+            text.quic_app_message(self, cid, args);
+            self.text_log_fns = Some(text);
+        }
     }
 
     /// Log arrival or departure of a UDP datagram for an unknown
@@ -250,14 +253,25 @@ impl Quic {
     /// C: `picoquic_log_quic_pdu`.
     pub fn log_pdu(
         &mut self,
-        _receiving: bool,
-        _current_time: Instant,
-        _cid64: u64,
-        _addr_peer: &SocketAddr,
-        _addr_local: &SocketAddr,
-        _packet_length: usize,
+        receiving: bool,
+        current_time: Instant,
+        cid64: u64,
+        addr_peer: &SocketAddr,
+        addr_local: &SocketAddr,
+        packet_length: usize,
     ) {
-        todo!()
+        if let Some(mut text) = self.text_log_fns.take() {
+            text.quic_pdu(
+                self,
+                receiving,
+                current_time,
+                cid64,
+                addr_peer,
+                addr_local,
+                packet_length,
+            );
+            self.text_log_fns = Some(text);
+        }
     }
 
     /// Tear down every installed logging backend, releasing the
@@ -266,7 +280,18 @@ impl Quic {
     ///
     /// C: `picoquic_log_close_logs`.
     pub fn close_logs(&mut self) {
-        todo!()
+        if let Some(mut text) = self.text_log_fns.take() {
+            text.quic_close(self);
+            self.text_log_fns = Some(text);
+        }
+        if let Some(mut bin) = self.bin_log_fns.take() {
+            bin.quic_close(self);
+            self.bin_log_fns = Some(bin);
+        }
+        if let Some(mut q) = self.qlog_fns.take() {
+            q.quic_close(self);
+            self.qlog_fns = Some(q);
+        }
     }
 }
 
@@ -402,8 +427,26 @@ pub trait Log {
     fn cc_dump(&mut self, current_time: Instant);
 }
 
+// Connection-rooted log dispatch.
+//
+// The C dispatchers (`picoquic_log_packet`, `picoquic_log_pdu`, …)
+// are gated on `picoquic_cnx_is_still_logging(cnx)` and then fan out
+// to `cnx->quic->{text,bin,qlog}_log_fns`.  The settled Phase-1/2
+// trait surface gives these methods only `&mut self` (the
+// `Connection`); the three boxed `Logger` vtables live on the parent
+// `Quic` context, and `Connection` carries no back-reference to it.
+//
+// Without a `&mut Quic` parameter on `Log::*`, the dispatch cannot
+// reach the vtable.  Each body carries a one-line structural
+// blocker note, per the translation guide's instruction for the
+// logger module (out of v1 scope per TRANSLATE_PLAN.md, leave
+// remaining markers) and the Phase-4 prompt's allowance for genuine
+// signature blockers.  The inherent helpers
+// `Connection::log_new_connection` and `Connection::log_app_message`
+// (lib.rs) cover the call sites the crate actually exercises today.
 impl Log for Connection {
     fn app_message(&mut self, _args: core::fmt::Arguments<'_>) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
@@ -417,6 +460,7 @@ impl Log for Connection {
         _unique_path_id: u64,
         _ecn: u8,
     ) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
@@ -428,6 +472,7 @@ impl Log for Connection {
         _ph: &PacketHeader,
         _bytes: &[u8],
     ) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
@@ -439,10 +484,12 @@ impl Log for Connection {
         _err: i32,
         _current_time: Instant,
     ) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
     fn buffered_packet(&mut self, _path_x: &mut Path, _ptype: PacketType, _current_time: Instant) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
@@ -455,6 +502,7 @@ impl Log for Connection {
         _send_buffer: &[u8],
         _current_time: Instant,
     ) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
@@ -468,6 +516,7 @@ impl Log for Connection {
         _packet_size: usize,
         _current_time: Instant,
     ) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
@@ -478,26 +527,32 @@ impl Log for Connection {
         _alpn: &[u8],
         _alpn_list: &[&[u8]],
     ) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
     fn transport_extension(&mut self, _is_local: bool, _params: &[u8]) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
     fn tls_ticket(&mut self, _ticket: &[u8]) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
     fn new_connection(&mut self) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
     fn close_connection(&mut self) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 
     fn cc_dump(&mut self, _current_time: Instant) {
+        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
         todo!()
     }
 }

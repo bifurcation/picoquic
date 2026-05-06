@@ -25,9 +25,10 @@
 //! Plus the threading helpers ([`NetworkThreadCtx::spawn`] et al.)
 //! that wrap `pthread_create` / `CreateThread`.
 //!
-//! Phase 1 contract: signatures only — every function body is
-//! `todo!()` and the empty `#[cfg(test)] mod test {}` lands at the
-//! bottom for Phase 2 to fill.
+//! Phase 4: threading entry points (`run_v2`, `run`, spawn family,
+//! `open_sockets`) carry a bare unfinished marker with a one-line
+//! blocker note — threading is deferred to v2 per TRANSLATE_PLAN.md.
+//! Leaf helpers are implemented.
 //!
 //! [`socks`]: crate::socks
 //!
@@ -535,6 +536,7 @@ impl Quic {
         _param: &mut LoopParam,
         _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
     ) -> Result<(), Error> {
+        // blocked: packet-loop body deferred to v2 per TRANSLATE_PLAN.md (v1 single-threaded; sockloop.c L1600+ depends on threading + select(2) plumbing not yet ported).
         todo!()
     }
 }
@@ -552,6 +554,7 @@ impl Quic {
         _do_not_use_gso: bool,
         _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
     ) -> Result<(), Error> {
+        // blocked: forwards to run_v2 which is deferred per TRANSLATE_PLAN.md (v1 single-threaded packet-loop scope).
         todo!()
     }
 }
@@ -567,6 +570,7 @@ impl NetworkThreadCtx {
     /// thread-function prototype; callers read the result back from
     /// `return_code`.
     pub fn run(&mut self) {
+        // blocked: packet_loop_v3 body deferred per TRANSLATE_PLAN.md (v1 single-threaded; needs select/wake-up pipe + back-pointer to Quic that v1 doesn't carry).
         todo!()
     }
 
@@ -583,6 +587,7 @@ impl NetworkThreadCtx {
         _param: LoopParam,
         _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
     ) -> Result<Box<Self>, OsError> {
+        // blocked: thread spawning deferred to v2 per TRANSLATE_PLAN.md (multi-threading is out of v1 scope).
         todo!()
     }
 
@@ -600,6 +605,7 @@ impl NetworkThreadCtx {
         _thread_name: Option<&str>,
         _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
     ) -> Result<Box<Self>, OsError> {
+        // blocked: custom-thread spawn deferred to v2 per TRANSLATE_PLAN.md (multi-threading is out of v1 scope).
         todo!()
     }
 
@@ -610,6 +616,7 @@ impl NetworkThreadCtx {
     /// Returns `Err(OsError)` with the OS errno on failure, `Ok(())`
     /// otherwise.
     pub fn wake_up(&mut self) -> Result<(), OsError> {
+        // blocked: requires the wake-up pipe / cross-thread signalling deferred to v2 per TRANSLATE_PLAN.md.
         todo!()
     }
 }
@@ -627,13 +634,11 @@ impl NetworkThreadCtx {
 /// thread_fn, void*)`.
 ///
 /// Returns `Ok(JoinHandle)` carrying the std handle, or
-/// `Err(OsError)` with the platform errno.  Threading is dropped
-/// from v1 (`TRANSLATE_PLAN.md`) so the body is a `todo!()`
-/// placeholder that lands when v2 multi-threading work begins.
+/// `Err(OsError)` with the platform errno.
 pub fn internal_thread_create(
-    _thread_fn: Box<dyn FnOnce() + Send + 'static>,
+    thread_fn: Box<dyn FnOnce() + Send + 'static>,
 ) -> Result<JoinHandle<()>, OsError> {
-    todo!()
+    Ok(std::thread::spawn(thread_fn))
 }
 
 /// Default implementation of [`CustomThreadDeleteFn`].
@@ -642,15 +647,17 @@ pub fn internal_thread_create(
 /// In Rust this is a no-op — dropping the [`JoinHandle`] detaches
 /// the thread; if the caller wants to wait for completion they
 /// call `join()` themselves first.
-pub fn internal_thread_delete(_thread: JoinHandle<()>) {
-    todo!()
+pub fn internal_thread_delete(thread: JoinHandle<()>) {
+    drop(thread);
 }
 
 /// Default implementation of [`CustomThreadSetnameFn`].
 /// C: `void internal_thread_setname(char const*)`.
-pub fn internal_thread_setname(_thread_name: &str) {
-    todo!()
-}
+///
+/// Thread naming requires OS-specific APIs not available in `std`;
+/// this implementation is a no-op.  Concrete backends may override
+/// via [`CustomThreadSetnameFn`].
+pub fn internal_thread_setname(_thread_name: &str) {}
 
 // ---------------------------------------------------------------------------
 // Quic: context helpers wired into the demo apps.
@@ -662,7 +669,8 @@ impl Quic {
     /// driven by a packet-loop thread.
     /// C: `struct st_network_thread_ctx_t* get_thread_ctx(picoquic_quic_t*)`.
     pub fn thread_ctx(&mut self) -> Option<&mut NetworkThreadCtx> {
-        todo!()
+        let b = self.v_thread_ctx.as_mut()?;
+        b.as_mut().downcast_mut::<NetworkThreadCtx>()
     }
 
     /// Build a server-side QUIC context with the extra hooks
@@ -678,6 +686,7 @@ impl Quic {
         _default_callback: Option<Box<dyn StreamDataCallback>>,
         _alpn_select_fn: Option<Box<dyn AlpnSelect>>,
     ) -> Result<Box<Quic>, Error> {
+        // blocked: depends on perflog_setup (still unfinished in performance_log.rs) and a Config::cnx_id_cbdata field that hasn't been ported yet.
         todo!()
     }
 }
@@ -705,6 +714,7 @@ impl Config {
         _thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
         _thread_ctxs: &mut [Option<Box<NetworkThreadCtx>>],
     ) -> Result<usize, Error> {
+        // blocked: spawns N OS threads — multi-threading deferred to v2 per TRANSLATE_PLAN.md.
         todo!()
     }
 }
@@ -717,7 +727,8 @@ impl<S: crate::socks::Socket> SocketCtx<S> {
     /// C: `void packet_loop_close_socket(socket_ctx_t*)`.
     /// Exposed directly so `sockloop_test.c`-derived tests can reach it.
     pub fn close(&mut self) {
-        todo!()
+        self.fd = None;
+        self.is_started = false;
     }
 }
 
@@ -739,6 +750,7 @@ pub fn open_sockets<S: crate::socks::Socket>(
     _s_ctx: &mut [SocketCtx<S>],
     _ecn_value: u8,
 ) -> Result<usize, Error> {
+    // blocked: needs a Socket-trait UDP open-with-options entry (af + port + SO_REUSEPORT + SO_*BUF + GSO probe) that the trait does not yet expose; only open_server_v4/v6 (port-only) exist.
     todo!()
 }
 

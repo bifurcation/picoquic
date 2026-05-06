@@ -350,3 +350,154 @@ Phase 3A: 52 source file(s) to translate
   · Bash(grep -n "config_init\|picoquic_config_init" /Users/richbarn/Projects/picoquic/pi)
   · Bash(grep -n "initial_random" /Users/richbarn/Projects/picoquic/picoquic/picoquic_con)
   · Read(/Users/richbarn/Projects/picoquic/picoquic/picoquic_config.h)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tp.rs)
+  · Bash(grep -n "address_discovery_mode\|option_ADDRESS_DISCOVERY\|case.*'J'" /Users/ric)
+  · Bash(grep -n "config_set_option\|config_option_test\|config_quic_test\|config_usage_t)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/utils.rs)
+  · Bash(mkdir -p /Users/richbarn/Projects/picoquic/rs/fq/tests/fixtures)
+  · Bash(mkdir -p /Users/richbarn/Projects/picoquic/rs/fq/tests/fixtures && echo "done")
+  · Write(/Users/richbarn/Projects/picoquic/rs/fq/tests/fixtures/config_usage_ref.txt)
+  · Write(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/config.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/config.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Bash(cd /Users/richbarn/Projects/picoquic/rs/fq && cargo fmt 2>&1)
+  · Bash(cargo test --no-run 2>&1)
+  · Bash(cargo clippy --tests --all-features -- -D warnings 2>&1)
+  · Bash(echo "# phase3a config_test.c translation" >> /Users/richbarn/Projects/picoquic/)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Edit(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo test --no-run)
+  $ (cd rs/fq && cargo clippy --tests --all-features -- -D warnings)
+  ok
+
+=== congestion_test (32 test(s)) ===
+  prompt  → xlate/prompts/phase3a/congestion_test.md
+  claude  → invoking (sonnet, max-turns=80) …
+  · Read(/Users/richbarn/Projects/picoquic/xlate/test_translation_guide.md)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/congestion.rs)
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/congestion_test.c)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Grep(CongestionAlgorithm|set_congestion|set_default_congestion|congestion_algorithm)
+  · Grep(tls_api_init_ctx|tls_api_one_scenario|tls_api_delete|bdp|set_qlog|save_tickets|set_test_address|set_max_data|set_cwin|init_transport_parameters|set_default_tp)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/ack_frequency.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Grep(nb_zero_rtt_acked|nb_retransmission_total|nb_packets_sent|cwin_notified_from_seed|p_first_ticket|set_transport_parameters|set_test_address|blackhole)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Grep(fn path\b|pub paths|fn first_path|stored_tickets)
+  · Grep(^pub enum Version|InternalTest|fn tls_api_one_scenario_body_connect)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/internal.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tp.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Write(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/congestion.rs)
+  · Bash(cd /Users/richbarn/Projects/picoquic/rs/fq && cargo fmt 2>&1)
+  · Bash(cargo test --no-run 2>&1)
+  · Bash(cargo clippy --tests --all-features -- -D warnings 2>&1)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/congestion.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/congestion.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/congestion.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/congestion.rs)
+  · Bash(cargo fmt && cargo test --no-run 2>&1 && cargo clippy --tests --all-features -- )
+  · Bash(cat >> /Users/richbarn/Projects/picoquic/COMMANDS.log << 'EOF'
+# Phase 3A conges)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Bash(tail -5 /Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Edit(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo test --no-run)
+  $ (cd rs/fq && cargo clippy --tests --all-features -- -D warnings)
+  ok
+
+=== cplusplus (1 test(s)) ===
+  prompt  → xlate/prompts/phase3a/cplusplus.md
+  claude  → invoking (sonnet, max-turns=80) …
+  · Read(/Users/richbarn/Projects/picoquic/xlate/test_translation_guide.md)
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/cplusplus.cpp)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/cplusplus.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/cplusplus.rs)
+  · Bash(cd /Users/richbarn/Projects/picoquic/rs/fq && cargo fmt 2>&1)
+  · Bash(cargo test --no-run 2>&1)
+  · Bash(cargo clippy --tests --all-features -- -D warnings 2>&1)
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo test --no-run)
+  $ (cd rs/fq && cargo clippy --tests --all-features -- -D warnings)
+  ok
+
+=== cpu_limited (5 test(s)) ===
+  prompt  → xlate/prompts/phase3a/cpu_limited.md
+  claude  → invoking (sonnet, max-turns=80) …
+  · Read(/Users/richbarn/Projects/picoquic/xlate/test_translation_guide.md)
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/cpu_limited.c)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/cpu_limited.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/lib.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/congestion.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/qlog.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/congestion.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/congestion.rs)
+  · Grep(use_long_log)
+  · Grep(nb_retransmission_total)
+  · Grep(client_endpoint)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/app_limited.rs)
+  · Glob(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/*.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/mod.rs)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/mod.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Write(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/cpu_limited.rs)
+  · Bash(cd /Users/richbarn/Projects/picoquic/rs/fq && cargo fmt 2>&1)
+  · Bash(cargo test --no-run 2>&1)
+  · Bash(cargo clippy --tests --all-features -- -D warnings 2>&1)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Edit(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Bash(cargo clippy --tests --all-features -- -D warnings 2>&1)
+  · Bash(cat >> /Users/richbarn/Projects/picoquic/COMMANDS.log << 'EOF'
+
+# phase3a cpu_li)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Bash(tail -5 /Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Read(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  · Edit(/Users/richbarn/Projects/picoquic/COMMANDS.log)
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo test --no-run)
+  $ (cd rs/fq && cargo clippy --tests --all-features -- -D warnings)
+  ok
+
+=== datagram_tests (11 test(s)) ===
+  prompt  → xlate/prompts/phase3a/datagram_tests.md
+  claude  → invoking (sonnet, max-turns=80) …
+  · Read(/Users/richbarn/Projects/picoquic/xlate/test_translation_guide.md)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/datagram.rs)
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/datagram_tests.c)
+  · Read(/Users/richbarn/Projects/picoquic/rs/fq/src/tests/util.rs)
+  · Grep(fn (set_qlog|set_default_congestion|set_congestion|mark_datagram|queue_datagram|queue_misc_frame|is_backlog_empty|set_transport_parameters|nb_packets_received|first_datagram|is_datagram_ready))
+  · Grep(datagram)
+  · Grep(nb_packets_received|is_datagram_ready|first_datagram|remote_parameters|send_mtu|local_cnxid_length|use_long_log)
+  · Grep(test_datagram_send_recv_ctx_t|datagram_ctx|datagram_recv_fn|datagram_send_fn|datagram_ack_fn)
+  · Read(/Users/richbarn/Projects/picoquic/picoquictest/picoquictest_internal.h)
+  · Grep(fn (nb_packets_received|is_datagram_ready|first_datagram|remote_transport|send_mtu|local_cnxid_length|use_long_log|path_send_mtu))
+  · Grep(CallbackEvent|callback_datagram|DatagramEvent|DatagramCallback)
+  · Grep(CongestionAlgorithm|bbr_algorithm)
+    RATE-LIMITED: You've hit your limit · resets 10:20pm (America/New_York)
+
+ABORTING SWEEP: rate-limited at datagram_tests.  Re-run later; state file is unchanged for this and pending sources.
+
+=== Phase 3A run summary ===
+  elapsed:   6606.6s
+  succeeded: 10
+  failed:    0
+  rate-limited at: datagram_tests
+  log:       xlate/phase3a_runs/20260504T173410.log

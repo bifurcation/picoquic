@@ -220,14 +220,51 @@ fn varint() {
     }
 }
 
+/// Integer square root used by the picoquic test suite.
+/// Defined in `picoquictest/intformattest.c` as a non-static helper;
+/// reproduced here for use by the Rust port.
+/// C: `picoquic_sqrt_for_tests`.
+fn sqrt_for_tests(y: u64) -> u64 {
+    if y < 6 {
+        return [0u64, 1, 1, 1, 2, 2][y as usize];
+    }
+    let mut x_min = 2u64;
+    let mut x_max = if y / 2 > 0xffff_ffff {
+        0xffff_ffff
+    } else {
+        y / 2
+    };
+    let mut x = 0u64;
+    for _ in 0..64 {
+        x = (x_min + x_max) / 2;
+        if x_min + 1 >= x_max {
+            break;
+        }
+        let x2 = x * x;
+        if x2 < y {
+            x_min = x;
+        } else if x2 > y {
+            x_max = x;
+        } else {
+            break;
+        }
+    }
+    x
+}
+
 /// C: `sqrt_for_test_test` in `picoquictest/intformattest.c`.
 ///
-/// The C body verifies `picoquic_sqrt_for_tests(x*(x+1))` returns
-/// `x` for every `x` in a doubling sequence up to `0xffffffff`.
-/// The Rust translation is a `todo!()` until a `sqrt_for_tests`
-/// helper lands (it's a test-suite-only utility used by the BBR
-/// tests).
+/// Verifies `sqrt_for_tests(x * (x+i))` returns `x` for `i ∈ {0,1}`
+/// and every `x` in a doubling sequence up to `0xffffffff`.
 #[test]
 fn sqrt_for_test() {
-    todo!("sqrt_for_test_test (no Rust counterpart yet)")
+    let mut x_base: u64 = 0;
+    while x_base < 0xffff_ffff {
+        for i in 0u64..2 {
+            let y = x_base * (x_base + i);
+            let x = sqrt_for_tests(y);
+            assert_eq!(x, x_base, "sqrt_for_tests({x_base}*({x_base}+{i})) = {x}");
+        }
+        x_base = 2 * x_base + 1;
+    }
 }

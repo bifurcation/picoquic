@@ -30,7 +30,6 @@ use crate::tls::HeaderKey;
 /// `aes::Aes256`; both implement
 /// [`cipher::BlockEncrypt<BlockSize = U16>`].
 pub struct AesHeaderProtector<C> {
-    #[allow(dead_code)] // Phase 4 wires this through to the body.
     cipher: C,
 }
 
@@ -39,15 +38,20 @@ where
     C: KeyInit + BlockEncrypt + Send,
 {
     /// Construct from a freshly-derived header-protection key.
-    pub fn new(_key: &[u8]) -> Result<Self, Error> {
-        todo!()
+    pub fn new(key: &[u8]) -> Result<Self, Error> {
+        let cipher = C::new_from_slice(key).map_err(|_| Error::InvalidArgument)?;
+        Ok(Self { cipher })
     }
 
     /// Compute the 16-byte mask from a 16-byte sample.  QUIC
     /// uses bytes `[0..5]` of the result; the rest are wasted
     /// but the AES API gives us a full block.
-    pub fn mask(&self, _sample: &[u8; 16]) -> [u8; 16] {
-        todo!()
+    pub fn mask(&self, sample: &[u8; 16]) -> [u8; 16] {
+        let mut block = cipher::generic_array::GenericArray::clone_from_slice(sample);
+        self.cipher.encrypt_block(&mut block);
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&block);
+        out
     }
 }
 
@@ -62,17 +66,25 @@ where
 
 /// ChaCha20 header protector.
 pub struct ChaCha20HeaderProtector {
-    #[allow(dead_code)] // Phase 4 wires this through to the body.
     key: [u8; 32],
 }
 
 impl ChaCha20HeaderProtector {
-    pub fn new(_key: &[u8]) -> Result<Self, Error> {
-        todo!()
+    pub fn new(key: &[u8]) -> Result<Self, Error> {
+        let k: [u8; 32] = key.try_into().map_err(|_| Error::InvalidArgument)?;
+        Ok(Self { key: k })
     }
 
-    pub fn mask(&self, _sample: &[u8; 16]) -> [u8; 16] {
-        todo!()
+    /// RFC 9001 §5.4.4: counter = sample[0..4] LE-u32, nonce = sample[4..16].
+    pub fn mask(&self, sample: &[u8; 16]) -> [u8; 16] {
+        use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+        let counter = u32::from_le_bytes(sample[0..4].try_into().unwrap());
+        let nonce = &sample[4..16];
+        let mut c = chacha20::ChaCha20::new_from_slices(&self.key, nonce).expect("fixed sizes");
+        c.try_seek(counter as u64 * 64).expect("in-range position");
+        let mut mask = [0u8; 16];
+        c.apply_keystream(&mut mask);
+        mask
     }
 }
 
@@ -86,7 +98,6 @@ impl ChaCha20HeaderProtector {
 /// One direction of AES-based header protection wrapped as a
 /// [`HeaderKey`].
 pub struct AesHeaderKey<C> {
-    #[allow(dead_code)]
     protector: AesHeaderProtector<C>,
 }
 
@@ -116,7 +127,6 @@ where
 /// One direction of ChaCha20-based header protection wrapped
 /// as a [`HeaderKey`].
 pub struct ChaCha20HeaderKey {
-    #[allow(dead_code)]
     protector: ChaCha20HeaderProtector,
 }
 
