@@ -7,8 +7,9 @@
 
 #![allow(non_snake_case)]
 
-use super::util::TestApiStreamDesc;
-use crate::{CongestionAlgorithm, get_congestion_algorithm};
+use super::util::{TestApiStreamDesc, tls_api_one_scenario_body, tls_api_one_scenario_init_ex};
+use crate::internal::{Version, init_transport_parameters};
+use crate::{CongestionAlgorithm, Duration, get_congestion_algorithm};
 
 // ---------------------------------------------------------------------------
 // Shared spec type.  C: `dtn_test_spec_t`.
@@ -56,8 +57,85 @@ fn dtn_basic_spec() -> DtnTestSpec {
 
 /// Run one DTN test end-to-end.
 /// C: `dtn_test_one` in `picoquictest/delay_tolerant_test.c`.
-fn dtn_test_one(_test_id: u8, _spec: &DtnTestSpec) {
-    todo!("dtn_test_one: simulation loop not yet implemented")
+fn dtn_test_one(test_id: u8, spec: &DtnTestSpec) {
+    let mut simulated_time = crate::Instant::from_ticks(0);
+    let picosec_per_byte_up = (1_000_000u64 * 8) / spec.mbps_up;
+    let picosec_per_byte_down = (1_000_000u64 * 8) / spec.mbps_down;
+
+    let mut client_parameters = crate::TransportParameters::default();
+    init_transport_parameters(&mut client_parameters);
+    client_parameters.enable_time_stamp = 3;
+    client_parameters.max_idle_timeout = Duration::from_ticks((spec.latency * 5) / 1000);
+    if spec.initial_flow_control_credit > client_parameters.initial_max_data {
+        client_parameters.initial_max_data = spec.initial_flow_control_credit;
+    }
+    if spec.initial_flow_control_credit > client_parameters.initial_max_stream_data_bidi_local {
+        client_parameters.initial_max_stream_data_bidi_local = spec.initial_flow_control_credit;
+    }
+    if spec.initial_flow_control_credit > client_parameters.initial_max_stream_data_bidi_remote {
+        client_parameters.initial_max_stream_data_bidi_remote = spec.initial_flow_control_credit;
+    }
+
+    let mut server_parameters = crate::TransportParameters::default();
+    init_transport_parameters(&mut server_parameters);
+    server_parameters.enable_time_stamp = 3;
+    server_parameters.max_idle_timeout = client_parameters.max_idle_timeout;
+
+    let mut initial_cid =
+        crate::ConnectionId::clone_from_slice(&[0xde, 0x40, 0, 0, 0, 0, 0, 0]).expect("8-byte CID");
+    initial_cid.as_bytes_mut()[2] = test_id;
+
+    let mut test_ctx = tls_api_one_scenario_init_ex(
+        &mut simulated_time,
+        Version::InternalTest1,
+        Some(&client_parameters),
+        Some(&server_parameters),
+        Some(&initial_cid),
+    )
+    .expect("tls_api_one_scenario_init_ex");
+
+    test_ctx
+        .qserver
+        .set_default_congestion_algorithm(spec.ccalgo);
+    test_ctx.cnx_client().set_congestion_algorithm(spec.ccalgo);
+
+    test_ctx.c_to_s_link.microsec_latency = spec.latency;
+    test_ctx.c_to_s_link.picosec_per_byte = picosec_per_byte_up;
+    test_ctx.s_to_c_link.microsec_latency = spec.latency;
+    test_ctx.s_to_c_link.picosec_per_byte = picosec_per_byte_down;
+    test_ctx.stream0_flow_release = true;
+    test_ctx.immediate_exit = true;
+
+    test_ctx.cnx_client().set_pmtud_required(true);
+
+    test_ctx.qserver.set_qlog(".").expect("server qlog");
+    test_ctx.qserver.set_log_level(1);
+    test_ctx.qclient.set_qlog(".").expect("client qlog");
+    test_ctx.qclient.set_log_level(1);
+
+    let init_loss_mask = if spec.has_loss { 0x1000_0000 } else { 0 };
+    tls_api_one_scenario_body(
+        &mut test_ctx,
+        &mut simulated_time,
+        spec.scenario,
+        init_loss_mask,
+        0,
+        0,
+        2 * spec.latency,
+        spec.max_completion_time,
+    )
+    .expect("DTN scenario");
+
+    if spec.max_number_of_packets != 0 {
+        let cnx = test_ctx.cnx_client();
+        let number_of_packets = cnx.nb_packets_sent + cnx.nb_packets_received;
+        assert!(
+            number_of_packets <= spec.max_number_of_packets,
+            "expected at most {} packets, got {}",
+            spec.max_number_of_packets,
+            number_of_packets
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

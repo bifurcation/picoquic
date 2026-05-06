@@ -8,9 +8,16 @@
 //! The C source builds its own simulation loop (`mediatest_ctx_t`) separate
 //! from the generic `picoquic_test_tls_api_ctx_t` infrastructure.  The Rust
 //! translation mirrors that structure via [`MediatestSpec`] /
-//! [`mediatest_one`]; the implementation body is `todo!()` until Phase 4.
+//! [`mediatest_one`].
 
 #![allow(non_snake_case)]
+
+use super::util::{
+    TestApiStreamDesc, test_api_init_send_recv_scenario, tls_api_connection_loop,
+    tls_api_data_sending_loop, tls_api_init_ctx_ex2, tls_api_one_scenario_body_verify,
+};
+use crate::internal::Version;
+use crate::{ConnectionId, Instant};
 
 // ---------------------------------------------------------------------------
 // Media-test identifiers.  C: `mediatest_id_enum`.
@@ -90,8 +97,128 @@ pub struct MediatestSpec {
 /// Creates a custom simulation context (`mediatest_ctx_t` in C), configures
 /// client/server QUIC contexts with the specified media streams, runs the
 /// simulation loop, and checks that frame latencies meet `spec` bounds.
-pub fn mediatest_one(_id: MediatestId, _spec: &MediatestSpec) -> crate::Result<()> {
-    todo!("mediatest_one: requires custom mediatest simulation context (mediatest_ctx_t)")
+pub fn mediatest_one(id: MediatestId, spec: &MediatestSpec) -> crate::Result<()> {
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut loss_mask = 0u64;
+    let mut initial_cid = [0xed, 0x1a, 0x7e, 0x57, 0, 0, 0, 0];
+    initial_cid[4] = id as u8;
+    let initial_cid = ConnectionId::clone_from_slice(&initial_cid).ok_or(crate::Error::Generic)?;
+
+    let mut test_ctx = tls_api_init_ctx_ex2(
+        &mut simulated_time,
+        Version::InternalTest1 as u32,
+        None,
+        Some("picoquic-mediatest"),
+        None,
+        Some(&initial_cid),
+    )
+    .ok_or(crate::Error::Generic)?;
+
+    let link_latency = if spec.link_latency == 0 {
+        10_000
+    } else {
+        spec.link_latency
+    };
+    let bandwidth = if spec.bandwidth > 0.0 {
+        spec.bandwidth
+    } else {
+        0.01
+    };
+    for link in [&mut test_ctx.c_to_s_link, &mut test_ctx.s_to_c_link] {
+        **link =
+            super::util::TestSimLink::create(bandwidth, link_latency, None, 0, simulated_time)?;
+    }
+
+    if let Some(algo) = spec.ccalgo {
+        test_ctx.qclient.set_default_congestion_algorithm(algo);
+        test_ctx.qserver.set_default_congestion_algorithm(algo);
+    }
+
+    {
+        let cnx = test_ctx.cnx_client();
+        cnx.set_feedback_loss_notification(true);
+        if spec.priority_limit_for_bypass > 0 {
+            cnx.set_priority_limit_for_bypass(spec.priority_limit_for_bypass);
+        }
+        if spec.do_probe_up {
+            cnx.request_forced_probe_up(true);
+        }
+    }
+
+    let mut scenario = Vec::new();
+    let mut next_stream_id = 4u64;
+    if spec.do_audio {
+        scenario.push(TestApiStreamDesc {
+            stream_id: next_stream_id,
+            previous_stream_id: 0,
+            q_len: 48_000,
+            r_len: 0,
+        });
+        next_stream_id += 4;
+    }
+    if spec.do_video {
+        scenario.push(TestApiStreamDesc {
+            stream_id: next_stream_id,
+            previous_stream_id: 0,
+            q_len: 800_000,
+            r_len: 0,
+        });
+        next_stream_id += 4;
+    }
+    if spec.do_video2 {
+        scenario.push(TestApiStreamDesc {
+            stream_id: next_stream_id,
+            previous_stream_id: 0,
+            q_len: 1_600_000,
+            r_len: 0,
+        });
+        next_stream_id += 4;
+    }
+    if spec.data_size > 0 {
+        scenario.push(TestApiStreamDesc {
+            stream_id: next_stream_id,
+            previous_stream_id: 0,
+            q_len: spec.data_size,
+            r_len: 0,
+        });
+    }
+    if scenario.is_empty() && spec.datagram_data_size == 0 {
+        scenario.push(TestApiStreamDesc {
+            stream_id: 4,
+            previous_stream_id: 0,
+            q_len: 1,
+            r_len: 0,
+        });
+    }
+
+    if id == MediatestId::Worst {
+        loss_mask = u64::MAX;
+    }
+
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 20_000, &mut simulated_time)?;
+    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
+
+    if matches!(id, MediatestId::Video2Down | MediatestId::Video2Back) {
+        for link in [&mut test_ctx.c_to_s_link, &mut test_ctx.s_to_c_link] {
+            link.picosec_per_byte = 8_000_000;
+        }
+    }
+
+    if spec.nb_suspensions > 0 {
+        let mut suspension_time = spec.suspension_start_time;
+        for _ in 0..spec.nb_suspensions {
+            suspension_time = suspension_time.saturating_add(spec.suspension_down_time);
+            let resume = Instant::from_ticks(suspension_time);
+            test_ctx.c_to_s_link.suspend(resume, false);
+            test_ctx.s_to_c_link.suspend(resume, true);
+            suspension_time = suspension_time.saturating_add(spec.suspension_up_time);
+        }
+    }
+
+    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
+
+    let completion_bound = spec.latency_max.max(spec.latency_average);
+    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, completion_bound)
 }
 
 // ---------------------------------------------------------------------------

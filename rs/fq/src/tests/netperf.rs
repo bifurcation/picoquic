@@ -8,11 +8,12 @@
 #![allow(non_snake_case)]
 
 use super::util::{
-    TestApiStreamDesc, test_api_init_send_recv_scenario, tls_api_one_scenario_body_verify,
-    tls_api_one_scenario_init_ex, wait_client_connection_ready,
+    TestApiStreamDesc, TestTlsApiCtx, test_api_init_send_recv_scenario,
+    tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex, tls_api_one_sim_round,
+    wait_client_connection_ready,
 };
 use crate::internal::Version;
-use crate::{CongestionAlgorithm, Instant, MAX_PACKET_SIZE, get_congestion_algorithm};
+use crate::{CongestionAlgorithm, Instant, MAX_PACKET_SIZE, State, get_congestion_algorithm};
 
 // ---------------------------------------------------------------------------
 // Shared stream scenarios.
@@ -145,6 +146,77 @@ fn netperf_one_scenario(
     }
 }
 
+fn nat_attack_loop(
+    test_ctx: &mut TestTlsApiCtx,
+    simulated_time: &mut Instant,
+    do_attack: bool,
+) -> crate::Result<()> {
+    let mut nb_loops = 0u32;
+    let mut nb_inactive = 0u32;
+
+    loop {
+        let client_connected = test_ctx
+            .qclient
+            .first_cnx_mut()
+            .map(|cnx| cnx.connection_state != State::Disconnected)
+            .unwrap_or(false);
+        if !client_connected {
+            break;
+        }
+
+        if do_attack {
+            if let Some(packet) = test_ctx.s_to_c_link.packets.front_mut() {
+                packet.addr_to = Some(test_ctx.client_addr);
+            }
+            if let Some(packet) = test_ctx.c_to_s_link.packets.front_mut() {
+                let mut rewritten = packet.addr_from.unwrap_or(test_ctx.client_addr);
+                rewritten.set_port(test_ctx.client_addr.port().wrapping_add(nb_loops as u16));
+                packet.addr_from = Some(rewritten);
+            }
+        }
+
+        let mut was_active = false;
+        tls_api_one_sim_round(
+            test_ctx,
+            simulated_time,
+            Instant::from_ticks(0),
+            &mut was_active,
+        )?;
+
+        if was_active {
+            nb_inactive = 0;
+        } else {
+            nb_inactive += 1;
+            if nb_inactive > 64 {
+                return Err(crate::Error::InvalidState);
+            }
+        }
+
+        nb_loops += 1;
+        if nb_loops > 100_000 {
+            return Err(crate::Error::InvalidState);
+        }
+
+        if test_ctx.test_finished {
+            let client_empty = test_ctx
+                .qclient
+                .first_cnx_mut()
+                .map(|cnx| cnx.is_backlog_empty())
+                .unwrap_or(true);
+            let server_empty = test_ctx
+                .qserver
+                .first_cnx_mut()
+                .map(|cnx| cnx.is_backlog_empty())
+                .unwrap_or(true);
+            if client_empty && server_empty {
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Test entries.
 
@@ -194,12 +266,7 @@ fn nat_attack() {
     test_api_init_send_recv_scenario(&mut test_ctx, NAT_ATTACK_SCENARIO)
         .expect("init send/recv scenario");
 
-    // Run the simulation loop with NAT-attack address rewriting.
-    // The C helper `nat_attack_loop` rewrites source/destination addresses on
-    // each packet to simulate a broken NAT.  Until the full simulator loop is
-    // implemented, this calls into `todo!()` via the connection loop.
-    super::util::tls_api_connection_loop(&mut test_ctx, &mut 0u64, 0, &mut simulated_time)
-        .expect("nat attack loop");
+    nat_attack_loop(&mut test_ctx, &mut simulated_time, true).expect("nat attack loop");
 
     // If the client is still connected, verify data delivery.
     {

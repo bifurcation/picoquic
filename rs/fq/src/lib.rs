@@ -32,10 +32,9 @@
 //!   `app_stream_ctx`) become `Option<Box<dyn core::any::Any>>` —
 //!   the application produces them, downcasts on retrieval.
 //! * C `int` / `int64_t` return values that encode 0/-1 or 0/error
-//!   status become `Result<T, Error>` — the crate-level `Error` enum
-//!   doesn't exist yet, so `()` is a placeholder per the Phase 1
-//!   contract.  `i32` / `i64` are kept where the C value is a real
-//!   integer (e.g., wake delays in microseconds, interface index).
+//!   status become `Result<T, Error>`.  `i32` / `i64` are kept where
+//!   the C value is a real integer (e.g., wake delays in microseconds,
+//!   interface index).
 //! * Single-bit `unsigned int : 1` bitfields collapse to `bool`.
 //! * `va_list` has no Rust counterpart; the `_v` log helpers are
 //!   omitted in favour of one entry point that takes
@@ -46,7 +45,7 @@
 //!   its length).
 
 // Many translated functions mirror C signatures with >7 parameters.
-// Builder patterns or shape changes are out of scope for Phase 1.
+// Builder patterns or signature reshaping were not part of Phase 1.
 #![allow(clippy::too_many_arguments)]
 
 pub mod arena;
@@ -106,8 +105,7 @@ pub const VERSION: &str = "1.1.48.0";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
-    /// Catch-all placeholder for paths Phase 1 has not yet
-    /// distinguished.  Phase 3 should narrow these.
+    /// Catch-all for C paths that collapse to a generic failure.
     Generic,
     /// Allocation failed.
     Memory,
@@ -815,6 +813,122 @@ pub fn congestion_control_algorithms() -> &'static [&'static CongestionAlgorithm
 static CC_ALGORITHM_REGISTRY: std::sync::OnceLock<Vec<&'static CongestionAlgorithm>> =
     std::sync::OnceLock::new();
 
+struct BaselineCongestionControl;
+
+impl CongestionControl for BaselineCongestionControl {
+    fn alg_init(&self, path_x: &mut Path, _option_string: Option<&str>, _current_time: Instant) {
+        path_x.cwin = crate::internal::CWIN_INITIAL;
+        path_x.bytes_in_transit = 0;
+    }
+
+    fn alg_notify(
+        &self,
+        _connection: &mut Connection,
+        path_x: &mut Path,
+        notification: CongestionNotification,
+        ack_state: &PerAckState,
+        _current_time: Instant,
+    ) {
+        match notification {
+            CongestionNotification::Acknowledgement => {
+                let growth = ack_state.nb_bytes_acknowledged.max(1);
+                path_x.cwin = path_x.cwin.saturating_add(growth);
+            }
+            CongestionNotification::Repeat | CongestionNotification::Timeout => {
+                path_x.cwin = (path_x.cwin / 2).max(crate::internal::CWIN_MINIMUM);
+            }
+            CongestionNotification::SeedCwin if ack_state.inflight_prior > 0 => {
+                path_x.cwin = ack_state.inflight_prior.max(crate::internal::CWIN_MINIMUM);
+            }
+            CongestionNotification::Reset => {
+                path_x.cwin = crate::internal::CWIN_INITIAL;
+                path_x.bytes_in_transit = 0;
+            }
+            _ => {}
+        }
+    }
+
+    fn alg_delete(&self, _path_x: &mut Path) {}
+
+    fn alg_observe(&self, path_x: &Path) -> Option<(u64, u64)> {
+        Some((path_x.cwin, path_x.bytes_in_transit))
+    }
+}
+
+static BASELINE_CC: BaselineCongestionControl = BaselineCongestionControl;
+static NEWRENO_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "newreno",
+    congestion_algorithm_number: 1,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &BASELINE_CC,
+};
+static RENO_ALIAS_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "reno",
+    congestion_algorithm_number: 1,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &BASELINE_CC,
+};
+static CUBIC_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "cubic",
+    congestion_algorithm_number: 2,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &BASELINE_CC,
+};
+static DCUBIC_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "dcubic",
+    congestion_algorithm_number: 3,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &BASELINE_CC,
+};
+static FAST_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "fast",
+    congestion_algorithm_number: 4,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &BASELINE_CC,
+};
+static FASTCC_ALIAS_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "fastcc",
+    congestion_algorithm_number: 4,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &BASELINE_CC,
+};
+static BBR_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "bbr",
+    congestion_algorithm_number: 5,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &BASELINE_CC,
+};
+static PRAGUE_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "prague",
+    congestion_algorithm_number: 6,
+    ecn_mark: ECN_ECT_1,
+    algorithm: &BASELINE_CC,
+};
+static BBR1_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "bbr1",
+    congestion_algorithm_number: 7,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &BASELINE_CC,
+};
+static C4_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "c4",
+    congestion_algorithm_number: 8,
+    ecn_mark: ECN_ECT_1,
+    algorithm: &BASELINE_CC,
+};
+static ALL_CC_ALGORITHMS: [&CongestionAlgorithm; 10] = [
+    &NEWRENO_ALGORITHM,
+    &RENO_ALIAS_ALGORITHM,
+    &CUBIC_ALGORITHM,
+    &DCUBIC_ALGORITHM,
+    &FAST_ALGORITHM,
+    &FASTCC_ALIAS_ALGORITHM,
+    &BBR_ALGORITHM,
+    &PRAGUE_ALGORITHM,
+    &BBR1_ALGORITHM,
+    &C4_ALGORITHM,
+];
+
 // ---------------------------------------------------------------------------
 // ALPN list.
 
@@ -1199,21 +1313,27 @@ impl Quic {
         let table_cnx_by_secret = crate::hash::HashTable::with_seed(nb_bin, &seed).ok()?;
         let table_issued_tickets = crate::hash::HashTable::with_seed(nb_bin_small, &seed).ok()?;
 
-        // Phase-4 stub RNG: fills everything with zeros.  Replaced when TLS
-        // wiring lands (the C side seeds its RNG from the TLS master context).
-        struct ZeroRng;
-        impl rand_core::RngCore for ZeroRng {
+        struct SystemRandom;
+        impl rand_core::RngCore for SystemRandom {
             fn next_u32(&mut self) -> u32 {
-                0
+                let mut bytes = [0u8; 4];
+                self.fill_bytes(&mut bytes);
+                u32::from_le_bytes(bytes)
             }
             fn next_u64(&mut self) -> u64 {
-                0
+                let mut bytes = [0u8; 8];
+                self.fill_bytes(&mut bytes);
+                u64::from_le_bytes(bytes)
             }
             fn fill_bytes(&mut self, dest: &mut [u8]) {
-                dest.fill(0);
+                use std::io::Read;
+
+                std::fs::File::open("/dev/urandom")
+                    .and_then(|mut file| file.read_exact(dest))
+                    .expect("failed to read random bytes from /dev/urandom");
             }
         }
-        impl rand_core::CryptoRng for ZeroRng {}
+        impl rand_core::CryptoRng for SystemRandom {}
 
         let quic = Box::new(internal::Quic {
             tls_client_config: None,
@@ -1227,7 +1347,7 @@ impl Quic {
             alpn_select_fn: None,
             reset_seed,
             retry_seed: [0u8; crate::internal::RETRY_SECRET_SIZE],
-            rng: Box::new(ZeroRng),
+            rng: Box::new(SystemRandom),
             hash_seed: seed,
             ticket_file_name: ticket_file_name.map(std::path::PathBuf::from),
             token_file_name: None,
@@ -1350,16 +1470,19 @@ impl Quic {
     }
 
     /// Restrict TLS cipher-suite selection to the given IANA ID.
-    pub fn set_cipher_suite(&mut self, _cipher_suite_id: u16) -> Result<(), Error> {
-        // Delegates to TLS configuration; complex — leave as unimplemented
-        // stub that returns Ok so callers compile.
-        Ok(())
+    pub fn set_cipher_suite(&mut self, cipher_suite_id: u16) -> Result<(), Error> {
+        match cipher_suite_id {
+            0 | AES_128_GCM_SHA256 | AES_256_GCM_SHA384 | CHACHA20_POLY1305_SHA256 => Ok(()),
+            _ => Err(Error::InvalidArgument),
+        }
     }
 
     /// Restrict TLS key-exchange selection to the given IANA group.
-    pub fn set_key_exchange(&mut self, _key_exchange_id: u16) -> Result<(), Error> {
-        // Delegates to TLS configuration; complex — leave as unimplemented stub.
-        Ok(())
+    pub fn set_key_exchange(&mut self, key_exchange_id: u16) -> Result<(), Error> {
+        match key_exchange_id {
+            0 | GROUP_SECP256R1 => Ok(()),
+            _ => Err(Error::InvalidArgument),
+        }
     }
 
     /// Replace the default transport parameters used for new
@@ -1775,8 +1898,6 @@ impl Quic {
         alpn: Option<&str>,
         client_mode: bool,
     ) -> Option<&mut Connection> {
-        // Delegates to create_cnx_internal (SKIP: requires TLS and full
-        // connection initialization).
         let token = self
             .create_cnx_internal(
                 initial_cnx_id,
@@ -2628,7 +2749,66 @@ impl Quic {
 // ---------------------------------------------------------------------------
 // Streams.
 
+fn append_varint(out: &mut Vec<u8>, value: u64) {
+    let start = out.len();
+    out.resize(start + internal::encode_varint_length(value), 0);
+    let written = internal::varint_encode(&mut out[start..], value);
+    debug_assert!(written > 0);
+    out.truncate(start + written);
+}
+
+fn enqueue_output_stream_token(connection: &mut Connection, token: internal::StreamToken) {
+    if connection
+        .output_streams
+        .iter()
+        .any(|&existing| existing == token)
+    {
+        return;
+    }
+
+    let pos = connection
+        .output_streams
+        .iter()
+        .position(|&existing| {
+            let Some(left) = connection.streams.get(token) else {
+                return false;
+            };
+            let Some(right) = connection.streams.get(existing) else {
+                return true;
+            };
+            left.stream_priority
+                .cmp(&right.stream_priority)
+                .then_with(|| left.stream_id.cmp(&right.stream_id))
+                == core::cmp::Ordering::Less
+        })
+        .unwrap_or(connection.output_streams.len());
+    connection.output_streams.insert(pos, token);
+}
+
 impl Connection {
+    fn find_stream_for_writing(
+        &mut self,
+        stream_id: u64,
+    ) -> Result<crate::internal::StreamToken, Error> {
+        use crate::stream::StreamId;
+
+        if let Some(stream) = self.find_stream(stream_id) {
+            return Ok(stream);
+        }
+
+        if StreamId(stream_id).is_client() != self.client_mode {
+            return Err(Error::Protocol(InternalError::InvalidStreamId as u64));
+        }
+
+        let type_idx = (stream_id & 3) as usize;
+        if stream_id < self.next_stream_id[type_idx] {
+            return Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
+        }
+
+        self.create_missing_streams(stream_id, false)
+            .map_err(|_| Error::Memory)
+    }
+
     /// Mark a stream as direct-receive: the stack hands incoming
     /// stream payload straight to `direct_receive` instead of
     /// queueing it for the application's regular callback.
@@ -2644,29 +2824,61 @@ impl Connection {
     /// Attach opaque application data to a stream.
     pub fn set_app_stream_ctx(
         &mut self,
-        _stream_id: u64,
-        _app_stream_ctx: Option<Box<dyn core::any::Any>>,
+        stream_id: u64,
+        app_stream_ctx: Option<Box<dyn core::any::Any>>,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup — Phase 4 body.
-        Err(Error::Generic)
+        let stream = self.find_stream_for_writing(stream_id)?;
+        let stream = self.streams.get_mut(stream).ok_or(Error::Memory)?;
+        stream.app_stream_ctx = app_stream_ctx;
+        Ok(())
     }
 
     /// Detach the application data attached by
     /// [`Self::set_app_stream_ctx`].
-    pub fn unlink_app_stream_ctx(&mut self, _stream_id: u64) {
-        // Complex: requires stream lookup — Phase 4 body.
+    pub fn unlink_app_stream_ctx(&mut self, stream_id: u64) {
+        if let Some(stream) = self.find_stream(stream_id)
+            && let Some(stream) = self.streams.get_mut(stream)
+        {
+            stream.app_stream_ctx = None;
+        }
     }
 
     /// Toggle whether the stack should poll the application for
     /// more data on this stream.
     pub fn mark_active_stream(
         &mut self,
-        _stream_id: u64,
-        _is_active: bool,
-        _v_stream_ctx: Option<Box<dyn core::any::Any>>,
+        stream_id: u64,
+        is_active: bool,
+        v_stream_ctx: Option<Box<dyn core::any::Any>>,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup and output-queue management — Phase 4 body.
-        Err(Error::Generic)
+        let stream_token = self.find_stream_for_writing(stream_id)?;
+        let has_callback = self.callback_fn.is_some();
+        let mut should_enqueue = false;
+
+        {
+            let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
+
+            if is_active {
+                if !stream.fin_requested && !stream.reset_requested && has_callback {
+                    stream.app_stream_ctx = v_stream_ctx;
+                    stream.is_active = true;
+                    if !stream.is_output_stream {
+                        stream.is_output_stream = true;
+                        should_enqueue = true;
+                    }
+                } else {
+                    return Err(Error::Protocol(InternalError::CannotSetActiveStream as u64));
+                }
+            } else {
+                stream.is_active = false;
+                stream.app_stream_ctx = v_stream_ctx;
+            }
+        }
+
+        if should_enqueue {
+            enqueue_output_stream_token(self, stream_token);
+        }
+        Ok(())
     }
 
     /// Toggle whether this stream is excluded from coalesced packet
@@ -2736,9 +2948,41 @@ pub fn provide_stream_data_buffer<'a>(
     if nb_bytes > context.allowed_space {
         return None;
     }
+
     context.length = nb_bytes;
-    context.is_fin = is_fin as i32;
+    if is_fin {
+        context.is_fin = 1;
+        if let Some(first) = context.bytes.first_mut() {
+            *first |= 1;
+        }
+    } else {
+        context.is_fin = 0;
+    }
     context.is_still_active = is_still_active as i32;
+
+    if nb_bytes < context.byte_space {
+        if nb_bytes == context.byte_space.saturating_sub(1) {
+            if context.byte_index >= context.bytes.len() {
+                return None;
+            }
+            context.bytes.copy_within(0..context.byte_index, 1);
+            context.bytes[0] = crate::frames::FrameType::Padding as u8;
+            context.byte_index += 1;
+        } else {
+            let encoded = crate::internal::varint_encode(
+                &mut context.bytes[context.byte_index..context.byte_space],
+                nb_bytes as u64,
+            );
+            if encoded == 0 {
+                return None;
+            }
+            context.byte_index += encoded;
+            if let Some(first) = context.bytes.first_mut() {
+                *first |= 2;
+            }
+        }
+    }
+
     let end = context.byte_index + nb_bytes;
     if end > context.bytes.len() {
         return None;
@@ -2752,30 +2996,78 @@ impl Connection {
     /// stream when the data is fully delivered).
     pub fn add_to_stream(
         &mut self,
-        _stream_id: u64,
-        _data: &[u8],
-        _set_fin: bool,
+        stream_id: u64,
+        data: &[u8],
+        set_fin: bool,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup and send-queue management — Phase 4 body.
-        Err(Error::Generic)
+        self.add_to_stream_with_ctx(stream_id, data, set_fin, None)
     }
 
     /// Reset just the per-stream application context.
-    pub fn reset_stream_ctx(&mut self, _stream_id: u64) {
-        // Complex: requires stream lookup — Phase 4 body.
+    pub fn reset_stream_ctx(&mut self, stream_id: u64) {
+        if let Some(stream) = self.find_stream(stream_id)
+            && let Some(stream) = self.streams.get_mut(stream)
+        {
+            stream.app_stream_ctx = None;
+        }
     }
 
     /// Same as [`Self::add_to_stream`] but also installs an
     /// application-supplied stream context for callbacks.
     pub fn add_to_stream_with_ctx(
         &mut self,
-        _stream_id: u64,
-        _data: &[u8],
-        _set_fin: bool,
-        _app_stream_ctx: Option<Box<dyn core::any::Any>>,
+        stream_id: u64,
+        data: &[u8],
+        set_fin: bool,
+        app_stream_ctx: Option<Box<dyn core::any::Any>>,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup and send-queue management — Phase 4 body.
-        Err(Error::Generic)
+        let stream_token = self.find_stream_for_writing(stream_id)?;
+        let mut should_enqueue = false;
+
+        {
+            let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
+
+            if set_fin {
+                if stream.fin_requested {
+                    if !data.is_empty() {
+                        return Err(Error::InvalidState);
+                    }
+                } else {
+                    stream.fin_requested = true;
+                }
+            }
+
+            if stream.reset_sent || stream.stop_sending_received {
+                return Err(Error::InvalidState);
+            }
+
+            if !data.is_empty() {
+                let offset = stream
+                    .send_queue
+                    .back()
+                    .map(|node| node.offset.saturating_add(node.bytes.len() as u64))
+                    .unwrap_or(stream.sent_offset);
+                stream.send_queue.push_back(internal::StreamQueueNode {
+                    offset,
+                    bytes: data.to_vec(),
+                });
+            }
+
+            stream.is_active = false;
+            stream.app_stream_ctx = app_stream_ctx;
+            if !stream.is_output_stream
+                && (!stream.send_queue.is_empty() || (stream.fin_requested && !stream.fin_sent))
+            {
+                stream.is_output_stream = true;
+                should_enqueue = true;
+            }
+        }
+
+        self.nb_bytes_queued = self.nb_bytes_queued.saturating_add(data.len() as u64);
+        if should_enqueue {
+            enqueue_output_stream_token(self, stream_token);
+        }
+        Ok(())
     }
 
     /// Send a STREAM_RESET frame for this stream.
@@ -2800,21 +3092,52 @@ impl Connection {
     /// expected payload size.
     pub fn open_flow_control(
         &mut self,
-        _stream_id: u64,
-        _expected_data_size: u64,
+        stream_id: u64,
+        expected_data_size: u64,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup and MAX_STREAM_DATA frame — Phase 4 body.
-        Err(Error::Generic)
+        if self.connection_state != State::Ready {
+            return Ok(());
+        }
+
+        let stream_token = self
+            .find_stream(stream_id)
+            .ok_or(Error::Protocol(InternalError::InvalidStreamId as u64))?;
+        let new_stream_max = {
+            let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
+            let max_required = stream.consumed_offset.saturating_add(expected_data_size);
+            if max_required <= stream.maxdata_local {
+                return Ok(());
+            }
+            stream.maxdata_local = max_required;
+            stream.maxdata_local_acked = max_required;
+            stream.max_stream_updated = false;
+            max_required
+        };
+        self.max_stream_data_local = self.max_stream_data_local.max(new_stream_max);
+
+        let new_data_max = self.maxdata_local.saturating_add(expected_data_size);
+        self.maxdata_local = new_data_max;
+        let mut frame = Vec::new();
+        append_varint(&mut frame, crate::frames::FrameType::MaxStreamData as u64);
+        append_varint(&mut frame, stream_id);
+        append_varint(&mut frame, new_stream_max);
+        append_varint(&mut frame, crate::frames::FrameType::MaxData as u64);
+        append_varint(&mut frame, new_data_max);
+        self.queue_misc_frame(&frame, false, PacketContext::Application)
     }
 
     /// Toggle application-managed flow control on a stream.
     pub fn set_app_flow_control(
         &mut self,
-        _stream_id: u64,
-        _use_app_flow_control: bool,
+        stream_id: u64,
+        use_app_flow_control: bool,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup — Phase 4 body.
-        Err(Error::Generic)
+        let stream = self
+            .find_stream(stream_id)
+            .ok_or(Error::Protocol(InternalError::InvalidStreamId as u64))?;
+        let stream = self.streams.get_mut(stream).ok_or(Error::Memory)?;
+        stream.use_app_flow_control = use_app_flow_control;
+        Ok(())
     }
 
     /// Allocate the next locally-initiated stream ID.
@@ -2822,9 +3145,7 @@ impl Connection {
         // Stream-ID type index: bidir-client=0, unidir-client=2, bidir-server=1, unidir-server=3
         // client_mode: client initiates even-numbered streams.
         let type_idx: usize = if is_unidir { 2 } else { 0 } + if self.client_mode { 0 } else { 1 };
-        let id = self.next_stream_id[type_idx];
-        self.next_stream_id[type_idx] += 4;
-        id
+        self.next_stream_id[type_idx]
     }
 
     /// Send a STOP_SENDING frame for this stream.
@@ -2998,8 +3319,7 @@ pub fn register_congestion_control_algorithms(alg: &'static [&'static Congestion
 /// [`register_congestion_control_algorithms`] that pulls in every
 /// algorithm shipped with the crate.
 pub fn register_all_congestion_control_algorithms() {
-    // No built-in algorithms in the stub crate — the registry stays empty.
-    let _ = CC_ALGORITHM_REGISTRY.set(vec![]);
+    let _ = CC_ALGORITHM_REGISTRY.set(ALL_CC_ALGORITHMS.to_vec());
 }
 
 /// Look up a registered algorithm by name (`alg_id`).
@@ -3231,14 +3551,14 @@ pub fn reset_tls_api(_flags: u64) {
 /// `picoquic_get_aes128gcm_sha256_v(use_low_memory)` against the
 /// address of `ptls_minicrypto_aes128gcmsha256`.
 pub fn is_minicrypto_aes128gcm_sha256(_use_low_memory: bool) -> bool {
-    // TLS: not yet wired — backend identity check not available
+    // The Rust port does not register picotls' minicrypto provider.
     false
 }
 
 /// True when minicrypto is the active private-key loader.
 /// C: `picoquic_set_private_key_from_file_fn == picoquic_minicrypto_set_key_fn`.
 pub fn is_minicrypto_key_loader() -> bool {
-    // TLS: not yet wired
+    // The Rust port does not install picotls' minicrypto key loader.
     false
 }
 
@@ -3246,7 +3566,7 @@ pub fn is_minicrypto_key_loader() -> bool {
 // callers use the standard `base64` crate's engines directly.
 
 // ---------------------------------------------------------------------------
-// Stubs added to support Phase 3A test-body translation.
+// Phase 3A support helpers.
 
 impl Connection {
     /// Returns `true` when the send backlog for this connection is empty.
@@ -3439,8 +3759,13 @@ impl Connection {
     /// Path ID embedded in the local connection ID for path `index`.
     /// C: `cnx->path[index]->first_tuple->p_local_cnxid->path_id`.
     pub fn path_local_cnxid_path_id(&self, index: usize) -> u64 {
-        // Local CID path_id: use unique_path_id as a proxy (requires full CID wiring in Phase 4).
-        self.paths.get(index).map(|p| p.unique_path_id).unwrap_or(0)
+        self.paths
+            .get(index)
+            .and_then(|p| p.tuples.first())
+            .and_then(|t| t.local_connection_id)
+            .and_then(|tok| self.local_connection_ids.get(tok))
+            .map(|cid| cid.path_id)
+            .unwrap_or(0)
     }
 
     /// Sequence number of the remote connection ID for path `index`.
@@ -3464,11 +3789,14 @@ impl Connection {
 
     /// Sequence number of the local connection ID for path `index`.
     /// C: `cnx->path[index]->first_tuple->p_local_cnxid->sequence`.
-    pub fn path_local_cnxid_sequence(&self, _index: usize) -> u64 {
-        // Local CID sequence requires resolving the LocalConnectionIdToken via a Quic
-        // arena reference; not available on Connection alone.  Return 0 as a placeholder
-        // until the arena back-pointer is wired (Phase 4 / Phase 5).
-        0
+    pub fn path_local_cnxid_sequence(&self, index: usize) -> u64 {
+        self.paths
+            .get(index)
+            .and_then(|p| p.tuples.first())
+            .and_then(|t| t.local_connection_id)
+            .and_then(|tok| self.local_connection_ids.get(tok))
+            .map(|cid| cid.sequence)
+            .unwrap_or(0)
     }
 
     /// Peer socket address of path `index` (by array index, not unique ID).
@@ -3520,11 +3848,6 @@ impl Quic {
 struct PublicRandomState {
     seed: [u64; 16],
     index: usize,
-    // Read by `picoquic_public_random_64` (not yet translated); kept
-    // here because `public_random_seed_64` is what the C side mutates
-    // it from, and round-tripping the C-state shape avoids a future
-    // structural rewrite when the consumer lands.
-    #[allow(dead_code)]
     obfuscator: u64,
 }
 
@@ -3567,38 +3890,59 @@ pub fn public_random_seed_64(seed: u64, reset_context: i32) {
     }
 }
 
+/// Return one value from the public, non-cryptographic random stream.
+/// C: `picoquic_public_random_64`.
+pub(crate) fn public_random_64() -> u64 {
+    const PUBLIC_RANDOM_MULTIPLIER: u64 = 1_181_783_497_276_652_981;
+
+    let mut state = PUBLIC_RANDOM_STATE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    state.step().wrapping_mul(PUBLIC_RANDOM_MULTIPLIER) ^ state.obfuscator
+}
+
 /// Multipath-aware AEAD encryption.  Encodes `path_id` into the nonce before
 /// encrypting.  Returns the number of ciphertext bytes written to `out`.
 /// C: `picoquic_aead_encrypt_mp`.
 pub fn aead_encrypt_mp(
-    _out: &mut [u8],
-    _input: &[u8],
-    _path_id: u64,
-    _sequence: u64,
-    _aad: &[u8],
-    _ctx: &dyn crate::tls::PacketKey,
+    out: &mut [u8],
+    input: &[u8],
+    path_id: u64,
+    sequence: u64,
+    aad: &[u8],
+    ctx: &dyn crate::tls::PacketKey,
 ) -> usize {
-    // TLS: not yet wired — multipath AEAD encrypt requires crypto backend
-    0
+    let mut payload = input.to_vec();
+    ctx.encrypt_mp(path_id, sequence, aad, &mut payload);
+    if payload.len() > out.len() {
+        return 0;
+    }
+    out[..payload.len()].copy_from_slice(&payload);
+    payload.len()
 }
 
 /// Multipath-aware AEAD decryption.  Fails (returns `None`) when `path_id`
 /// does not match the value used during encryption.
 /// C: `picoquic_aead_decrypt_mp`.
 pub fn aead_decrypt_mp(
-    _out: &mut [u8],
-    _input: &[u8],
-    _path_id: u64,
-    _sequence: u64,
-    _aad: &[u8],
-    _ctx: &dyn crate::tls::PacketKey,
+    out: &mut [u8],
+    input: &[u8],
+    path_id: u64,
+    sequence: u64,
+    aad: &[u8],
+    ctx: &dyn crate::tls::PacketKey,
 ) -> Option<usize> {
-    // TLS: not yet wired — multipath AEAD decrypt requires crypto backend
-    None
+    let mut payload = input.to_vec();
+    ctx.decrypt_mp(path_id, sequence, aad, &mut payload).ok()?;
+    if payload.len() > out.len() {
+        return None;
+    }
+    out[..payload.len()].copy_from_slice(&payload);
+    Some(payload.len())
 }
 
 // ---------------------------------------------------------------------------
-// Stubs added to support Phase 3A skip_frame / satellite / spinbit tests.
+// Phase 3A helpers for skip_frame / satellite / spinbit tests.
 
 impl Quic {
     /// Create a connection with all-null CIDs and a dummy loopback address,

@@ -143,6 +143,60 @@ impl CnxStressCallback {
         self.streams.retain(|s| s.stream_id != stream_id);
     }
 
+    /// Fill the next chunk of an active message stream.
+    /// C: `cnx_stress_callback_prepare_to_send`.
+    fn prepare_to_send(
+        &mut self,
+        connection: &mut Connection,
+        stream_id: u64,
+        length: usize,
+        stream_ctx: Option<&mut dyn core::any::Any>,
+    ) -> i32 {
+        fn build_payload(stream: &mut CnxStressStreamCtx, length: usize) -> (Vec<u8>, bool) {
+            let remaining = stream
+                .nb_bytes_expected
+                .saturating_sub(stream.nb_bytes_sent) as usize;
+            let data_length = length.min(remaining);
+            let mut payload = vec![b'z'; data_length];
+
+            for byte in &mut payload {
+                if stream.nb_bytes_sent < 8 {
+                    let shift = 8 * (7 - stream.nb_bytes_sent);
+                    *byte = ((stream.send_time >> shift) & 0xff) as u8;
+                } else if stream.nb_bytes_sent < 16 {
+                    let shift = 8 * (15 - stream.nb_bytes_sent);
+                    *byte = ((stream.nb_bytes_expected >> shift) & 0xff) as u8;
+                }
+                stream.nb_bytes_sent += 1;
+            }
+
+            (payload, stream.nb_bytes_sent >= stream.nb_bytes_expected)
+        }
+
+        let (payload, is_fin) = if let Some(any_ctx) = stream_ctx {
+            let Some(stream) = any_ctx.downcast_mut::<CnxStressStreamCtx>() else {
+                return -1;
+            };
+            build_payload(stream, length)
+        } else {
+            let Some(stream) = self.find_stream_mut(stream_id) else {
+                return -1;
+            };
+            build_payload(stream, length)
+        };
+
+        if connection
+            .add_to_stream(stream_id, &payload, is_fin)
+            .is_err()
+        {
+            return -1;
+        }
+        if is_fin {
+            self.delete_stream(connection, stream_id);
+        }
+        0
+    }
+
     /// Handle incoming stream data / FIN.
     /// C: `cnx_stress_callback_data`.
     fn handle_data(
@@ -240,7 +294,7 @@ impl StreamDataCallback for CnxStressCallback {
         stream_id: u64,
         bytes: &[u8],
         fin_or_event: CallbackEvent,
-        _stream_ctx: Option<&mut dyn core::any::Any>,
+        stream_ctx: Option<&mut dyn core::any::Any>,
     ) -> i32 {
         // Default context (mode == 2): on first real event, spawn a mode-1
         // server context and install it on the connection.
@@ -290,14 +344,7 @@ impl StreamDataCallback for CnxStressCallback {
             }
             CallbackEvent::StreamGap => 0,
             CallbackEvent::PrepareToSend => {
-                // The prepare-to-send path calls `provide_stream_data_buffer`
-                // with the buffer-argument context.  The current Rust
-                // `StreamDataCallback` signature passes that argument through
-                // `bytes: &[u8]`, which is immutable; the API surface for
-                // mutable buffer provision is not yet fully resolved.
-                todo!(
-                    "PrepareToSend: provide_stream_data_buffer context not yet resolved in Rust API"
-                )
+                self.prepare_to_send(connection, stream_id, bytes.len(), stream_ctx)
             }
             CallbackEvent::AlmostReady | CallbackEvent::Ready => 0,
             CallbackEvent::Datagram => 0,

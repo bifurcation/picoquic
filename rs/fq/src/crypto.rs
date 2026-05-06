@@ -11,7 +11,7 @@
 //! and a few QUIC-specific paths (lb CID encryption, retry
 //! integrity, initial-secret derivation) reach for directly.
 //!
-//! Phase 1 contract: signatures only — every body is `todo!()`.
+//! Backend implementations live in provider-specific modules.
 
 extern crate alloc;
 use alloc::boxed::Box;

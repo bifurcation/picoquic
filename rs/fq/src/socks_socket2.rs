@@ -6,9 +6,8 @@
 //! the test simulator) implement the same trait against their
 //! own platform abstractions.
 //!
-//! Phase 1 contract: signatures only — every method body is
-//! stubs.  Phase 4 wires them through `socket2`'s
-//! `recv_from`/`send_to`/`set_*` calls.
+//! Phase 4 wires the safe parts through `socket2`'s
+//! receive/send/option-setting calls.
 
 use core::net::SocketAddr;
 
@@ -109,10 +108,19 @@ impl Socket for Socket2Udp {
     }
 
     fn set_ecn_options(&mut self) -> Result<(bool, bool), Error> {
-        // Full ECN option setting (IP_TOS/IP_RECVTOS, IPV6_TCLASS/
-        // IPV6_RECVTCLASS) is platform-specific and not uniformly
-        // exposed by socket2 0.5.  Report unsupported for now.
-        Ok((false, false))
+        self.set_ecn_options_ex(crate::socks::EcnCodepoint::Ect1)
+    }
+
+    fn set_ecn_options_ex(
+        &mut self,
+        ecn: crate::socks::EcnCodepoint,
+    ) -> Result<(bool, bool), Error> {
+        let ecn = ecn as u32;
+        let recv_v4 = self.0.set_recv_tos(true).is_ok();
+        let recv_v6 = self.0.set_recv_tclass_v6(true).is_ok();
+        let send_v4 = self.0.set_tos(ecn).is_ok();
+        let send_v6 = self.0.set_tclass_v6(ecn).is_ok();
+        Ok((recv_v4 || recv_v6, send_v4 || send_v6))
     }
 
     fn set_pmtud_options(&mut self) -> Result<(), Error> {

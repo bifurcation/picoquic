@@ -389,7 +389,10 @@ def _parse_codex_event(ev: dict[str, Any]) -> tuple[str, str, bool]:
 
     if "assistant" in typ or "message" in typ or "completed" in typ:
         text = _find_string_key(ev, {"text", "message", "content", "result"})
-    return tool, text, _json_contains_rate_limit(ev)
+    rate_limited = False
+    if "error" in typ or "failed" in typ:
+        rate_limited = _json_contains_rate_limit(ev)
+    return tool, text, rate_limited
 
 
 def _parse_stream_event(

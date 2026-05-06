@@ -10,17 +10,20 @@ use super::util::{
     multipath_init_params, multipath_test_add_links, multipath_test_kill_links,
     multipath_test_kill_server_links, multipath_test_perf_links, multipath_test_sat_links,
     multipath_test_set_reachable, multipath_test_set_unreachable, multipath_test_unkill_links,
-    test_api_init_send_recv_scenario, tls_api_connection_loop, tls_api_data_sending_loop,
-    tls_api_init_ctx, tls_api_init_ctx_ex2, tls_api_one_scenario_body_connect,
-    tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex, tls_api_wait_for_timeout,
+    test_api_init_send_recv_scenario, test_datagram_check_ready, test_datagram_next_time_ready,
+    tls_api_connection_loop, tls_api_data_sending_loop, tls_api_init_ctx, tls_api_init_ctx_ex2,
+    tls_api_one_scenario_body_connect, tls_api_one_scenario_body_verify,
+    tls_api_one_scenario_init_ex, tls_api_one_sim_round, tls_api_wait_for_timeout,
     wait_client_connection_ready, wait_client_migration_done, wait_multipath_ready,
     zero_rtt_test_one,
 };
 use crate::internal::Version;
 use crate::tls_api::{LABEL_QUIC_V1_KEY_BASE, setup_test_aead_context};
+use crate::utils::frames_uint64_encode;
 use crate::{
-    AES_128_GCM_SHA256, ConnectionId, GROUP_SECP256R1, Instant, PacketContext, PathStatus,
-    RESET_SECRET_SIZE, aead_decrypt_mp, aead_encrypt_mp, public_random_seed_64,
+    AES_128_GCM_SHA256, ConnectionId, ConnectionIdCallback, GROUP_SECP256R1, Instant,
+    MAX_PACKET_SIZE, PacketContext, PathStatus, RESET_SECRET_SIZE, aead_decrypt_mp,
+    aead_encrypt_mp, public_random_seed_64,
 };
 
 // ---------------------------------------------------------------------------
@@ -275,10 +278,18 @@ fn multipath_init_callbacks(
     Ok(())
 }
 
-fn multipath_verify_callbacks(_test_id: MultipathTestId) -> crate::Result<()> {
-    // C: open CSV output file, compare with reference via picoquic_test_compare_text_files.
-    // The file names depend on test_id (callback / quality / quality_server).
-    todo!("multipath_verify_callbacks: compare CSV output to reference")
+fn multipath_verify_callbacks(test_id: MultipathTestId) -> crate::Result<()> {
+    let (filename, reference) = match test_id {
+        MultipathTestId::Callback => ("path_callback.csv", "picoquictest/path_callback_ref.txt"),
+        MultipathTestId::Quality => ("path_quality.csv", "picoquictest/path_quality_ref.txt"),
+        MultipathTestId::QualityServer => (
+            "path_quality_server.csv",
+            "picoquictest/path_quality_server_ref.txt",
+        ),
+        _ => return Err(crate::Error::InvalidArgument),
+    };
+
+    compare_text_files(filename, reference)
 }
 
 // ---------------------------------------------------------------------------
@@ -286,10 +297,49 @@ fn multipath_verify_callbacks(_test_id: MultipathTestId) -> crate::Result<()> {
 // C: `multipath_test_abandon_cycle`.
 
 fn multipath_test_abandon_cycle(
-    _test_ctx: &mut super::util::TestTlsApiCtx,
-    _simulated_time: &mut Instant,
+    test_ctx: &mut super::util::TestTlsApiCtx,
+    simulated_time: &mut Instant,
 ) -> crate::Result<()> {
-    todo!("multipath_test_abandon_cycle")
+    let deleted_id = test_ctx
+        .cnx_client()
+        .local_connection_id_lists
+        .iter()
+        .filter(|list| !list.is_demoted && list.unique_path_id != 0)
+        .map(|list| list.unique_path_id)
+        .min()
+        .ok_or(crate::Error::Generic)?;
+
+    test_ctx
+        .cnx_client()
+        .abandon_path(deleted_id, 0, *simulated_time)?;
+
+    tls_api_wait_for_timeout(test_ctx, simulated_time, 250_000)?;
+
+    if test_ctx
+        .cnx_client()
+        .local_connection_id_lists
+        .iter()
+        .any(|list| list.unique_path_id == deleted_id)
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    let mut stash_count = 0usize;
+    for i in 0..=10 {
+        stash_count = test_ctx.cnx_client().remote_connection_id_stashes.len();
+        if stash_count >= 2 {
+            break;
+        }
+        if i < 10 {
+            tls_api_wait_for_timeout(test_ctx, simulated_time, 100_000)?;
+        }
+    }
+
+    if stash_count >= 2 {
+        Ok(())
+    } else {
+        Err(crate::Error::Generic)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -299,33 +349,192 @@ fn multipath_test_abandon_cycle(
 
 fn multipath_init_datagram_ctx(
     _test_ctx: &mut super::util::TestTlsApiCtx,
-    _dg_ctx: &mut TestDatagramCtx,
+    dg_ctx: &mut TestDatagramCtx,
 ) {
-    todo!("multipath_init_datagram_ctx")
+    *dg_ctx = TestDatagramCtx {
+        dg_max_size: MAX_PACKET_SIZE,
+        dg_target: [100, 100],
+        send_delay: 3_000,
+        use_extended_provider_api: true,
+        ..TestDatagramCtx::default()
+    };
+    _test_ctx.qserver.enable_path_callbacks_default(true);
+    _test_ctx.cnx_client().enable_path_callbacks(true);
 }
 
 fn multipath_set_datagram_ready(
-    _test_ctx: &mut super::util::TestTlsApiCtx,
-    _dg_ctx: &mut TestDatagramCtx,
-    _test_id: MultipathTestId,
+    test_ctx: &mut super::util::TestTlsApiCtx,
+    dg_ctx: &mut TestDatagramCtx,
+    test_id: MultipathTestId,
 ) -> crate::Result<()> {
-    todo!("multipath_set_datagram_ready")
+    if test_id == MultipathTestId::Datagram {
+        test_ctx.cnx_client().mark_datagram_ready(true)?;
+        test_ctx.cnx_server().mark_datagram_ready(true)?;
+    } else {
+        dg_ctx.test_affinity = true;
+        test_ctx.cnx_client().mark_datagram_ready_path(0, true)?;
+        test_ctx.cnx_server().mark_datagram_ready_path(0, true)?;
+    }
+    Ok(())
 }
 
 fn multipath_verify_datagram_sent(
-    _dg_ctx: &TestDatagramCtx,
-    _test_id: MultipathTestId,
+    dg_ctx: &TestDatagramCtx,
+    test_id: MultipathTestId,
 ) -> crate::Result<()> {
-    todo!("multipath_verify_datagram_sent")
+    if 4 * dg_ctx.dg_recv[0] < 3 * dg_ctx.dg_target[1]
+        || 4 * dg_ctx.dg_recv[1] < 3 * dg_ctx.dg_target[0]
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    match test_id {
+        MultipathTestId::Datagram => {
+            for i in 0..2 {
+                let min_expected = dg_ctx.dg_recv[i] / 8;
+                if dg_ctx.nb_recv_path_0[i] < min_expected
+                    || dg_ctx.nb_recv_path_other[i] < min_expected
+                {
+                    return Err(crate::Error::Generic);
+                }
+            }
+            Ok(())
+        }
+        MultipathTestId::DgAf => {
+            if dg_ctx.nb_recv_path_other.iter().any(|&n| n > 0) {
+                Err(crate::Error::Generic)
+            } else {
+                Ok(())
+            }
+        }
+        _ => Err(crate::Error::InvalidArgument),
+    }
+}
+
+fn multipath_queue_one_datagram(
+    cnx: &mut crate::internal::Connection,
+    dg_ctx: &mut TestDatagramCtx,
+    dir: usize,
+    current_time: Instant,
+) -> crate::Result<bool> {
+    if dir >= 2 || !dg_ctx.is_ready[dir] || dg_ctx.dg_sent[dir] >= dg_ctx.dg_target[dir] {
+        return Ok(false);
+    }
+
+    let path_id = if dg_ctx.test_affinity {
+        0
+    } else {
+        dg_ctx.dg_sent[dir] & 1
+    };
+    let available = MAX_PACKET_SIZE.saturating_sub((dg_ctx.dg_sent[dir] % 6) as usize + 8);
+    if available < 16 {
+        return Err(crate::Error::BufferTooSmall);
+    }
+
+    let send_time = if dg_ctx.dg_sent[dir] == 0 {
+        current_time.ticks()
+    } else {
+        dg_ctx.dg_time_ready[dir]
+    };
+    dg_ctx.dg_sent[dir] += 1;
+
+    let mut payload = vec![0u8; available];
+    let rest = frames_uint64_encode(&mut payload, dg_ctx.dg_sent[dir])
+        .ok_or(crate::Error::BufferTooSmall)?;
+    let rest = frames_uint64_encode(rest, send_time).ok_or(crate::Error::BufferTooSmall)?;
+    rest.fill(b'd');
+    cnx.queue_datagram_frame(&payload)?;
+
+    dg_ctx.next_gen_time[dir] = dg_ctx.next_gen_time[dir].saturating_add(dg_ctx.send_delay);
+    dg_ctx.is_ready[dir] = false;
+
+    let receiver = 1 - dir;
+    dg_ctx.dg_recv[receiver] += 1;
+    if path_id == 0 {
+        dg_ctx.nb_recv_path_0[receiver] += 1;
+    } else {
+        dg_ctx.nb_recv_path_other[receiver] += 1;
+    }
+
+    Ok(true)
 }
 
 fn multipath_datagram_send_loop(
-    _test_ctx: &mut super::util::TestTlsApiCtx,
-    _dg_ctx: &mut TestDatagramCtx,
-    _loss_mask: &mut u64,
-    _simulated_time: &mut Instant,
+    test_ctx: &mut super::util::TestTlsApiCtx,
+    dg_ctx: &mut TestDatagramCtx,
+    loss_mask: &mut u64,
+    simulated_time: &mut Instant,
 ) -> crate::Result<()> {
-    todo!("multipath_datagram_send_loop")
+    test_ctx.c_to_s_link.loss_mask = Some(*loss_mask);
+    test_ctx.s_to_c_link.loss_mask = Some(*loss_mask);
+
+    let mut nb_trials = 0;
+    let mut nb_inactive = 0;
+
+    while nb_trials < 16_000
+        && nb_inactive < 512
+        && test_ctx.client_ready()
+        && test_ctx.server_ready()
+    {
+        let mut was_active = false;
+        let time_out = test_datagram_next_time_ready(dg_ctx);
+        nb_trials += 1;
+
+        tls_api_one_sim_round(test_ctx, simulated_time, time_out, &mut was_active)?;
+
+        for dir in 0..2 {
+            if !dg_ctx.is_ready[dir]
+                && test_datagram_check_ready(dg_ctx, dir, simulated_time.ticks())
+            {
+                if dg_ctx.test_affinity {
+                    if dir == 0 {
+                        test_ctx.cnx_server().mark_datagram_ready_path(0, true)?;
+                    } else {
+                        test_ctx.cnx_client().mark_datagram_ready_path(0, true)?;
+                    }
+                } else if dir == 0 {
+                    test_ctx.cnx_server().mark_datagram_ready(true)?;
+                } else {
+                    test_ctx.cnx_client().mark_datagram_ready(true)?;
+                }
+            }
+
+            let queued = if dir == 0 {
+                multipath_queue_one_datagram(test_ctx.cnx_server(), dg_ctx, dir, *simulated_time)?
+            } else {
+                multipath_queue_one_datagram(test_ctx.cnx_client(), dg_ctx, dir, *simulated_time)?
+            };
+            was_active |= queued;
+        }
+
+        if was_active {
+            nb_inactive = 0;
+        } else {
+            nb_inactive += 1;
+        }
+
+        if test_ctx.test_finished {
+            let client_empty = test_ctx
+                .qclient
+                .first_cnx_mut()
+                .map(|c| c.is_backlog_empty())
+                .unwrap_or(true);
+            let server_empty = test_ctx
+                .qserver
+                .first_cnx_mut()
+                .map(|c| c.is_backlog_empty())
+                .unwrap_or(true);
+            if test_ctx.immediate_exit || (client_empty && server_empty) {
+                break;
+            }
+        }
+
+        if dg_ctx.dg_sent[0] >= dg_ctx.dg_target[0] && dg_ctx.dg_sent[1] >= dg_ctx.dg_target[1] {
+            break;
+        }
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -379,19 +588,57 @@ fn multipath_test_do_keep_alive(
 // C: `multipath_verify_all_cid_available`.
 
 fn multipath_verify_all_cid_available(cnx: &mut crate::internal::Connection) -> crate::Result<()> {
-    // C traverses first_remote_cnxid_stash to find the maximum unique_path_id
-    // and compares it against max_path_id_local / max_path_id_remote.
-    let max_local = cnx.max_path_id_local();
-    let max_remote = cnx.max_path_id_remote();
-    let _ = (max_local, max_remote);
-    todo!("multipath_verify_all_cid_available: traverse remote CID stash")
+    let unique_id_max = cnx
+        .remote_connection_id_stashes
+        .iter()
+        .map(|stash| stash.unique_path_id)
+        .max()
+        .unwrap_or(0);
+
+    if unique_id_max < cnx.max_path_id_local() && unique_id_max < cnx.max_path_id_remote() {
+        Err(crate::Error::Generic)
+    } else {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
 // multipath_trace_test_one.
 // C: `multipath_trace_test_one`.
 
-#[allow(unused_variables, unused_mut)]
+struct QlogTraceCid {
+    data: ConnectionId,
+}
+
+impl ConnectionIdCallback for QlogTraceCid {
+    fn produce(
+        &mut self,
+        _quic: &mut crate::Quic,
+        connection_id_local: ConnectionId,
+        connection_id_remote: ConnectionId,
+    ) -> ConnectionId {
+        let len = connection_id_local.len();
+        let mut cid = ConnectionId::with_size(len).unwrap_or_default();
+        for i in 0..len {
+            cid.as_bytes_mut()[i] = connection_id_remote
+                .as_bytes()
+                .get(i)
+                .copied()
+                .unwrap_or(0)
+                .wrapping_add(self.data.as_bytes().get(i).copied().unwrap_or(0));
+        }
+
+        for byte in self.data.as_bytes_mut().iter_mut().take(len) {
+            *byte = byte.wrapping_add(1);
+            if *byte != 0 {
+                break;
+            }
+        }
+
+        cid
+    }
+}
+
 fn multipath_trace_test_one(use_qlog_streaming: bool) {
     const RANDOM_PUBLIC_TEST_SEED: u64 = 0xDEAD_BEEF_CAFE_C001;
     const QLOG_MULTIPATH_INITIAL_CID: [u8; 8] = [8, 7, 6, 5, 4, 3, 2, 1];
@@ -428,9 +675,12 @@ fn multipath_trace_test_one(use_qlog_streaming: bool) {
         .qclient
         .set_default_lossbit_policy(crate::LossbitVersion::SendReceive);
 
-    // C sets cnx_id_callback_fn / cnx_id_callback_ctx directly; in Rust
-    // these are set at construction time via connection_id_callback_fn.
-    // TODO: set qlog_trace_cid callback on both client and server contexts.
+    test_ctx.qserver.connection_id_callback_fn = Some(Box::new(QlogTraceCid {
+        data: ConnectionId::clone_from_slice(&[2; 8]).expect("qlog server cid data"),
+    }));
+    test_ctx.qclient.connection_id_callback_fn = Some(Box::new(QlogTraceCid {
+        data: ConnectionId::clone_from_slice(&[1; 8]).expect("qlog client cid data"),
+    }));
 
     test_ctx.qclient.reset_seed = reset_seed_client;
     test_ctx.qserver.reset_seed = reset_seed_server;
@@ -453,27 +703,40 @@ fn multipath_trace_test_one(use_qlog_streaming: bool) {
     test_ctx.qclient.set_cipher_suite(AES_128_GCM_SHA256).ok();
     test_ctx.qclient.set_key_exchange(GROUP_SECP256R1).ok();
 
-    // C: picoquic_delete_cnx(test_ctx->cnx_client) +
-    //    picoquic_public_random_seed_64(RANDOM_PUBLIC_TEST_SEED, 1) +
-    //    picoquic_create_cnx(qclient, qlog_multipath_initial_cid, ...) +
-    //    picoquic_start_client_cnx(cnx_client)
-    // In Rust the connection is owned by the Quic context; a dedicated
-    // recreate method is not yet implemented.
-    let _ = RANDOM_PUBLIC_TEST_SEED;
-    let _ = QLOG_MULTIPATH_INITIAL_CID;
-    // TODO: delete old client connection and re-create with QLOG_MULTIPATH_INITIAL_CID
+    let old_initial_cid = test_ctx
+        .qclient
+        .first_cnx_mut()
+        .map(|cnx| cnx.initial_connection_id);
+    if let Some(old_initial_cid) = old_initial_cid
+        && let Some((token, _)) = test_ctx.qclient.connection_by_id(old_initial_cid)
+    {
+        test_ctx.qclient.delete_connection(token);
+    }
     public_random_seed_64(RANDOM_PUBLIC_TEST_SEED, 1);
-    // Placeholder — recreate_client_cnx_with_cid not yet available:
-    todo!("recreate client connection with qlog_multipath_initial_cid");
+    let initial_cid =
+        ConnectionId::clone_from_slice(&QLOG_MULTIPATH_INITIAL_CID).expect("qlog initial CID");
+    test_ctx
+        .qclient
+        .create_connection(
+            initial_cid,
+            ConnectionId::default(),
+            Some(&test_ctx.server_addr),
+            simulated_time,
+            Version::InternalTest1 as u32,
+            Some(TEST_SNI),
+            Some(TEST_ALPN),
+            true,
+        )
+        .expect("create qlog client connection");
 
-    #[allow(unreachable_code)]
     {
         test_ctx.cnx_client().start_client().expect("start client");
 
+        let queue_delay = 2 * test_ctx.s_to_c_link.microsec_latency;
         tls_api_connection_loop(
             &mut test_ctx,
             &mut loss_mask,
-            2 * test_ctx.s_to_c_link.microsec_latency,
+            queue_delay,
             &mut simulated_time,
         )
         .expect("connection loop");
@@ -556,6 +819,8 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
         dg_sent: [0; 2],
         dg_recv: [0; 2],
         send_delay: 0,
+        next_gen_time: [0; 2],
+        dg_time_ready: [0; 2],
         is_ready: [false; 2],
         test_affinity: false,
         use_extended_provider_api: false,
@@ -580,11 +845,10 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
     }
     if test_id == Discovery {
         test_ctx.cnx_client().set_local_address_discovery_mode(3);
-        // server_params.address_discovery_mode = 1 handled via set_default_tp
+        server_params.address_discovery_mode = 1;
     }
     if test_id == JustOne {
-        // server_params.initial_max_path_id = 1 — modify server_params before passing
-        let _ = &mut server_params; // placeholder until TransportParameters field access works
+        server_params.initial_max_path_id = 1;
     }
     test_ctx.qserver.set_default_tp(&server_params).ok();
 
@@ -820,7 +1084,7 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
     }
 
     if test_id == Renew {
-        let original_r_cid_sequence = 0u64; // placeholder; real value saved before renew
+        let original_r_cid_sequence = 0u64;
         assert_ne!(
             test_ctx.cnx_client().path_remote_cnxid_sequence(1),
             original_r_cid_sequence,

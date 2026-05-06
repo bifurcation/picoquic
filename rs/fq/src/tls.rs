@@ -9,7 +9,8 @@
 //! (`tls_picotls.rs`, `tls_rustls.rs`, `tls_openssl.rs`)
 //! gated by the matching Cargo features.
 //!
-//! Phase 1 contract: signatures only — every body is `todo!()`.
+//! Phase 4 keeps this module as the TLS trait contract; concrete
+//! backend behavior lives in sibling modules.
 //!
 //! ## Structure
 //!
@@ -234,6 +235,22 @@ pub trait PacketKey: Send {
     /// In-place decrypt + tag verify.  Shrinks `payload` by
     /// the tag length on success.
     fn decrypt(&self, packet: u64, header: &[u8], payload: &mut Vec<u8>) -> Result<(), Error>;
+
+    /// Multipath variant of [`Self::encrypt`].  The C helper
+    /// `picoquic_aead_encrypt_mp` xors the low 32 bits of `path_id`
+    /// into the AEAD IV before applying the normal packet-number
+    /// nonce transform.
+    fn encrypt_mp(&self, path_id: u64, packet: u64, header: &[u8], payload: &mut Vec<u8>);
+
+    /// Multipath variant of [`Self::decrypt`], matching
+    /// `picoquic_aead_decrypt_mp`.
+    fn decrypt_mp(
+        &self,
+        path_id: u64,
+        packet: u64,
+        header: &[u8],
+        payload: &mut Vec<u8>,
+    ) -> Result<(), Error>;
 
     /// AEAD tag length (16 for all QUIC-defined cipher suites).
     fn tag_len(&self) -> usize;

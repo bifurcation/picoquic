@@ -58,9 +58,8 @@ impl<T> Clone for Token<T> {
 impl<T> Token<T> {
     /// Construct a synthetic token with explicit `idx` and `generation` fields.
     /// This is `pub(crate)` — external code must go through [`Arena::insert`].
-    /// Used internally when a placeholder token is needed before the arena is
-    /// fully wired up (e.g., Phase 4 stubs that build tokens before the
-    /// owning arena exists).
+    /// Used internally when code must name an arena slot from data that already
+    /// carries the slot index and generation.
     pub(crate) fn synthetic(idx: u32, generation: u32) -> Self {
         Self {
             idx,
@@ -72,8 +71,14 @@ impl<T> Token<T> {
 
 /// A slot in the arena storage vector.
 enum Slot<T> {
-    Free { next_free: Option<u32> },
-    Filled { generation: u32, value: T },
+    Free {
+        next_free: Option<u32>,
+        generation: u32,
+    },
+    Filled {
+        generation: u32,
+        value: T,
+    },
 }
 
 /// Slotmap-style arena that owns `T`s and addresses them by
@@ -99,15 +104,16 @@ impl<T> Arena<T> {
     /// Returns [`Error::Memory`] on slot-vector allocation failure.
     pub fn insert(&mut self, value: T) -> Result<Token<T>, Error> {
         let (idx, generation) = if let Some(free_idx) = self.free {
-            let next = if let Slot::Free { next_free } = &self.slots[free_idx as usize] {
-                *next_free
+            let (next, slot_gen) = if let Slot::Free {
+                next_free,
+                generation,
+            } = &self.slots[free_idx as usize]
+            {
+                (*next_free, *generation)
             } else {
                 unreachable!("free list pointed at a Filled slot")
             };
             self.free = next;
-            // Use a stable generation: reuse `free_idx` as the generation
-            // (unique per physical slot index, never collides with a fresh insert).
-            let slot_gen = free_idx;
             self.slots[free_idx as usize] = Slot::Filled {
                 generation: slot_gen,
                 value,
@@ -156,10 +162,12 @@ impl<T> Arena<T> {
             Some(Slot::Filled { generation, .. }) if *generation == token.generation
         );
         if is_match {
+            let next_generation = token.generation.wrapping_add(1);
             let old = core::mem::replace(
                 &mut self.slots[idx],
                 Slot::Free {
                     next_free: self.free,
+                    generation: next_generation,
                 },
             );
             self.free = Some(token.idx);
@@ -244,5 +252,17 @@ mod test {
         arena.remove(t1).unwrap();
         let vals: Vec<_> = arena.iter().copied().collect();
         assert_eq!(vals, vec![2]);
+    }
+
+    #[test]
+    fn reused_slot_invalidates_old_token() {
+        let mut arena: Arena<u32> = Arena::new();
+        let old = arena.insert(10).unwrap();
+        assert_eq!(arena.remove(old), Some(10));
+
+        let new = arena.insert(20).unwrap();
+        assert_eq!(arena.get(old), None);
+        assert_eq!(arena.get(new), Some(&20));
+        assert_ne!(old, new);
     }
 }

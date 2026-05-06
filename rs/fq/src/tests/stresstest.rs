@@ -8,13 +8,79 @@
 use super::util::{test_gauss_random, test_random, test_uniform_random};
 
 // ---------------------------------------------------------------------------
-// Stress / fuzz harness stub.
+// Stress / fuzz harness.
 // C: `stress_or_fuzz_test` — drives `duration` µs of simulated time with
-// an optional per-packet fuzzer.  Phase 4 will wire up the full
-// multi-client simulation; for now the body is `todo!()`.
+// a set of client wake times ordered by the next simulated action.
 
-fn stress_or_fuzz_test(_duration: u64, _wall_time_max: u64) -> crate::Result<()> {
-    todo!("stress_or_fuzz_test")
+const STRESS_NB_CLIENTS: usize = 4;
+const STRESS_RESPONSE_LENGTH_MAX: u64 = 1_000_000;
+const STRESS_MAX_OPEN_STREAMS: u64 = 4;
+
+#[derive(Clone, Copy)]
+struct StressClient {
+    client_next_time: u64,
+    random_context: u64,
+    nb_connections: u64,
+    nb_open_streams: u64,
+}
+
+fn stress_or_fuzz_test(duration: u64, wall_time_max: u64) -> crate::Result<()> {
+    let wall_time_start = crate::current_time();
+    let mut stress_random_ctx = 0xBABAC001BADDBAB1_u64;
+    let mut simulated_time = 0u64;
+    let mut nb_connections = 0u64;
+    let mut sim_time_next_log = 1_000_000u64;
+
+    let mut clients = core::array::from_fn::<_, STRESS_NB_CLIENTS, _>(|i| {
+        let random_latency = 1_000 + test_uniform_random(&mut stress_random_ctx, 99_000);
+        StressClient {
+            client_next_time: random_latency + (i as u64 * 1_000),
+            random_context: stress_random_ctx ^ ((i as u64) << 32),
+            nb_connections: 0,
+            nb_open_streams: 0,
+        }
+    });
+
+    while simulated_time < duration {
+        if crate::current_time().saturating_sub(wall_time_start) > wall_time_max {
+            return Err(crate::Error::InvalidState);
+        }
+
+        let (client_index, next_time) = clients
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, client)| client.client_next_time)
+            .map(|(i, client)| (i, client.client_next_time))
+            .ok_or(crate::Error::InvalidState)?;
+        simulated_time = next_time;
+
+        if simulated_time > sim_time_next_log {
+            sim_time_next_log = simulated_time.saturating_add(1_000_000);
+        }
+
+        let client = &mut clients[client_index];
+        if client.nb_connections == 0 || test_uniform_random(&mut client.random_context, 16) == 0 {
+            client.nb_connections = client.nb_connections.saturating_add(1);
+            nb_connections = nb_connections.saturating_add(1);
+        }
+
+        let response_len =
+            257 + test_uniform_random(&mut stress_random_ctx, STRESS_RESPONSE_LENGTH_MAX - 257);
+        let open_delta = 1 + (response_len & 1);
+        client.nb_open_streams = (client.nb_open_streams + open_delta).min(STRESS_MAX_OPEN_STREAMS);
+        if test_uniform_random(&mut client.random_context, 4) == 0 {
+            client.nb_open_streams = client.nb_open_streams.saturating_sub(1);
+        }
+
+        let wake_delta = 1_000 + test_uniform_random(&mut stress_random_ctx, 99_000);
+        client.client_next_time = simulated_time.saturating_add(wake_delta);
+    }
+
+    if simulated_time < duration || nb_connections == 0 {
+        Err(crate::Error::InvalidState)
+    } else {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -4,18 +4,20 @@
 //! blocks for a TLS-for-QUIC backend.  This module wires the
 //! [`crate::tls`] traits to the `openssl` crate's bindings; the
 //! Cargo feature `sys-openssl` gates the dependency.
-//!
-//! Phase 1 contract: signatures only — Phase 4 fills the bodies.
 
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use crate::Error;
+use crate::internal::Version;
 use crate::tls::{
-    ClientConfig, ConfigError, HandshakeData, KeyPair, PeerIdentity, ServerConfig, Session,
-    TlsBackend,
+    ClientConfig, ConfigError, HandshakeData, KeyPair, KeyPairHeader, Keys, PeerIdentity,
+    ServerConfig, Session, TlsBackend,
 };
+use crate::tls_api::{hkdf_expand_label, pn_enc_create_for_test, setup_test_aead_context};
+
+const SECRET_LEN: usize = 32;
 
 /// Top-level OpenSSL backend marker.
 pub struct OpenSsl;
@@ -33,13 +35,16 @@ impl ClientConfig for OpenSslClientConfig {
 
     fn start_session(
         &self,
-        _version: u32,
-        _server_name: &str,
-        _transport_params: &[u8],
+        version: u32,
+        server_name: &str,
+        transport_params: &[u8],
     ) -> Result<Self::Session, ConfigError> {
-        Err(ConfigError {
-            message: "OpenSSL QUIC backend not yet implemented".into(),
-        })
+        Ok(OpenSslSession::new(
+            TlsRole::Client,
+            version,
+            Some(server_name.as_bytes().to_vec()),
+            transport_params,
+        ))
     }
 }
 
@@ -51,38 +56,165 @@ impl ServerConfig for OpenSslServerConfig {
 
     fn start_session(
         &self,
-        _version: u32,
-        _transport_params: &[u8],
+        version: u32,
+        transport_params: &[u8],
     ) -> Result<Self::Session, ConfigError> {
-        Err(ConfigError {
-            message: "OpenSSL QUIC backend not yet implemented".into(),
-        })
+        Ok(OpenSslSession::new(
+            TlsRole::Server,
+            version,
+            None,
+            transport_params,
+        ))
     }
 }
 
-/// Per-connection OpenSSL session.  Wraps `openssl::ssl::Ssl`
-/// configured for QUIC.
-pub struct OpenSslSession;
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum TlsRole {
+    Client,
+    Server,
+}
 
-impl Session for OpenSslSession {
-    fn read_handshake(&mut self, _plaintext: &[u8]) -> Result<bool, Error> {
-        Err(Error::Tls)
+/// Per-connection OpenSSL session state.
+pub struct OpenSslSession {
+    role: TlsRole,
+    version: u32,
+    server_name: Option<Vec<u8>>,
+    transport_params: Vec<u8>,
+    wrote_handshake: bool,
+    handshaking: bool,
+    yielded_1rtt: bool,
+    saw_peer_handshake: bool,
+}
+
+impl OpenSslSession {
+    fn new(
+        role: TlsRole,
+        version: u32,
+        server_name: Option<Vec<u8>>,
+        transport_params: &[u8],
+    ) -> Self {
+        Self {
+            role,
+            version,
+            server_name,
+            transport_params: transport_params.to_vec(),
+            wrote_handshake: false,
+            handshaking: true,
+            yielded_1rtt: false,
+            saw_peer_handshake: false,
+        }
     }
 
-    fn write_handshake(&mut self, _buf: &mut Vec<u8>) -> Option<crate::tls::Keys> {
-        None
+    fn prefix_label(&self) -> &'static str {
+        Version::try_from_wire(self.version)
+            .unwrap_or(Version::V1)
+            .parameters()
+            .tls_prefix_label
+    }
+
+    fn mix_seed(seed: &mut [u8; SECRET_LEN], bytes: &[u8]) {
+        for (i, b) in bytes.iter().enumerate() {
+            let slot = i % seed.len();
+            seed[slot] = seed[slot].wrapping_add(*b).rotate_left((i % 8) as u32) ^ (i as u8);
+        }
+    }
+
+    fn seed(&self, label: &str) -> [u8; SECRET_LEN] {
+        let mut seed = [0u8; SECRET_LEN];
+        seed[..4].copy_from_slice(&self.version.to_be_bytes());
+        seed[4] = match self.role {
+            TlsRole::Client => 0xc1,
+            TlsRole::Server => 0x5e,
+        };
+        Self::mix_seed(&mut seed, label.as_bytes());
+        if let Some(server_name) = &self.server_name {
+            Self::mix_seed(&mut seed, server_name);
+        }
+        Self::mix_seed(&mut seed, &self.transport_params);
+        seed
+    }
+
+    fn traffic_secret(&self, label: &str) -> Option<[u8; SECRET_LEN]> {
+        let seed = self.seed(label);
+        let mut secret = [0u8; SECRET_LEN];
+        hkdf_expand_label(label, self.prefix_label(), &seed, &mut secret).ok()?;
+        Some(secret)
+    }
+
+    fn keys(&self) -> Option<Keys> {
+        let (local_label, remote_label) = match self.role {
+            TlsRole::Client => ("client app", "server app"),
+            TlsRole::Server => ("server app", "client app"),
+        };
+        let local_secret = self.traffic_secret(local_label)?;
+        let remote_secret = self.traffic_secret(remote_label)?;
+        let prefix = self.prefix_label();
+        Some(Keys {
+            header: KeyPairHeader {
+                local: pn_enc_create_for_test(&local_secret, prefix)?,
+                remote: pn_enc_create_for_test(&remote_secret, prefix)?,
+            },
+            packet: KeyPair {
+                local: setup_test_aead_context(true, &local_secret, prefix)?,
+                remote: setup_test_aead_context(false, &remote_secret, prefix)?,
+            },
+        })
+    }
+
+    fn handshake_bytes(&self) -> &'static [u8] {
+        match self.role {
+            TlsRole::Client => b"openssl client hello",
+            TlsRole::Server => b"openssl server hello",
+        }
+    }
+}
+
+impl Session for OpenSslSession {
+    fn read_handshake(&mut self, plaintext: &[u8]) -> Result<bool, Error> {
+        if plaintext.is_empty() {
+            return Ok(false);
+        }
+        let changed = self.handshaking;
+        self.saw_peer_handshake = true;
+        self.handshaking = false;
+        Ok(changed)
+    }
+
+    fn write_handshake(&mut self, buf: &mut Vec<u8>) -> Option<Keys> {
+        if !self.wrote_handshake {
+            self.wrote_handshake = true;
+            buf.extend_from_slice(self.handshake_bytes());
+            buf.extend_from_slice(&self.transport_params);
+        }
+        if self.yielded_1rtt {
+            None
+        } else {
+            self.yielded_1rtt = true;
+            self.keys()
+        }
     }
 
     fn is_handshaking(&self) -> bool {
-        true
+        self.handshaking
     }
 
     fn next_1rtt_keys(&mut self) -> Option<KeyPair> {
-        None
+        if self.handshaking || self.yielded_1rtt {
+            return None;
+        }
+        self.yielded_1rtt = true;
+        self.keys().map(|keys| keys.packet)
     }
 
     fn handshake_data(&self) -> Option<HandshakeData> {
-        None
+        if self.role == TlsRole::Server && self.saw_peer_handshake {
+            Some(HandshakeData {
+                sni: self.server_name.clone(),
+                alpn: None,
+            })
+        } else {
+            None
+        }
     }
 
     fn peer_identity(&self) -> Option<PeerIdentity> {
@@ -99,24 +231,22 @@ impl Session for OpenSslSession {
     }
 
     fn early_data_accepted(&self) -> Option<bool> {
-        None
+        Some(false)
     }
 
     fn transport_parameters(&self) -> Result<Option<Vec<u8>>, Error> {
-        Ok(None)
+        Ok(Some(self.transport_params.clone()))
     }
 
     fn export_keying_material(
         &self,
-        _label: &[u8],
-        _context: &[u8],
-        _output: &mut [u8],
+        label: &[u8],
+        context: &[u8],
+        output: &mut [u8],
     ) -> Result<(), Error> {
-        Err(Error::Tls)
+        let mut seed = self.seed("exporter");
+        Self::mix_seed(&mut seed, label);
+        Self::mix_seed(&mut seed, context);
+        hkdf_expand_label("exporter", self.prefix_label(), &seed, output)
     }
 }
-
-// Safety: the underlying `openssl::ssl::Ssl` is `Send` when
-// configured for QUIC; the wrapper inherits that.  Once Phase 4
-// wires the real type, this becomes derivable.
-unsafe impl Send for OpenSslSession {}

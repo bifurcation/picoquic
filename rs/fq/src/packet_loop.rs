@@ -1226,7 +1226,7 @@ impl Drop for NetworkThreadCtx {
 }
 
 // `delete_network_thread` is dropped from the Rust API:
-// `Box<NetworkThreadCtx>` going out of scope signals shutdown,
+// dropping `Box<NetworkThreadCtx>` signals shutdown,
 // waits for the loop to exit, and frees the context (Drop in Phase 3).
 
 // ---------------------------------------------------------------------------

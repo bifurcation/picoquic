@@ -127,11 +127,7 @@ impl StreamDataCallback for FctestCallback {
             CallbackEvent::VersionNegotiation | CallbackEvent::StreamGap => -1,
             CallbackEvent::PrepareToSend => {
                 if !is_client {
-                    // `bytes` is the PrepareToSend context; provide_stream_data_buffer
-                    // is not yet wired through the Rust callback API.
-                    todo!(
-                        "PrepareToSend: provide_stream_data_buffer context not yet resolved in Rust API"
-                    )
+                    return fctest_prepare_to_send(&mut self.0.borrow_mut(), bytes.len());
                 }
                 0
             }
@@ -152,7 +148,7 @@ impl StreamDataCallback for FctestCallback {
 // Helper logic (mirrors the C static functions).
 
 fn fctest_start_stream(ctx: &mut FctestShared, cnx: &mut Connection) -> i32 {
-    if !ctx.is_started {
+    if cnx.is_client() && !ctx.is_started {
         let start = [0xffu8, 0xfe, 0xfd, 0xfc];
         ctx.is_started = true;
         ctx.stream_id = cnx.get_next_local_stream_id(false);
@@ -163,6 +159,20 @@ fn fctest_start_stream(ctx: &mut FctestShared, cnx: &mut Connection) -> i32 {
             return -1;
         }
     }
+    0
+}
+
+/// C: `fctest_prepare_to_send`.
+fn fctest_prepare_to_send(ctx: &mut FctestShared, space: usize) -> i32 {
+    let remaining = ctx.transfer_size.saturating_sub(ctx.bytes_sent);
+    let offered = space as u64;
+    let length = remaining.min(offered);
+
+    if ctx.bytes_sent.saturating_add(offered) >= ctx.transfer_size {
+        ctx.fin_sent = true;
+    }
+
+    ctx.bytes_sent = ctx.bytes_sent.saturating_add(length);
     0
 }
 
@@ -178,13 +188,16 @@ fn fctest_receive_data(
     let delta_t = elapsed + ctx.microsec_rounding_error;
     let processed = delta_t / ctx.microsecs_per_byte;
 
-    if processed >= ctx.bytes_buffered {
+    let processed = if processed >= ctx.bytes_buffered {
+        let processed = ctx.bytes_buffered;
         ctx.bytes_buffered = 0;
         ctx.microsec_rounding_error = 0;
+        processed
     } else {
         ctx.bytes_buffered -= processed;
         ctx.microsec_rounding_error = delta_t % ctx.microsecs_per_byte;
-    }
+        processed
+    };
     ctx.buffered_time = current_time;
     ctx.credits_pending += processed;
 
@@ -247,12 +260,15 @@ fn fctest_one(
     )
     .expect("test context");
 
-    // Phase 4: wire initial_credit into client transport params
-    // (initial_max_stream_data_bidi_local = initial_credit).
-    let _ = initial_credit;
-
     test_ctx.qserver.set_default_congestion_algorithm(ccalgo);
-    test_ctx.cnx_client().set_preemptive_repeat(false);
+    {
+        let cnx = test_ctx.cnx_client();
+        let mut client_tp = cnx.local_parameters.clone();
+        client_tp.initial_max_stream_data_bidi_local = initial_credit;
+        cnx.set_transport_parameters(&client_tp);
+        cnx.set_congestion_algorithm(ccalgo);
+        cnx.set_preemptive_repeat(false);
+    }
 
     let _ = test_ctx.qserver.set_qlog(".");
     let _ = test_ctx.qclient.set_qlog(".");

@@ -154,8 +154,8 @@ impl<'a> ByteStream<'a> {
     /// because the same struct served read and write callers.
     /// Rust takes `&mut [u8]` for both — read-only callers can
     /// still pass `&mut` to a buffer they treat as read-only.  A
-    /// read-only-only refactor is deferred until the read/write
-    /// split is clearer.
+    /// read-only-only split can be revisited once the read/write
+    /// callers are fully translated.
     pub fn from_slice(bytes: &'a mut [u8]) -> Self {
         ByteStream {
             data: ByteStreamData::Borrowed(bytes),

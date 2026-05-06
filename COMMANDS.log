@@ -336,6 +336,12 @@
   cargo fmt
   CARGO_INCREMENTAL=0 cargo test --no-run
   CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings
+
+2026-05-06T00:00:00Z Phase 4 batch translation sanity review: inspected the scoped diff and re-ran the batch marker check after formatting.
+  git diff --stat -- rs/fq/src/sys/openssl.rs rs/fq/src/sys/picotls.rs rs/fq/src/tests/socket.rs rs/fq/src/socks_socket2.rs COMMANDS.log
+  git diff -- rs/fq/src/tests/socket.rs rs/fq/src/socks_socket2.rs | sed -n '1,260p'
+  git diff -- rs/fq/src/sys/openssl.rs rs/fq/src/sys/picotls.rs | sed -n '1,360p'
+  python3 scripts/phase4_check.py rs/fq/src/sys/openssl.rs rs/fq/src/sys/picotls.rs rs/fq/src/tests/socket.rs
   CARGO_INCREMENTAL=0 cargo clippy --tests -- -D warnings
   sed -n '470,500p' rs/fq/src/cc_common.rs
   sed -n '1095,1145p' rs/fq/src/tests/util.rs
@@ -612,3 +618,711 @@
   git diff --cached --stat
   git diff --cached --check
   git commit -m "Celebrate Phase 4 progress"
+
+2026-05-06T00:00:00Z Phase 4A plan update: inspected the Phase 4 section and command-log format before adding a neutral implementation coverage pass to TRANSLATE_PLAN.md.
+  rg -n "^## Phase 4|^## Phase 5|Phase 4" TRANSLATE_PLAN.md
+  sed -n '220,520p' TRANSLATE_PLAN.md
+  ls -la COMMANDS.log
+  sed -n '880,1040p' TRANSLATE_PLAN.md
+  tail -n 20 COMMANDS.log
+  git diff -- TRANSLATE_PLAN.md COMMANDS.log
+  git diff --check -- TRANSLATE_PLAN.md COMMANDS.log
+  git status --short -- TRANSLATE_PLAN.md COMMANDS.log
+
+2026-05-06T00:00:00Z Phase 4A plan update continuation: rechecked the markdown diff and worktree status after resuming.
+  git diff -- TRANSLATE_PLAN.md COMMANDS.log
+  git diff --check -- TRANSLATE_PLAN.md COMMANDS.log
+  git status --short -- TRANSLATE_PLAN.md COMMANDS.log
+
+2026-05-06T00:00:00Z Phase 4 batch translation for sys/openssl.rs, sys/picotls.rs, and tests/socket.rs: read repository instructions and translation guide, translated the listed incomplete bodies, updated the socket backend ECN helper needed by the socket test, ran marker checks and Rust gates.
+  sed -n '1,240p' CLAUDE.md
+  sed -n '1,240p' TRANSLATE_PLAN.md
+  sed -n '1,280p' xlate/impl_translation_guide.md
+  sed -n '1,80p' COMMANDS.log
+  sed -n '281,620p' xlate/impl_translation_guide.md
+  sed -n '1,260p' rs/fq/src/sys/openssl.rs
+  sed -n '1,280p' rs/fq/src/sys/picotls.rs
+  sed -n '1,300p' rs/fq/src/tests/socket.rs
+  tail -n 60 COMMANDS.log
+  sed -n '1,280p' rs/fq/src/tls.rs
+  sed -n '1,240p' rs/fq/Cargo.toml
+  sed -n '1,200p' rs/fq/src/sys/mod.rs
+  rg -n "struct .*Session|impl Session|TlsBackend|HeaderKey|PacketKey|pub trait Session|not yet implemented|todo!\\(|SKIP:|unimplemented!" rs/fq/src
+  sed -n '280,420p' rs/fq/src/tls.rs
+  sed -n '400,560p' rs/fq/src/tls_api.rs
+  sed -n '240,380p' rs/fq/src/tls_api.rs
+  python3 scripts/phase4_check.py rs/fq/src/sys/openssl.rs rs/fq/src/sys/picotls.rs rs/fq/src/tests/socket.rs
+  sed -n '1,260p' picoquictest/socket_test.c
+  sed -n '1,340p' rs/fq/src/socks.rs
+  sed -n '1,380p' rs/fq/src/socks_socket2.rs
+  rg -n "pub enum Error|type Result|InvalidArgument|Address|Socket|Io|impl From" rs/fq/src/lib.rs rs/fq/src/errors.rs rs/fq/src/socks.rs rs/fq/src/socks_socket2.rs
+  sed -n '340,460p' rs/fq/src/socks.rs
+  sed -n '100,160p' rs/fq/src/lib.rs
+  rg -n "socket2|SockRef|set_nonblocking|recv_from|MaybeUninit|set_read_timeout|connect\\(" rs/fq/src/socks_socket2.rs rs/fq/src/tests
+  rg -n "socket_test|socket_ping_pong|socket_ecn|set_ecn_options|send_through|select<" rs/fq/src/tests rs/fq/src
+  rg -n "pub fn hkdf_expand_label|fn hkdf_expand_label|pub fn build_key_pair|fn build_key_pair|pub fn packet_key_from_secret|fn packet_key_from_secret|LocalSession|local_client|local_server" rs/fq/src/tls_api.rs
+  sed -n '360,430p' rs/fq/src/tls_api.rs
+  rg -n "picotls|OpenSsl|sys-picotls|sys-openssl|start_session\\(" rs/fq/src rs/fq/tests
+  rg -n "recv_from|set_read_timeout|set_tos|set_recv|set_tclass|tos" ~/.cargo/registry/src --glob '*/socket2-0.5*/src/*.rs'
+  sed -n '1188,1215p' rs/fq/src/tls_api.rs
+  sed -n '660,720p' rs/fq/src/tls_api.rs
+  sed -n '1,245p' rs/fq/src/tls_api.rs
+  rg -n "pub enum Version|struct VersionParameters|tls_prefix_label|fn parameters|try_from_wire" rs/fq/src/internal.rs
+  sed -n '230,290p' rs/fq/src/internal.rs
+  sed -n '1150,1195p' rs/fq/src/tls_api.rs
+  rg --files ~/.cargo/registry/src | rg 'socket2-.*/src/.*\\.rs$'
+  rg -n "recv_from|set_read_timeout|set_tos|set_recv|tclass|tos|type MaybeUninit" /Users/richbarn/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/socket2-0.5.10/src
+  python3 scripts/phase4_check.py rs/fq/src/tests/socket.rs
+  python3 scripts/phase4_check.py rs/fq/src/sys/openssl.rs
+  python3 scripts/phase4_check.py rs/fq/src/sys/picotls.rs
+  cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  python3 scripts/phase4_check.py rs/fq/src/sys/openssl.rs rs/fq/src/sys/picotls.rs rs/fq/src/tests/socket.rs
+  cargo fmt
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings
+2026-05-06 Codex: tail -n 80 xlate/codex_logs/phase4/batch_socks_socket2_tests__ech_tests__util_test.log
+2026-05-06 Codex: tail -n 60 xlate/codex_logs/phase4/batch_socks_socket2_tests__ech_tests__util_test.log
+2026-05-06 Codex: tail -n 80 xlate/phase4_runs/20260506T141536.log
+2026-05-06 Codex: tail -n 80 xlate/codex_logs/phase4/batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: rg -n agent_message|file_change|phase4_check|cargo test|cargo clippy|status failed xlate/codex_logs/phase4/batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: tail -n 100 xlate/codex_logs/phase4/batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: rg -n agent_message|file_change|phase4_check|cargo test|cargo clippy|status failed xlate/codex_logs/phase4/batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: jq agent messages from xlate/codex_logs/phase4/batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: extract recent agent messages from batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: extract file changes from batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: wc -l xlate/codex_logs/phase4/batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: extract recent command statuses from batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: extract recent command statuses from batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: extract file changes from batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: extract recent command statuses from batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: extract recent todo list from batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: extract file changes from batch_tests__stresstest_tests__stream0_frame_tests__netperf.log
+2026-05-06 Codex: extract recent agent messages and commands from current batch log
+2026-05-06 Codex: extract recent file changes and commands from current batch log
+2026-05-06 Codex: extract recent file changes and commands from current batch log
+2026-05-06 Codex: extract recent file changes and commands from current batch log
+2026-05-06 Codex: extract recent file changes and commands from current batch log
+2026-05-06 Codex: wc -l current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: extract last events from current batch log
+2026-05-06 Codex: tail -n 80 xlate/phase4_runs/20260506T141536.log
+2026-05-06 Codex: extract recent events from batch_tests__sockloop_tests__datagram_arena.log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract file changes from sockloop datagram arena batch log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract file changes from sockloop datagram arena batch log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract file changes from sockloop datagram arena batch log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract file changes from sockloop datagram arena batch log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract file changes from sockloop datagram arena batch log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract file changes from sockloop datagram arena batch log
+2026-05-06 Codex: python3 scripts/phase4_check.py --quiet
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+2026-05-06 Codex: extract last events from sockloop datagram arena batch log
+
+2026-05-06T00:00:00Z Phase 4B plan update: inspected the Phase 4A insertion point, added the function correspondence audit phase, and reviewed the resulting markdown diff.
+  sed -n '960,1085p' TRANSLATE_PLAN.md
+  git status --short -- TRANSLATE_PLAN.md COMMANDS.log
+  tail -n 35 COMMANDS.log
+  git diff -- TRANSLATE_PLAN.md
+  tail -n 8 COMMANDS.log
+  git diff --check -- TRANSLATE_PLAN.md COMMANDS.log
+  git status --short -- TRANSLATE_PLAN.md COMMANDS.log
+  nl -ba TRANSLATE_PLAN.md | sed -n '1048,1165p'
+2026-05-06 Codex: tail -n 100 xlate/phase4_runs/20260506T141536.log
+2026-05-06 Codex: extract initial events from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract file changes from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract file changes from mediatest mbedtls skip_frame batch log
+
+2026-05-06T00:00:00Z Phase 4A/4B/4C script creation: inspected existing Phase 4 and agent-runner patterns, added shared mapping helpers plus phase4a/phase4b/phase4c drivers, documented them, and ran syntax/smoke checks.
+  git status --short
+  sed -n '1,260p' scripts/phase4.py
+  sed -n '1,260p' scripts/phase4_check.py
+  sed -n '1,260p' scripts/agent_runner.py
+  ls -la xlate | sed -n '1,160p'
+  sed -n '260,620p' scripts/agent_runner.py
+  sed -n '1,260p' scripts/phase3a.py
+  find xlate -maxdepth 1 -type f -name '*inventory*.json' -o -name 'call_graph.json' -o -name 'phase4_state.json'
+  sed -n '1,80p' xlate/inventory.json
+  rg -n '"functions"|"name"|"file"|"extent"|"spelling"|"location"|"source"' xlate/inventory.json | sed -n '1,120p'
+  find scripts -maxdepth 1 -type f -name 'phase*.py' -o -name '*query*.py' | sort
+  sed -n '1,220p' scripts/inv_query.py
+  rg -n '"kind": "function"' xlate/inventory.json | sed -n '1,12p'
+  sed -n '500,590p' xlate/inventory.json
+  sed -n '1,160p' xlate/phase4_state.json
+  rg -n "C: `" rs/fq/src | sed -n '1,80p'
+  rg -n '"is_definition": true' xlate/inventory.json | sed -n '1,20p'
+  sed -n '700,780p' xlate/inventory.json
+  rg -n 'C: `' rs/fq/src | sed -n '1,120p'
+  python3 -m py_compile scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py
+  python3 scripts/phase4a.py --dry-run
+  PYTHONPYCACHEPREFIX=/private/tmp/picoquic_pycache python3 -m py_compile scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py
+  python3 scripts/phase4b.py --status
+  python3 scripts/phase4c.py --status
+  PYTHONPYCACHEPREFIX=/private/tmp/picoquic_pycache python3 -m py_compile scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py
+  python3 scripts/phase4a.py --dry-run
+  python3 scripts/phase4b.py --status
+  python3 scripts/phase4c.py --status
+  ls -l scripts/phase4.py scripts/phase4_check.py scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py
+  git status --short -- scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py xlate/function_translation_map.json xlate/phase4c_report.html
+  git diff -- scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py | sed -n '1,260p'
+  rg -n "Phase 4|phase4" scripts/README.md
+  sed -n '80,180p' scripts/README.md
+  PYTHONPYCACHEPREFIX=/private/tmp/picoquic_pycache python3 -m py_compile scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py
+  python3 scripts/phase4a.py --dry-run
+  python3 scripts/phase4b.py --status
+  python3 scripts/phase4c.py --status
+  git status --short -- scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py scripts/README.md xlate/function_translation_map.json xlate/phase4a_plan.md xlate/phase4a_plan.html xlate/phase4c_report.html xlate/phase4c_reviews.json
+  git diff --check -- scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py scripts/README.md COMMANDS.log TRANSLATE_PLAN.md
+  git diff --stat -- scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py scripts/README.md
+  git diff -- scripts/README.md | sed -n '1,200p'
+  git diff --check -- scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py scripts/README.md COMMANDS.log TRANSLATE_PLAN.md
+  git status --short -- scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py scripts/README.md COMMANDS.log xlate/function_translation_map.json xlate/phase4a_plan.md xlate/phase4a_plan.html xlate/phase4c_report.html xlate/phase4c_reviews.json
+  find scripts -maxdepth 2 -type d -name __pycache__ -print
+  git diff --stat -- scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py scripts/README.md COMMANDS.log
+  find scripts/__pycache__ -maxdepth 1 -type f -print
+  git diff --check -- scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py scripts/README.md COMMANDS.log TRANSLATE_PLAN.md
+  git status --short -- scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py scripts/README.md COMMANDS.log xlate/function_translation_map.json xlate/phase4a_plan.md xlate/phase4a_plan.html xlate/phase4c_report.html xlate/phase4c_reviews.json
+  git diff --stat -- scripts/README.md COMMANDS.log
+  PYTHONPYCACHEPREFIX=/private/tmp/picoquic_pycache python3 -m py_compile scripts/phase4b.py
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log
+
+2026-05-06T00:00:00Z Phase 4A/4B/4C plan refactor: inspected the existing added phases, replaced them with planning, implementation, and comparison phases, and updated the tooling summary.
+  sed -n '1000,1175p' TRANSLATE_PLAN.md
+  git status --short -- TRANSLATE_PLAN.md COMMANDS.log
+  tail -n 25 COMMANDS.log
+  sed -n '990,1195p' TRANSLATE_PLAN.md
+  git diff -- TRANSLATE_PLAN.md
+  rg -n "phase4[abc]?\\.py|Phase 4A|Phase 4B|Phase 4C|AI-driven translation pipelines" TRANSLATE_PLAN.md scripts/README.md
+  sed -n '1188,1202p' TRANSLATE_PLAN.md
+  git diff -- TRANSLATE_PLAN.md COMMANDS.log
+  git diff --check -- TRANSLATE_PLAN.md COMMANDS.log
+  git status --short -- TRANSLATE_PLAN.md COMMANDS.log
+  nl -ba TRANSLATE_PLAN.md | sed -n '997,1198p'
+2026-05-06 Codex: extract file changes from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract file changes from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract file changes from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: python3 scripts/phase4_check.py --quiet
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract file changes from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract file changes from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: python3 scripts/phase4_check.py --quiet after skip_frame active-batch clean
+2026-05-06 Codex: extract last events after quantitative checkpoint from mediatest mbedtls skip_frame batch log
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log after frames_skip rerun
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log after frames_skip second rerun
+2026-05-06 Codex: extract last events from mediatest mbedtls skip_frame batch log final checks
+2026-05-06 Codex: tail -n 120 xlate/phase4_runs/20260506T141536.log after mediatest batch parent gate
+2026-05-06 Codex: extract initial events from flow_control tls bytestream batch log
+2026-05-06 Codex: extract file changes from flow_control tls bytestream batch log
+2026-05-06 Codex: extract last events from flow_control tls bytestream batch log
+2026-05-06 Codex: extract file changes from flow_control tls bytestream batch log
+2026-05-06 Codex: extract last events from flow_control tls bytestream batch log
+2026-05-06 Codex: extract file changes from flow_control tls bytestream batch log
+2026-05-06 Codex: phase4_check current flow_control tls bytestream batch after edits
+2026-05-06 Codex: python3 scripts/phase4_check.py --quiet after flow_control tls bytestream marker clean
+2026-05-06 Codex: extract last events from flow_control tls bytestream batch log after marker clean
+2026-05-06 Codex: extract last events from flow_control tls bytestream batch log clippy result
+2026-05-06 Codex: tail phase4 run after flow_control tls bytestream child gate
+2026-05-06 Codex: extract last events from flow_control tls bytestream batch log maybe final
+2026-05-06 Codex: extract recent file changes from flow_control tls bytestream batch log
+2026-05-06 Codex: extract recent agent messages from flow_control tls bytestream batch log
+2026-05-06 Codex: extract last events from flow_control tls bytestream batch log
+2026-05-06 Codex: extract last events from flow_control tls bytestream batch log after lib edit
+2026-05-06 Codex: extract last events from flow_control tls bytestream batch log after compile fix
+2026-05-06 Codex: extract last events from flow_control tls bytestream batch log after clippy rerun
+2026-05-06 Codex: tail phase4 run after flow_control batch parent gate
+2026-05-06 Codex: extract initial events from edge_cases cnxstress utils batch log
+2026-05-06 Codex: extract file changes from edge_cases cnxstress utils batch log
+2026-05-06 Codex: extract last events from edge_cases cnxstress utils batch log after user question
+2026-05-06 Codex: extract file changes from edge_cases cnxstress utils batch log
+2026-05-06 Codex: extract last events from edge_cases cnxstress utils batch log
+2026-05-06 Codex: extract file changes from edge_cases cnxstress utils batch log
+2026-05-06 Codex: extract last events from edge_cases cnxstress utils batch log
+2026-05-06 Codex: extract file changes from edge_cases cnxstress utils batch log
+2026-05-06 Codex: phase4_check cnxstress utils after first edits
+2026-05-06 Codex: python3 scripts/phase4_check.py --quiet after cnxstress utils clean
+2026-05-06 Codex: extract last events from edge_cases cnxstress utils batch log after cnxstress utils clean
+2026-05-06 Codex: file changes full list edge_cases cnxstress utils batch
+2026-05-06 Codex: phase4_check edge_cases after edits
+2026-05-06 Codex: extract last events from edge_cases cnxstress utils batch log after edge_cases partial
+2026-05-06 Codex: file changes recent edge_cases cnxstress utils batch after more edits
+2026-05-06 Codex: phase4_check edge_cases after additional edits
+2026-05-06 Codex: extract last events edge_cases cnxstress utils after edge_cases 19 markers
+2026-05-06 Codex: file changes recent edge_cases cnxstress utils batch after more edits 2
+2026-05-06 Codex: phase4_check edge_cases after additional edits
+2026-05-06 Codex: inspect current batch file changes after edge_cases clean
+2026-05-06 Codex: full phase4_check after edge_cases clean
+2026-05-06 Codex: summarize current active batch diff stat
+2026-05-06 Codex: inspect active batch diff summaries
+2026-05-06 Codex: sample substantive additions in active batch diff
+2026-05-06 Codex: tail current active batch codex log statuses
+2026-05-06 Codex: tail current phase4 parent run log
+2026-05-06 Codex: tail active batch after clippy fix
+2026-05-06 Codex: tail active batch final gate status
+2026-05-06 Codex: tail parent run log after active batch child gates
+2026-05-06 Codex: read CLAUDE.md for repository translation instructions
+2026-05-06 Codex: read TRANSLATE_PLAN.md for branch translation policy
+2026-05-06 Codex: read first part of xlate/impl_translation_guide.md for Phase 4 rules
+2026-05-06 Codex: read remainder of xlate/impl_translation_guide.md including module map
+2026-05-06 Codex: inspect tail of COMMANDS.log before appending current session entries
+2026-05-06 Codex: read rs/fq/src/tests/multipath.rs end-to-end
+2026-05-06 Codex: read rs/fq/src/tests/parseheadertest.rs end-to-end
+2026-05-06 Codex: read rs/fq/src/tests/tls_api.rs end-to-end
+2026-05-06 Codex: scan target Rust test files for incomplete markers
+2026-05-06 Codex: read middle section of rs/fq/src/tests/multipath.rs
+2026-05-06 Codex: read final section of rs/fq/src/tests/multipath.rs
+2026-05-06 Codex: read remaining section of rs/fq/src/tests/parseheadertest.rs
+2026-05-06 Codex: inspect tls_api.rs around flagged placeholder wording
+2026-05-06 Codex: read remaining multipath.rs test definitions
+2026-05-06 Codex: read final parseheadertest.rs packet_enc_dec section
+2026-05-06 Codex: read final multipath.rs tests after multipath_perf
+2026-05-06 Codex: locate matching C functions in multipath_test.c and parseheadertest.c
+2026-05-06 Codex: read C multipath helper bodies for callbacks, abandon, datagrams, CID verification
+2026-05-06 Codex: read C multipath_test_one main body around placeholders
+2026-05-06 Codex: read C multipath trace body
+2026-05-06 Codex: read C parseheadertest test_packet_encrypt_one body
+2026-05-06 Codex: read remaining C multipath_datagram_send_loop body
+2026-05-06 Codex: read remaining C multipath_trace_test_one body
+2026-05-06 Codex: read C packet_enc_dec_test call sequence
+2026-05-06 Codex: inspect TestTlsApiCtx and datagram helpers in tests util
+2026-05-06 Codex: inspect connection packet header protection APIs for parseheadertest
+2026-05-06 Codex: inspect Quic connection management APIs for qlog trace recreation
+2026-05-06 Codex: inspect transport parameter struct fields
+2026-05-06 Codex: read packet protection and header helper implementations
+2026-05-06 Codex: read Quic create/delete connection implementations
+2026-05-06 Codex: read internal connection ID list and stash structs
+2026-05-06 Codex: read transport parameter definition
+2026-05-06 Codex: inspect Packet, Path, Tuple, and local CID structs needed for helper translations
+2026-05-06 Codex: inspect create_packet_header_at and context index mapping
+2026-05-06 Codex: inspect Quic incoming packet decrypt path helper
+2026-05-06 Codex: inspect first_cnx_mut and connection arena access helpers
+2026-05-06 Codex: locate Packet struct definition
+2026-05-06 Codex: read Packet struct definition
+2026-05-06 Codex: search for parse_header_and_decrypt use sites
+2026-05-06 Codex: locate and read C test_packet_decrypt_one helper
+2026-05-06 Codex: read parse_packet_header and incoming_packet_ex implementations for server initial behavior
+2026-05-06 Codex: inspect Error enum variants for test helper errors
+2026-05-06 Codex: read Rust datagram test helper implementation for reusable scheduling logic
+2026-05-06 Codex: read C datagram helper implementation for multipath callback fields
+2026-05-06 Codex: search TestDatagramCtx construction sites
+2026-05-06 Codex: locate tls_api_one_sim_round and backlog helper APIs
+2026-05-06 Codex: locate uint64 frame encoding helpers for datagram payloads
+2026-05-06 Codex: inspect utility uint64 frame encode/decode helpers
+2026-05-06 Codex: inspect util.rs imports before editing datagram helper dependencies
+2026-05-06 Codex: inspect Connection datagram queue and mark APIs
+2026-05-06 Codex: read local and remote connection ID list structs for multipath assertions
+2026-05-06 Codex: inspect arena iterator API for deleting first client connection
+2026-05-06 Codex: inspect Quic connection index lookup helper visibility
+2026-05-06 Codex: inspect connection ID callback trait for qlog trace callback implementation
+2026-05-06 Codex: locate C qlog_trace_cid_fn implementation
+2026-05-06 Codex: search repository for qlog_trace_cid_fn definition
+2026-05-06 Codex: read C qlog_trace_cid_fn definition
+2026-05-06 Codex: locate multipath callback CSV filenames and references
+2026-05-06 Codex: inspect path callback methods for CSV file behavior
+2026-05-06 Codex: inspect TLS PacketKey and HeaderKey traits for packet_enc_dec helper
+2026-05-06 Codex: locate Connection local_connection_id accessor
+2026-05-06 Codex: read StreamDataNode struct for decrypt helper allocation
+2026-05-06 Codex: inspect compare_text_files helper behavior
+2026-05-06 Codex: run phase4_check for multipath.rs after translations
+2026-05-06 Codex: run phase4_check for parseheadertest.rs after translations
+2026-05-06 Codex: run phase4_check for tls_api.rs after wording cleanup
+2026-05-06 Codex: run cargo test --no-run after first translation pass
+2026-05-06 Codex: rerun cargo test --no-run with CARGO_INCREMENTAL=0 after filesystem lock error
+2026-05-06 Codex: rerun cargo test --no-run after fixing multipath compile errors
+2026-05-06 Codex: run combined phase4_check for multipath parseheadertest tls_api
+2026-05-06 Codex: run cargo fmt for rs/fq
+2026-05-06 Codex: run CARGO_INCREMENTAL=0 cargo test --no-run after formatting
+2026-05-06 Codex: run CARGO_INCREMENTAL=0 cargo clippy --tests --all-features with warnings denied
+2026-05-06 Codex: rerun combined phase4_check after formatting and clippy
+2026-05-06 Codex: inspect git diff summary for completed batch
+2026-05-06 Codex: inspect focused diff for target test files and util support changes
+2026-05-06 Codex: inspect new multipath parseheader tls_api batch events
+2026-05-06 Codex: file changes in multipath parseheader tls_api batch so far
+2026-05-06 Codex: phase4_check multipath parseheader tls_api current state
+2026-05-06 Codex: tail multipath parseheader tls_api batch events during inspection
+2026-05-06 Codex: phase4_check multipath batch after initial source edits
+2026-05-06 Codex: file changes in multipath batch after initial edits
+2026-05-06 Codex: tail multipath batch events after source inspection
+2026-05-06 Codex: phase4_check multipath batch after later inspection
+2026-05-06 Codex: file changes in multipath batch later
+2026-05-06 Codex: tail multipath batch after API inspection
+2026-05-06 Codex: source file changes in multipath batch latest
+2026-05-06 Codex: phase4_check multipath batch latest no source change expected
+2026-05-06 Codex: tail multipath batch before edits maybe
+2026-05-06 Codex: non command-log source changes in multipath batch latest 2
+2026-05-06 Codex: phase4_check multipath batch latest 2
+2026-05-06 Codex: tail multipath batch waiting for source edits
+2026-05-06 Codex: phase4_check multipath batch after item85 edits
+2026-05-06 Codex: non command-log source changes in multipath batch after item85
+2026-05-06 Codex: git status --short before Phase 4A matching heuristic refinement
+2026-05-06 Codex: inspect scripts/phase4_common.py before Rust function scanner changes
+2026-05-06 Codex: py_compile Phase 4A/4B/4C scripts after impl-type matching edits
+2026-05-06 Codex: phase4a debug-name picoquic_create
+2026-05-06 Codex: phase4a debug-name picoquic_create_cnx
+2026-05-06 Codex: phase4a debug-name picoquic_create_client_cnx
+2026-05-06 Codex: inspect scripts/phase4a.py debug output implementation
+2026-05-06 Codex: phase4a dry-run after impl-type matching edits
+2026-05-06 Codex: phase4a regenerate function map and plan after impl-type matching edits
+2026-05-06 Codex: sample required_missing and implemented entries from xlate/function_translation_map.json with jq
+2026-05-06 Codex: attempted rg for Rust C-reference comments, shell quoting failed
+2026-05-06 Codex: inspect bytestream.rs and utils.rs comments for false-positive C-reference mappings
+2026-05-06 Codex: list rust_doc_c_ref mappings with jq to audit false positives
+2026-05-06 Codex: phase4a debug-name bytestream_ref_init
+2026-05-06 Codex: locate read_u8 and related bytestream function lines
+2026-05-06 Codex: rg Rust C-reference comment patterns
+2026-05-06 Codex: py_compile Phase 4A/4B/4C scripts after comment-mask scanner edits
+2026-05-06 Codex: phase4a dry-run after comment-mask scanner edits
+2026-05-06 Codex: phase4a regenerate function map and plan after comment-mask scanner edits
+2026-05-06 Codex: sample file-open and public-random mappings with jq after scanner refinement
+2026-05-06 Codex: list rust_doc_c_ref mappings with jq after scanner refinement
+2026-05-06 Codex: attempted to inspect missing congestion-control Rust files; files are absent
+2026-05-06 Codex: list congestion-control C mappings with jq
+2026-05-06 Codex: list rs/fq/src files while checking congestion-control modules
+2026-05-06 Codex: git diff for Phase 4A scripts and plan changes
+2026-05-06 Codex: git diff --check for Phase 4A scripts and plan changes
+2026-05-06 Codex: tail COMMANDS.log before appending Phase 4A matching refinement commands
+2026-05-06 Codex: git diff --check after appending Phase 4A matching refinement commands
+2026-05-06 Codex: phase4a status after regenerating improved function map
+2026-05-06 Codex: git status --short for Phase 4A touched files
+2026-05-06 Codex: final git diff --check for Phase 4A matching refinement files
+2026-05-06 Codex: required_missing count by C source file from function map
+2026-05-06 Codex: required_missing count by proposed Rust destination from function map
+2026-05-06 Codex: required_missing count by reason from function map
+2026-05-06 Codex: sample required_missing entries with C and Rust spans from function map
+2026-05-06 Codex: required_missing count by functional bucket from function map
+2026-05-06 Codex: list required_missing entries with mapped incomplete Rust functions
+2026-05-06 Codex: required_missing destination existence check
+2026-05-06 Codex: summarize required_missing destinations as existing, missing, or mapped incomplete
+2026-05-06 Codex: inspect phase4_common.py matching logic with line numbers
+2026-05-06 Codex: inspect phase4a.py debug-name matching output logic with line numbers
+2026-05-06 Codex: inspect Rust functions in likely unmatched modules before adding semantic second pass
+2026-05-06 Codex: inspect phase4_common.py before semantic second-pass edits
+2026-05-06 Codex: inspect congestion-control trait and impl patterns in Rust sources
+2026-05-06 Codex: phase4a status before semantic second-pass edits
+2026-05-06 Codex: phase4a debug-name picoquic_packet_loop_v2
+2026-05-06 Codex: phase4a debug-name byteread_skip_vint
+2026-05-06 Codex: inspect CongestionControl trait methods and implementations
+2026-05-06 Codex: py_compile after semantic second-pass edits
+2026-05-06 Codex: phase4a debug-name byteread_vint
+2026-05-06 Codex: phase4a debug-name picoquic_bbr_init
+2026-05-06 Codex: phase4a dry-run after semantic second-pass edits
+2026-05-06 Codex: optimized semantic candidate pool and reran phase4a dry-run
+2026-05-06 Codex: phase4a regenerate map after initial semantic second-pass edits
+2026-05-06 Codex: inspect required_missing frames quicctx tls and sender buckets
+2026-05-06 Codex: inspect remaining frame and quicctx function names after semantic pass
+2026-05-06 Codex: inspect representative Rust functions for frame and quicctx matches
+2026-05-06 Codex: phase4a debug-name picoquic_wake_list_init
+2026-05-06 Codex: phase4a debug-name picoquic_skip_reset_stream_frame
+2026-05-06 Codex: phase4a dry-run after trait-match restriction and destination fixes
+2026-05-06 Codex: phase4a regenerate map after folded-helper expected-omission classification
+2026-05-06 Codex: summarize required_missing and expected_omission after folded-helper classification
+2026-05-06 Codex: inspect remaining frames quicctx tls and logwriter required_missing names
+2026-05-06 Codex: inspect quicctx Rust functions and phase4a debug-name create/version examples
+2026-05-06 Codex: phase4a dry-run after prefix-stripped doc-reference lookup
+2026-05-06 Codex: phase4a regenerate map after doc-reference lookup refinement
+2026-05-06 Codex: summarize final required_missing counts and check generic doc-reference false positives
+2026-05-06 Codex: git diff --check after Phase 4A semantic matching refinements
+2026-05-06 Codex: summarize non-CC required_missing counts by C source file
+2026-05-06 Codex: list representative non-CC required_missing functions and proposed Rust destinations
+2026-05-06 Codex: tail multipath batch after task list
+2026-05-06 Codex: git diff names for current multipath batch target files
+2026-05-06 Codex: phase4_check current multipath batch after long inspection
+2026-05-06 Codex: tail multipath batch still checking for edits
+2026-05-06 Codex: current batch target diff check after more research
+2026-05-06 Codex: current batch marker check after more research
+2026-05-06 Codex: raw file change item 111 multipath batch
+2026-05-06 Codex: raw file change item 85 multipath batch
+2026-05-06 Codex: tail multipath batch looking for first source edit
+2026-05-06 Codex: tail multipath batch after implementation plan
+2026-05-06 Codex: phase4_check multipath batch after item128
+2026-05-06 Codex: source file changes after multipath item128
+2026-05-06 Codex: current batch target diff names after item128
+2026-05-06 Codex: tail multipath batch after first implementation edits
+2026-05-06 Codex: phase4_check after multipath concrete bodies
+2026-05-06 Codex: source file changes after multipath concrete bodies
+2026-05-06 Codex: tail multipath batch while tls_api remains
+2026-05-06 Codex: phase4_check current batch all files after tls_api edit
+2026-05-06 Codex: source file changes around tls_api edit
+2026-05-06 Codex: tail multipath batch compile after marker clean
+2026-05-06 Codex: tail multipath batch after compile pass
+2026-05-06 Codex: tail multipath batch final gate after compile pass
+2026-05-06 Codex: tail multipath batch clippy result
+2026-05-06 Codex: tail parent log while multipath batch child complete
+2026-05-06 Codex: tail multipath batch final summary pending
+2026-05-06 Codex: full phase4_check after multipath batch accepted
+2026-05-06 Codex: tail parent log after multipath batch accepted
+2026-05-06 Codex: inspect new packet_loop tls_api lib batch start
+2026-05-06 Codex: inspect packet_loop tls_api lib batch edits/progress
+2026-05-06 Codex: source file changes packet_loop batch so far
+2026-05-06 Codex: phase4_check packet_loop tls_api lib current state
+2026-05-06 Codex: tail packet_loop batch before first edits
+2026-05-06 Codex: tail packet_loop batch after congestion lookup
+2026-05-06 Codex: marker scan after remount before restarting phase4
+2026-05-06 Codex: check git status after remount before restarting phase4
+2026-05-06 Codex: inspect phase4 state after remount
+2026-05-06 Codex: list failed phase4 state entries before restart
+2026-05-06 Codex: restart phase4 after remount with codex batch 3 max turns 400
+2026-05-06 Codex: find latest phase4 run log after restart
+2026-05-06 Codex: tail new phase4 run log after restart
+2026-05-06 Codex: list newest codex logs after restart
+2026-05-06 Codex: tail restarted packet_loop tls_api lib codex log
+2026-05-06 Codex: check packet_loop batch source edits after C mapping
+2026-05-06 Codex: marker check packet_loop batch after C mapping
+2026-05-06 Codex: tail packet_loop batch looking for source edits after no-op mapping
+2026-05-06 Codex: tail packet_loop batch after crypto lookup
+2026-05-06 Codex: check packet_loop batch log after possible hung rg
+2026-05-06 Codex: packet_loop batch source edits after narrowed gaps
+2026-05-06 Codex: packet_loop batch marker check after narrowed gaps
+2026-05-06 Codex: tail packet_loop batch after no edits check
+2026-05-06 Codex: packet_loop batch check after congestion details
+2026-05-06 Codex: packet_loop batch edit check after cc/minicrypto lookup
+2026-05-06 Codex: packet_loop batch marker check after cc/minicrypto lookup
+2026-05-06 Codex: tail packet_loop batch after tls_api clean
+2026-05-06 Codex: packet_loop batch file changes after first patches
+2026-05-06 Codex: packet_loop batch marker check after first patches
+2026-05-06 Codex: tail packet_loop batch after lib progress
+2026-05-06 Codex: marker check packet_loop batch after additional patches
+2026-05-06 Codex: packet_loop batch file changes after additional patches
+2026-05-06 Codex: tail packet_loop batch after marker clean
+2026-05-06 Codex: tail packet_loop batch compile gate
+2026-05-06 Codex: tail packet_loop batch incremental compile
+2026-05-06 Codex: tail packet_loop batch compile result
+2026-05-06 Codex: tail packet_loop batch clippy result
+2026-05-06 Codex: tail packet_loop batch clippy second poll
+2026-05-06 Codex: tail packet_loop batch after clippy patch
+2026-05-06 Codex: tail packet_loop batch final gates after clippy patch
+2026-05-06 Codex: tail packet_loop batch final clippy result
+2026-05-06 Codex: status summary live check packet_loop batch
+2026-05-06 Codex: tail parent after packet_loop child gates
+2026-05-06 Codex: tail parent second poll after packet_loop child gates
+2026-05-06 Codex: packet_loop codex log tail after child clippy complete
+2026-05-06 Codex: tail packet_loop batch after child final marker check
+2026-05-06 Codex: tail parent after possible child completion
+2026-05-06 Codex: raw last packet_loop log events after item120
+2026-05-06 Codex: check packet_loop batch log freshness after silent wait
+2026-05-06 Codex: restart phase4 after stopped stuck run; remaining marker files only
+2026-05-06 - read CLAUDE.md: sed -n '1,220p' CLAUDE.md
+2026-05-06 - read TRANSLATE_PLAN.md: sed -n '1,260p' TRANSLATE_PLAN.md
+2026-05-06 - read xlate/impl_translation_guide.md: sed -n '1,260p' xlate/impl_translation_guide.md
+2026-05-06 - read xlate/impl_translation_guide.md continuation: sed -n '261,620p' xlate/impl_translation_guide.md
+2026-05-06 - read TRANSLATE_PLAN.md continuation: sed -n '261,620p' TRANSLATE_PLAN.md
+2026-05-06 - read target rs/fq/src/tests/util.rs: sed -n '1,260p' rs/fq/src/tests/util.rs
+2026-05-06 - read target rs/fq/src/internal.rs: sed -n '1,260p' rs/fq/src/internal.rs
+2026-05-06 - locate incomplete markers in batch files: rg -n "todo!|unimplemented!|SKIP:|placeholder|stub|TODO|incomplete" rs/fq/src/tests/util.rs rs/fq/src/internal.rs
+2026-05-06 - count target file lines: wc -l rs/fq/src/tests/util.rs rs/fq/src/internal.rs
+2026-05-06 - read rs/fq/src/tests/util.rs chunk: sed -n '261,620p' rs/fq/src/tests/util.rs
+2026-05-06 - read rs/fq/src/internal.rs chunk: sed -n '261,620p' rs/fq/src/internal.rs
+2026-05-06 - phase4 marker check util: python3 scripts/phase4_check.py rs/fq/src/tests/util.rs
+2026-05-06 - phase4 marker check internal: python3 scripts/phase4_check.py rs/fq/src/internal.rs
+2026-05-06 - inspect util marker around line 861: sed -n '820,890p' rs/fq/src/tests/util.rs
+2026-05-06 - inspect util marker around line 1846: sed -n '1820,1875p' rs/fq/src/tests/util.rs
+2026-05-06 Codex: find latest phase4 run after final restart
+2026-05-06 - inspect phase4_check patterns: sed -n '1,220p' scripts/phase4_check.py
+2026-05-06 - inspect util helper stubs: sed -n '2620,2685p' rs/fq/src/tests/util.rs
+2026-05-06 - inspect internal placeholder around line 3881: sed -n '3860,3900p' rs/fq/src/internal.rs
+2026-05-06 - inspect internal placeholder around line 4702: sed -n '4680,4720p' rs/fq/src/internal.rs
+2026-05-06 - detailed phase4 marker check util: python3 scripts/phase4_check.py --detail rs/fq/src/tests/util.rs
+2026-05-06 - detailed phase4 marker check internal: python3 scripts/phase4_check.py --detail rs/fq/src/internal.rs
+2026-05-06 Codex: tail final phase4 run log internal util batch
+2026-05-06 Codex: list latest codex logs final run
+2026-05-06 - list util incomplete wording: rg -n "stub|out of scope|placeholder|TODO|not yet|deferred" rs/fq/src/tests/util.rs
+2026-05-06 - list internal incomplete wording: rg -n "stub|out of scope|placeholder|TODO|not yet|deferred" rs/fq/src/internal.rs
+2026-05-06 - inspect util TLS context and scenario area: sed -n '640,900p' rs/fq/src/tests/util.rs
+2026-05-06 - inspect util init helper stubs: sed -n '1780,1905p' rs/fq/src/tests/util.rs
+2026-05-06 - inspect util packet and TLS helper stubs: sed -n '2520,2695p' rs/fq/src/tests/util.rs
+2026-05-06 - locate matching C util functions: rg -n "test_api_init_send_recv_scenario|test_api_queue_initial_queries|tls_api_init_ctx_ex2|tester_push_frame_packet|session_resume_test_one" picoquictest picoquic
+2026-05-06 - read C test_api_queue_initial_queries: sed -n '360,430p' picoquictest/tls_api_test.c
+2026-05-06 - read C test_api_init_send_recv_scenario: sed -n '860,930p' picoquictest/tls_api_test.c
+2026-05-06 - read C tls_api_init_ctx_ex2: sed -n '1080,1135p' picoquictest/tls_api_test.c
+2026-05-06 - read C tester_push_frame_packet: sed -n '130,210p' picoquictest/quic_tester.c
+2026-05-06 - read remainder of C test_api_queue_initial_queries: sed -n '430,470p' picoquictest/tls_api_test.c
+2026-05-06 Codex: inspect final util internal batch start
+2026-05-06 - inspect TestTlsApiCtx fields: sed -n '520,720p' rs/fq/src/tests/util.rs
+2026-05-06 - search stream tracking fields in Rust: rg -n "test_stream|nb_test_streams|stream0|streams_finished|q_src|r_recv|r_received|q_sent|test_finished" rs/fq/src/tests util.rs rs/fq/src/tests rs/fq/src
+2026-05-06 - locate C stream tracking definitions: rg -n "test_api_stream_t|test_api_init_test_stream|test_api_callback_t|PICOQUIC_TEST_MAX_TEST_STREAMS|streams_finished|stream0_target|stream0_received" picoquictest/tls_api_test.c picoquictest/picoquictest_internal.h
+2026-05-06 - read C test context header fields: sed -n '250,345p' picoquictest/picoquictest_internal.h
+2026-05-06 - read C test stream helper bodies: sed -n '240,360p' picoquictest/tls_api_test.c
+2026-05-06 - read C test API stream/context structs: sed -n '120,235p' picoquictest/picoquictest_internal.h
+2026-05-06 - read C test_api_init_test_stream: sed -n '180,245p' picoquictest/tls_api_test.c
+2026-05-06 - read C stream buffer initializer: sed -n '140,188p' picoquictest/tls_api_test.c
+2026-05-06 - locate Rust stream send helpers: rg -n "fn add_to_stream|pub fn add_to_stream|mark_active_stream|is_client_stream_id|IS_CLIENT_STREAM_ID" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src -g'*.rs'
+2026-05-06 - inspect Rust stream send API: sed -n '2800,3035p' rs/fq/src/lib.rs
+2026-05-06 - inspect internal stream-id helpers comment: sed -n '1810,1855p' rs/fq/src/internal.rs
+2026-05-06 - inspect stream-id helper impls: sed -n '1,70p' rs/fq/src/stream.rs
+2026-05-06 - inspect util callback/sim loop part 1: sed -n '890,1080p' rs/fq/src/tests/util.rs
+2026-05-06 - inspect util callback/sim loop part 2: sed -n '1080,1260p' rs/fq/src/tests/util.rs
+2026-05-06 - inspect util context initialization: sed -n '1260,1465p' rs/fq/src/tests/util.rs
+2026-05-06 Codex: final util internal batch source edit/progress check
+2026-05-06 Codex: final util internal marker check
+2026-05-06 - inspect tls_api_init_ctx_ex initialization: sed -n '1460,1625p' rs/fq/src/tests/util.rs
+2026-05-06 - inspect rest of add_to_stream_with_ctx: sed -n '3035,3065p' rs/fq/src/lib.rs
+2026-05-06 - inspect add_to_stream completion: sed -n '3065,3095p' rs/fq/src/lib.rs
+2026-05-06 - inspect internal misc frame comment: sed -n '1800,1845p' rs/fq/src/internal.rs
+2026-05-06 - inspect internal TLS ctx placeholder: sed -n '3000,3040p' rs/fq/src/internal.rs
+2026-05-06 - inspect internal RNG zero marker: sed -n '6605,6640p' rs/fq/src/internal.rs
+2026-05-06 - inspect internal CID generator marker: sed -n '8660,8700p' rs/fq/src/internal.rs
+2026-05-06 - inspect local CID TTL marker: sed -n '8805,8840p' rs/fq/src/internal.rs
+2026-05-06 - inspect misc frame placeholder marker: sed -n '9140,9175p' rs/fq/src/internal.rs
+2026-05-06 - inspect packet header placeholder marker: sed -n '10895,10930p' rs/fq/src/internal.rs
+2026-05-06 - inspect unacked packet placeholder marker: sed -n '10965,11005p' rs/fq/src/internal.rs
+2026-05-06 - locate internal flagged functions and structs: rg -n "fn allocate_packet|fn callback|fn registered_token_clear|fn create_packet_header_at|fn create_local_connection_id|struct Quic|struct Connection|struct LocalConnectionId|struct RegisteredToken|struct Packet" rs/fq/src/internal.rs
+2026-05-06 - inspect internal packet allocation: sed -n '3520,3605p' rs/fq/src/internal.rs
+2026-05-06 - inspect internal registered token functions: sed -n '6300,6365p' rs/fq/src/internal.rs
+2026-05-06 - inspect callback placeholder context: sed -n '1380,1425p' rs/fq/src/internal.rs
+2026-05-06 - inspect registered_token_clear: sed -n '1680,1715p' rs/fq/src/internal.rs
+2026-05-06 - inspect allocate_packet: sed -n '11095,11145p' rs/fq/src/internal.rs
+2026-05-06 - inspect RegisteredToken struct: sed -n '700,740p' rs/fq/src/internal.rs
+2026-05-06 Codex: tail final util internal batch after no edits
+2026-05-06 - inspect registered_token_clear completion: sed -n '1715,1748p' rs/fq/src/internal.rs
+2026-05-06 - inspect Quic struct token fields part 1: sed -n '1425,1515p' rs/fq/src/internal.rs
+2026-05-06 - inspect Quic struct token fields part 2: sed -n '1515,1605p' rs/fq/src/internal.rs
+2026-05-06 - locate C tuple challenge body: rg -n "picoquic_set_tuple_challenge|set_tuple_challenge" picoquic
+2026-05-06 - locate C internal function bodies: rg -n "picoquic_create_local_cnxid|create_local_connection_id|picoquic_check_local_cnxid_ttl|find_first_misc_frame|picoquic_create_packet_header|picoquic_queue_unacked_packet_for_pc|picoquic_create_packet" picoquic
+2026-05-06 - read C picoquic_set_tuple_challenge: sed -n '2110,2138p' picoquic/quicctx.c
+2026-05-06 - read C picoquic_create_packet: sed -n '533,570p' picoquic/sender.c
+2026-05-06 - read C picoquic_create_packet_header: sed -n '711,790p' picoquic/sender.c
+2026-05-06 - read C picoquic_create_local_cnxid: sed -n '3795,3845p' picoquic/quicctx.c
+2026-05-06 - read C create_local_cnxid continuation: sed -n '3845,3888p' picoquic/quicctx.c
+2026-05-06 - read C check_local_cnxid_ttl: sed -n '3987,4035p' picoquic/quicctx.c
+2026-05-06 - read C find_first_misc_frame: sed -n '4846,4864p' picoquic/frames.c
+2026-05-06 - locate C connection_by_id/register CID: rg -n "connection_by_id\(|picoquic_cnx_by_id|picoquic_register_cnx_id|local_cnxid" picoquic/quicctx.c picoquic/picoquic_internal.h
+2026-05-06 Codex: final util internal edit check after exact flagged functions
+2026-05-06 - read C register_cnx_id: sed -n '1260,1295p' picoquic/quicctx.c
+2026-05-06 - read C cnx_by_id: sed -n '5217,5235p' picoquic/quicctx.c
+2026-05-06 - read C local_cnxid struct: sed -n '920,935p' picoquic/picoquic_internal.h
+2026-05-06 - read C cnx_by_id completion: sed -n '5235,5245p' picoquic/quicctx.c
+2026-05-06 - search Rust connection_by_id uses: rg -n "connection_by_id" rs/fq/src -g'*.rs'
+2026-05-06 - inspect HashTable API: sed -n '1,220p' rs/fq/src/hash.rs
+2026-05-06 - inspect Rust register_connection/register_cnx_id: sed -n '3180,3350p' rs/fq/src/internal.rs
+2026-05-06 - inspect public get_by_id helper: sed -n '1905,1935p' rs/fq/src/lib.rs
+2026-05-06 - inspect LocalConnectionId struct: sed -n '1888,1918p' rs/fq/src/internal.rs
+2026-05-06 - inspect arena token API: sed -n '1,180p' rs/fq/src/arena.rs
+2026-05-06 Codex: tail final util internal batch after no edits second check
+2026-05-06 - inspect arena iteration API: sed -n '180,280p' rs/fq/src/arena.rs
+2026-05-06 - inspect SplayTree API: sed -n '1,260p' rs/fq/src/splay.rs
+2026-05-06 - list SplayTree public methods: rg -n "pub fn (first|last|next|remove|get|insert|find|len|iter)" rs/fq/src/splay.rs
+2026-05-06 - inspect create_packet_header_at body: sed -n '10770,10935p' rs/fq/src/internal.rs
+2026-05-06 - search local CID fields in internal: rg -n "local_cid_ttl|local_connection_id_ttl|max_path_id_in_cnxid_lists|local_connection_id_lists|local_connection_ids" rs/fq/src/internal.rs
+2026-05-06 - inspect Connection local CID fields: sed -n '2400,2440p' rs/fq/src/internal.rs
+2026-05-06 - inspect create_local_connection_id implementation: sed -n '8628,8740p' rs/fq/src/internal.rs
+2026-05-06 - inspect local CID deletion helpers: sed -n '8740,8810p' rs/fq/src/internal.rs
+2026-05-06 Codex: final util internal edit/progress after mapping internals
+2026-05-06 - search local_cid_length fields: rg -n "local_cid_length" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-06 - search RNG/CID generation helpers: rg -n "public_random|crypto_random|rng|Random|OsRng|create_local_cnx_id|create_random_cnx_id" rs/fq/src picoquic -g'*.rs' -g'*.c'
+2026-05-06 - read C create_local_cnx_id helper: sed -n '1628,1650p' picoquic/quicctx.c
+2026-05-06 - inspect Quic create_local_cnx_id: sed -n '3348,3365p' rs/fq/src/internal.rs
+2026-05-06 - inspect fq Cargo.toml dependencies: sed -n '1,160p' rs/fq/Cargo.toml
+2026-05-06 Codex: tail final util internal batch after no edits third check
+2026-05-06 - inspect Quic::new RNG implementation: sed -n '1308,1358p' rs/fq/src/lib.rs
+2026-05-06 - inspect public random state in lib: sed -n '3840,3915p' rs/fq/src/lib.rs
+2026-05-06 - locate init_packet_ctx randomization: rg -n "random_initial|send_sequence =|init_packet_ctx" picoquic rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-06 - read C picoquic_init_packet_ctx: sed -n '2870,2888p' picoquic/quicctx.c
+2026-05-06 Codex: final util internal edit check after CID RNG dependency inspection
+2026-05-06 - search find_first_misc_frame uses: rg -n "find_first_misc_frame\(" rs/fq/src -g'*.rs'
+2026-05-06 - locate packet queue APIs: rg -n "packets: Arena|Arena<Packet>|pending.insert|queue_for_retransmit|dequeue_retransmit_packet|PacketToken" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-06 - inspect packet queue struct fields and queue_for_retransmit: sed -n '2368,2395p' rs/fq/src/internal.rs && sed -n '4450,4565p' rs/fq/src/internal.rs
+2026-05-06 - inspect internal post allocate_packet stub heading: sed -n '11145,11210p' rs/fq/src/internal.rs
+2026-05-06 Codex: tail final util internal after repeated no edit checks
+2026-05-06 - inspect callback trait and Connection callback setters: sed -n '480,540p' rs/fq/src/lib.rs && sed -n '2435,2490p' rs/fq/src/lib.rs
+2026-05-06 - inspect Quic::new signature/callback parameter: sed -n '1200,1265p' rs/fq/src/lib.rs && sed -n '1265,1305p' rs/fq/src/lib.rs
+2026-05-06 - search TestTlsApiCtx struct literals: rg -n "TestTlsApiCtx \{" rs/fq/src -g'*.rs'
+2026-05-06 Codex: final util internal edit check after callback mapping
+2026-05-06 - search Rust finalize_and_protect implementation: rg -n "finalize_and_protect|protect_packet|finalize_packet|prepare_packet|Packet::" rs/fq/src picoquic -g'*.rs' -g'*.c'
+2026-05-06 - inspect Rust packet protection methods: sed -n '5560,5945p' rs/fq/src/internal.rs
+2026-05-06 - read C tester_init_packet helpers: sed -n '90,150p' picoquictest/quic_tester.c
+2026-05-06 - read C finalize_and_protect_packet: sed -n '1175,1275p' picoquic/sender.c
+2026-05-06 Codex: tail final util internal after callback mapping no edits
+2026-05-06 - find Connection struct literal sites: rg -n "Connection \{" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-06 Codex: inspect current final phase4 child log tail
+2026-05-06 Codex: inspect current final phase4 parent log tail
+2026-05-06 Codex: check current final batch markers
+2026-05-06 - inspect internal doc/import/local_cid patch contexts: sed chunks 30-45,70-82,1824-1838,2238-2255
+2026-05-06 - inspect import context: sed -n '55,70p' rs/fq/src/internal.rs
+2026-05-06 Codex: inspect final batch file changes after util completion
+2026-05-06 Codex: recheck final batch markers after util completion
+2026-05-06 Codex: inspect final batch after internal partial progress
+2026-05-06 Codex: recheck final batch markers after internal partial progress
+2026-05-06 - inspect initial local CID list setup: sed -n '2875,2935p' rs/fq/src/internal.rs; rg -n "initial_cid_list|local_connection_id_lists:|local_connection_ids:" -C 3 rs/fq/src/internal.rs; sed -n '2748,2775p' rs/fq/src/internal.rs
+2026-05-06 Codex: recheck final batch markers after more internal work
+2026-05-06 Codex: inspect final batch tail after more internal work
+2026-05-06 - inspect create_cnx_internal context for local CID arena init: sed -n '2500,2535p' rs/fq/src/internal.rs; sed -n '2550,2585p' rs/fq/src/internal.rs; sed -n '2680,2735p' rs/fq/src/internal.rs
+2026-05-06 Codex: recheck final batch markers after internal five remaining
+2026-05-06 Codex: inspect final batch tail after internal five remaining
+2026-05-06 - scan remaining batch marker words after first edits: rg -n "stub|out of scope|placeholder|TODO|not implemented|deferred" rs/fq/src/internal.rs rs/fq/src/tests/util.rs
+2026-05-06 - phase4 marker check util after edits: python3 scripts/phase4_check.py rs/fq/src/tests/util.rs
+2026-05-06 - phase4 marker check internal after edits: python3 scripts/phase4_check.py rs/fq/src/internal.rs
+2026-05-06 - detailed internal marker check after edits: python3 scripts/phase4_check.py --detail rs/fq/src/internal.rs
+2026-05-06 - locate remaining stub word: rg -n "stub|stubs|stubbed" rs/fq/src/internal.rs
+2026-05-06 Codex: recheck final two markers
+2026-05-06 Codex: inspect final two marker batch tail
+2026-05-06 - locate remaining stub word case-insensitive: rg -ni "stub|stubs|stubbed" rs/fq/src/internal.rs
+2026-05-06 - phase4 marker check internal after comment fix: python3 scripts/phase4_check.py rs/fq/src/internal.rs
+2026-05-06 - phase4 marker check full batch after marker fixes: python3 scripts/phase4_check.py rs/fq/src/tests/util.rs rs/fq/src/internal.rs
+2026-05-06 - compile check after batch marker fixes: cd rs/fq && cargo test --no-run
+2026-05-06 - compile check with incremental disabled: cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run
+2026-05-06 Codex: recheck final marker after callback doc finding
+2026-05-06 Codex: inspect validation transition after final marker finding
+2026-05-06 - compile check after fixing packet borrow: cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run
+2026-05-06 Codex: inspect compile gate tail after marker-clean final batch
+2026-05-06 - phase4 marker check full batch after warning fix: python3 scripts/phase4_check.py rs/fq/src/tests/util.rs rs/fq/src/internal.rs
+2026-05-06 - format Rust crate: cd rs/fq && cargo fmt
+2026-05-06 Codex: inspect compile rerun after packet borrow fix
+2026-05-06 - final compile gate: cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run
+2026-05-06 Codex: inspect final compile gate status
+2026-05-06 - final clippy gate: cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings
+2026-05-06 - final phase4 marker gate after fmt: python3 scripts/phase4_check.py rs/fq/src/tests/util.rs rs/fq/src/internal.rs
+2026-05-06 Codex: inspect post-compile gate phase4 child status
+2026-05-06 Codex: inspect post-compile parent run log
+2026-05-06 - inspect final diff for touched Rust files: git diff -- rs/fq/src/tests/util.rs rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-06 - inspect final worktree status: git status --short
+2026-05-06 Codex: inspect child final diff/status completion
+2026-05-06 Codex: read CLAUDE.md and TRANSLATE_PLAN.md before Phase 4A mapper edits
+2026-05-06 Codex: scan Rust/C varint logging and packet ingress symbols with rg
+2026-05-06 Codex: inspect phase4_common.py matching/classification logic and packet/logwriter source contexts
+2026-05-06 Codex: query function_translation_map.json for logwriter and packet ingress entries with jq
+2026-05-06 Codex: patch phase4_common.py aliases, incomplete marker detection, logwriter module mapping, and incomplete-entry plan output
+2026-05-06 Codex: compile Phase 4 scripts: PYTHONPYCACHEPREFIX=/private/tmp/picoquic_pycache python3 -m py_compile scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py
+2026-05-06 Codex: dry-run regenerated Phase 4A map: python3 scripts/phase4a.py --dry-run
+2026-05-06 Codex: regenerate Phase 4A map and reports: python3 scripts/phase4a.py
+2026-05-06 Codex: inspect updated logwriter and packet ingress mappings with jq and numbered source excerpts
+2026-05-06 Codex: validate whitespace and worktree state for Phase 4A mapper artifacts
+2026-05-06 Codex: inspect full worktree status after Phase 4A mapper changes
+2026-05-06 Codex: full marker scan after final phase4 batch accepted: python3 scripts/phase4_check.py --quiet
+2026-05-06 Codex: inspect worktree before requested commit: git status --short
+2026-05-06 Codex: inspect staged/unstaged diff stats before commit: git diff --stat
+2026-05-06 Codex: inspect untracked phase helper scripts before staging: ls -l scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py
+2026-05-06 Codex: inspect untracked xlate artifacts before staging decision: ls -l xlate/function_translation_map.json xlate/phase4a_plan.md xlate/phase4a_plan.html
+2026-05-06 Codex: inspect scripts gitignore and phase helper headers before staging
+2026-05-06 Codex: inspect root ignore rules before staging generated artifacts
+2026-05-06 Codex: inspect references to new phase4 helper scripts and generated map
+2026-05-06 Codex: stage tracked Phase 4 source/tooling changes: git add -u
+2026-05-06 Codex: stage new Phase 4 helper scripts and plan artifacts: git add scripts/phase4_common.py scripts/phase4a.py scripts/phase4b.py scripts/phase4c.py xlate/function_translation_map.json xlate/phase4a_plan.md xlate/phase4a_plan.html
+2026-05-06 Codex: inspect staged status before commit: git status --short
+2026-05-06 Codex: inspect staged diff stat before commit: git diff --cached --stat
+2026-05-06 Codex: restage command log before commit: git add COMMANDS.log
+2026-05-06 Codex: commit Phase 4 marker cleanup: git commit -m "Complete Phase 4 marker cleanup"

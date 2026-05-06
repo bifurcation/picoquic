@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """phase4.py — AI-driven Phase 4 implementation translator.
 
-For each Rust source file under `rs/fq/src/`, fill in `todo!()`
-function bodies by translating the corresponding C body from
-`picoquic/`.  The Phase 3 tests are the gate: a function is "done"
-when the tests that exercise it stop panicking on `todo!()`.
+For each Rust source or test file under `rs/fq/src/`, fill in
+incomplete bodies and remove placeholder marker comments by translating
+the corresponding C body from `picoquic/` or `picoquictest/`.
+The Phase 3 tests are the gate: a function is "done" when the tests
+that exercise it stop panicking or taking stub paths.
 
 Pipeline modelled on `scripts/phase3a.py`; the differences:
 
@@ -67,35 +68,41 @@ ALLOWED_TOOLS = (
     "Bash(python3 scripts/phase3_check.py:*)"
 )
 
-# Files we don't try to translate this phase: pure-design modules
-# with no C counterpart, and loglib stuff which is out of v1 scope.
-# Note: tests/util.rs IS in scope — its todo!() bodies are
-# translations of C test helpers from picoquictest_internal.h.
-SKIP_FILES = {
-    # Phase-3 dual-q simulator stub; not a picoquic translation target.
-    "tests/dualq.rs",
-    # No C counterpart (Phase 2 design modules).
-    "arena.rs",
-    "tls.rs",
-    "crypto.rs",
-    "sys/mod.rs",
-}
+# Phase 4 is the no-placeholder cleanup pass.  Do not exclude tests or
+# design modules here: stale marker comments are also incomplete work.
+SKIP_FILES: set[str] = set()
 
 
 INCOMPLETE_RE = re.compile(
-    r"\btodo!\s*\(|\bunimplemented!\s*\(|//\s*SKIP\s*:",
+    r"\btodo!\s*\("
+    r"|\bunimplemented!\s*\("
+    r"|//\s*SKIP\s*:"
+    r"|\bTODO\b"
+    r"|\bFIXME\b"
+    r"|\bXXX\b"
+    r"|\bplaceholder\b"
+    r"|\bstubs?\b"
+    r"|\bstubbed\b"
+    r"|\bdeferred\b"
+    r"|\bdefer(?:red)?\s+to\b"
+    r"|\bnot\s+yet\s+implemented\b"
+    r"|\bnot\s+implemented\b"
+    r"|\bout\s+of\s+scope\b",
+    re.IGNORECASE,
 )
 
 
 def collect_targets(order: str = "size") -> list[Path]:
     """All `.rs` under `rs/fq/src/` that contain at least one
-    incomplete body, ordered bottom-up.
+    incomplete body or placeholder marker, ordered bottom-up.
 
     "Incomplete" means any of:
       * `todo!()`
       * `unimplemented!()`
       * `// SKIP:` markers (agent-stubbed bodies that compile but
         return placeholder values)
+      * placeholder/stub/TODO comments or strings that indicate logic
+        has not been translated yet
 
     `order`:
       * `size` (default) — smallest file first.  Crude proxy for
@@ -111,10 +118,6 @@ def collect_targets(order: str = "size") -> list[Path]:
     for path in sorted(RS_SRC.rglob("*.rs")):
         rel = path.relative_to(RS_SRC).as_posix()
         if rel in SKIP_FILES:
-            continue
-        # Skip Phase 3 test-body files except tests/util.rs (which
-        # contains test-helper bodies that need C-side translations).
-        if rel.startswith("tests/") and rel != "tests/util.rs":
             continue
         if INCOMPLETE_RE.search(path.read_text()):
             out.append(path)
@@ -151,9 +154,9 @@ def _load_callgraph_heights() -> dict[str, int]:
 
 
 def todo_count(path: Path) -> int:
-    """Count incomplete bodies in `path`: todo!(), unimplemented!(),
-    and // SKIP: markers.  Each is functionally equivalent — none
-    is a real translation.
+    """Count incomplete markers in `path`.  Each marker means the file
+    still contains unfinished translation work, whether the marker is an
+    executable `todo!()` or a comment documenting a placeholder path.
     """
     return sum(1 for _ in INCOMPLETE_RE.finditer(path.read_text()))
 
@@ -197,8 +200,12 @@ def record(state: dict, key: str, status: str, **extra) -> None:
     save_state(state)
 
 
-def is_done(key: str, state: dict) -> bool:
-    return state.get(key, {}).get("status") == "ok"
+def is_done(key: str, state: dict, target: Path | None = None) -> bool:
+    if state.get(key, {}).get("status") != "ok":
+        return False
+    # Older state records were written before Phase 4 tracked broad
+    # placeholder markers.  Never let stale state hide live markers.
+    return target is None or todo_count(target) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +262,9 @@ def compose_prompt(target: Path) -> str:
         "  * 'borrow-checker issue' / 'lifetime issue' (use the",
         "    correct ownership pattern; restructure if needed)",
         "",
-        "The ONLY acceptable `todo!()` blocker is a concrete external",
-        "dependency genuinely outside our reach, e.g. 'blocked: needs",
-        "picotls API not yet exposed in the Rust binding'.",
+        "Do not leave blocker `todo!()`s behind.  If a dependency is",
+        "missing, expose or implement the dependency first, then return",
+        "to the original body.",
         "",
         "No `unimplemented!()`.  No `// SKIP:` comments.  No fake",
         "stub returns.  See `xlate/impl_translation_guide.md` section",
@@ -268,8 +275,9 @@ def compose_prompt(target: Path) -> str:
         "suite is the gate: a function is done when tests that",
         "exercise it stop panicking.",
         "",
-        f"This file currently has **{n_todos}** incomplete bodies to fill",
-        "(counted across `todo!()` + `unimplemented!()` + `// SKIP:`).",
+        f"This file currently has **{n_todos}** incomplete markers to clear",
+        "(counted across `todo!()`, `unimplemented!()`, `// SKIP:`,",
+        "and placeholder/stub/TODO wording).",
         "",
         "## What this is",
         "",
@@ -284,13 +292,17 @@ def compose_prompt(target: Path) -> str:
         "1. **`xlate/impl_translation_guide.md`** — Rust idioms for",
         "   common C body patterns (memory, control flow, errors,",
         "   strings, time, network, logging, crypto).  Read this once.",
-        f"2. The Rust target: `{rel}` — every `todo!()` body in here",
-        "   is your work.",
-        "3. The matching C source.  Most modules under `rs/fq/src/`",
-        "   correspond to one or more files under `picoquic/`; the",
-        "   guide names the mapping.  Use `Glob` / `Grep` against",
-        "   `picoquic/*.c` to find the C bodies for each function.",
-        "4. The tests that exercise this module: `rs/fq/src/tests/`.",
+        f"2. The Rust target: `{rel}` — every placeholder marker in here",
+        "   is your work.  If the marker is in a stale comment/docstring,",
+        "   remove or rewrite it only after confirming the code underneath",
+        "   is real implementation, not a stub.",
+        "3. The matching C source.  Most library modules under",
+        "   `rs/fq/src/` correspond to one or more files under",
+        "   `picoquic/`; translated tests under `rs/fq/src/tests/`",
+        "   correspond to `picoquictest/`.  The guide names the mapping.",
+        "   Use `Glob` / `Grep` against the C sources to find bodies.",
+        "4. The tests that exercise this module, or the C test source",
+        "   that this Rust test file translates.",
         "",
         "## Translation rules",
         "",
@@ -311,26 +323,28 @@ def compose_prompt(target: Path) -> str:
         "  with placeholder returns, no `Err(Generic)` shortcuts,",
         "  no `Ok(())` no-ops for functions with real side effects,",
         "  no fabricated defaults.  Do the hard work.  If a body",
-        "  truly can't be translated this pass, leave a single bare",
-        "  `todo!()` with a one-line blocker note above it.",
+        "  truly can't be translated under the current signature, report",
+        "  the exact signature mismatch on stdout and keep working on all",
+        "  other markers in the file.",
         "- **Tests are the gate.**  After each meaningful chunk, run",
         f"     cd rs/fq && cargo test --no-run",
         f"     python3 scripts/phase4_check.py {rel}",
-        "  to confirm the file still compiles and how many `todo!()`s",
-        "  remain.  Iterate until zero.",
+        "  to confirm the file still compiles and how many incomplete",
+        "  markers remain.  Iterate until zero.",
         "",
         "## Process",
         "",
         "1. Read the impl translation guide (once).",
         f"2. Read the Rust target `{rel}` end-to-end.",
-        "3. Identify the corresponding C source(s) under `picoquic/`.",
-        "   The first line of each `todo!()` function's doc comment",
+        "3. Identify the corresponding C source(s) under `picoquic/`",
+        "   or `picoquictest/`.",
+        "   The first line of each placeholder function's doc comment",
         "   typically names the C function (`/// C: \\`picoquic_xxx\\``).",
-        "4. For each `todo!()`:",
+        "4. For each placeholder marker:",
         "   a. Find the C body.",
         "   b. Translate idiomatically per the guide.",
         "   c. Run `cargo test --no-run` to confirm it still compiles.",
-        "5. After every `todo!()` in this file is replaced, run:",
+        "5. After every placeholder marker in this file is cleared, run:",
         "     cd rs/fq && cargo fmt",
         "     cd rs/fq && cargo test --no-run",
         "     cd rs/fq && cargo clippy --tests --all-features -- -D warnings",
@@ -373,7 +387,7 @@ def compose_batch_prompt(batch: list[Path]) -> str:
         n = todo_count(target)
         total_todos += n
         sources_section.append(
-            f"### `{rel}` ({n} todo!() bod{'y' if n == 1 else 'ies'})\n"
+            f"### `{rel}` ({n} incomplete marker{'s' if n != 1 else ''})\n"
         )
     rel_paths = [str(t.relative_to(REPO_ROOT)) for t in batch]
 
@@ -411,9 +425,9 @@ def compose_batch_prompt(batch: list[Path]) -> str:
         "not in scope', 'loglib not in scope', 'sub-system not yet",
         "translated', 'needs design thought', 'borrow-checker issue'.",
         "",
-        "The ONLY acceptable `todo!()` blocker is a concrete external",
-        "dependency genuinely outside our reach (e.g. 'needs picotls",
-        "API not yet exposed in the Rust binding').",
+        "Do not leave blocker `todo!()`s behind.  If a dependency is",
+        "missing, expose or implement the dependency first, then return",
+        "to the original body.",
         "",
         "Fill in incomplete function bodies in the Rust files listed",
         "below by translating the matching C bodies in `picoquic/`.",
@@ -421,8 +435,9 @@ def compose_batch_prompt(batch: list[Path]) -> str:
         "session, amortising the read of the translation guide and",
         "any cross-module API lookups.",
         "",
-        f"Total incomplete bodies in this batch: **{total_todos}** "
-        "(counted across `todo!()` + `unimplemented!()` + `// SKIP:`).",
+        f"Total incomplete markers in this batch: **{total_todos}** "
+        "(counted across `todo!()`, `unimplemented!()`, `// SKIP:`,",
+        "and placeholder/stub/TODO wording).",
         "",
         "## What this is",
         "",
@@ -454,8 +469,9 @@ def compose_batch_prompt(batch: list[Path]) -> str:
         "- **Don't change signatures.**  Phase 1 / 2 / 3 settled them.",
         "  If a body genuinely cannot be expressed under the existing",
         "  signature, surface it on stdout and skip the function.",
-        "- **No `unsafe`.**  No edits outside `rs/fq/src/` (except the",
-        "  Phase 3 test suite, which you should not touch).",
+        "- **No `unsafe`.**  No edits outside `rs/fq/src/`.  Test files",
+        "  under `rs/fq/src/tests/` are in scope when they are listed",
+        "  in this batch.",
         "- **Idiomatic Rust over C-mirroring.**  See the guide.",
         "- **No new public items.**  Helpers are fine but private.",
         "- **Tests are the gate.**  Run `cargo test --no-run` after",
@@ -473,7 +489,7 @@ def compose_batch_prompt(batch: list[Path]) -> str:
         "",
         "After translating each file, run:",
         "    python3 scripts/phase4_check.py <rs file>",
-        "to confirm 0 `todo!()` bodies remain.  If any do, fix them",
+        "to confirm 0 incomplete markers remain.  If any do, fix them",
         "before moving on.",
         "",
         "After the whole batch, run:",
@@ -489,7 +505,8 @@ def compose_batch_prompt(batch: list[Path]) -> str:
         "2. For each file in this batch:",
         "   a. Read the Rust target end-to-end.",
         "   b. Identify matching C source(s) (doc comments name them).",
-        "   c. For each `todo!()` body: find the C body, translate.",
+        "   c. For each placeholder marker: find the C body or stale",
+        "      comment it refers to, then implement or correct it.",
         "   d. Run `python3 scripts/phase4_check.py <file>`; iterate.",
         "3. Run the gate (fmt + cargo test --no-run + clippy) once at",
         "   the end of the batch.",
@@ -588,7 +605,7 @@ def todos_remaining(target: Path) -> int:
 def run_one(target: Path, *, dry_run: bool, max_turns: int,
             agent: agent_runner.AgentConfig, state: dict) -> str:
     rel_key = target.relative_to(RS_SRC).as_posix()
-    print(f"\n=== {rel_key} ({todo_count(target)} todos) ===")
+    print(f"\n=== {rel_key} ({todo_count(target)} incomplete markers) ===")
     prompt_file = write_prompt(target)
     print(f"  prompt  → {prompt_file.relative_to(REPO_ROOT)}")
     if dry_run:
@@ -607,10 +624,10 @@ def run_one(target: Path, *, dry_run: bool, max_turns: int,
         record(state, rel_key, "fail", stage=agent.label, exit_code=code)
         return "fail"
 
-    # Check whether todo!()s remain.
+    # Check whether incomplete markers remain.
     remaining = todos_remaining(target)
     if remaining > 0:
-        print(f"    PARTIAL: {remaining} todo!()s remain")
+        print(f"    PARTIAL: {remaining} incomplete markers remain")
         record(state, rel_key, "partial", remaining=remaining)
         return "partial"
 
@@ -663,16 +680,16 @@ def run_batch(batch: list[Path], *, dry_run: bool, max_turns: int,
         # Don't bail yet — let the per-file checker decide.
 
     # Per-file completion check via file-by-file todo!() count.
-    print("  check   → counting todo!() in each batch source")
+    print("  check   → counting incomplete markers in each batch source")
     succeeded: list[str] = []
     failed: list[str] = []
     for target, rel in zip(batch, rel_paths):
         n = todo_count(target)
         if n == 0:
-            print(f"    OK   {rel}: 0 todo!() left")
+            print(f"    OK   {rel}: 0 incomplete markers left")
             succeeded.append(rel)
         else:
-            print(f"    FAIL {rel}: {n} todo!() remain")
+            print(f"    FAIL {rel}: {n} incomplete markers remain")
             failed.append(rel)
 
     # Run the build gate; failure penalises the whole batch.
@@ -701,8 +718,8 @@ def run_batch(batch: list[Path], *, dry_run: bool, max_turns: int,
 def cmd_status(targets: list[Path]) -> None:
     state = load_state()
     print(f"Phase 4 progress: {len(targets)} source file(s) "
-          f"with todo!() bodies")
-    ok = [t for t in targets if is_done(t.relative_to(RS_SRC).as_posix(), state)]
+          f"with incomplete markers")
+    ok = [t for t in targets if is_done(t.relative_to(RS_SRC).as_posix(), state, t)]
     partial = [t for t in targets
                if state.get(t.relative_to(RS_SRC).as_posix(), {}).get("status") == "partial"]
     failed = [t for t in targets
@@ -715,14 +732,14 @@ def cmd_status(targets: list[Path]) -> None:
     total_todos = sum(todo_count(t) for t in targets)
     done_todos = sum(todo_count(t) for t in ok)  # ok files have 0 todos
     pending_todos = total_todos - done_todos
-    print(f"  todo!() count: {pending_todos} remaining "
+    print(f"  incomplete marker count: {pending_todos} remaining "
           f"(of {total_todos} initial)")
     if partial:
         print("\nPartial:")
         for t in partial:
             rel = t.relative_to(RS_SRC).as_posix()
             n = state[rel].get("remaining", "?")
-            print(f"  - {rel}  ({n} todo!() remaining)")
+            print(f"  - {rel}  ({n} incomplete markers remaining)")
 
 
 # ---------------------------------------------------------------------------
@@ -816,7 +833,7 @@ def main() -> int:
 
     if not args.force:
         targets = [t for t in targets
-                   if not is_done(t.relative_to(RS_SRC).as_posix(), state)]
+                   if not is_done(t.relative_to(RS_SRC).as_posix(), state, t)]
 
     if args.limit is not None:
         targets = targets[: args.limit]

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """phase4_check.py — verify that Rust source files have no
-incomplete bodies left.
+incomplete bodies or placeholder markers left.
 
-Detects three incompleteness patterns (all are functionally
-equivalent — runtime panic or silent stub):
+Detects incompleteness patterns (all are functionally equivalent:
+runtime panic, silent stub, or stale marker that admits missing logic):
   * `todo!()`
   * `unimplemented!()`
   * `// SKIP:` markers (used by Phase 4 agents to stub a body with
     `None` / `Err(Generic)` / `Ok(())` while the *real* C body
     isn't translated; pervasive in internal.rs)
+  * TODO/FIXME/XXX
+  * placeholder/stub/deferred/not implemented/out of scope wording
 
 Usage:
   python3 scripts/phase4_check.py                          # all
@@ -16,7 +18,7 @@ Usage:
   python3 scripts/phase4_check.py --quiet                  # only failures
   python3 scripts/phase4_check.py --detail                 # name unfinished fns
 
-Exit code 0 if every named file has zero incomplete bodies; non-zero
+Exit code 0 if every named file has zero incomplete markers; non-zero
 otherwise.
 
 The script reports per-file:
@@ -39,6 +41,14 @@ PATTERNS = [
     ("todo!()", re.compile(r"\btodo!\s*\(", re.MULTILINE)),
     ("unimplemented!()", re.compile(r"\bunimplemented!\s*\(", re.MULTILINE)),
     ("// SKIP:", re.compile(r"//\s*SKIP\s*:", re.MULTILINE)),
+    ("TODO", re.compile(r"\bTODO\b(?!\s*!)", re.IGNORECASE | re.MULTILINE)),
+    ("FIXME", re.compile(r"\bFIXME\b", re.IGNORECASE | re.MULTILINE)),
+    ("XXX", re.compile(r"\bXXX\b", re.IGNORECASE | re.MULTILINE)),
+    ("placeholder", re.compile(r"\bplaceholder\b", re.IGNORECASE | re.MULTILINE)),
+    ("stub", re.compile(r"\bstubs?\b|\bstubbed\b", re.IGNORECASE | re.MULTILINE)),
+    ("deferred", re.compile(r"\bdeferred\b|\bdefer(?:red)?\s+to\b", re.IGNORECASE | re.MULTILINE)),
+    ("not implemented", re.compile(r"\bnot\s+yet\s+implemented\b|\bnot\s+implemented\b", re.IGNORECASE | re.MULTILINE)),
+    ("out of scope", re.compile(r"\bout\s+of\s+scope\b", re.IGNORECASE | re.MULTILINE)),
 ]
 FN_RE = re.compile(
     r"\bfn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*[<(]",
@@ -67,7 +77,7 @@ def check(path: Path, quiet: bool = False) -> tuple[int, list[str]]:
     if total == 0:
         if not quiet:
             print(f"OK    {path.relative_to(REPO_ROOT)}: "
-                  f"0 incomplete bodies")
+                  f"0 incomplete markers")
         return 0, []
     parts = ", ".join(
         f"{len(v)} {k}" for k, v in by_kind.items()
@@ -76,7 +86,7 @@ def check(path: Path, quiet: bool = False) -> tuple[int, list[str]]:
         fn for hits in by_kind.values() for _, fn in hits if fn
     })
     print(f"FAIL  {path.relative_to(REPO_ROOT)}: "
-          f"{total} incomplete ({parts}) in {len(fns)} fn(s)")
+          f"{total} incomplete marker(s) ({parts}) in {len(fns)} fn(s)")
     return total, fns
 
 
@@ -96,14 +106,14 @@ def main() -> int:
                    help="Rust source files (relative to repo root) to "
                         "check.  Default: every .rs under rs/fq/src/.")
     p.add_argument("--quiet", action="store_true",
-                   help="Print only files with remaining todo!()s.")
+                   help="Print only files with remaining incomplete markers.")
     p.add_argument("--detail", action="store_true",
                    help="List the unfinished function names per file.")
     a = p.parse_args()
 
     targets = collect_targets(a.files)
     total = 0
-    files_with_todos = 0
+    files_with_markers = 0
     for path in targets:
         if not path.exists():
             print(f"WARNING: missing {path}", file=sys.stderr)
@@ -111,14 +121,13 @@ def main() -> int:
         n, fns = check(path, quiet=a.quiet)
         total += n
         if n:
-            files_with_todos += 1
+            files_with_markers += 1
             if a.detail:
                 for fn in fns:
                     print(f"        - {fn}")
 
-    print(f"\nSummary: {len(targets) - files_with_todos}/{len(targets)} "
-          f"files complete, {total} incomplete bodies remain "
-          f"(todo!() + unimplemented!() + // SKIP:).")
+    print(f"\nSummary: {len(targets) - files_with_markers}/{len(targets)} "
+          f"files complete, {total} incomplete markers remain.")
     return 0 if total == 0 else 1
 
 

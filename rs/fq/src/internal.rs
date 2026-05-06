@@ -32,9 +32,9 @@
 //!   `Option<std::fs::File>` in Phase 1B.
 //! * `struct sockaddr_storage` fields fold into
 //!   [`core::net::SocketAddr`].  Fields that the C code zeros out
-//!   to mean "address not yet set" become `Option<SocketAddr>`.
+//!   to mean "address absent" become `Option<SocketAddr>`.
 //! * `Quic`, `Connection`, `Path` were
-//!   forward-declared as opaque stubs in
+//!   forward-declared as opaque handles in
 //!   [`crate`] (the public header).  Their
 //!   real bodies live here; the public module re-exports the
 //!   names so existing `use` paths in other modules keep
@@ -54,7 +54,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use core::any::Any;
@@ -182,6 +182,12 @@ pub const NUMBER_OF_EPOCHS: usize = 4;
 pub const NUMBER_OF_EPOCH_OFFSETS: usize = NUMBER_OF_EPOCHS + 1;
 
 pub use crate::tp::NB_TP_0RTT;
+
+fn fill_system_random(bytes: &mut [u8]) -> crate::Result<()> {
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(bytes))
+        .map_err(|_| crate::Error::Generic)
+}
 
 // ---------------------------------------------------------------------------
 // Range / bitfield helper macros.
@@ -1550,7 +1556,9 @@ pub struct Quic {
     /// `LocalConnectionIdToken` rather than `ConnectionToken` once the
     /// per-path CID arena is wired up; a CID does not uniquely
     /// identify a connection — paths within a connection have
-    /// distinct CIDs.  Stub assumes the simpler shape for now.
+    /// distinct CIDs.  The current table stores the owning connection
+    /// token and resolves the local-CID token through the connection's
+    /// CID arena on lookup.
     pub connection_by_id: HashTable<ConnectionId, ConnectionToken>,
     /// Lookup by network 5-tuple.  Phase 4 plan: value is more
     /// likely `PathToken`, since the C side stored a `*mut Path`
@@ -1698,25 +1706,29 @@ impl Quic {
     /// Drop registered-token entries that expired before
     /// `expiry_time_max`.
     pub fn registered_token_clear(&mut self, expiry_time_max: Instant) {
-        // Remove entries from the front of the tree (lowest key = lowest token_hash)
-        // that have expired. Since the tree is keyed by token_hash not by time,
-        // we iterate all entries and remove expired ones.
-        // C iterates smallest token_time first using picosplay_first.
-        // We approximate by draining from the arena's perspective.
-        while let Some(first_st) = self.token_reuse_tree.first() {
-            let arena_tok = match self.token_reuse_tree.get(first_st) {
-                Some(&t) => t,
-                None => break,
-            };
-            let expired = match self.registered_tokens.get(arena_tok) {
-                Some(rt) => rt.token_time < expiry_time_max,
-                None => true,
-            };
-            if !expired {
-                break;
+        let mut expired = Vec::new();
+        let mut current = self.token_reuse_tree.first();
+        while let Some(st) = current {
+            current = self.token_reuse_tree.next(st);
+            if let Some(&arena_tok) = self.token_reuse_tree.get(st) {
+                let is_expired = self
+                    .registered_tokens
+                    .get(arena_tok)
+                    .map(|rt| rt.token_time < expiry_time_max)
+                    .unwrap_or(true);
+                if is_expired {
+                    expired.push((st, Some(arena_tok)));
+                }
+            } else {
+                expired.push((st, None));
             }
-            self.token_reuse_tree.remove(first_st);
-            self.registered_tokens.remove(arena_tok);
+        }
+
+        for (st, arena_tok) in expired {
+            self.token_reuse_tree.remove(st);
+            if let Some(arena_tok) = arena_tok {
+                self.registered_tokens.remove(arena_tok);
+            }
         }
     }
 }
@@ -1827,10 +1839,8 @@ pub struct StreamHead {
 
 /// Misc-frame header.  In C the body of the frame is appended to
 /// the header in the same allocation; in Rust the frame bytes
-/// follow the header out-of-line — Phase 3 will decide whether
-/// to bake them in (`Box<[u8]>`) or keep them external.  For
-/// Phase 1 the field is omitted; the layout question is part of
-/// the body translation and out of scope here.
+/// follow the header inline in `bytes`, which carries both the
+/// frame header and payload without a trailing allocation.
 pub struct MiscFrameHeader {
     /// Encoded frame bytes (C: header + appended payload in the
     /// same allocation; Rust owns the bytes inline).  `length` is
@@ -2247,6 +2257,10 @@ pub struct Connection {
     /// time; used by methods on `Connection` that need the CID length but have
     /// no back-pointer to `Quic`.
     pub local_cid_length: u8,
+    /// Cached copy of `Quic::local_connection_id_ttl`.
+    pub local_connection_id_ttl: u64,
+    /// Cached copy of `Quic::random_initial`.
+    pub random_initial: u8,
 
     pub start_time: Instant,
     pub phase_delay: i64,
@@ -2549,6 +2563,15 @@ impl Quic {
         // Build a null path/tuple for the initial path.
         let default_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
         let peer_addr = addr_to.copied().unwrap_or(default_addr);
+        let mut local_connection_ids = Arena::new();
+        let initial_lcid_token = local_connection_ids.insert(LocalConnectionId {
+            connection_by_id_membership: None,
+            path_id: 0,
+            sequence: 0,
+            create_time: start_time,
+            connection_id: initial_cnx_id,
+            is_acked: false,
+        })?;
         let initial_tuple = Tuple {
             unique_path_id: 0,
             peer_addr,
@@ -2556,7 +2579,7 @@ impl Quic {
             if_index: 0,
             observed_addr: default_addr,
             remote_connection_id_index: None,
-            local_connection_id: None,
+            local_connection_id: Some(initial_lcid_token),
             nb_observed_repeat: 0,
             observed_time: zero_instant,
             challenge_response: 0,
@@ -2754,7 +2777,7 @@ impl Quic {
             nb_local_connection_id_expired: 0,
             is_demoted: false,
             demotion_time: zero_instant,
-            connection_ids: Vec::new(),
+            connection_ids: vec![initial_lcid_token],
         };
 
         // Build the initial remote CID stash for path 0.
@@ -3007,6 +3030,8 @@ impl Quic {
             connection_by_secret_membership: None,
 
             local_cid_length: self.local_connection_id_length,
+            local_connection_id_ttl: self.local_connection_id_ttl,
+            random_initial: self.random_initial,
 
             start_time,
             phase_delay: i64::MAX,
@@ -3150,7 +3175,7 @@ impl Quic {
             next_path_id_in_lists: 1,
             max_path_id_in_connection_id_lists: 0,
             local_connection_id_lists: vec![initial_cid_list],
-            local_connection_ids: Arena::new(),
+            local_connection_ids,
 
             ack_frequency_sequence_local: u64::MAX,
             ack_gap_local: 2,
@@ -3878,10 +3903,7 @@ pub fn set_tuple_challenge(tuple: &mut Tuple, current_time: Instant, use_constan
                 .ticks()
                 .wrapping_mul(0xdeadbeef_u64.wrapping_add(ichal as u64))
         } else {
-            // Phase 4: RNG not yet wired; use a deterministic placeholder.
-            current_time
-                .ticks()
-                .wrapping_add(ichal as u64 * 0x9e3779b97f4a7c15)
+            crate::public_random_64()
         };
     }
     tuple.challenge_time = current_time;
@@ -4697,15 +4719,21 @@ impl Quic {
         &mut self,
         cnx_id: ConnectionId,
     ) -> Option<(ConnectionToken, LocalConnectionIdToken)> {
-        // Look up in connection_by_id hash table.
-        // The value stored is a ConnectionToken; for the LocalConnectionIdToken
-        // we return a synthetic placeholder (Phase 4 full wiring would store it
-        // in the CID arena).
         let ht = self.connection_by_id.lookup(&cnx_id)?;
         let &conn_tok = self.connection_by_id.get(ht)?;
-        // Placeholder token — callers that only use the ConnectionToken part work;
-        // callers that use the LocalConnectionIdToken part may need further work.
-        let lcid_tok = LocalConnectionIdToken::synthetic(0, 0);
+        let lcid_tok = self.connections.get(conn_tok).and_then(|connection| {
+            connection
+                .local_connection_id_lists
+                .iter()
+                .flat_map(|list| list.connection_ids.iter().copied())
+                .find(|&tok| {
+                    connection
+                        .local_connection_ids
+                        .get(tok)
+                        .map(|l_cid| l_cid.connection_id == cnx_id)
+                        .unwrap_or(false)
+                })
+        })?;
         Some((conn_tok, lcid_tok))
     }
 
@@ -6619,12 +6647,21 @@ impl PacketData {
 }
 
 impl Connection {
-    pub fn init_packet_ctx(&mut self, pkt_ctx: &mut PacketContextState, _pc: PacketContext) {
+    pub fn init_packet_ctx(&mut self, pkt_ctx: &mut PacketContextState, pc: PacketContext) {
         // C: picoquic_init_packet_ctx
-        // In C, send_sequence is randomized if quic->random_initial is set.
-        // In Rust, TLS/RNG not yet wired so use 0.
-        pkt_ctx.send_sequence = 0;
-        pkt_ctx.highest_acknowledged = 0u64.wrapping_sub(1);
+        if self.random_initial != 0 && (pc == PacketContext::Initial || self.random_initial > 1) {
+            let mut rnd = [0u8; 8];
+            if fill_system_random(&mut rnd).is_ok() {
+                pkt_ctx.send_sequence =
+                    u64::from_le_bytes(rnd) % PN_RANDOM_RANGE as u64 + PN_RANDOM_MIN as u64;
+            } else {
+                pkt_ctx.send_sequence =
+                    crate::public_random_64() % PN_RANDOM_RANGE as u64 + PN_RANDOM_MIN as u64;
+            }
+        } else {
+            pkt_ctx.send_sequence = 0;
+        }
+        pkt_ctx.highest_acknowledged = pkt_ctx.send_sequence.wrapping_sub(1);
         pkt_ctx.latest_time_acknowledged = self.start_time;
         pkt_ctx.highest_acknowledged_time = self.start_time;
         pkt_ctx.pending = std::collections::BTreeMap::new();
@@ -6911,6 +6948,40 @@ impl Connection {
 // Stream management.
 
 impl Connection {
+    fn compare_output_stream_tokens(
+        &self,
+        left: StreamToken,
+        right: StreamToken,
+    ) -> core::cmp::Ordering {
+        let Some(left) = self.streams.get(left) else {
+            return core::cmp::Ordering::Greater;
+        };
+        let Some(right) = self.streams.get(right) else {
+            return core::cmp::Ordering::Less;
+        };
+        left.stream_priority
+            .cmp(&right.stream_priority)
+            .then_with(|| left.stream_id.cmp(&right.stream_id))
+    }
+
+    fn enqueue_output_stream_token(&mut self, token: StreamToken) {
+        if self
+            .output_streams
+            .iter()
+            .any(|&existing| existing == token)
+        {
+            return;
+        }
+        let pos = self
+            .output_streams
+            .iter()
+            .position(|&existing| {
+                self.compare_output_stream_tokens(token, existing) == core::cmp::Ordering::Less
+            })
+            .unwrap_or(self.output_streams.len());
+        self.output_streams.insert(pos, token);
+    }
+
     /// Create and register a new application stream with the given id.
     /// C: `picoquic_create_stream`.
     pub fn create_stream(&mut self, stream_id: u64) -> Result<StreamToken, crate::Error> {
@@ -6976,7 +7047,7 @@ impl Connection {
             direct_receive_fn: None,
             direct_receive_ctx: None,
             sack_list: SackList::new(),
-            stream_priority: 0,
+            stream_priority: crate::DEFAULT_STREAM_PRIORITY,
             is_active: false,
             fin_requested: false,
             fin_sent: false,
@@ -7028,7 +7099,7 @@ impl Connection {
             if let Some(s) = self.streams.get_mut(tok) {
                 s.is_output_stream = true;
             }
-            self.output_streams.push_back(tok);
+            self.enqueue_output_stream_token(tok);
         }
 
         Ok(tok)
@@ -7139,8 +7210,7 @@ impl Connection {
             if let Some(splay_tok) = stream.stream_tree_membership
                 && let Some(tok) = self.stream_tree.get(splay_tok).copied()
             {
-                // Insert at the back (priority ordering is best-effort here).
-                self.output_streams.push_back(tok);
+                self.enqueue_output_stream_token(tok);
             }
         }
     }
@@ -7214,7 +7284,7 @@ impl Connection {
                 && !s.is_output_stream
             {
                 s.is_output_stream = true;
-                self.output_streams.push_back(tok);
+                self.enqueue_output_stream_token(tok);
             }
         }
     }
@@ -7250,7 +7320,19 @@ impl Connection {
 
     /// As [`Self::find_ready_stream_path`] but path-agnostic.
     pub fn find_ready_stream(&self) -> Option<StreamToken> {
-        self.output_streams.front().copied()
+        self.output_streams.iter().copied().find(|tok| {
+            self.streams.get(*tok).is_some_and(|stream| {
+                let control_frame_ready = (stream.stop_sending_requested
+                    && !stream.stop_sending_sent)
+                    || (stream.reset_requested && !stream.reset_sent);
+                let data_ready = self.maxdata_remote > self.data_sent
+                    && stream.sent_offset < stream.maxdata_remote
+                    && (stream.is_active
+                        || !stream.send_queue.is_empty()
+                        || (stream.fin_requested && !stream.fin_sent));
+                control_frame_ready || data_ready
+            })
+        })
     }
 
     /// True when the TLS handshake stream has data to send.
@@ -7302,6 +7384,119 @@ impl Connection {
     }
 }
 
+fn queued_stream_data_info(
+    stream: &StreamHead,
+    token: crate::splay::SplayToken,
+) -> Option<(u64, usize)> {
+    let data_token = *stream.stream_data_tree.get(token)?;
+    let data = stream.stream_data_nodes.get(data_token)?;
+    Some((data.offset, data.length))
+}
+
+fn insert_received_stream_data_chunk(
+    stream: &mut StreamHead,
+    offset: u64,
+    data: &[u8],
+    received_data: &mut StreamDataNode,
+) -> Result<(), crate::Error> {
+    if data.len() > MAX_PACKET_SIZE {
+        return Err(crate::Error::BufferTooSmall);
+    }
+
+    let mut node = StreamDataNode {
+        stream_data_membership: None,
+        offset,
+        data: [0u8; MAX_PACKET_SIZE],
+        length: data.len(),
+    };
+    node.data[..data.len()].copy_from_slice(data);
+
+    let token = stream
+        .stream_data_nodes
+        .insert(node)
+        .map_err(|_| crate::Error::Memory)?;
+    let (tree_token, old) = stream
+        .stream_data_tree
+        .insert(offset, token)
+        .map_err(|_| crate::Error::Memory)?;
+    if let Some(old) = old {
+        stream.stream_data_nodes.remove(old);
+    }
+    if let Some(stored) = stream.stream_data_nodes.get_mut(token) {
+        stored.stream_data_membership = Some(tree_token);
+    }
+
+    received_data.stream_data_membership = None;
+    received_data.offset = offset;
+    received_data.length = data.len();
+    received_data.data[..data.len()].copy_from_slice(data);
+    Ok(())
+}
+
+fn queue_received_stream_data(
+    stream: &mut StreamHead,
+    offset: u64,
+    data: &[u8],
+    received_data: &mut StreamDataNode,
+) -> Result<(), crate::Error> {
+    let input_begin = offset;
+    let input_end = offset.saturating_add(data.len() as u64);
+    let mut frame_offset = offset.max(stream.consumed_offset);
+
+    if frame_offset >= input_end {
+        return Ok(());
+    }
+
+    let previous = stream.stream_data_tree.find_previous(&frame_offset);
+    if let Some(previous) = previous
+        && let Some((prev_offset, prev_len)) = queued_stream_data_info(stream, previous)
+    {
+        let prev_end = prev_offset.saturating_add(prev_len as u64);
+        if prev_end > frame_offset {
+            frame_offset = prev_end;
+        }
+    }
+
+    let mut next = if let Some(previous) = previous {
+        stream.stream_data_tree.next(previous)
+    } else {
+        stream.stream_data_tree.first()
+    };
+
+    while frame_offset < input_end {
+        let Some(next_token) = next else {
+            break;
+        };
+        let Some((next_offset, next_len)) = queued_stream_data_info(stream, next_token) else {
+            break;
+        };
+        if next_offset >= input_end {
+            break;
+        }
+
+        if next_offset > frame_offset {
+            let chunk_len = (next_offset - frame_offset) as usize;
+            let src = (frame_offset - input_begin) as usize;
+            insert_received_stream_data_chunk(
+                stream,
+                frame_offset,
+                &data[src..src + chunk_len],
+                received_data,
+            )?;
+        }
+
+        frame_offset = next_offset.saturating_add(next_len as u64);
+        next = stream.stream_data_tree.next(next_token);
+    }
+
+    if frame_offset < input_end {
+        let src = (frame_offset - input_begin) as usize;
+        insert_received_stream_data_chunk(stream, frame_offset, &data[src..], received_data)?;
+    }
+
+    Ok(())
+}
+
 pub fn decode_stream_frame<'a>(
     connection: &mut Connection,
     bytes: &'a [u8],
@@ -7337,28 +7532,7 @@ pub fn decode_stream_frame<'a>(
         .ok()?;
     if let Some(stream) = connection.streams.get_mut(tok) {
         if data_length > 0 {
-            let len = data_length.min(MAX_PACKET_SIZE);
-            let mut node = StreamDataNode {
-                stream_data_membership: None,
-                offset,
-                data: [0u8; MAX_PACKET_SIZE],
-                length: len,
-            };
-            node.data[..len].copy_from_slice(&data[..len]);
-            if let Ok(token) = stream.stream_data_nodes.insert(node)
-                && let Ok((st, old)) = stream.stream_data_tree.insert(offset, token)
-            {
-                if let Some(old) = old {
-                    stream.stream_data_nodes.remove(old);
-                }
-                if let Some(stored) = stream.stream_data_nodes.get_mut(token) {
-                    stored.stream_data_membership = Some(st);
-                }
-            }
-            received_data.stream_data_membership = None;
-            received_data.offset = offset;
-            received_data.length = len;
-            received_data.data[..len].copy_from_slice(&data[..len]);
+            queue_received_stream_data(stream, offset, data, received_data).ok()?;
         }
         if fin != 0 {
             stream.fin_received = true;
@@ -8103,29 +8277,8 @@ pub fn decode_crypto_hs_frame<'a>(
         return None;
     }
     let data = &tail[..length as usize];
-    let len = data.len().min(MAX_PACKET_SIZE);
-    received_data.stream_data_membership = None;
-    received_data.offset = offset;
-    received_data.length = len;
-    received_data.data[..len].copy_from_slice(&data[..len]);
     if let Some(stream) = connection.tls_stream.get_mut(epoch.clamp(0, 3) as usize) {
-        let mut node = StreamDataNode {
-            stream_data_membership: None,
-            offset,
-            data: [0u8; MAX_PACKET_SIZE],
-            length: len,
-        };
-        node.data[..len].copy_from_slice(&data[..len]);
-        if let Ok(token) = stream.stream_data_nodes.insert(node)
-            && let Ok((st, old)) = stream.stream_data_tree.insert(offset, token)
-        {
-            if let Some(old) = old {
-                stream.stream_data_nodes.remove(old);
-            }
-            if let Some(stored) = stream.stream_data_nodes.get_mut(token) {
-                stored.stream_data_membership = Some(st);
-            }
-        }
+        queue_received_stream_data(stream, offset, data, received_data).ok()?;
     }
     Some(&tail[length as usize..])
 }
@@ -8531,6 +8684,24 @@ impl Connection {
 }
 
 impl Connection {
+    fn has_local_connection_id_value(&self, connection_id: &ConnectionId) -> bool {
+        self.local_connection_id_lists.iter().any(|list| {
+            list.connection_ids.iter().any(|&tok| {
+                self.local_connection_ids
+                    .get(tok)
+                    .map(|l| &l.connection_id == connection_id)
+                    .unwrap_or(false)
+            })
+        })
+    }
+
+    fn random_local_connection_id(&self) -> crate::Result<ConnectionId> {
+        let copy_len = self.local_cid_length as usize;
+        let mut bytes = [0u8; crate::CONNECTION_ID_MAX_SIZE];
+        fill_system_random(&mut bytes[..copy_len])?;
+        ConnectionId::clone_from_slice(&bytes[..copy_len]).ok_or(crate::Error::Generic)
+    }
+
     pub fn create_local_connection_id(
         &mut self,
         unique_path_id: u64,
@@ -8559,23 +8730,25 @@ impl Connection {
             }
         };
 
-        // Decide on the CID value.
-        let connection_id = if let Some(suggested) = suggested_value {
-            *suggested
-        } else if self.local_cid_length == 0 {
-            // Zero-length CID: use default (null) connection ID.
+        let connection_id = if self.local_cid_length == 0 {
             ConnectionId::default()
         } else {
-            // Generate a CID.  Phase 4: wire up real RNG from Quic context.
-            // For now use a deterministic placeholder based on sequence number.
-            let seq = self.local_connection_id_lists[list_idx].local_connection_id_sequence_next;
-            let mut bytes = [0u8; crate::CONNECTION_ID_MAX_SIZE];
-            let seq_bytes = seq.to_le_bytes();
-            let copy_len = self.local_cid_length as usize;
-            for (i, b) in bytes[..copy_len].iter_mut().enumerate() {
-                *b = seq_bytes[i % 8];
+            let mut selected = None;
+            for attempt in 0..32 {
+                let candidate = if attempt == 0 {
+                    match suggested_value {
+                        Some(suggested) => *suggested,
+                        None => self.random_local_connection_id()?,
+                    }
+                } else {
+                    self.random_local_connection_id()?
+                };
+                if !self.has_local_connection_id_value(&candidate) {
+                    selected = Some(candidate);
+                    break;
+                }
             }
-            ConnectionId::clone_from_slice(&bytes[..copy_len]).unwrap_or_default()
+            selected.ok_or(crate::Error::Generic)?
         };
 
         let seq = self.local_connection_id_lists[list_idx].local_connection_id_sequence_next;
@@ -8697,11 +8870,56 @@ impl Connection {
 impl Connection {
     pub fn check_local_connection_id_ttl(
         &mut self,
-        _local_connection_id_list: &mut LocalConnectionIdList,
-        _current_time: Instant,
-        _next_wake_time: &mut Instant,
+        local_connection_id_list: &mut LocalConnectionIdList,
+        current_time: Instant,
+        next_wake_time: &mut Instant,
     ) {
-        // TODO: implement TTL expiry logic when needed.
+        let ttl = self.local_connection_id_ttl;
+        if ttl == u64::MAX {
+            return;
+        }
+
+        if current_time
+            .ticks()
+            .saturating_sub(local_connection_id_list.local_connection_id_oldest_created)
+            >= ttl
+        {
+            local_connection_id_list.local_connection_id_oldest_created = current_time.ticks();
+            local_connection_id_list.nb_local_connection_id_expired = 0;
+
+            for &tok in &local_connection_id_list.connection_ids {
+                if let Some(l_cid) = self.local_connection_ids.get(tok) {
+                    if current_time
+                        .ticks()
+                        .saturating_sub(l_cid.create_time.ticks())
+                        >= ttl
+                    {
+                        local_connection_id_list.nb_local_connection_id_expired += 1;
+                        if l_cid.sequence
+                            >= local_connection_id_list.local_connection_id_retire_before
+                        {
+                            local_connection_id_list.local_connection_id_retire_before =
+                                l_cid.sequence + 1;
+                        }
+                    } else if l_cid.create_time.ticks()
+                        < local_connection_id_list.local_connection_id_oldest_created
+                    {
+                        local_connection_id_list.local_connection_id_oldest_created =
+                            l_cid.create_time.ticks();
+                    }
+                }
+            }
+
+            self.next_wake_time = current_time;
+        } else if next_wake_time
+            .ticks()
+            .saturating_sub(local_connection_id_list.local_connection_id_oldest_created)
+            > ttl
+        {
+            *next_wake_time = Instant::from_ticks(
+                local_connection_id_list.local_connection_id_oldest_created + ttl,
+            );
+        }
     }
 }
 
@@ -9037,12 +9255,12 @@ impl Connection {
     /// Borrow the next misc-frame header in `connection` for the given
     /// packet context.  C: `find_first_misc_frame`.
     pub fn find_first_misc_frame(
-        &self,
-        _packet_context: PacketContext,
+        &mut self,
+        packet_context: PacketContext,
     ) -> Option<&mut MiscFrameHeader> {
-        // Cannot return `&mut` from `&self`; callers that need mutation should
-        // use `misc_frames.front_mut()` directly.  Return None as placeholder.
-        None
+        self.misc_frames
+            .iter_mut()
+            .find(|frame| frame.packet_context == packet_context)
     }
 }
 
@@ -9709,7 +9927,7 @@ impl Path {
 pub fn skip_frame(bytes: &[u8], bytes_max: usize, consumed: &mut usize, pure_ack: &mut i32) -> i32 {
     let max = bytes_max.min(bytes.len());
     *consumed = 0;
-    *pure_ack = 0;
+    *pure_ack = 1;
     if max == 0 {
         return -1;
     }
@@ -9722,12 +9940,17 @@ pub fn skip_frame(bytes: &[u8], bytes_max: usize, consumed: &mut usize, pure_ack
     let rest = match frame_type {
         x if x == crate::frames::FrameType::Padding as u64 => {
             *pure_ack = 1;
-            tail
+            let mut off = max - tail.len();
+            while off < max && bytes[off] == 0 {
+                off += 1;
+            }
+            &bytes[off..max]
         }
         x if x == crate::frames::FrameType::Ping as u64
             || x == crate::frames::FrameType::HandshakeDone as u64
             || x == crate::frames::FrameType::ImmediateAck as u64 =>
         {
+            *pure_ack = 0;
             tail
         }
         x if x == crate::frames::FrameType::Ack as u64
@@ -9790,6 +10013,7 @@ pub fn skip_frame(bytes: &[u8], bytes_max: usize, consumed: &mut usize, pure_ack
             {
                 return -1;
             }
+            *pure_ack = 0;
             &bytes[header_len + data_length..max]
         }
         x if x == crate::frames::FrameType::CryptoHs as u64 => {
@@ -9803,6 +10027,7 @@ pub fn skip_frame(bytes: &[u8], bytes_max: usize, consumed: &mut usize, pure_ack
                 Some(t) if t.len() >= length as usize => &t[length as usize..],
                 _ => return -1,
             };
+            *pure_ack = 0;
             tail
         }
         x if x == crate::frames::FrameType::NewToken as u64 => {
@@ -9811,11 +10036,16 @@ pub fn skip_frame(bytes: &[u8], bytes_max: usize, consumed: &mut usize, pure_ack
                 Some(t) if t.len() >= length as usize => &t[length as usize..],
                 _ => return -1,
             };
+            *pure_ack = 0;
             tail
         }
-        x if x == crate::frames::FrameType::Datagram as u64 => &[],
+        x if x == crate::frames::FrameType::Datagram as u64 => {
+            *pure_ack = 0;
+            &[]
+        }
         x if x == crate::frames::FrameType::DatagramL as u64 => {
             let mut length = 0;
+            *pure_ack = 0;
             match frames_varint_decode(tail, &mut length) {
                 Some(t) if t.len() >= length as usize => &t[length as usize..],
                 _ => return -1,
@@ -9829,10 +10059,16 @@ pub fn skip_frame(bytes: &[u8], bytes_max: usize, consumed: &mut usize, pure_ack
             }
             &tail[8..]
         }
-        x if x == crate::frames::FrameType::ResetStream as u64
-            || x == crate::frames::FrameType::ResetStreamAt as u64 =>
-        {
+        x if x == crate::frames::FrameType::ResetStream as u64 => {
+            *pure_ack = 0;
             match skip_n_varints(tail, 3) {
+                Some(t) => t,
+                None => return -1,
+            }
+        }
+        x if x == crate::frames::FrameType::ResetStreamAt as u64 => {
+            *pure_ack = 0;
+            match skip_n_varints(tail, 4) {
                 Some(t) => t,
                 None => return -1,
             }
@@ -9841,6 +10077,7 @@ pub fn skip_frame(bytes: &[u8], bytes_max: usize, consumed: &mut usize, pure_ack
             || x == crate::frames::FrameType::MaxStreamData as u64
             || x == crate::frames::FrameType::StreamDataBlocked as u64 =>
         {
+            *pure_ack = 0;
             match skip_n_varints(tail, 2) {
                 Some(t) => t,
                 None => return -1,
@@ -9854,20 +10091,25 @@ pub fn skip_frame(bytes: &[u8], bytes_max: usize, consumed: &mut usize, pure_ack
             || x == crate::frames::FrameType::StreamsBlockedUnidir as u64
             || x == crate::frames::FrameType::RetireConnectionId as u64
             || x == crate::frames::FrameType::MaxPathId as u64
-            || x == crate::frames::FrameType::PathsBlocked as u64
-            || x == crate::frames::FrameType::PathCidBlocked as u64
-            || x == crate::frames::FrameType::TimeStamp as u64 =>
+            || x == crate::frames::FrameType::PathsBlocked as u64 =>
         {
+            *pure_ack = 0;
             match skip_n_varints(tail, 1) {
                 Some(t) => t,
                 None => return -1,
             }
         }
+        x if x == crate::frames::FrameType::TimeStamp as u64 => match skip_n_varints(tail, 1) {
+            Some(t) => t,
+            None => return -1,
+        },
         x if x == crate::frames::FrameType::PathRetireConnectionId as u64
             || x == crate::frames::FrameType::PathAbandon as u64
             || x == crate::frames::FrameType::PathAvailable as u64
-            || x == crate::frames::FrameType::PathBackup as u64 =>
+            || x == crate::frames::FrameType::PathBackup as u64
+            || x == crate::frames::FrameType::PathCidBlocked as u64 =>
         {
+            *pure_ack = 0;
             match skip_n_varints(tail, 2) {
                 Some(t) => t,
                 None => return -1,
@@ -9882,6 +10124,7 @@ pub fn skip_frame(bytes: &[u8], bytes_max: usize, consumed: &mut usize, pure_ack
                     None => return -1,
                 };
             }
+            *pure_ack = 0;
             tail = match skip_n_varints(tail, 2) {
                 Some(t) => t,
                 None => return -1,
@@ -9918,13 +10161,30 @@ pub fn skip_frame(bytes: &[u8], bytes_max: usize, consumed: &mut usize, pure_ack
                 _ => return -1,
             }
         }
-        x if x == crate::frames::FrameType::AckFrequency as u64 => match skip_n_varints(tail, 4) {
-            Some(t) => t,
-            None => return -1,
-        },
+        x if x == crate::frames::FrameType::AckFrequency as u64 => {
+            *pure_ack = 0;
+            match skip_n_varints(tail, 4) {
+                Some(t) => t,
+                None => return -1,
+            }
+        }
+        x if x == crate::frames::FrameType::Bdp as u64 => {
+            *pure_ack = 0;
+            let mut t = match skip_n_varints(tail, 3) {
+                Some(t) => t,
+                None => return -1,
+            };
+            let mut length = 0;
+            t = match frames_varint_decode(t, &mut length) {
+                Some(t) if t.len() >= length as usize => &t[length as usize..],
+                _ => return -1,
+            };
+            t
+        }
         x if x == crate::frames::FrameType::ObservedAddressV4 as u64
             || x == crate::frames::FrameType::ObservedAddressV6 as u64 =>
         {
+            *pure_ack = 0;
             match parse_observed_address_frame(tail, frame_type) {
                 Some((_, rest)) => rest,
                 None => return -1,
@@ -10754,7 +11014,8 @@ impl Connection {
                 *pn_offset = 0;
                 *pn_length = 0;
             } else {
-                // 2-byte placeholder for payload length
+                // Reserve the two-byte payload-length varint; protection
+                // updates it once the final packet length is known.
                 bytes[length] = 0;
                 bytes[length + 1] = 0;
                 length += 2;
@@ -10819,15 +11080,23 @@ impl Connection {
     pub fn queue_unacked_packet_for_pc(
         &mut self,
         pc: PacketContext,
-        _packet_type: PacketType,
+        packet_type: PacketType,
         sequence: u64,
-        _length: usize,
-        _current_time: Instant,
+        length: usize,
+        current_time: Instant,
     ) {
-        // Insert a synthetic PacketToken placeholder (generation 0) so the
-        // pending map has an entry at the given sequence number.
-        let tok = PacketToken::synthetic(sequence as u32, 0);
-        self.pkt_ctx[pc as usize].pending.insert(sequence, tok);
+        let Some(mut packet) = self.allocate_packet() else {
+            return;
+        };
+        packet.packet_context = pc;
+        packet.packet_type = packet_type;
+        packet.sequence_number = sequence;
+        packet.length = length;
+        packet.send_time = current_time;
+        packet.is_queued_for_retransmit = true;
+        if let Ok(tok) = self.queued_packets.insert(*packet) {
+            self.pkt_ctx[pc as usize].pending.insert(sequence, tok);
+        }
     }
 
     /// Dequeue the first entry in `pkt_ctx[pc].pending` as if it had been
@@ -10993,7 +11262,7 @@ impl Connection {
 }
 
 // ---------------------------------------------------------------------------
-// Stubs added to support Phase 3A skip_frame test-body translation.
+// Helpers used by the Phase 3A skip-frame test-body translation.
 
 /// Enqueue a remote CID (received in a NEW_CONNECTION_ID frame) into the
 /// connection's stash list.

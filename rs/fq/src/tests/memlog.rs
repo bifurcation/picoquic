@@ -31,111 +31,107 @@ const TEST_SCENARIO_MEMLOG: &[TestApiStreamDesc] = &[TestApiStreamDesc {
 /// optionally enables multipath, drives the simulation to completion, and
 /// compares the generated CSV to the reference (for non-multipath runs).
 fn memlog_test_one(is_multipath: bool, memlog_file_name: &str, expect_error: bool) {
-    let mut simulated_time = Instant::from_ticks(0);
-    let mut loss_mask: u64 = 0;
-    let queue_delay_max: u64 = 40_000;
+    let result = (|| -> crate::Result<()> {
+        let mut simulated_time = Instant::from_ticks(0);
+        let mut loss_mask: u64 = 0;
+        let queue_delay_max: u64 = 40_000;
 
-    let initial_cid =
-        crate::ConnectionId::clone_from_slice(&[0x8e, 0x10, 0x97, 0xe5, 0x70, 0, 0, 0])
-            .expect("8-byte CID");
+        let initial_cid =
+            crate::ConnectionId::clone_from_slice(&[0x8e, 0x10, 0x97, 0xe5, 0x70, 0, 0, 0])
+                .ok_or(crate::Error::Generic)?;
 
-    let mut test_ctx = tls_api_init_ctx_ex2(
-        &mut simulated_time,
-        Version::InternalTest1 as u32,
-        None,
-        None,
-        None,
-        Some(&initial_cid),
-    )
-    .expect("tls_api_init_ctx_ex2");
-
-    // Attach an in-memory performance log to the client connection.
-    test_ctx
-        .cnx_client()
-        .memlog_init(100, memlog_file_name)
-        .expect("memlog_init");
-
-    if is_multipath {
-        // Enable multipath by setting initial_max_path_id = 1 on both endpoints.
-        {
-            let mut tp = test_ctx.qserver.default_tp().clone();
-            tp.initial_max_path_id = 1;
-            test_ctx.qserver.set_default_tp(&tp).ok();
-        }
-        {
-            let mut tp = test_ctx.qclient.default_tp().clone();
-            tp.initial_max_path_id = 1;
-            test_ctx.qclient.set_default_tp(&tp).ok();
-        }
-        test_ctx.cnx_client().local_parameters.initial_max_path_id = 1;
-    }
-
-    test_ctx.cnx_client().start_client().expect("start_client");
-    tls_api_connection_loop(
-        &mut test_ctx,
-        &mut loss_mask,
-        queue_delay_max,
-        &mut simulated_time,
-    )
-    .expect("connection loop");
-
-    if is_multipath {
-        assert!(
-            test_ctx.cnx_client().is_multipath_enabled,
-            "multipath must be enabled after negotiation"
-        );
-    }
-
-    test_api_init_send_recv_scenario(&mut test_ctx, TEST_SCENARIO_MEMLOG).expect("init scenario");
-
-    // Simulation loop: advance until client disconnects or scenario completes.
-    let mut nb_inactive = 0i32;
-    let mut nb_trials = 0i32;
-    loop {
-        if test_ctx.cnx_client().state() == State::Disconnected {
-            break;
-        }
-        let mut was_active = false;
-        tls_api_one_sim_round(
-            &mut test_ctx,
+        let mut test_ctx = tls_api_init_ctx_ex2(
             &mut simulated_time,
-            Instant::from_ticks(0),
-            &mut was_active,
+            Version::InternalTest1 as u32,
+            None,
+            None,
+            None,
+            Some(&initial_cid),
         )
-        .expect("sim round");
+        .ok_or(crate::Error::Generic)?;
 
-        if was_active {
-            nb_inactive = 0;
-        } else {
-            nb_inactive += 1;
+        test_ctx.cnx_client().memlog_init(100, memlog_file_name)?;
+
+        if is_multipath {
+            {
+                let mut tp = test_ctx.qserver.default_tp().clone();
+                tp.initial_max_path_id = 1;
+                test_ctx.qserver.set_default_tp(&tp)?;
+            }
+            {
+                let mut tp = test_ctx.qclient.default_tp().clone();
+                tp.initial_max_path_id = 1;
+                test_ctx.qclient.set_default_tp(&tp)?;
+            }
+            test_ctx.cnx_client().local_parameters.initial_max_path_id = 1;
         }
 
-        if test_ctx.test_finished
-            && test_ctx.cnx_client().is_cnx_backlog_empty()
-            && test_ctx.has_cnx_server()
-            && test_ctx.cnx_server().is_cnx_backlog_empty()
-        {
-            break;
+        test_ctx.cnx_client().start_client()?;
+        tls_api_connection_loop(
+            &mut test_ctx,
+            &mut loss_mask,
+            queue_delay_max,
+            &mut simulated_time,
+        )?;
+
+        if is_multipath {
+            assert!(
+                test_ctx.cnx_client().is_multipath_enabled,
+                "multipath must be enabled after negotiation"
+            );
         }
 
-        nb_trials += 1;
-        assert!(
-            nb_trials <= 1_000_000 && nb_inactive <= 1024,
-            "simulation stalled"
-        );
-    }
+        test_api_init_send_recv_scenario(&mut test_ctx, TEST_SCENARIO_MEMLOG)?;
 
-    // Compare generated CSV to reference (non-multipath, non-error runs only).
-    if !is_multipath && !expect_error {
-        compare_text_files(memlog_file_name, MEMLOG_TEST_REF).expect("log file matches reference");
-    } else if expect_error {
-        // The test is inverted: expect that memlog_init or the log write failed.
-        // If we got here without an error, the test has failed.
-        // (In practice, the todo!() above will panic first.)
+        let mut nb_inactive = 0i32;
+        let mut nb_trials = 0i32;
+        loop {
+            if test_ctx.cnx_client().state() == State::Disconnected {
+                break;
+            }
+            let mut was_active = false;
+            tls_api_one_sim_round(
+                &mut test_ctx,
+                &mut simulated_time,
+                Instant::from_ticks(0),
+                &mut was_active,
+            )?;
+
+            if was_active {
+                nb_inactive = 0;
+            } else {
+                nb_inactive += 1;
+            }
+
+            if test_ctx.test_finished
+                && test_ctx.cnx_client().is_cnx_backlog_empty()
+                && test_ctx.has_cnx_server()
+                && test_ctx.cnx_server().is_cnx_backlog_empty()
+            {
+                break;
+            }
+
+            nb_trials += 1;
+            if nb_trials > 1_000_000 || nb_inactive > 1024 {
+                return Err(crate::Error::Generic);
+            }
+        }
+
+        Ok(())
+    })();
+
+    if expect_error {
+        assert!(result.is_err(), "memlog scenario unexpectedly succeeded");
+    } else {
+        result.expect("memlog scenario");
+        if !is_multipath {
+            compare_text_files(memlog_file_name, MEMLOG_TEST_REF)
+                .expect("log file matches reference");
+        }
     }
 }
 
-/// Run three memlog sub-tests: normal, multipath, and expected-failure.
+/// Run three memlog sub-tests: normal, multipath, and failing output path.
 /// C: `memlog_test`.
 #[test]
 fn memlog() {

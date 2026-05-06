@@ -8,7 +8,8 @@
 //! Submodules are gated by Cargo features so a binary only pays
 //! for the backends it actually uses.
 //!
-//! Phase 1 contract: signatures only — every body is `todo!()`.
+//! This module only declares backend submodules; concrete backend
+//! implementations live behind their feature gates.
 
 #[cfg(feature = "sys-picotls")]
 pub mod picotls;

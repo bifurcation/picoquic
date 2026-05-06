@@ -1206,7 +1206,7 @@ fn set_certificate_and_key() {
 
 /// C: `set_verify_certificate_callback_test` in `picoquictest/tls_api_test.c`.
 ///
-/// Same test under its alternative stub name.
+/// Same test under its alternative registration name.
 #[test]
 fn set_verify_certificate_callback_test() {
     request_client_authentication_test_one(TEST_FILE_SERVER_CERT_ECDSA, TEST_FILE_SERVER_KEY_ECDSA)

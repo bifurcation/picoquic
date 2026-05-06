@@ -10,7 +10,10 @@
 
 use core::net::SocketAddr;
 
-use crate::internal::{Epoch, PacketHeader, PacketType, Version, update_payload_length};
+use crate::internal::{
+    Epoch, PacketHeader, PacketType, StreamDataNode, Version, protect_packet_header,
+    update_payload_length,
+};
 use crate::{ConnectionId, Instant, PacketContext, Quic, RESET_SECRET_SIZE};
 
 use super::util;
@@ -531,13 +534,169 @@ fn incoming_initial() {
 /// decrypt the result using `q_server` and verify the packet header.
 /// C: `test_packet_encrypt_one` in `picoquictest/parseheadertest.c`.
 fn test_packet_encrypt_one(
-    _addr_from: &SocketAddr,
-    _cnx_client: &mut crate::internal::Connection,
-    _q_server: &mut Quic,
-    _ptype: PacketType,
-    _length: usize,
+    addr_from: &SocketAddr,
+    cnx_client: &mut crate::internal::Connection,
+    q_server: &mut Quic,
+    ptype: PacketType,
+    length: usize,
 ) -> crate::Result<()> {
-    todo!("test_packet_encrypt_one")
+    let current_time = Instant::from_ticks(0);
+    let pc = match ptype {
+        PacketType::Initial => PacketContext::Initial,
+        PacketType::Handshake => PacketContext::Handshake,
+        _ => PacketContext::Application,
+    };
+    let epoch = match ptype {
+        PacketType::Initial => Epoch::Initial,
+        PacketType::Handshake => Epoch::Handshake,
+        PacketType::ZeroRttProtected => Epoch::ZeroRtt,
+        PacketType::OneRttProtected => Epoch::OneRtt,
+        _ => Epoch::OneRtt,
+    };
+
+    let mut packet = [0xbbu8; crate::MAX_PACKET_SIZE];
+    let mut pn_offset = 0usize;
+    let mut pn_length = 0usize;
+    let header_length = cnx_client.predict_packet_header_length_for_pc(ptype, pc);
+    let sequence_number = cnx_client.pkt_ctx[pc as usize].send_sequence;
+    let actual_header_length = cnx_client.create_packet_header_at(
+        ptype,
+        sequence_number,
+        0,
+        0,
+        header_length,
+        &mut packet,
+        &mut pn_offset,
+        &mut pn_length,
+    );
+    if actual_header_length != header_length || length < header_length {
+        return Err(crate::Error::InvalidArgument);
+    }
+
+    let mut send_buffer = [0u8; crate::MAX_PACKET_SIZE];
+    let send_length = {
+        let aead = cnx_client.crypto_context[epoch as usize]
+            .aead_encrypt
+            .as_deref()
+            .ok_or(crate::Error::Tls)?;
+        let pn_enc = cnx_client.crypto_context[epoch as usize]
+            .pn_enc
+            .as_deref()
+            .ok_or(crate::Error::Tls)?;
+
+        let header = packet[..header_length].to_vec();
+        let mut payload = packet[header_length..length].to_vec();
+        aead.encrypt(sequence_number, &header, &mut payload);
+        let send_length = header_length + payload.len();
+        if send_length > send_buffer.len() {
+            return Err(crate::Error::BufferTooSmall);
+        }
+        send_buffer[..header_length].copy_from_slice(&header);
+        send_buffer[header_length..send_length].copy_from_slice(&payload);
+        update_payload_length(&mut send_buffer, pn_offset, pn_offset, send_length);
+        let first_mask = if (send_buffer[0] & 0x80) != 0 {
+            0x0f
+        } else {
+            0x1f
+        };
+        protect_packet_header(
+            &mut send_buffer[..send_length],
+            pn_offset,
+            first_mask,
+            pn_enc,
+        );
+        send_length
+    };
+
+    if q_server.first_cnx_mut().is_none() {
+        q_server
+            .create_connection(
+                cnx_client.initial_connection_id,
+                ConnectionId::default(),
+                Some(addr_from),
+                current_time,
+                cnx_client.version_number(),
+                None,
+                Some("picoquic-test"),
+                false,
+            )
+            .ok_or(crate::Error::Generic)?;
+    }
+
+    if ptype == PacketType::Initial
+        && let Some(server_cid) = q_server
+            .first_cnx_mut()
+            .map(|server| server.initial_connection_id)
+    {
+        cnx_client.set_path_tuple_remote_cid(0, 0, server_cid);
+    }
+
+    let expected_dest = if matches!(ptype, PacketType::Initial | PacketType::ZeroRttProtected)
+        && cnx_client.path_remote_cnxid_sequence(0) == 0
+    {
+        cnx_client.initial_connection_id
+    } else {
+        cnx_client
+            .remote_connection_id_stashes
+            .first()
+            .and_then(|stash| stash.connection_ids.first())
+            .map(|cid| cid.connection_id)
+            .unwrap_or_default()
+    };
+    let expected_src = if ptype == PacketType::OneRttProtected {
+        ConnectionId::default()
+    } else {
+        cnx_client
+            .paths
+            .first()
+            .and_then(|path| path.tuples.first())
+            .and_then(|tuple| tuple.local_connection_id)
+            .and_then(|token| cnx_client.local_connection_ids.get(token))
+            .map(|cid| cid.connection_id)
+            .unwrap_or_default()
+    };
+
+    let mut received = StreamDataNode {
+        stream_data_membership: None,
+        offset: 0,
+        data: [0; crate::MAX_PACKET_SIZE],
+        length: 0,
+    };
+    let mut ph = PacketHeader::default();
+    let mut consumed = 0usize;
+    let _ = q_server.parse_header_and_decrypt(
+        &send_buffer[..send_length],
+        send_length,
+        Some(addr_from),
+        current_time,
+        &mut received,
+        &mut ph,
+        &mut consumed,
+    )?;
+
+    assert_eq!(ph.packet_type, ptype, "packet type mismatch");
+    assert_eq!(ph.offset, pn_offset, "offset mismatch");
+    assert_eq!(
+        ph.version,
+        if ptype == PacketType::OneRttProtected {
+            0
+        } else {
+            cnx_client.version_number()
+        }
+    );
+    assert_eq!(
+        ph.packet_number_full, sequence_number,
+        "packet number mismatch"
+    );
+    assert_eq!(
+        ph.payload_length,
+        send_length.saturating_sub(pn_offset),
+        "payload length mismatch"
+    );
+    assert_eq!(ph.dest_connection_id, expected_dest, "dest CID mismatch");
+    assert_eq!(ph.src_connection_id, expected_src, "src CID mismatch");
+
+    Ok(())
 }
 
 /// C: `packet_enc_dec_test` in `picoquictest/parseheadertest.c`.

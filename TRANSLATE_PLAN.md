@@ -994,6 +994,197 @@ need to regenerate the call graph.
 The remaining red tests (if any) are real failures, not stub panics
 — they get a separate triage pass.
 
+## Phase 4A — Function map and implementation plan
+
+Phase 4A is a planning pass.  It builds the first complete map from
+in-scope C functions to their translated Rust counterparts, then
+decides which unmapped C functions require Rust implementations and
+where those implementations should live.  It does not implement missing
+functions.  Its output is a concrete implementation plan for human
+approval before Phase 4B starts.
+
+### Function map
+
+`scripts/phase4a.py` writes `xlate/function_translation_map.json`.
+The map records, for every in-scope C function:
+
+* C function name, source file, and start/end line numbers.
+* Rust counterpart name, source file, and start/end line numbers, when
+  one is found.
+* Mapping evidence: `/// C: ...` comments, Phase 4 state, inventory
+  metadata, direct name correspondence, or a manual override.
+* Current implementation status.
+* Required-action classification.
+
+The first map is built from Phase 0 inventory data, Phase 4 state,
+Rust `/// C: ...` references, direct source searches, and any manual
+overrides needed to resolve naming or module-shape differences.
+
+### Required-action classification
+
+Every C function without a Rust counterpart is reviewed and classified:
+
+* `implemented` — a completed Rust counterpart exists.
+* `expected_omission` — no direct Rust function is needed.  Examples:
+  allocation/free helpers absorbed by ownership, `Drop`, `Vec`, or
+  `Box`; thin C wrappers folded into methods; helper functions made
+  unnecessary by a safer Rust shape.
+* `required_missing` — observable behavior is missing and needs a Rust
+  implementation.
+* `blocked` — a concrete design question or dependency prevents a
+  faithful classification.
+
+### Implementation plan
+
+For each `required_missing` item, Phase 4A proposes:
+
+* Rust destination module and item shape: free function, method, trait
+  implementation, static descriptor, table entry, or test helper.
+* Any module/export changes needed to make the item reachable.
+* Any ordering constraints with other missing functions.
+* The expected verification target: specific tests when known, or the
+  standard Phase 4 cargo gates when no narrower test is available.
+
+If the proposed module structure would differ from the current Rust
+layout, the plan explains why the new shape is needed.  If a missing
+function might be an `expected_omission` but the evidence is weak, it
+stays `blocked` rather than being silently dropped.
+
+### Approval artifact
+
+Phase 4A writes:
+
+* `xlate/function_translation_map.json` — the current map.
+* `xlate/phase4a_plan.md` — the proposed implementation plan.
+* `xlate/phase4a_plan.html` — the same plan in a browsable form.
+
+Phase 4B starts only after the plan is approved.  Approval can be
+recorded by updating the plan status in `xlate/phase4a_plan.md` or by
+committing the reviewed plan with a note that it is approved.
+
+### Acceptance gate
+
+* Every in-scope C function appears in
+  `xlate/function_translation_map.json`.
+* Every unmapped C function is classified as `expected_omission`,
+  `required_missing`, or `blocked`.
+* Every `required_missing` item has a proposed Rust destination and
+  verification target.
+* The Phase 4A plan has been presented for human approval.
+
+## Phase 4B — Implement missing required functions
+
+Phase 4B implements the Rust functions and related items approved in
+Phase 4A.  It uses `xlate/function_translation_map.json` as the
+authoritative worklist and updates that map as each item moves from
+`required_missing` to `implemented`.
+
+This is not a relaxation of Phase 4.  The same translation standards
+apply: faithful and idiomatic Rust, safe ownership, no placeholder
+implementations, no stubs, no silent signature changes, and no edits
+outside the allowed Rust/module support files unless the plan is updated
+first.
+
+### Procedure
+
+For each approved `required_missing` item:
+
+1. Read the C source, directly related headers, the approved Phase 4A
+   destination, and nearby Rust code.
+2. Implement the missing Rust item in the approved module structure.
+   This may include descriptors, registration tables, aliases, module
+   exports, or tests when those are part of making the function
+   reachable.
+3. Update `xlate/function_translation_map.json` with the Rust file,
+   line span, implementation status, and any changed mapping evidence.
+4. Run the relevant narrow test when one is known, then the Phase 4
+   gates: `cargo fmt`, `cargo test --no-run`, and
+   `cargo clippy --tests --all-features -- -D warnings`.
+
+If implementation reveals that the Phase 4A module structure or item
+shape is wrong, update the map entry to `blocked` with the reason and
+return the proposed plan amendment for approval before continuing that
+item.
+
+### Acceptance gate
+
+* `xlate/function_translation_map.json` has no approved
+  `required_missing` entries.
+* Every required C function is either `implemented` or `blocked` with a
+  concrete human-actionable reason.
+* Every implemented item has a Rust file and line span recorded in the
+  map.
+* The Phase 4 build and lint gates still pass.
+* `cargo test` failures, if any remain, are runtime behavior failures
+  rather than missing-translation failures.
+
+## Phase 4C — Function correspondence audit
+
+Phase 4C is a lightweight audit of the final C/Rust function map.  For
+each mapped C/Rust pair, it asks whether the Rust function appears, from
+the bodies alone, to be a reasonable translation of the C function.  The
+goal is to catch obvious inconsistencies cheaply before deeper
+debugging.
+
+This phase does not prove semantic equivalence.  It deliberately avoids
+full-program context and treats the result as triage data: `ok`,
+`suspect`, or `definitely_not_ok`.
+
+### Body-only comparison
+
+For each mapped C/Rust pair, the driver asks an agent for a superficial
+translation review using only:
+
+* the C function body;
+* the Rust function body;
+* the two function names and source spans.
+
+The prompt must not include dependencies, type definitions, callers,
+callee definitions, module context, or build errors.  The reviewer is
+only looking for obvious inconsistencies visible from the bodies:
+missing branches, inverted conditions, dropped state updates, mismatched
+constants, omitted calls, loop-shape changes, suspicious error handling,
+or placeholder-like code.  Idiomatic Rust differences are fine when the
+body still appears to preserve the C control flow and effects.
+
+Each review returns:
+
+* `ok` — no obvious body-level concern.
+* `suspect` — possible mismatch; needs human or deeper agent review.
+* `definitely_not_ok` — clear body-level mismatch or placeholder.
+* A short rationale, limited to body-visible evidence.
+
+This should be fast and low-cost.  Batch multiple small functions per
+agent call when possible, and do not ask the reviewer to inspect or
+modify source files.
+
+### Report
+
+`scripts/phase4c.py` writes:
+
+* `xlate/phase4c_reviews.json` — body-only comparison results.
+* `xlate/phase4c_report.html` — human-readable report.
+
+The HTML report includes:
+
+* A summary table for mapped function pairs: counts and percentages for
+  `ok`, `suspect`, and `definitely_not_ok`.
+* A list of C functions that still have no Rust equivalent, by name,
+  with their Phase 4A/4B classification.
+* For every `suspect` or `definitely_not_ok` pair, a side-by-side view
+  of the C and Rust function bodies with file/line spans and the short
+  body-only rationale.
+
+### Acceptance gate
+
+* Every mapped pair in `xlate/function_translation_map.json` has a
+  Phase 4C review result.
+* `xlate/phase4c_report.html` exists and includes the comparison
+  summary, remaining no-equivalent list, and side-by-side views for all
+  non-`ok` pairs.
+* Any `definitely_not_ok` item is routed back to Phase 4B or marked
+  `blocked` with a concrete human-actionable reason.
+
 ## Tooling stack
 
 * `cmake` — produces `compile_commands.json`.
@@ -1001,9 +1192,9 @@ The remaining red tests (if any) are real failures, not stub panics
   target's flags.
 * libclang + Python — Phase 0 AST analysis, call graph, dashboard.
 * `bindgen` — per-file allowlisted reference output (never shipped).
-* Python scripts — driver for Phase 1 module skeletons; `phase3a.py`
-  / `phase4.py` AI-driven translation pipelines for tests and
-  implementations.
+* Python scripts — driver for Phase 1 module skeletons; `phase3a.py`,
+  `phase4.py`, and the Phase 4A/4B/4C map, completion, and audit
+  drivers.
 * `cargo check` and `cargo test` — inner loop, manually invoked.
 * `cargo fmt` and `cargo clippy` — style and lint gates.
 

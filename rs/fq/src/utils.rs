@@ -22,10 +22,9 @@
 //!   debug-output stream installed by [`debug_set_stream`]
 //!   transfers ownership instead, so the global slot can keep the
 //!   writer alive between calls.
-//! * `file_open*` / `file_close` / `file_delete` are real OS file
-//!   primitives.  They are stubbed here as opaque [`File`] handles;
-//!   Phase 3 will wire them to `std::fs::File` behind the
-//!   (not-yet-defined) `std` Cargo feature.
+//! * `file_open*` / `file_close` collapse to direct `std::fs::File`
+//!   use at call sites; [`file_delete`] keeps the portable delete
+//!   helper as an OS-backed function.
 //! * `struct sockaddr*` parameters and fields use
 //!   [`core::net::SocketAddr`] — same convention as
 //!   [`crate`].  `struct sockaddr_storage*`
@@ -39,18 +38,15 @@
 //! * `char*` strings: input strings borrow as `&str`; owned outputs
 //!   return `String`.  Buffer-supplying helpers (e.g.
 //!   [`addr_text`]) take a `&mut dyn core::fmt::Write`.
-//! * Threading primitives ([`Thread`], [`Mutex`], [`Event`]) are
-//!   explicitly out of scope for v1 ("threading dropped, revisit in
-//!   v2" per `TRANSLATE_PLAN.md`).  The types are kept as opaque
-//!   placeholders so signatures can land; per TRANSLATE_PLAN.md
-//!   threading support is deferred to v2 and these stubs remain.
+//! * Threading wrappers from the C portability layer map directly to
+//!   Rust standard-library types at call sites: `std::thread`,
+//!   `std::sync::Mutex`, channels, and condition variables.
 //! * The C macro `SET_LAST_WAKE(quic, file_id)` and the
 //!   `DBG_PRINTF` family are bodies-not-signatures: they expand at
 //!   the call site rather than being declared in the header.  They
-//!   are deferred to Phase 3 (where the C call sites get
-//!   translated) — `quic_t` has no `wake_file` /
-//!   `wake_line` fields yet, so the macro can't be expressed in
-//!   Rust without redesigning that type.
+//!   are call-site macros rather than standalone functions; translated
+//!   call sites record equivalent wake provenance when their owning
+//!   connection or QUIC context exposes it.
 
 use core::cmp::Ordering;
 use core::net::{IpAddr, SocketAddr};
@@ -65,7 +61,7 @@ use crate::{CONNECTION_ID_MAX_SIZE, ConnectionId, PreferredAddress};
 //
 // Used by the C `SET_LAST_WAKE(quic, file_id)` macro to record
 // which translation unit last poked the QUIC context.  The macro
-// itself is deferred — see the module docstring.
+// itself is translated at the C macro's call sites.
 
 /// File-id constant for `sender.c`.
 pub const SENDER: u32 = 1;

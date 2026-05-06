@@ -70,7 +70,7 @@
 //! TLS-side methods in this module keep the `tls_` prefix so both
 //! pairs can coexist.
 //!
-//! ## Out of scope
+//! ## Deliberate omissions
 //!
 //! * The five `#if 0`-disabled `cid_*_under_mask_ctx` /
 //!   `cid_free_encrypt_global_ctx` entries are dead code in the C
@@ -261,8 +261,12 @@ impl Aes128GcmPacketKey {
         Ok(Self { cipher, iv })
     }
 
-    fn nonce(&self, packet: u64) -> [u8; AES_GCM_IV_SIZE] {
+    fn nonce_mp(&self, path_id: u64, packet: u64) -> [u8; AES_GCM_IV_SIZE] {
         let mut nonce = self.iv;
+        let path = (path_id as u32).to_be_bytes();
+        for (n, p) in nonce[..4].iter_mut().zip(path.iter()) {
+            *n ^= *p;
+        }
         let pn = packet.to_be_bytes();
         for (n, p) in nonce[4..].iter_mut().zip(pn.iter()) {
             *n ^= *p;
@@ -273,9 +277,17 @@ impl Aes128GcmPacketKey {
 
 impl crate::tls::PacketKey for Aes128GcmPacketKey {
     fn encrypt(&self, packet: u64, header: &[u8], payload: &mut Vec<u8>) {
+        self.encrypt_mp(0, packet, header, payload);
+    }
+
+    fn decrypt(&self, packet: u64, header: &[u8], payload: &mut Vec<u8>) -> Result<(), Error> {
+        self.decrypt_mp(0, packet, header, payload)
+    }
+
+    fn encrypt_mp(&self, path_id: u64, packet: u64, header: &[u8], payload: &mut Vec<u8>) {
         use aes_gcm::aead::AeadInPlace;
 
-        let nonce = self.nonce(packet);
+        let nonce = self.nonce_mp(path_id, packet);
         let tag = self
             .cipher
             .encrypt_in_place_detached((&nonce).into(), header, payload.as_mut_slice())
@@ -283,7 +295,13 @@ impl crate::tls::PacketKey for Aes128GcmPacketKey {
         payload.extend_from_slice(&tag);
     }
 
-    fn decrypt(&self, packet: u64, header: &[u8], payload: &mut Vec<u8>) -> Result<(), Error> {
+    fn decrypt_mp(
+        &self,
+        path_id: u64,
+        packet: u64,
+        header: &[u8],
+        payload: &mut Vec<u8>,
+    ) -> Result<(), Error> {
         use aes_gcm::aead::AeadInPlace;
 
         if payload.len() < QUIC_AEAD_TAG_LEN {
@@ -294,7 +312,7 @@ impl crate::tls::PacketKey for Aes128GcmPacketKey {
             .try_into()
             .map_err(|_| Error::Protocol(InternalError::AeadCheck as u64))?;
         payload.truncate(tag_index);
-        let nonce = self.nonce(packet);
+        let nonce = self.nonce_mp(path_id, packet);
         self.cipher
             .decrypt_in_place_detached(
                 (&nonce).into(),
@@ -837,12 +855,12 @@ impl Quic {
     /// Read the virtual time tls sees through its `get_time`
     /// callback (microseconds).  C: `get_tls_time`.
     ///
-    /// The C body returned `quic->simulated_time / 1000`; the Rust
-    /// design removed `simulated_time` (time is passed per-call).
-    /// The TLS backend should maintain its own clock reference;
-    /// returning 0 here is a placeholder until backend integration.
+    /// The C body asks the TLS context for milliseconds and converts
+    /// them back to microseconds.  Rust keeps QUIC time in the context
+    /// helper, so this returns the same microsecond value exposed by
+    /// [`Quic::time`].
     pub fn tls_time(&self) -> u64 {
-        self.stateless_reset_next_time.ticks()
+        self.time()
     }
 }
 

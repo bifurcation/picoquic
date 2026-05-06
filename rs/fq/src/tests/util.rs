@@ -116,6 +116,8 @@ pub fn test_poisson_random(random_context: &mut u64, exp_minus_lambda_2_30: u64)
 }
 
 // ---------------------------------------------------------------------------
+use core::any::Any;
+
 // Network simulator (sim_link).
 
 /// One simulated packet flowing through a sim link.  C:
@@ -164,7 +166,7 @@ impl TestSimPacket {
 /// the AQM lives inside the link (taking the link by `&mut` in
 /// each call would conflict with the `&mut self` borrow).  Phase 4
 /// will resolve the borrow with a take-replace pattern.
-pub trait TestAqm {
+pub trait TestAqm: Any {
     /// Submit a packet to the AQM.  C: `submit`.
     fn submit(&mut self, link: &mut TestSimLink, packet: TestSimPacket, current_time: Instant);
 
@@ -183,6 +185,9 @@ pub trait TestAqm {
     /// Move any AQM-pending packets onto the link's main queue.
     /// C: `admit_pending`.
     fn admit_pending(&mut self, link: &mut TestSimLink, current_time: Instant);
+
+    /// Return this AQM as [`Any`] for test-only inspection of concrete state.
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Jitter model used by the sim link.  C: `picoquic_jitter_mode`.
@@ -365,9 +370,9 @@ impl TestSimLink {
         })
     }
 
-    // C: `picoquictest_sim_link_delete`.  Dropped from the Rust
-    // API: `Box<TestSimLink>` going out of scope will free the
-    // link and its queued packets via Drop in Phase 4.
+    // C: `picoquictest_sim_link_delete`.  Rust lets
+    // `Box<TestSimLink>` fall out of ownership; `Drop` releases the
+    // link and its queued packets.
 
     /// Time at which the next packet will arrive (or `current_time`
     /// if the queue is empty).  C:
@@ -597,6 +602,46 @@ pub struct TestApiStreamDesc {
     pub r_len: usize,
 }
 
+const TEST_MAX_TEST_STREAMS: usize = 100;
+
+struct TestApiStream {
+    stream_id: u64,
+    previous_stream_id: u64,
+    q_sent: bool,
+    r_received: bool,
+    q_len: usize,
+    r_len: usize,
+    q_src: Vec<u8>,
+    q_rcv: Vec<u8>,
+    r_src: Vec<u8>,
+    r_rcv: Vec<u8>,
+}
+
+impl TestApiStream {
+    fn new(desc: &TestApiStreamDesc) -> Self {
+        fn source_bytes(len: usize) -> Vec<u8> {
+            (0..len).map(|i| i as u8).collect()
+        }
+
+        Self {
+            stream_id: desc.stream_id,
+            previous_stream_id: desc.previous_stream_id,
+            q_sent: false,
+            r_received: desc.r_len == 0,
+            q_len: desc.q_len,
+            r_len: desc.r_len,
+            q_src: source_bytes(desc.q_len),
+            q_rcv: vec![0; desc.q_len],
+            r_src: source_bytes(desc.r_len),
+            r_rcv: vec![0; desc.r_len],
+        }
+    }
+
+    fn response_complete(&self) -> bool {
+        self.r_received && self.r_src.len() == self.r_len && self.r_rcv.len() == self.r_len
+    }
+}
+
 /// CPU-limiting parameters for a simulated endpoint in the test
 /// network simulator.  C: `picoquictest_endpoint_t`.
 #[derive(Default)]
@@ -678,6 +723,11 @@ pub struct TestTlsApiCtx {
     /// Default ECN mark applied to outgoing packets.
     /// C: `test_ctx->packet_ecn_default`.
     pub packet_ecn_default: u8,
+    test_streams: Vec<TestApiStream>,
+    stream0_target: usize,
+    stream0_sent: usize,
+    stream0_received: usize,
+    streams_finished: bool,
 }
 
 impl TestTlsApiCtx {
@@ -850,11 +900,21 @@ pub fn wait_client_connection_ready(
 /// send/receive loop will drive those streams.
 /// C: `test_api_init_send_recv_scenario`.
 pub fn test_api_init_send_recv_scenario(
-    _test_ctx: &mut TestTlsApiCtx,
-    _scenario: &[TestApiStreamDesc],
+    test_ctx: &mut TestTlsApiCtx,
+    scenario: &[TestApiStreamDesc],
 ) -> crate::Result<()> {
-    // Stream tracking not yet mapped in the Rust struct; stub returns Ok.
-    Ok(())
+    if scenario.len() > TEST_MAX_TEST_STREAMS {
+        return Err(crate::Error::Generic);
+    }
+
+    test_ctx.test_streams.clear();
+    test_ctx
+        .test_streams
+        .extend(scenario.iter().map(TestApiStream::new));
+    test_ctx.test_finished = false;
+    test_ctx.streams_finished = false;
+
+    test_api_queue_initial_queries(test_ctx, 0)
 }
 
 /// Drive data delivery until all streams in the scenario are done.
@@ -1440,6 +1500,11 @@ pub fn cert_verify_set_ctx(
         test_finished: false,
         ecn_support: 0,
         packet_ecn_default: 0,
+        test_streams: Vec::new(),
+        stream0_target: 0,
+        stream0_sent: 0,
+        stream0_received: 0,
+        streams_finished: false,
     }))
 }
 
@@ -1514,6 +1579,24 @@ pub fn tls_api_init_ctx_ex(
     ticket_file: Option<&str>,
     initial_cid: Option<&ConnectionId>,
 ) -> Option<Box<TestTlsApiCtx>> {
+    tls_api_init_ctx_ex_named(
+        simulated_time,
+        proposed_version,
+        Some(TEST_SNI),
+        Some(TEST_ALPN),
+        ticket_file,
+        initial_cid,
+    )
+}
+
+fn tls_api_init_ctx_ex_named(
+    simulated_time: &mut Instant,
+    proposed_version: u32,
+    sni: Option<&str>,
+    alpn: Option<&str>,
+    ticket_file: Option<&str>,
+    initial_cid: Option<&ConnectionId>,
+) -> Option<Box<TestTlsApiCtx>> {
     const VERIFIER_ENCRYPT_KEY: [u8; RESET_SECRET_SIZE] = {
         let mut k = [0u8; RESET_SECRET_SIZE];
         let mut i = 0usize;
@@ -1552,7 +1635,7 @@ pub fn tls_api_init_ctx_ex(
         Some(TEST_FILE_SERVER_CERT),
         Some(TEST_FILE_SERVER_KEY),
         Some(TEST_FILE_CERT_STORE),
-        Some(TEST_ALPN),
+        alpn,
         None,
         None,
         [0u8; RESET_SECRET_SIZE],
@@ -1571,8 +1654,8 @@ pub fn tls_api_init_ctx_ex(
             Some(&server_addr),
             *simulated_time,
             version,
-            Some(TEST_SNI),
-            Some(TEST_ALPN),
+            sni,
+            alpn,
             true,
         )?;
         let _ = cnx.start_client();
@@ -1603,6 +1686,11 @@ pub fn tls_api_init_ctx_ex(
         test_finished: false,
         ecn_support: 0,
         packet_ecn_default: 0,
+        test_streams: Vec::new(),
+        stream0_target: 0,
+        stream0_sent: 0,
+        stream0_received: 0,
+        streams_finished: false,
     }))
 }
 
@@ -1829,17 +1917,58 @@ pub fn tls_api_init_ctx(
 /// Re-queue the initial data queries on a recycled test connection.
 /// C: `test_api_queue_initial_queries`.
 pub fn test_api_queue_initial_queries(
-    _test_ctx: &mut TestTlsApiCtx,
-    _initial_data_stream_id: u64,
+    test_ctx: &mut TestTlsApiCtx,
+    initial_data_stream_id: u64,
 ) -> crate::Result<()> {
+    let mut more_stream = false;
+
+    for i in 0..test_ctx.test_streams.len() {
+        if test_ctx.test_streams[i].previous_stream_id != initial_data_stream_id {
+            continue;
+        }
+
+        let stream_id = test_ctx.test_streams[i].stream_id;
+        let q_len = test_ctx.test_streams[i]
+            .q_len
+            .min(test_ctx.test_streams[i].q_src.len());
+        let data = test_ctx.test_streams[i].q_src[..q_len].to_vec();
+        debug_assert_eq!(test_ctx.test_streams[i].q_rcv.len(), q_len);
+        if crate::stream::StreamId(stream_id).is_client() {
+            test_ctx
+                .cnx_client()
+                .add_to_stream(stream_id, &data, true)?;
+        } else {
+            test_ctx
+                .cnx_server()
+                .add_to_stream(stream_id, &data, true)?;
+        }
+        test_ctx.test_streams[i].q_sent = true;
+        more_stream = true;
+    }
+
+    if test_ctx.stream0_target > 0 {
+        test_ctx.cnx_client().mark_active_stream(0, true, None)?;
+    }
+
+    if !more_stream {
+        more_stream = test_ctx.test_streams.iter().any(|s| !s.response_complete());
+    }
+
+    if more_stream {
+        test_ctx.test_finished = false;
+        test_ctx.streams_finished = false;
+    } else {
+        test_ctx.streams_finished = true;
+        test_ctx.test_finished = test_ctx.stream0_received >= test_ctx.stream0_target;
+    }
+
     Ok(())
 }
 
 /// Create a TLS-API test context with an explicit SNI, ALPN, and
-/// additional flag parameters.  The extra booleans (force-zero-share,
-/// grease-bit, random-initial-cid, do-retry, client-only) are
-/// accepted but ignored in this stub; the simpler
-/// [`tls_api_init_ctx_ex`] is used internally.
+/// additional flag parameters.  This Rust helper exposes the subset
+/// exercised by the translated tests: version, SNI, ALPN, ticket file,
+/// and initial CID.
 /// C: `tls_api_init_ctx_ex2`.
 #[allow(clippy::too_many_arguments)]
 pub fn tls_api_init_ctx_ex2(
@@ -1850,7 +1979,14 @@ pub fn tls_api_init_ctx_ex2(
     ticket_file: Option<&str>,
     initial_cid: Option<&ConnectionId>,
 ) -> Option<Box<TestTlsApiCtx>> {
-    tls_api_init_ctx_ex(simulated_time, proposed_version, ticket_file, initial_cid)
+    tls_api_init_ctx_ex_named(
+        simulated_time,
+        proposed_version,
+        _sni.or(Some(TEST_SNI)),
+        _alpn.or(Some(TEST_ALPN)),
+        ticket_file,
+        initial_cid,
+    )
 }
 
 /// One segment in a time-varying link scenario.
@@ -1876,7 +2012,7 @@ pub fn tls_api_one_scenario_body_ex(
     _test_ctx: &mut TestTlsApiCtx,
     _simulated_time: &mut Instant,
     _scenario: &[TestApiStreamDesc],
-    _stream0_target: usize,
+    stream0_target: usize,
     _init_loss_mask: u64,
     _max_data: u64,
     _queue_delay_max: u64,
@@ -1885,6 +2021,9 @@ pub fn tls_api_one_scenario_body_ex(
 ) -> crate::Result<()> {
     tls_api_one_scenario_body_connect(_test_ctx, _simulated_time, _init_loss_mask, 0)?;
     _test_ctx.loss_mask_default = _init_loss_mask;
+    _test_ctx.stream0_target = stream0_target;
+    _test_ctx.stream0_sent = 0;
+    _test_ctx.stream0_received = 0;
     test_api_init_send_recv_scenario(_test_ctx, _scenario)?;
     let mut loss_mask = _init_loss_mask;
     tls_api_data_sending_loop(_test_ctx, &mut loss_mask, _simulated_time, 0)?;
@@ -2215,6 +2354,10 @@ impl TestAqm for RctlState {
     }
 
     fn admit_pending(&mut self, _link: &mut TestSimLink, _current_time: Instant) {}
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
 }
 
 /// Install a leaky-bucket rate controller on `link`.
@@ -2252,6 +2395,12 @@ pub struct TestDatagramCtx {
     pub dg_recv: [u64; 2],
     /// Interval between consecutive datagrams (µs).  C: `send_delay`.
     pub send_delay: u64,
+    /// Time at which the next datagram generation is scheduled.
+    /// C: `next_gen_time`.
+    pub next_gen_time: [u64; 2],
+    /// Time at which the current datagram became ready.
+    /// C: `dg_time_ready`.
+    pub dg_time_ready: [u64; 2],
     /// Whether the test is currently in ready state.  C: `is_ready`.
     pub is_ready: [bool; 2],
     /// Bind datagrams to path 0 only.  C: `test_affinity`.
@@ -2266,18 +2415,38 @@ pub struct TestDatagramCtx {
 
 /// Return the next scheduled datagram generation time across both directions.
 /// C: `test_datagram_next_time_ready`.
-pub fn test_datagram_next_time_ready(_dg_ctx: &TestDatagramCtx) -> Instant {
-    Instant::from_ticks(0)
+pub fn test_datagram_next_time_ready(dg_ctx: &TestDatagramCtx) -> Instant {
+    let mut next_time = 0u64;
+
+    for dir in 0..2 {
+        if !dg_ctx.is_ready[dir]
+            && dg_ctx.dg_sent[dir] < dg_ctx.dg_target[dir]
+            && (dg_ctx.next_gen_time[dir] < next_time || next_time == 0)
+        {
+            next_time = dg_ctx.next_gen_time[dir];
+        }
+    }
+
+    Instant::from_ticks(next_time)
 }
 
 /// Check whether a datagram is ready for direction `dir` at `current_time`.
 /// C: `test_datagram_check_ready`.
 pub fn test_datagram_check_ready(
-    _dg_ctx: &mut TestDatagramCtx,
-    _dir: usize,
-    _current_time: u64,
+    dg_ctx: &mut TestDatagramCtx,
+    dir: usize,
+    current_time: u64,
 ) -> bool {
-    false
+    if dir < 2
+        && !dg_ctx.is_ready[dir]
+        && dg_ctx.dg_sent[dir] < dg_ctx.dg_target[dir]
+        && current_time >= dg_ctx.next_gen_time[dir]
+    {
+        dg_ctx.is_ready[dir] = true;
+        dg_ctx.dg_time_ready[dir] = current_time;
+    }
+
+    dir < 2 && dg_ctx.is_ready[dir]
 }
 
 // ---------------------------------------------------------------------------
@@ -2547,47 +2716,119 @@ pub fn tester_simple_ack_frame(_last_packet_number: u64) -> Vec<u8> {
 /// Build a packet containing `frame`, encrypt it as `ptype`, and either
 /// inject it directly into the server or queue it on the sim link.
 /// C: `tester_push_frame_packet` in `picoquictest/quic_tester.c`.
-///
-/// Note: packet encryption (`picoquic_finalize_and_protect_packet`) is not yet
-/// wired in the Rust port.  This best-effort implementation copies the raw
-/// frame bytes into a `TestSimPacket` and dispatches it; the server will not
-/// process it until the crypto layer is translated.
 pub fn tester_push_frame_packet(
-    _test_ctx: &mut TestTlsApiCtx,
-    _ptype: crate::internal::PacketType,
-    _frame: &[u8],
-    _shall_pad: bool,
-    _shall_queue: bool,
-    _current_time: Instant,
+    test_ctx: &mut TestTlsApiCtx,
+    ptype: crate::internal::PacketType,
+    frame: &[u8],
+    shall_pad: bool,
+    shall_queue: bool,
+    current_time: Instant,
 ) -> crate::Result<()> {
+    let mut send_buffer = [0u8; MAX_PACKET_SIZE];
+    let mut send_length = 0usize;
+
+    {
+        let cnx = test_ctx.cnx_client();
+        let pc = match ptype {
+            crate::internal::PacketType::Initial => PacketContext::Initial,
+            crate::internal::PacketType::Handshake => PacketContext::Handshake,
+            crate::internal::PacketType::ZeroRttProtected
+            | crate::internal::PacketType::OneRttProtected => PacketContext::Application,
+            _ => return Err(crate::Error::Generic),
+        };
+
+        let mut packet = cnx.allocate_packet().ok_or(crate::Error::Memory)?;
+        packet.checksum_overhead = 16;
+        packet.packet_type = ptype;
+        packet.packet_context = pc;
+        packet.offset = cnx.predict_packet_header_length_for_pc(ptype, pc);
+        packet.length = packet.offset;
+        packet.send_path = Some(crate::internal::PathToken::synthetic(0, 0));
+
+        let sequence = cnx.pkt_ctx[pc as usize].send_sequence;
+        let mut pn_offset = 0usize;
+        let mut pn_length = 0usize;
+        let header_len = cnx.create_packet_header_at(
+            ptype,
+            sequence,
+            0,
+            0,
+            packet.offset,
+            &mut packet.bytes,
+            &mut pn_offset,
+            &mut pn_length,
+        );
+        packet.offset = header_len;
+        packet.length = header_len;
+
+        if packet.length + frame.len() >= packet.bytes.len() {
+            return Err(crate::Error::Memory);
+        }
+        packet.bytes[packet.length..packet.length + frame.len()].copy_from_slice(frame);
+        packet.length += frame.len();
+
+        if shall_pad {
+            let target = cnx
+                .paths
+                .first()
+                .map(|p| p.send_mtu.saturating_sub(packet.checksum_overhead))
+                .unwrap_or(packet.length);
+            packet.length =
+                Connection::pad_to_target_length(&mut packet.bytes, packet.length, target);
+        }
+
+        if cnx.paths.is_empty() {
+            return Err(crate::Error::Generic);
+        }
+        let mut path = cnx.paths.remove(0);
+        let packet_length = packet.length;
+        let packet_offset = packet.offset;
+        let checksum_overhead = packet.checksum_overhead;
+        cnx.finalize_and_protect_packet(
+            &mut packet,
+            0,
+            packet_length,
+            packet_offset,
+            checksum_overhead,
+            &mut send_length,
+            &mut send_buffer,
+            MAX_PACKET_SIZE,
+            &mut path,
+            current_time,
+        );
+        cnx.paths.insert(0, path);
+    }
+
     let mut sim_packet = TestSimPacket::create()?;
-    let frame_len = _frame.len().min(MAX_PACKET_SIZE);
-    sim_packet.bytes[..frame_len].copy_from_slice(&_frame[..frame_len]);
-    sim_packet.length = frame_len;
-    sim_packet.addr_from = Some(_test_ctx.client_addr);
-    sim_packet.addr_to = Some(_test_ctx.server_addr);
-    sim_packet.ecn_mark = _test_ctx.packet_ecn_default;
-    if _shall_queue {
-        _test_ctx.c_to_s_link.submit(sim_packet, _current_time);
+    if send_length > sim_packet.bytes.len() {
+        return Err(crate::Error::Memory);
+    }
+    sim_packet.bytes[..send_length].copy_from_slice(&send_buffer[..send_length]);
+    sim_packet.length = send_length;
+    sim_packet.addr_from = Some(test_ctx.client_addr);
+    sim_packet.addr_to = Some(test_ctx.server_addr);
+    sim_packet.ecn_mark = test_ctx.packet_ecn_default;
+    if shall_queue {
+        test_ctx.c_to_s_link.submit(sim_packet, current_time);
     } else {
         let len = sim_packet.length;
-        let addr_from = _test_ctx.client_addr;
-        let addr_to = _test_ctx.server_addr;
+        let addr_from = test_ctx.client_addr;
+        let addr_to = test_ctx.server_addr;
         let ecn = sim_packet.ecn_mark;
-        let _ = _test_ctx.qserver.incoming_packet(
+        let _ = test_ctx.qserver.incoming_packet(
             &mut sim_packet.bytes[..len],
             &addr_from,
             &addr_to,
             0,
             ecn,
-            _current_time,
+            current_time,
         );
     }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// TLS-API named-helper stubs used by translated test bodies.
+// TLS-API named helpers used by translated test bodies.
 
 /// Run a TLS API handshake with a specific packet-loss bitmask.
 /// C: `tls_api_loss_test` in `picoquictest/tls_api_test.c`.
@@ -2630,8 +2871,7 @@ pub fn session_resume_test_one(ticket_file: &str) -> crate::Result<()> {
         if i == 0 {
             session_resume_wait_for_ticket(&mut test_ctx, &mut simulated_time)?;
         }
-        // Save tickets (stub — may not persist across iterations)
-        let _ = test_ctx.qclient.save_tickets(simulated_time, ticket_file);
+        test_ctx.qclient.save_tickets(simulated_time, ticket_file)?;
         tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)?;
     }
     Ok(())
