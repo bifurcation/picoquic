@@ -1,6 +1,9 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) and other
+AI coding agents when working with code in this repository.  `AGENTS.md`
+is a short compatibility pointer for tools that look for that filename;
+the detailed rules live here.
 
 ## Active branch context
 
@@ -27,6 +30,13 @@ translation work goes there — don't create sibling crates, a
 workspace, or parallel trees without discussing first.  Any scripts
 written to drive the translation (Phase 0 inventory, dashboards,
 `next_todo.py`, etc.) go in `./scripts/`.
+
+AI-driven translation scripts invoke `scripts/agent_runner.py`.
+Claude remains the default provider, but the same scripts can run Codex
+with `--agent codex` or `XLATE_AGENT=codex`.  Agent transcripts go under
+`xlate/claude_logs/` or `xlate/codex_logs/` according to the selected
+provider.  See `scripts/README.md` for the switch and environment
+variables.
 
 Don't run inline Python (`python3 -c '…'`).  Write the script as a
 file under `./scripts/`, then invoke it.  Even one-shot diagnostic

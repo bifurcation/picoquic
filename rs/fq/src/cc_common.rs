@@ -486,11 +486,14 @@ impl NewRenoSimState {
             },
             CongestionNotification::EcnEc
             | CongestionNotification::Repeat
-            | CongestionNotification::Timeout => {
-                if self.recovery_sequence <= ack_state.lost_packet_number {
-                    self.enter_recovery(connection, path_x, notification, current_time);
-                }
+            | CongestionNotification::Timeout
+                if self.recovery_sequence <= ack_state.lost_packet_number =>
+            {
+                self.enter_recovery(connection, path_x, notification, current_time);
             }
+            CongestionNotification::EcnEc
+            | CongestionNotification::Repeat
+            | CongestionNotification::Timeout => {}
             CongestionNotification::SpuriousRepeat => {
                 if !connection.is_multipath_enabled {
                     if current_time.ticks() - self.recovery_start < path_x.smoothed_rtt.ticks()

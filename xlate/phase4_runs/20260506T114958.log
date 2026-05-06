@@ -1,0 +1,30 @@
+Phase 4: 5 target(s) to translate (batch=1)
+  agent:   codex (model=default)
+  run log: xlate/phase4_runs/20260506T114958.log
+  state:   xlate/phase4_state.json
+
+=== logger.rs (15 todos) ===
+  prompt  → xlate/prompts/phase4/logger.md
+  (dry-run; skipping agent + gate)
+
+=== tls_api.rs (30 todos) ===
+  prompt  → xlate/prompts/phase4/tls_api.md
+  (dry-run; skipping agent + gate)
+
+=== packet_loop.rs (9 todos) ===
+  prompt  → xlate/prompts/phase4/packet_loop.md
+  (dry-run; skipping agent + gate)
+
+=== tests/util.rs (8 todos) ===
+  prompt  → xlate/prompts/phase4/tests__util.md
+  (dry-run; skipping agent + gate)
+
+=== internal.rs (125 todos) ===
+  prompt  → xlate/prompts/phase4/internal.md
+  (dry-run; skipping agent + gate)
+
+=== Phase 4 run summary ===
+  elapsed:   0.5s
+  succeeded: 0
+  failed:    0
+  log:       xlate/phase4_runs/20260506T114958.log

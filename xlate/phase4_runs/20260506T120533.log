@@ -1,0 +1,21 @@
+Phase 4: 1 target(s) to translate (batch=1)
+  agent:   codex (model=default)
+  run log: xlate/phase4_runs/20260506T120533.log
+  state:   xlate/phase4_state.json
+
+=== tls_api.rs (30 todos) ===
+  prompt  → xlate/prompts/phase4/tls_api.md
+  codex   → invoking (model=default, max-turns=200) …
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && cargo test --no-run)
+    FAIL: gate exit 101
+
+Stopped at tls_api.rs (--stop-on-failure).
+
+=== Phase 4 run summary ===
+  elapsed:   938.0s
+  succeeded: 0
+  failed:    1
+    - tls_api.rs
+  log:       xlate/phase4_runs/20260506T120533.log

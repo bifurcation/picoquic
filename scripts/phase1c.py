@@ -9,18 +9,18 @@ Workflow:
      `// REVIEW(open): `, is excluded — those are the AI's
      "couldn't auto-resolve" signal and require human attention,
      not another AI pass).
-  3. For each such file, invoke `claude -p` with: the file path,
+  3. For each such file, invoke the configured AI agent with: the file path,
      the extracted REVIEW comments (line + text), and a prompt
-     telling claude to apply the requested change and remove the
-     comment when done.  When claude can't fully resolve, it
+     telling the agent to apply the requested change and remove the
+     comment when done.  When the agent can't fully resolve, it
      rewrites the comment as `// REVIEW(open): <reason>`.
-  4. After claude finishes, run the gate (cargo fmt + clippy +
+  4. After the agent finishes, run the gate (cargo fmt + clippy +
      check).  If the gate passes, mark ok.
 
 State and logs:
   - xlate/phase1c_state.json   — per-file status keyed by Rust path.
   - xlate/phase1c_runs/*.log   — full stdout for each run.
-  - xlate/claude_logs/phase1c/<path>.log — per-file transcript.
+  - xlate/<agent>_logs/phase1c/<path>.log — per-file transcript.
   - xlate/prompts/phase1c/<path>.md      — the prompt sent.
 
 Usage:
@@ -32,6 +32,7 @@ Usage:
   python3 scripts/phase1c.py --status
   python3 scripts/phase1c.py --force
   python3 scripts/phase1c.py --stop-on-failure
+  python3 scripts/phase1c.py --agent codex
 """
 
 from __future__ import annotations
@@ -39,17 +40,16 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shlex
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+import agent_runner
+
 REPO_ROOT      = Path(__file__).resolve().parent.parent
 PHASE1C_STATE  = REPO_ROOT / "xlate" / "phase1c_state.json"
 PROMPTS_DIR    = REPO_ROOT / "xlate" / "prompts" / "phase1c"
-LOG_DIR        = REPO_ROOT / "xlate" / "claude_logs" / "phase1c"
 RUNS_DIR       = REPO_ROOT / "xlate" / "phase1c_runs"
 RS_CRATE       = REPO_ROOT / "rs" / "fq"
 RS_SRC         = RS_CRATE / "src"
@@ -150,9 +150,9 @@ def prompt_path_for(file: Path) -> Path:
     return PROMPTS_DIR / rel_rs.with_suffix(".md")
 
 
-def claude_log_path_for(file: Path) -> Path:
+def agent_log_path_for(agent: agent_runner.AgentConfig, file: Path) -> Path:
     rel_rs = file.relative_to(RS_SRC)
-    return LOG_DIR / rel_rs.with_suffix(".log")
+    return agent_runner.log_dir(REPO_ROOT, agent, "phase1c") / rel_rs.with_suffix(".log")
 
 
 # ---------------------------------------------------------------------------
@@ -248,38 +248,24 @@ def write_prompt_file(file: Path, comments: list[tuple[int, str]]) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Claude invocation
+# Agent invocation
 
-def invoke_claude(file: Path, prompt_file: Path,
-                  max_turns: int, model: str) -> tuple[int, str]:
-    if shutil.which("claude") is None:
-        return 127, "claude CLI not found on PATH"
-    log = claude_log_path_for(file)
-    log.parent.mkdir(parents=True, exist_ok=True)
+def invoke_agent(file: Path, prompt_file: Path,
+                 max_turns: int,
+                 agent: agent_runner.AgentConfig) -> tuple[int, str]:
     prompt = prompt_file.read_text()
-    cmd = [
-        "claude", "-p", prompt,
-        "--model", model,
-        "--allowedTools", ALLOWED_TOOLS,
-        "--max-turns", str(max_turns),
-    ]
-    t0 = time.monotonic()
-    res = subprocess.run(
-        cmd, cwd=REPO_ROOT,
-        capture_output=True, text=True,
-        stdin=subprocess.DEVNULL,
+    run = agent_runner.run_capture(
+        agent,
+        prompt,
+        repo_root=REPO_ROOT,
+        log_path=agent_log_path_for(agent, file),
+        phase="phase1c",
+        label=rel(file),
+        prompt_file=prompt_file,
+        allowed_tools=ALLOWED_TOOLS,
+        max_turns=max_turns,
     )
-    elapsed = time.monotonic() - t0
-    transcript = (
-        f"# claude -p (phase1c) for {rel(file)}\n"
-        f"# elapsed: {elapsed:.1f}s, exit: {res.returncode}\n"
-        f"# command: {' '.join(shlex.quote(c) for c in cmd[:1] + cmd[3:])}\n"
-        f"# (prompt omitted; see "
-        f"{prompt_file.relative_to(REPO_ROOT)})\n\n"
-        f"## stdout\n{res.stdout}\n\n## stderr\n{res.stderr}\n"
-    )
-    log.write_text(transcript)
-    return res.returncode, res.stdout
+    return run.returncode, run.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +290,7 @@ def run_gate() -> int:
 # Per-file runner
 
 def run_one(file: Path, *, dry_run: bool, max_turns: int,
-            model: str, state: dict) -> str:
+            agent: agent_runner.AgentConfig, state: dict) -> str:
     key = rel(file)
     print(f"\n=== {key} ===")
     before = find_review_comments(file)
@@ -319,15 +305,16 @@ def run_one(file: Path, *, dry_run: bool, max_turns: int,
     prompt_file = write_prompt_file(file, before)
     print(f"  prompt  → {prompt_file.relative_to(REPO_ROOT)}")
     if dry_run:
-        print("  (dry-run; skipping claude + gate)")
+        print("  (dry-run; skipping agent + gate)")
         return "skip"
 
-    print(f"  claude  → invoking ({model}, max-turns={max_turns}) …")
-    code, _stdout = invoke_claude(file, prompt_file, max_turns, model)
+    print(f"  {agent.label:<7} → invoking "
+          f"(model={agent.model_label}, max-turns={max_turns}) …")
+    code, _stdout = invoke_agent(file, prompt_file, max_turns, agent)
     if code != 0:
-        print(f"    FAIL: claude exit {code} "
-              f"(see {claude_log_path_for(file).relative_to(REPO_ROOT)})")
-        record(state, key, "fail", stage="claude", exit_code=code,
+        print(f"    FAIL: {agent.label} exit {code} "
+              f"(see {agent_log_path_for(agent, file).relative_to(REPO_ROOT)})")
+        record(state, key, "fail", stage=agent.label, exit_code=code,
                reviews_before=len(before))
         return "fail"
 
@@ -446,7 +433,7 @@ def main() -> int:
     p.add_argument("--limit", type=int, default=None,
                    help="Stop after processing N files.")
     p.add_argument("--dry-run", action="store_true",
-                   help="Print plan; do not invoke claude or run the gate.")
+                   help="Print plan; do not invoke agent or run the gate.")
     p.add_argument("--stop-on-failure", action="store_true",
                    help="Stop at the first failure (default is to continue).")
     p.add_argument("--force", action="store_true",
@@ -457,12 +444,15 @@ def main() -> int:
     p.add_argument("--list", action="store_true",
                    help="Print files containing // REVIEW: comments and exit.")
     p.add_argument("--max-turns", type=int, default=80,
-                   help="Per-file turn limit for claude (default 80).")
-    p.add_argument("--model", default="sonnet",
-                   help="Model passed to `claude -p --model` "
-                        "(default: sonnet — REVIEW execution is "
-                        "judgement-light).")
+                   help="Per-file turn limit for Claude; included as "
+                        "guidance for Codex (default 80).")
+    agent_runner.add_agent_args(
+        p,
+        claude_default_model="sonnet",
+        model_help_context="Phase 1C agent",
+    )
     args = p.parse_args()
+    agent = agent_runner.config_from_args(args, claude_default_model="sonnet")
 
     if args.status:
         cmd_status()
@@ -487,7 +477,7 @@ def main() -> int:
             return 1
         if not args.force and not find_review_comments(f):
             print(f"no // REVIEW: comments in {args.file} "
-                  "(pass --force to invoke claude anyway)")
+                  "(pass --force to invoke the agent anyway)")
             return 0
         targets = [f]
     else:
@@ -503,13 +493,14 @@ def main() -> int:
     log_path = setup_run_log()
     t_run_start = time.monotonic()
     print(f"Phase 1C: {len(targets)} file(s) to process")
+    print(f"  agent:   {agent.label} (model={agent.model_label})")
     print(f"  run log: {log_path.relative_to(REPO_ROOT)}")
     print(f"  state:   {PHASE1C_STATE.relative_to(REPO_ROOT)}")
     failed: list[str] = []
     succeeded: list[str] = []
     for f in targets:
         result = run_one(f, dry_run=args.dry_run,
-                         max_turns=args.max_turns, model=args.model,
+                         max_turns=args.max_turns, agent=agent,
                          state=state)
         if result == "fail":
             failed.append(rel(f))

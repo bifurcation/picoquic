@@ -240,6 +240,23 @@ work parallelizable across translators (human or AI).
   This is *evidence* for the translator's pointer-shape decision — the
   decision itself stays human.
 
+### AI agent selection
+
+AI-driven scripts invoke a shared runner at `scripts/agent_runner.py`.
+Claude is the default provider for compatibility with the original
+translation run, but each driver can switch to Codex with
+`--agent codex` or `XLATE_AGENT=codex`.  Common model overrides are
+`--model`, `XLATE_AGENT_MODEL`, `XLATE_CLAUDE_MODEL`, and
+`XLATE_CODEX_MODEL`.
+
+Claude receives the script's `--allowedTools` list directly.  Codex has
+no equivalent per-run allowlist flag, so the runner appends the intended
+tool scope to the prompt and invokes `codex exec` with
+`--sandbox workspace-write --ask-for-approval never` by default
+(overridable with `--codex-sandbox` / `--codex-approval`).
+Provider transcripts are separated under `xlate/claude_logs/` and
+`xlate/codex_logs/`.
+
 ## Phase 1A — AI self-review of translated headers
 
 After Phase 1 lands a Rust stub for each header, run a self-review
@@ -319,18 +336,18 @@ editing — that's a valid outcome.
 `scripts/phase1a.py` drives the pass:
 
 * Iterates Phase 1 `ok` headers in topological order.
-* Per header: composes a review prompt, invokes `claude -p` with
-  `--allowedTools "Read Edit Glob Grep Bash(cargo check)
-  Bash(cargo clippy)"` — no `Write`, this is refinement only.
+* Per header: composes a review prompt, invokes the configured agent
+  with `Read Edit Glob Grep Bash(cargo check) Bash(cargo clippy)` as
+  the intended tool scope — no `Write`, this is refinement only.
 * Tracks state in `xlate/phase1a_state.json` (status: `ok` /
   `fail` / `noop`).
 * Resumable; continues on failure by default.
-* Per-header transcripts at `xlate/claude_logs/phase1a/<path>.log`.
+* Per-header transcripts at `xlate/<agent>_logs/phase1a/<path>.log`.
 
 ## Phase 1B — Cross-module consistency report
 
-1A is per-header by design — claude sees one module deeply but
-isn't well-suited to spot patterns that vary *between* modules
+1A is per-header by design — one agent invocation sees one module
+deeply but isn't well-suited to spot patterns that vary *between* modules
 (trait naming conventions, lint allowances, type definitions
 that drift, the same C type translated differently in different
 places).  A whole-crate AI pass would burn context and turns
@@ -361,7 +378,7 @@ to address.
 
 ### Scripting
 
-`scripts/phase1b.py` is a single-shot inspection — no claude,
+`scripts/phase1b.py` is a single-shot inspection — no agent,
 no state machine.  It writes `xlate/consistency_report.md` and
 exits.
 
@@ -417,8 +434,8 @@ For each file containing `// REVIEW: ` markers:
 
 * Scans `rs/fq/src/` for files containing `// REVIEW: ` (the
   open form is excluded).
-* For each, invokes `claude -p` with the same tool allowlist as
-  1A and a prompt naming the file plus the extracted REVIEW
+* For each, invokes the configured agent with the same intended tool
+  scope as 1A and a prompt naming the file plus the extracted REVIEW
   comments (line numbers + text).
 * Tracks state in `xlate/phase1c_state.json`, keyed by Rust
   file path.
@@ -623,12 +640,11 @@ are interchangeable.
 * Composes a prompt that points the AI at `TRANSLATE_PLAN.md`,
   `CLAUDE.md`, the seed inventory, and `rs/fq/src/`, and asks
   for the plan document at `xlate/phase2_plan.md`.
-* Invokes `claude -p` with `--allowedTools "Read Glob Grep
-  Bash(cargo metadata) Write"` — `Write` is allowed because
-  the plan document itself is the output.  `Edit` is not
-  needed.  No cargo build/check tools — 2A doesn't change the
-  source, so there's nothing to gate.
-* Transcript at `xlate/claude_logs/phase2a.log`.
+* Invokes the configured agent with `Read Glob Grep Write` as the
+  intended tool scope — `Write` is allowed because the plan document
+  itself is the output.  `Edit` is not needed.  No cargo build/check
+  tools — 2A doesn't change the source, so there's nothing to gate.
+* Transcript at `xlate/<agent>_logs/phase2a.log`.
 
 ## Phase 2B — Human review of the plan
 
@@ -675,15 +691,15 @@ plan.  It stays greppable across the project.
 
 * Scans `xlate/phase2_plan.md` for `// REVIEW: ` markers (the
   open form is excluded).
-* If any markers exist, invokes `claude -p` with
-  `--allowedTools "Read Edit Glob Grep"` — Edit on the plan
-  document only.  No source changes; no cargo gates.
+* If any markers exist, invokes the configured agent with
+  `Read Edit Glob Grep` as the intended tool scope — Edit on the
+  plan document only.  No source changes; no cargo gates.
 * Each invocation passes the file plus the extracted REVIEW
   comments (line numbers + text) in the prompt.
 * State at `xlate/phase2b_state.json` records each iteration's
   resolved-vs-open counts.
 * Resumable; re-running with no fresh markers is a no-op.
-* Transcript at `xlate/claude_logs/phase2b/<iteration>.log`.
+* Transcript at `xlate/<agent>_logs/phase2b/<iteration>.log`.
 
 ### Phase 2B acceptance gate
 
@@ -741,15 +757,15 @@ record.  Don't silently diverge.
 * Per capability: composes a prompt that names the capability,
   quotes the relevant plan section, and lists the consuming
   Rust modules.
-* Invokes `claude -p` with `--allowedTools "Read Edit Write
-  Glob Grep Bash(cargo check) Bash(cargo clippy)"` — `Write`
-  is allowed because new sibling modules
-  (`tls_picotls.rs`, etc.) need to be created.
+* Invokes the configured agent with `Read Edit Write Glob Grep
+  Bash(cargo check) Bash(cargo clippy)` as the intended tool scope —
+  `Write` is allowed because new sibling modules (`tls_picotls.rs`,
+  etc.) need to be created.
 * State at `xlate/phase2c_state.json`, keyed by capability name
   (`status: ok / fail / skipped`).
 * Resumable; continues on failure by default.
 * Per-capability transcripts at
-  `xlate/claude_logs/phase2c/<capability>.log`.
+  `xlate/<agent>_logs/phase2c/<capability>.log`.
 
 ### Phase 2 acceptance gate
 
@@ -827,7 +843,7 @@ its first call is the expected outcome until Phase 4 fills bodies.
 
 ### Pipeline (Phase 3A)
 
-The bulk of the work is automated by a per-batch claude-driven
+The bulk of the work is automated by a per-batch agent-driven
 pipeline (`scripts/phase3a.py`).  Stages:
 
 1. **Stub generation** (`scripts/phase3.py`): parse the
@@ -841,15 +857,16 @@ pipeline (`scripts/phase3a.py`).  Stages:
    agent reads this once instead of re-grepping `lib.rs` /
    `internal.rs` from scratch.
 3. **Body translation** (`scripts/phase3a.py`):
-     * Per-source mode (`--batch 1`): one `claude -p` invocation
+     * Per-source mode (`--batch 1`): one agent invocation
        per `picoquictest/<src>.c`.  Higher fidelity, but each
        invocation pays the full guide / `util.rs` re-read cost.
      * Batched mode (`--batch N`, default 1): one invocation per
        group of N sources.  Amortises guide / `util.rs` reads
        across the batch and lets the agent re-use helpers it
        added earlier in the same session.
-   The script invokes `claude -p` with stream-json output, surfaces
-   each tool call to stdout, runs the build gate (`cargo fmt` +
+   The script invokes the configured agent with streaming output where
+   the provider supports it, surfaces each tool call to stdout, runs the
+   build gate (`cargo fmt` +
    `cargo test --no-run` + `cargo clippy --tests --all-features --
    -D warnings`), and records ok/fail per source in
    `xlate/phase3a_state.json`.
@@ -858,16 +875,16 @@ pipeline (`scripts/phase3a.py`).  Stages:
    is anything other than the auto-stub `todo!("<entry_fn>")`.
    Both the agent and the parent script call this; the parent
    re-runs sources whose checks fail.
-5. **Rate-limit handling**: HTTP 429 from the Anthropic API
-   surfaces as a distinct exit code; the sweep aborts cleanly
+5. **Rate-limit handling**: HTTP 429 from the provider API surfaces
+   as a distinct exit code; the sweep aborts cleanly
    without polluting the state file.  Re-run after the quota
    resets.
 
 State, logs, and artifacts:
 * `xlate/phase3a_state.json` — per-source ok/fail.
 * `xlate/phase3a_runs/<timestamp>.log` — run-level stdout.
-* `xlate/claude_logs/phase3a/<src>.log` — per-source claude
-  stream-json transcript.
+* `xlate/<agent>_logs/phase3a/<src>.log` — per-source agent
+  transcript.
 * `xlate/prompts/phase3a/<src>.md` — composed prompts.
 
 ### Phase 3 acceptance gate
@@ -920,15 +937,16 @@ For each Rust source file:
      file already encode this as `/// C: \`picoquic_xxx\``;
    * spells out the translation contract (faithful, idiomatic, no
      signature changes, no `unsafe`, no edits outside `rs/fq/src/`).
-2. **Invoke `claude -p`** with a tight allowlist (Read / Edit /
-   Glob / Grep / Bash for `cargo` and the Phase 4 completion check).
+2. **Invoke the configured agent** with a tight intended scope
+   (Read / Edit / Glob / Grep / Bash for `cargo` and the Phase 4
+   completion check).
 3. **Verify** with `scripts/phase4_check.py <rs file>` (zero
    `todo!()`s remain in the named files).
 4. **Build gate** — `cargo fmt` + `cargo test --no-run` + `cargo
    clippy --tests --all-features -- -D warnings`.  Failure penalises
    the run.
 
-A `--batch N` mode packs N source files per claude invocation,
+A `--batch N` mode packs N source files per agent invocation,
 amortising the guide read and any cross-module API lookups.  The
 build gate runs once at the end of each batch.
 
@@ -937,15 +955,15 @@ State / log artifacts:
 * `xlate/phase4_state.json` — per-file `{status, at, …}`.  `ok` /
   `partial` / `fail`; `partial` records `remaining` count.
 * `xlate/phase4_runs/<timestamp>.log` — per-sweep tee of stdout.
-* `xlate/claude_logs/phase4/<basename>.log` — per-run stream-json
-  transcript of the claude invocation.
+* `xlate/<agent>_logs/phase4/<basename>.log` — per-run agent
+  transcript.
 * `xlate/prompts/phase4/<basename>.md` — the composed prompt
   (regenerated on each run).
 
 Re-running with no flags resumes from `phase4_state.json` (already-`ok`
 files are skipped).  `--force` redoes everything; `--src <file>`
 targets one file; `--limit N` caps the sweep.  HTTP 429 is detected
-(both `api_error_status==429` *and* `is_error`) and aborts cleanly
+from structured provider events where available and aborts cleanly
 without polluting state.
 
 ### Signature drift

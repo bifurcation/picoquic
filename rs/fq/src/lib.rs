@@ -959,6 +959,9 @@ impl Quic {
     /// [`LOG_PACKET_MAX_SEQUENCE`] packets per connection.
     pub fn set_log_level(&mut self, log_level: i32) {
         self.use_long_log = log_level != 0;
+        for connection in self.connections.iter_mut() {
+            connection.use_long_log = self.use_long_log;
+        }
     }
 
     /// Toggle randomised log-file names (defeating accidental
@@ -1845,8 +1848,9 @@ impl Quic {
 impl Connection {
     /// Begin the client-side handshake on this connection.
     pub fn start_client(&mut self) -> Result<(), Error> {
-        // Complex: initiates TLS handshake state machine.
-        Err(Error::Generic)
+        self.setup_initial_traffic_keys()?;
+        self.connection_state = State::ClientInitSent;
+        Ok(())
     }
 
     /// Begin an ordered close.
@@ -2967,7 +2971,7 @@ impl Connection {
     /// `true` while the connection still streams events into its
     /// log (capped per [`Quic::set_max_simultaneous_logs`]).
     pub fn is_still_logging(&self) -> bool {
-        self.f_binlog.is_some()
+        self.nb_packets_logged < LOG_PACKET_MAX_SEQUENCE as u64 || self.use_long_log
     }
 }
 
@@ -3675,28 +3679,13 @@ impl Connection {
     /// logger backends attached to this connection.
     /// C: `picoquic_log_new_connection(cnx)`.
     pub fn log_new_connection(&mut self) {
-        // C: dispatches to text_log_fns / bin_log_fns / qlog_fns on
-        // cnx->quic when each handle is non-NULL.  Connection has no
-        // back-reference to Quic under the settled signature, so the
-        // dispatch reduces to whatever connection-local state has
-        // been wired by the active backend.  With the loglib backends
-        // out of v1 scope (per TRANSLATE_PLAN.md), no Logger impls
-        // attach themselves yet — the C path itself is a no-op for an
-        // unconfigured context, which is the state we mirror here.
-        let _ = self.f_binlog.as_ref();
-        let _ = self.qlog_ctx.as_ref();
+        crate::logger::Log::new_connection(self);
     }
 
     /// Emit a free-form application message on this connection's log.
     /// C: `picoquic_log_app_message(cnx, "%s", msg)`.
     pub fn log_app_message(&mut self, msg: &str) {
-        // Same dispatch model as log_new_connection — see that doc
-        // comment for the Quic / loglib-scope rationale.  The message
-        // is consumed via the connection-local handles; with no
-        // backend installed, the call is a no-op, matching the C
-        // dispatch when text_log_fns / bin_log_fns / qlog_fns are all
-        // NULL.
-        let _ = (msg, self.f_binlog.as_ref(), self.qlog_ctx.as_ref());
+        crate::logger::Log::app_message(self, format_args!("{}", msg));
     }
 }
 

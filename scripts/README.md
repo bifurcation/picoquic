@@ -2,6 +2,34 @@
 
 Tooling for the picoquic → fq Rust translation.  Mostly Python.
 
+## Agent selection
+
+AI-driven phases use `scripts/agent_runner.py`.  Claude remains the
+default so existing commands keep working, but every driver that invokes
+an AI agent now accepts the same switch:
+
+```sh
+python3 scripts/phase4.py --agent codex
+XLATE_AGENT=codex python3 scripts/phase3a.py --limit 1
+```
+
+Common knobs:
+
+| Setting | Effect |
+|---------|--------|
+| `--agent claude\|codex` / `XLATE_AGENT` | Select the provider. |
+| `--model` / `XLATE_AGENT_MODEL` | Override the model for either provider. |
+| `XLATE_CLAUDE_MODEL`, `XLATE_CODEX_MODEL` | Provider-specific model defaults. |
+| `--codex-sandbox` / `XLATE_CODEX_SANDBOX` | Sandbox passed to `codex exec` (default `workspace-write`). |
+| `--codex-approval` / `XLATE_CODEX_APPROVAL` | Approval policy passed to `codex exec` (default `never`). |
+| `XLATE_CLAUDE_ARGS`, `XLATE_CODEX_ARGS` | Extra provider CLI args, shell-split. |
+
+Transcripts go to `xlate/claude_logs/...` or `xlate/codex_logs/...`
+depending on the selected provider.  Claude receives the script's
+`--allowedTools` list directly.  Codex has no matching per-run
+allowlist flag, so the runner appends that list to the prompt as the
+intended action scope and runs `codex exec` in the selected sandbox.
+
 ## Phase 0: inventory & dashboard
 
 One-shot pipeline that produces a snapshot of the C codebase in
@@ -36,8 +64,8 @@ out of scope: executables (`picoquicfirst/`, `pqbench_app/`,
 
 ## Phase 1: per-header translation (driver)
 
-`phase1.py` translates each in-scope header to a Rust module via
-`claude -p`, gated on `cargo fmt + clippy + check`.  Resumable via
+`phase1.py` translates each in-scope header to a Rust module via the
+selected agent, gated on `cargo fmt + clippy + check`.  Resumable via
 `xlate/phase1_state.json` (`ok` / `fail` / `stub`).  See
 `TRANSLATE_PLAN.md` Phase 1 for policy; the script's docstring
 explains flags.
@@ -48,7 +76,7 @@ explains flags.
 improvements (safety, consistency, idiomatic Rust) in place via
 `Edit`.  No `Write` — refinement only.  State at
 `xlate/phase1a_state.json`; per-header transcripts under
-`xlate/claude_logs/phase1a/`.
+`xlate/<agent>_logs/phase1a/`.
 
 ```sh
 python3 scripts/phase1a.py --status
@@ -58,7 +86,7 @@ python3 scripts/phase1a.py               # full pass
 
 ## Phase 1B: cross-module consistency report
 
-`phase1b.py` is pure inspection — no claude.  It scans
+`phase1b.py` is pure inspection — no agent.  It scans
 `rs/fq/src/picoquic/` and writes
 `xlate/consistency_report.md` cataloguing patterns that vary
 across modules: trait naming conventions, module-level lint
@@ -74,7 +102,7 @@ python3 scripts/phase1b.py --json     # additionally emit raw data
 ## Phase 1C: address `// REVIEW:` comments
 
 `phase1c.py` scans `rs/fq/src/` for `// REVIEW: <instruction>`
-markers a human reviewer left in the code, and asks claude to
+markers a human reviewer left in the code, and asks the selected agent to
 address each one.  Successfully-addressed lines are removed;
 unresolved ones are rewritten as `// REVIEW(open): <reason>` so
 they don't get re-asked on the next run.  State at

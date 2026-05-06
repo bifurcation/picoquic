@@ -11,7 +11,7 @@
 //! happens through inherent methods on [`Quic`].  Either layer
 //! fans the event out to whichever backends are registered.
 //!
-//! Phase 1 contract: signatures only — every body is `todo!()`.
+//! Phase 4 status: unified-log dispatch bodies are translated.
 //!
 //! Pointer-shape and translation policy notes for this module:
 //!
@@ -19,10 +19,10 @@
 //!   the Phase 1 rule "function pointers map to traits" we collapse
 //!   the whole vtable into a single trait, [`Logger`],
 //!   because every backend installs all sixteen entries together.
-//!   A QUIC context will eventually hold three optional
-//!   `Box<dyn Logger>` slots (`text_log_fns` / `bin_log_fns`
-//!   / `qlog_fns`); that restructuring lands when `internal.h` is
-//!   translated.
+//!   QUIC contexts and connections hold three optional shared logger
+//!   handles (`text_log_fns` / `bin_log_fns` / `qlog_fns`).  The
+//!   shared handle is the safe Rust replacement for the C
+//!   `cnx->quic` back-pointer used by the dispatch wrappers.
 //! * `Quic*` / `Connection*` — every observed caller passes a non-NULL
 //!   pointer and the logger callbacks may mutate internal state.
 //!   Free functions keyed on `Quic*` become inherent methods on
@@ -54,6 +54,8 @@
 //!   dropped from the Rust API entirely.
 
 use core::net::SocketAddr;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use crate::Instant;
 use crate::internal::{PacketHeader, PacketType};
@@ -224,13 +226,22 @@ pub trait Logger {
     fn cc_dump(&mut self, connection: &mut Connection, path_x: &mut Path, current_time: Instant);
 }
 
+pub(crate) type LoggerRef = Rc<RefCell<dyn Logger>>;
+
+fn logger_ref(slot: &Option<LoggerRef>) -> Option<LoggerRef> {
+    slot.as_ref().map(Rc::clone)
+}
+
+fn option_path<'a>(path_x: &'a mut Option<&mut Path>) -> Option<&'a mut Path> {
+    path_x.as_mut().map(|path| &mut **path)
+}
+
 // ---------------------------------------------------------------------------
 // Public dispatch layer.
 //
 // Each method below fans the event out to whichever of the three
 // logger slots (`text_log_fns`, `bin_log_fns`, `qlog_fns`) the QUIC
-// context has installed.  Phase 1 leaves bodies as `todo!()`;
-// Phase 3 fills in the dispatch.
+// context has installed.
 
 impl Quic {
     /// Log an application-supplied message that is not attached to a
@@ -240,9 +251,8 @@ impl Quic {
     ///
     /// C: `picoquic_log_context_free_app_message`.
     pub fn log_app_message(&mut self, cid: &ConnectionId, args: core::fmt::Arguments<'_>) {
-        if let Some(mut text) = self.text_log_fns.take() {
-            text.quic_app_message(self, cid, args);
-            self.text_log_fns = Some(text);
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().quic_app_message(self, cid, args);
         }
     }
 
@@ -260,8 +270,8 @@ impl Quic {
         addr_local: &SocketAddr,
         packet_length: usize,
     ) {
-        if let Some(mut text) = self.text_log_fns.take() {
-            text.quic_pdu(
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().quic_pdu(
                 self,
                 receiving,
                 current_time,
@@ -280,17 +290,14 @@ impl Quic {
     ///
     /// C: `picoquic_log_close_logs`.
     pub fn close_logs(&mut self) {
-        if let Some(mut text) = self.text_log_fns.take() {
-            text.quic_close(self);
-            self.text_log_fns = Some(text);
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().quic_close(self);
         }
-        if let Some(mut bin) = self.bin_log_fns.take() {
-            bin.quic_close(self);
-            self.bin_log_fns = Some(bin);
+        if let Some(bin) = logger_ref(&self.bin_log_fns) {
+            bin.borrow_mut().quic_close(self);
         }
-        if let Some(mut q) = self.qlog_fns.take() {
-            q.quic_close(self);
-            self.qlog_fns = Some(q);
+        if let Some(q) = logger_ref(&self.qlog_fns) {
+            q.borrow_mut().quic_close(self);
         }
     }
 }
@@ -427,132 +434,451 @@ pub trait Log {
     fn cc_dump(&mut self, current_time: Instant);
 }
 
-// Connection-rooted log dispatch.
-//
-// The C dispatchers (`picoquic_log_packet`, `picoquic_log_pdu`, …)
-// are gated on `picoquic_cnx_is_still_logging(cnx)` and then fan out
-// to `cnx->quic->{text,bin,qlog}_log_fns`.  The settled Phase-1/2
-// trait surface gives these methods only `&mut self` (the
-// `Connection`); the three boxed `Logger` vtables live on the parent
-// `Quic` context, and `Connection` carries no back-reference to it.
-//
-// Without a `&mut Quic` parameter on `Log::*`, the dispatch cannot
-// reach the vtable.  Each body carries a one-line structural
-// blocker note, per the translation guide's instruction for the
-// logger module (out of v1 scope per TRANSLATE_PLAN.md, leave
-// remaining markers) and the Phase-4 prompt's allowance for genuine
-// signature blockers.  The inherent helpers
-// `Connection::log_new_connection` and `Connection::log_app_message`
-// (lib.rs) cover the call sites the crate actually exercises today.
 impl Log for Connection {
-    fn app_message(&mut self, _args: core::fmt::Arguments<'_>) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+    fn app_message(&mut self, args: core::fmt::Arguments<'_>) {
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().app_message(self, args);
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut().app_message(self, args);
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut().app_message(self, args);
+        }
     }
 
     fn pdu(
         &mut self,
-        _receiving: bool,
-        _current_time: Instant,
-        _addr_peer: &SocketAddr,
-        _addr_local: &SocketAddr,
-        _packet_length: usize,
-        _unique_path_id: u64,
-        _ecn: u8,
+        receiving: bool,
+        current_time: Instant,
+        addr_peer: &SocketAddr,
+        addr_local: &SocketAddr,
+        packet_length: usize,
+        unique_path_id: u64,
+        ecn: u8,
     ) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+        if !self.is_still_logging() {
+            return;
+        }
+
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().pdu(
+                self,
+                receiving,
+                current_time,
+                addr_peer,
+                addr_local,
+                packet_length,
+                unique_path_id,
+                ecn,
+            );
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut().pdu(
+                self,
+                receiving,
+                current_time,
+                addr_peer,
+                addr_local,
+                packet_length,
+                unique_path_id,
+                ecn,
+            );
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut().pdu(
+                self,
+                receiving,
+                current_time,
+                addr_peer,
+                addr_local,
+                packet_length,
+                unique_path_id,
+                ecn,
+            );
+        }
     }
 
     fn packet(
         &mut self,
-        _path_x: Option<&mut Path>,
-        _receiving: bool,
-        _current_time: Instant,
-        _ph: &PacketHeader,
-        _bytes: &[u8],
+        path_x: Option<&mut Path>,
+        receiving: bool,
+        current_time: Instant,
+        ph: &PacketHeader,
+        bytes: &[u8],
     ) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+        if !self.is_still_logging() {
+            return;
+        }
+
+        let mut path_x = path_x;
+
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().packet(
+                self,
+                option_path(&mut path_x),
+                receiving,
+                current_time,
+                ph,
+                bytes,
+            );
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut().packet(
+                self,
+                option_path(&mut path_x),
+                receiving,
+                current_time,
+                ph,
+                bytes,
+            );
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut().packet(
+                self,
+                option_path(&mut path_x),
+                receiving,
+                current_time,
+                ph,
+                bytes,
+            );
+        }
     }
 
     fn dropped_packet(
         &mut self,
-        _path_x: Option<&mut Path>,
-        _ph: &PacketHeader,
-        _packet_size: usize,
-        _err: i32,
-        _current_time: Instant,
+        path_x: Option<&mut Path>,
+        ph: &PacketHeader,
+        packet_size: usize,
+        err: i32,
+        current_time: Instant,
     ) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+        if !self.is_still_logging() {
+            return;
+        }
+
+        let mut path_x = path_x;
+
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().dropped_packet(
+                self,
+                option_path(&mut path_x),
+                ph,
+                packet_size,
+                err,
+                current_time,
+            );
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut().dropped_packet(
+                self,
+                option_path(&mut path_x),
+                ph,
+                packet_size,
+                err,
+                current_time,
+            );
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut().dropped_packet(
+                self,
+                option_path(&mut path_x),
+                ph,
+                packet_size,
+                err,
+                current_time,
+            );
+        }
     }
 
-    fn buffered_packet(&mut self, _path_x: &mut Path, _ptype: PacketType, _current_time: Instant) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+    fn buffered_packet(&mut self, path_x: &mut Path, ptype: PacketType, current_time: Instant) {
+        if !self.is_still_logging() {
+            return;
+        }
+
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut()
+                .buffered_packet(self, path_x, ptype, current_time);
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut()
+                .buffered_packet(self, path_x, ptype, current_time);
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut()
+                .buffered_packet(self, path_x, ptype, current_time);
+        }
     }
 
     fn outgoing_packet(
         &mut self,
-        _path_x: &mut Path,
-        _bytes: &[u8],
-        _sequence_number: u64,
-        _pn_length: usize,
-        _send_buffer: &[u8],
-        _current_time: Instant,
+        path_x: &mut Path,
+        bytes: &[u8],
+        sequence_number: u64,
+        pn_length: usize,
+        send_buffer: &[u8],
+        current_time: Instant,
     ) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+        if !self.is_still_logging() {
+            return;
+        }
+
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().outgoing_packet(
+                self,
+                path_x,
+                bytes,
+                sequence_number,
+                pn_length,
+                send_buffer,
+                current_time,
+            );
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut().outgoing_packet(
+                self,
+                path_x,
+                bytes,
+                sequence_number,
+                pn_length,
+                send_buffer,
+                current_time,
+            );
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut().outgoing_packet(
+                self,
+                path_x,
+                bytes,
+                sequence_number,
+                pn_length,
+                send_buffer,
+                current_time,
+            );
+        }
     }
 
     fn packet_lost(
         &mut self,
-        _path_x: &mut Path,
-        _ptype: PacketType,
-        _sequence_number: u64,
-        _trigger: &str,
-        _dcid: Option<&ConnectionId>,
-        _packet_size: usize,
-        _current_time: Instant,
+        path_x: &mut Path,
+        ptype: PacketType,
+        sequence_number: u64,
+        trigger: &str,
+        dcid: Option<&ConnectionId>,
+        packet_size: usize,
+        current_time: Instant,
     ) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+        if !self.is_still_logging() {
+            return;
+        }
+
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().packet_lost(
+                self,
+                path_x,
+                ptype,
+                sequence_number,
+                trigger,
+                dcid,
+                packet_size,
+                current_time,
+            );
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut().packet_lost(
+                self,
+                path_x,
+                ptype,
+                sequence_number,
+                trigger,
+                dcid,
+                packet_size,
+                current_time,
+            );
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut().packet_lost(
+                self,
+                path_x,
+                ptype,
+                sequence_number,
+                trigger,
+                dcid,
+                packet_size,
+                current_time,
+            );
+        }
     }
 
-    fn negotiated_alpn(
-        &mut self,
-        _is_local: bool,
-        _sni: &[u8],
-        _alpn: &[u8],
-        _alpn_list: &[&[u8]],
-    ) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+    fn negotiated_alpn(&mut self, is_local: bool, sni: &[u8], alpn: &[u8], alpn_list: &[&[u8]]) {
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut()
+                .negotiated_alpn(self, is_local, sni, alpn, alpn_list);
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut()
+                .negotiated_alpn(self, is_local, sni, alpn, alpn_list);
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut()
+                .negotiated_alpn(self, is_local, sni, alpn, alpn_list);
+        }
     }
 
-    fn transport_extension(&mut self, _is_local: bool, _params: &[u8]) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+    fn transport_extension(&mut self, is_local: bool, params: &[u8]) {
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut()
+                .transport_extension(self, is_local, params);
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut().transport_extension(self, is_local, params);
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut()
+                .transport_extension(self, is_local, params);
+        }
     }
 
-    fn tls_ticket(&mut self, _ticket: &[u8]) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+    fn tls_ticket(&mut self, ticket: &[u8]) {
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().tls_ticket(self, ticket);
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut().tls_ticket(self, ticket);
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut().tls_ticket(self, ticket);
+        }
     }
 
     fn new_connection(&mut self) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().new_connection(self);
+        }
+
+        if let Some(bin) = logger_ref(&self.bin_log_fns) {
+            bin.borrow_mut().new_connection(self);
+        }
+
+        if let Some(qlog) = logger_ref(&self.qlog_fns) {
+            qlog.borrow_mut().new_connection(self);
+        }
     }
 
     fn close_connection(&mut self) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+        if let Some(text) = logger_ref(&self.text_log_fns) {
+            text.borrow_mut().close_connection(self);
+        }
+
+        if self.f_binlog.is_some()
+            && let Some(bin) = logger_ref(&self.bin_log_fns)
+        {
+            bin.borrow_mut().close_connection(self);
+        }
+
+        if self.qlog_ctx.is_some()
+            && let Some(qlog) = logger_ref(&self.qlog_fns)
+        {
+            qlog.borrow_mut().close_connection(self);
+        }
     }
 
-    fn cc_dump(&mut self, _current_time: Instant) {
-        // blocked: Connection has no back-ref to Quic; logger vtables live on Quic.
-        todo!()
+    fn cc_dump(&mut self, current_time: Instant) {
+        let mut paths = core::mem::take(&mut self.paths);
+
+        if let Some(mut memlog) = self.memlog_call_back.take() {
+            if let Some(path0) = paths.first_mut() {
+                memlog.callback(self, path0, 0, current_time);
+            }
+            self.memlog_call_back = Some(memlog);
+        }
+
+        if self.is_still_logging() {
+            for path_x in &mut paths {
+                if !path_x.is_cc_data_updated {
+                    continue;
+                }
+
+                if let Some(text) = logger_ref(&self.text_log_fns) {
+                    text.borrow_mut().cc_dump(self, path_x, current_time);
+                }
+
+                if self.f_binlog.is_some()
+                    && let Some(bin) = logger_ref(&self.bin_log_fns)
+                {
+                    bin.borrow_mut().cc_dump(self, path_x, current_time);
+                }
+
+                if self.qlog_ctx.is_some()
+                    && let Some(qlog) = logger_ref(&self.qlog_fns)
+                {
+                    qlog.borrow_mut().cc_dump(self, path_x, current_time);
+                }
+
+                path_x.is_cc_data_updated = false;
+            }
+        }
+
+        self.paths = paths;
     }
 }

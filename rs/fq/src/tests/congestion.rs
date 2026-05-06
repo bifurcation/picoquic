@@ -258,11 +258,9 @@ fn performance_test_one(
 ) {
     let mut simulated_time = Instant::from_ticks(0x0005a138fbde8743u64);
     let picosec_per_byte_down = (1_000_000u64 * 8) / mbps;
-    let picosec_per_byte_up = if rkbps == 0 {
-        picosec_per_byte_down
-    } else {
-        (1_000_000_000u64 * 8) / rkbps
-    };
+    let picosec_per_byte_up = (1_000_000_000u64 * 8)
+        .checked_div(rkbps)
+        .unwrap_or(picosec_per_byte_down);
     let buffer_id = (buffer_size * 16) / (latency + jitter);
     let initial_cid = ConnectionId::clone_from_slice(&[
         0xbbu8,

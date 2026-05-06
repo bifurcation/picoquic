@@ -19,14 +19,14 @@ Per source file:
          `internal.rs`, `tls.rs`, `tests/util.rs`, etc.);
        * spells out the translation contract (TDD; panic-on-todo
          is fine; do not skip with placeholder todo!s).
-  2. Invoke `claude -p` with Read / Edit / Write / Bash(cargo
-     check / cargo fmt) tools.
-  3. After Claude returns, run `cargo test --no-run` as the gate.
+  2. Invoke the configured AI agent with Read / Edit / Write /
+     Bash(cargo check / cargo fmt) as the intended action scope.
+  3. After the agent returns, run `cargo test --no-run` as the gate.
 
 State / logs:
   - xlate/phase3a_state.json
   - xlate/phase3a_runs/<timestamp>.log
-  - xlate/claude_logs/phase3a/<src>.log
+  - xlate/<agent>_logs/phase3a/<src>.log
   - xlate/prompts/phase3a/<src>.md
 
 Usage:
@@ -38,6 +38,7 @@ Usage:
   python3 scripts/phase3a.py --force
   python3 scripts/phase3a.py --stop-on-failure
   python3 scripts/phase3a.py --max-turns 200 --model opus
+  python3 scripts/phase3a.py --agent codex
 """
 
 from __future__ import annotations
@@ -45,13 +46,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shlex
-import shutil
 import subprocess
 import sys
 import time
 from collections import defaultdict
 from pathlib import Path
+
+import agent_runner
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DRIVER = REPO_ROOT / "picoquic_t" / "picoquic_t.c"
@@ -61,10 +62,9 @@ RS_TESTS = RS_CRATE / "src" / "tests"
 
 PHASE3A_STATE = REPO_ROOT / "xlate" / "phase3a_state.json"
 PROMPTS_DIR = REPO_ROOT / "xlate" / "prompts" / "phase3a"
-LOG_DIR = REPO_ROOT / "xlate" / "claude_logs" / "phase3a"
 RUNS_DIR = REPO_ROOT / "xlate" / "phase3a_runs"
 
-# Tool allowlist for claude -p.  Includes Write because the agent
+# Tool allowlist for Claude.  Includes Write because the agent
 # may overwrite the entire stub file.  cargo test --no-run is the
 # build gate; cargo fmt cleans up after.
 ALLOWED_TOOLS = (
@@ -176,8 +176,9 @@ def prompt_file_path(src_basename: str) -> Path:
     return PROMPTS_DIR / f"{src_basename}.md"
 
 
-def claude_log_path(src_basename: str) -> Path:
-    return LOG_DIR / f"{src_basename}.log"
+def agent_log_path(agent: agent_runner.AgentConfig,
+                   src_basename: str) -> Path:
+    return agent_runner.log_dir(REPO_ROOT, agent, "phase3a") / f"{src_basename}.log"
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +215,7 @@ def is_done(src: str, state: dict) -> bool:
 # Prompt composition.
 
 def compose_batch_prompt(batch: list[tuple[str, list[tuple[str, str]]]]) -> str:
-    """Compose a single-claude-invocation prompt that translates
+    """Compose a single-agent-invocation prompt that translates
     multiple source files in one go.  Amortises the guide / API-surface
     reads across the whole batch.
     """
@@ -487,85 +488,29 @@ def write_batch_prompt(batch: list[tuple[str, list[tuple[str, str]]]]) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Claude invocation.
+# Agent invocation.
 
-def invoke_claude(src: str, prompt_file: Path,
-                  max_turns: int, model: str,
-                  log_path_override: Path | None = None) -> tuple[int, str]:
-    if shutil.which("claude") is None:
-        return 127, "claude CLI not found on PATH"
-    log = log_path_override if log_path_override is not None else claude_log_path(src)
-    log.parent.mkdir(parents=True, exist_ok=True)
+def invoke_agent(src: str, prompt_file: Path,
+                 max_turns: int,
+                 agent: agent_runner.AgentConfig,
+                 log_path_override: Path | None = None) -> tuple[int, str]:
+    log = (
+        log_path_override if log_path_override is not None
+        else agent_log_path(agent, src)
+    )
     prompt = prompt_file.read_text()
-    cmd = [
-        "claude", "-p", prompt,
-        "--model", model,
-        "--allowedTools", ALLOWED_TOOLS,
-        "--max-turns", str(max_turns),
-        "--output-format", "stream-json",
-        "--verbose",
-    ]
-    t0 = time.monotonic()
-    # Stream the events to disk in real time so the run can be
-    # monitored externally (`tail -f xlate/claude_logs/phase3a/<src>.log`).
-    log_f = open(log, "w", buffering=1)
-    log_f.write(
-        f"# claude -p (phase3a) for {src}\n"
-        f"# started: {time.strftime('%Y-%m-%dT%H:%M:%S')}\n"
-        f"# command: {' '.join(shlex.quote(c) for c in cmd[:1] + cmd[3:])}\n"
-        f"# (prompt: {prompt_file.relative_to(REPO_ROOT)})\n\n"
+    run = agent_runner.run_stream(
+        agent,
+        prompt,
+        repo_root=REPO_ROOT,
+        log_path=log,
+        phase="phase3a",
+        label=src,
+        prompt_file=prompt_file,
+        allowed_tools=ALLOWED_TOOLS,
+        max_turns=max_turns,
     )
-    final_summary = ""
-    last_assistant_text = ""
-    rate_limited = False
-    proc = subprocess.Popen(
-        cmd, cwd=REPO_ROOT,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        stdin=subprocess.DEVNULL, bufsize=1,
-    )
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        log_f.write(line)
-        line = line.rstrip()
-        if not line:
-            continue
-        try:
-            ev = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        # Surface a one-line summary for each tool use / message step.
-        if ev.get("type") == "assistant":
-            for block in ev.get("message", {}).get("content", []):
-                if block.get("type") == "tool_use":
-                    name = block.get("name", "?")
-                    inp = block.get("input", {})
-                    label = ""
-                    if name in {"Read", "Edit", "Write"}:
-                        label = inp.get("file_path", "")
-                    elif name == "Bash":
-                        label = inp.get("command", "")[:80]
-                    elif name in {"Glob", "Grep"}:
-                        label = inp.get("pattern", inp.get("query", ""))
-                    print(f"  · {name}({label})", flush=True)
-                elif block.get("type") == "text":
-                    last_assistant_text = block.get("text", "")
-        elif ev.get("type") == "result":
-            final_summary = ev.get("result", "") or ""
-            # Only rely on the structured api_error_status; the
-            # `result` text mentions "limit" plenty in legitimate
-            # contexts (test names like `app_limited`, words like
-            # `cwin_limited`, etc.).
-            if ev.get("api_error_status") == 429 and ev.get("is_error"):
-                rate_limited = True
-    rc = proc.wait()
-    elapsed = time.monotonic() - t0
-    log_f.write(f"\n# elapsed: {elapsed:.1f}s, exit: {rc}\n")
-    log_f.close()
-    if rate_limited:
-        # Surface the rate-limit signal with a distinctive exit code so
-        # the outer loop aborts rather than marking the source fail.
-        rc = 99
-    return rc, final_summary or last_assistant_text
+    return run.returncode, run.summary
 
 
 # ---------------------------------------------------------------------------
@@ -590,8 +535,8 @@ def run_gate() -> int:
 # Per-source-file runner.
 
 def run_one(src: str, entries: list[tuple[str, str]], *,
-            dry_run: bool, max_turns: int, model: str,
-            state: dict) -> str:
+            dry_run: bool, max_turns: int,
+            agent: agent_runner.AgentConfig, state: dict) -> str:
     print(f"\n=== {src} ({len(entries)} test(s)) ===")
     rs_target = rust_test_path(src)
     if not rs_target.is_file():
@@ -603,12 +548,13 @@ def run_one(src: str, entries: list[tuple[str, str]], *,
     prompt_file = write_prompt(src, entries)
     print(f"  prompt  → {prompt_file.relative_to(REPO_ROOT)}")
     if dry_run:
-        print("  (dry-run; skipping claude + gate)")
+        print("  (dry-run; skipping agent + gate)")
         return "skip"
 
-    print(f"  claude  → invoking ({model}, max-turns={max_turns}) …")
+    print(f"  {agent.label:<7} → invoking "
+          f"(model={agent.model_label}, max-turns={max_turns}) …")
     before = rs_target.read_text()
-    code, stdout = invoke_claude(src, prompt_file, max_turns, model)
+    code, stdout = invoke_agent(src, prompt_file, max_turns, agent)
     if code == 99:
         # Rate limit hit; do NOT mark the source as failed (the work
         # never started).  Surface a distinct status so the outer
@@ -616,9 +562,9 @@ def run_one(src: str, entries: list[tuple[str, str]], *,
         print(f"    RATE-LIMITED: {stdout.strip()[:200]}")
         return "rate-limited"
     if code != 0:
-        log_rel = claude_log_path(src).relative_to(REPO_ROOT)
-        print(f"    FAIL: claude exit {code} (see {log_rel})")
-        record(state, src, "fail", stage="claude", exit_code=code)
+        log_rel = agent_log_path(agent, src).relative_to(REPO_ROOT)
+        print(f"    FAIL: {agent.label} exit {code} (see {log_rel})")
+        record(state, src, "fail", stage=agent.label, exit_code=code)
         return "fail"
     after = rs_target.read_text()
     changed = before != after
@@ -638,9 +584,10 @@ def run_one(src: str, entries: list[tuple[str, str]], *,
 # Status / driver glue.
 
 def run_batch(batch: list[tuple[str, list[tuple[str, str]]]], *,
-              dry_run: bool, max_turns: int, model: str,
+              dry_run: bool, max_turns: int,
+              agent: agent_runner.AgentConfig,
               state: dict) -> tuple[list[str], list[str]]:
-    """Run one batched claude invocation over `batch` sources.
+    """Run one batched agent invocation over `batch` sources.
     Returns (succeeded, failed) lists keyed by source basename.
     """
     src_basenames = [src for src, _ in batch]
@@ -649,13 +596,17 @@ def run_batch(batch: list[tuple[str, list[tuple[str, str]]]], *,
     prompt_file = write_batch_prompt(batch)
     print(f"  prompt  → {prompt_file.relative_to(REPO_ROOT)}")
     if dry_run:
-        print("  (dry-run; skipping claude + check)")
+        print("  (dry-run; skipping agent + check)")
         return [], []
     batch_key = "_".join(src_basenames)[:80]
-    batch_log = LOG_DIR / f"batch_{batch_key}.log"
-    print(f"  claude  → invoking ({model}, max-turns={max_turns}) …")
-    code, stdout = invoke_claude(
-        f"batch_{batch_key}", prompt_file, max_turns, model,
+    batch_log = (
+        agent_runner.log_dir(REPO_ROOT, agent, "phase3a")
+        / f"batch_{batch_key}.log"
+    )
+    print(f"  {agent.label:<7} → invoking "
+          f"(model={agent.model_label}, max-turns={max_turns}) …")
+    code, stdout = invoke_agent(
+        f"batch_{batch_key}", prompt_file, max_turns, agent,
         log_path_override=batch_log,
     )
     if code == 99:
@@ -663,7 +614,7 @@ def run_batch(batch: list[tuple[str, list[tuple[str, str]]]], *,
         # Caller treats this as abort.
         return [], []
     if code != 0:
-        print(f"    FAIL: claude exit {code} (see {batch_log})")
+        print(f"    FAIL: {agent.label} exit {code} (see {batch_log})")
         # Don't mark sources as fail yet — let the checker decide.
     # Run the completion check to determine which sources are done.
     print("  check   → python3 scripts/phase3_check.py "
@@ -756,7 +707,7 @@ def main() -> int:
     p.add_argument("--limit", type=int, default=None,
                    help="Stop after N source files.")
     p.add_argument("--dry-run", action="store_true",
-                   help="Print plan; do not invoke claude or run the gate.")
+                   help="Print plan; do not invoke agent or run the gate.")
     p.add_argument("--stop-on-failure", action="store_true",
                    help="Stop at the first failure (default is to continue).")
     p.add_argument("--force", action="store_true",
@@ -764,16 +715,20 @@ def main() -> int:
     p.add_argument("--status", action="store_true",
                    help="Print progress and exit.")
     p.add_argument("--max-turns", type=int, default=200,
-                   help="Per-source / per-batch turn limit for claude (default 200).")
-    p.add_argument("--model", default="sonnet",
-                   help="Model passed to `claude -p --model` "
-                        "(default: sonnet).")
+                   help="Per-source / per-batch turn limit for Claude; "
+                        "included as guidance for Codex (default 200).")
+    agent_runner.add_agent_args(
+        p,
+        claude_default_model="sonnet",
+        model_help_context="Phase 3A agent",
+    )
     p.add_argument("--batch", type=int, default=1,
-                   help="Pack N sources per claude invocation "
+                   help="Pack N sources per agent invocation "
                         "(default: 1, i.e. per-source).  Larger values "
                         "amortise context-warmup but require higher "
                         "max-turns and may hit context-window limits.")
     args = p.parse_args()
+    agent = agent_runner.config_from_args(args, claude_default_model="sonnet")
 
     by_src = group_by_source()
 
@@ -811,6 +766,7 @@ def main() -> int:
     log_path = setup_run_log()
     t_run_start = time.monotonic()
     print(f"Phase 3A: {len(targets)} source file(s) to translate")
+    print(f"  agent:   {agent.label} (model={agent.model_label})")
     print(f"  run log: {log_path.relative_to(REPO_ROOT)}")
     print(f"  state:   {PHASE3A_STATE.relative_to(REPO_ROOT)}")
     failed: list[str] = []
@@ -823,7 +779,7 @@ def main() -> int:
         while idx < len(targets):
             batch = targets[idx:idx + args.batch]
             ok, bad = run_batch(batch, dry_run=args.dry_run,
-                                max_turns=args.max_turns, model=args.model,
+                                max_turns=args.max_turns, agent=agent,
                                 state=state)
             succeeded.extend(ok)
             failed.extend(bad)
@@ -840,7 +796,7 @@ def main() -> int:
     else:
         for src, entries in targets:
             result = run_one(src, entries, dry_run=args.dry_run,
-                             max_turns=args.max_turns, model=args.model,
+                             max_turns=args.max_turns, agent=agent,
                              state=state)
             if result == "rate-limited":
                 rate_limited_at = src

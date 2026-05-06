@@ -9,15 +9,16 @@ For each in-scope C header in topological (leaves-first) order:
      The baseline is *not* the production module — it's a diff-aid
      for the translator.
 
-  2. Translation: invoke `claude -p` (non-interactive Claude Code)
+  2. Translation: invoke the configured AI agent
+     (`--agent claude|codex`, default Claude)
      with a self-contained prompt that:
        - names the header,
        - points at the bindgen baseline,
        - cites TRANSLATE_PLAN.md / CLAUDE.md as binding,
-       - tells Claude to read callers to decide pointer shapes,
-       - tells Claude to write `rs/fq/src/<mirrored>.rs` with
+       - tells the agent to read callers to decide pointer shapes,
+       - tells the agent to write `rs/fq/src/<mirrored>.rs` with
          `todo!()` bodies,
-       - tells Claude to run `cargo check` from `rs/fq/` itself
+       - tells the agent to run `cargo check` from `rs/fq/` itself
          and iterate until it passes.
 
   3. Post-step: regenerate parent `mod` files so the new module is
@@ -36,7 +37,8 @@ Usage:
   python3 scripts/phase1.py                       # run all headers (continue on failure)
   python3 scripts/phase1.py --limit 1             # one header (smoke)
   python3 scripts/phase1.py --header picoquic/foo.h
-  python3 scripts/phase1.py --dry-run             # plan only, no claude
+  python3 scripts/phase1.py --dry-run             # plan only, no agent
+  python3 scripts/phase1.py --agent codex         # use Codex CLI
   python3 scripts/phase1.py --stop-on-failure     # stop at first failure
   python3 scripts/phase1.py --force               # redo finished headers
   python3 scripts/phase1.py --status              # progress only
@@ -44,15 +46,14 @@ Usage:
 Requirements:
   - `bindgen` on PATH (`cargo install bindgen-cli`).  If missing, the
     baseline step writes a stub and the run continues.
-  - `claude` on PATH (the Claude Code CLI).  Required unless
-    --dry-run.
+  - The selected agent CLI (`claude` or `codex`) on PATH.  Required
+    unless --dry-run.
   - xlate/inventory.json must exist (run `scripts/phase0.py` first).
 
-Claude is invoked with a narrow `--allowedTools` list — Read, Edit,
-Write, Glob, Grep, plus `Bash(cargo check)` so it can self-validate.
-No `bypassPermissions`; Claude cannot run arbitrary commands or
-touch files outside rs/fq/.  The session is a fresh, isolated
-`claude -p`; settings from any parent session do not carry over.
+When Claude is selected, it receives a narrow `--allowedTools` list —
+Read, Edit, Write, Glob, Grep, plus `Bash(cargo check)` so it can
+self-validate.  Codex is invoked via `codex exec` with a workspace-write
+sandbox and the same intended action scope appended to the prompt.
 
 State and logs:
   - xlate/phase1_state.json — per-header status ('ok'|'fail').
@@ -60,7 +61,7 @@ State and logs:
     redo everything).
   - xlate/phase1_runs/<timestamp>.log — full stdout for each run,
     tee'd from the pipeline.
-  - xlate/claude_logs/<path>.log — per-header transcript (claude
+  - xlate/<agent>_logs/<path>.log — per-header transcript (agent
     stdout/stderr).
 """
 
@@ -79,23 +80,24 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+import agent_runner
+
 REPO_ROOT     = Path(__file__).resolve().parent.parent
 INV_PATH      = REPO_ROOT / "xlate" / "inventory.json"
 CC_PATH       = REPO_ROOT / "build" / "compile_commands.json"
 BINDGEN_DIR   = REPO_ROOT / "xlate" / "bindgen_baseline"
 PROMPTS_DIR   = REPO_ROOT / "xlate" / "prompts"
-LOG_DIR       = REPO_ROOT / "xlate" / "claude_logs"
 RUNS_DIR      = REPO_ROOT / "xlate" / "phase1_runs"
 STATE_PATH    = REPO_ROOT / "xlate" / "phase1_state.json"
 RS_CRATE      = REPO_ROOT / "rs" / "fq"
 RS_SRC        = RS_CRATE / "src"
 
-# Tools claude is allowed to use during a per-header session.
+# Tools Claude is allowed to use during a per-header session.
 # - Read/Edit/Write/Glob/Grep: write the module, search C sources
 #   for caller usage.
 # - Bash(cargo check:*) + Bash(cargo clippy:*): self-validation
 #   only.  No other shell access.  These match the gate the
-#   parent script runs after claude finishes, so claude can
+#   parent script runs after the agent finishes, so it can
 #   converge on a gate-clean translation before returning.  The
 #   `:*` is the prefix-match form — the bare `Bash(cmd)` form is
 #   exact-match and rejects `cargo clippy -- -D warnings`.
@@ -186,8 +188,8 @@ def prompt_path(header: str) -> Path:
     return PROMPTS_DIR / Path(header).with_suffix(".md")
 
 
-def claude_log_path(header: str) -> Path:
-    return LOG_DIR / Path(header).with_suffix(".log")
+def agent_log_path(agent: agent_runner.AgentConfig, header: str) -> Path:
+    return agent_runner.log_dir(REPO_ROOT, agent) / Path(header).with_suffix(".log")
 
 
 # ---------------------------------------------------------------------------
@@ -524,41 +526,29 @@ def write_prompt_file(header: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Claude invocation
+# Agent invocation
 
-def invoke_claude(header: str, prompt_file: Path,
-                  max_turns: int) -> tuple[int, str]:
-    """Run `claude -p` with the prompt for one header.
+def invoke_agent(header: str, prompt_file: Path,
+                 max_turns: int,
+                 agent: agent_runner.AgentConfig) -> tuple[int, str]:
+    """Run the configured AI agent with the prompt for one header.
 
     Returns (exit_code, transcript). The transcript is also tee'd to
-    xlate/claude_logs/<path>.log.
+    xlate/<agent>_logs/<path>.log.
     """
-    if shutil.which("claude") is None:
-        return 127, "claude CLI not found on PATH"
-    log = claude_log_path(header)
-    log.parent.mkdir(parents=True, exist_ok=True)
     prompt = prompt_file.read_text()
-    cmd = [
-        "claude", "-p", prompt,
-        "--allowedTools", ALLOWED_TOOLS,
-        "--max-turns", str(max_turns),
-    ]
-    t0 = time.monotonic()
-    res = subprocess.run(
-        cmd, cwd=REPO_ROOT,
-        capture_output=True, text=True,
-        stdin=subprocess.DEVNULL,  # otherwise `claude -p` waits 3s on stdin
+    run = agent_runner.run_capture(
+        agent,
+        prompt,
+        repo_root=REPO_ROOT,
+        log_path=agent_log_path(agent, header),
+        phase="phase1",
+        label=header,
+        prompt_file=prompt_file,
+        allowed_tools=ALLOWED_TOOLS,
+        max_turns=max_turns,
     )
-    elapsed = time.monotonic() - t0
-    transcript = (
-        f"# claude -p for {header}\n"
-        f"# elapsed: {elapsed:.1f}s, exit: {res.returncode}\n"
-        f"# command: {' '.join(shlex.quote(c) for c in cmd[:1] + cmd[3:])}\n"
-        f"# (prompt omitted; see xlate/prompts/{header.replace('.h', '.md')})\n\n"
-        f"## stdout\n{res.stdout}\n\n## stderr\n{res.stderr}\n"
-    )
-    log.write_text(transcript)
-    return res.returncode, transcript
+    return run.returncode, run.summary
 
 
 # ---------------------------------------------------------------------------
@@ -611,7 +601,7 @@ def is_done(header: str, state: dict) -> bool:
     Status meanings:
       ok    — translated and gate-clean.  Skip on subsequent runs.
       fail  — last run failed.  Retry.
-      stub  — claude wrote a minimal `todo!()` stub for this header
+      stub  — an agent wrote a minimal `todo!()` stub for this header
               while translating a *dependent* header so its module
               could compile.  Not done — replace with the real
               translation when this header's turn comes.
@@ -771,7 +761,7 @@ def record_new_stubs(state: dict, *, header: str,
         h = header_for_rs_path(p, all_headers)
         if h is None:
             continue
-        # Don't downgrade an already-ok translation if claude touched it.
+        # Don't downgrade an already-ok translation if the agent touched it.
         if state.get(h, {}).get("status") == "ok":
             continue
         state[h] = {
@@ -786,6 +776,7 @@ def record_new_stubs(state: dict, *, header: str,
 
 
 def run_one(header: str, *, dry_run: bool, max_turns: int,
+            agent: agent_runner.AgentConfig,
             state: dict, all_headers: set[str]) -> str:
     """Translate one header.  Returns 'ok', 'skip', or 'fail'.
 
@@ -800,7 +791,7 @@ def run_one(header: str, *, dry_run: bool, max_turns: int,
     prompt_file = write_prompt_file(header)
     print(f"  prompt  → {prompt_file.relative_to(REPO_ROOT)}")
     if dry_run:
-        print("  (dry-run; skipping claude + gate)")
+        print("  (dry-run; skipping agent + gate)")
         return "skip"
 
     seed_placeholder(header)
@@ -810,19 +801,20 @@ def run_one(header: str, *, dry_run: bool, max_turns: int,
 
     rs_before = existing_rs_files()
 
-    print(f"  claude  → invoking (max-turns={max_turns}) …")
-    code, _transcript = invoke_claude(header, prompt_file, max_turns)
+    print(f"  {agent.label:<7} → invoking "
+          f"(model={agent.model_label}, max-turns={max_turns}) …")
+    code, _transcript = invoke_agent(header, prompt_file, max_turns, agent)
     if code != 0:
-        print(f"    FAIL: claude exit {code} "
-              f"(see {claude_log_path(header).relative_to(REPO_ROOT)})")
-        record(state, header, "fail", stage="claude", exit_code=code)
+        print(f"    FAIL: {agent.label} exit {code} "
+              f"(see {agent_log_path(agent, header).relative_to(REPO_ROOT)})")
+        record(state, header, "fail", stage=agent.label, exit_code=code)
         return "fail"
     if is_still_placeholder(header):
-        msg = (f"claude finished but "
+        msg = (f"{agent.label} finished but "
                f"{rust_path_for(header).relative_to(REPO_ROOT)} "
                "is still the placeholder")
         print(f"    FAIL: {msg}")
-        record(state, header, "fail", stage="claude", reason=msg)
+        record(state, header, "fail", stage=agent.label, reason=msg)
         return "fail"
 
     rs_after = existing_rs_files()
@@ -857,7 +849,7 @@ def main() -> int:
     p.add_argument("--limit", type=int, default=None,
                    help="Stop after translating N headers.")
     p.add_argument("--dry-run", action="store_true",
-                   help="Print plan; do not invoke claude or run the gate.")
+                   help="Print plan; do not invoke agent or run the gate.")
     p.add_argument("--stop-on-failure", action="store_true",
                    help="Stop at the first failure (default is to continue).")
     p.add_argument("--force", action="store_true",
@@ -868,8 +860,11 @@ def main() -> int:
     p.add_argument("--print-order", action="store_true",
                    help="Print headers in topological translation order and exit.")
     p.add_argument("--max-turns", type=int, default=80,
-                   help="Per-header turn limit for claude (default 80).")
+                   help="Per-header turn limit for Claude; included as "
+                        "guidance for Codex (default 80).")
+    agent_runner.add_agent_args(p, model_help_context="Phase 1 agent")
     args = p.parse_args()
+    agent = agent_runner.config_from_args(args)
 
     if not INV_PATH.is_file():
         print(f"missing {INV_PATH}; run scripts/phase0.py first",
@@ -912,6 +907,7 @@ def main() -> int:
     log_path = setup_run_log()
     t_run_start = time.monotonic()
     print(f"Phase 1: {len(targets)} header(s) to translate")
+    print(f"  agent:   {agent.label} (model={agent.model_label})")
     print(f"  run log: {log_path.relative_to(REPO_ROOT)}")
     print(f"  state:   {STATE_PATH.relative_to(REPO_ROOT)}")
     failed: list[str] = []
@@ -919,7 +915,8 @@ def main() -> int:
     headers_set = set(all_headers)
     for h in targets:
         result = run_one(h, dry_run=args.dry_run, max_turns=args.max_turns,
-                         state=state, all_headers=headers_set)
+                         agent=agent, state=state,
+                         all_headers=headers_set)
         if result == "fail":
             failed.append(h)
             if args.stop_on_failure:

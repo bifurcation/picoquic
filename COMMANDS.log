@@ -253,3 +253,362 @@
 2026-05-06T00:00:00Z Phase 4 logger.rs: translated the 3 Quic-rooted dispatchers (log_app_message / log_pdu / close_logs) using the take/dispatch/restore pattern on the boxed Logger vtables to avoid &mut self double-borrow with &mut Quic. Connection-rooted Log trait methods left as bare todo!() with structural blocker note: settled trait surface gives them only &mut self, no &mut Quic, so they cannot reach text_log_fns / bin_log_fns / qlog_fns on the parent context.
   cd rs/fq && cargo check && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
   python3 scripts/phase4_check.py rs/fq/src/logger.rs
+2026-05-06T09:00:00Z Agent provider switch: inspected CLAUDE.md, TRANSLATE_PLAN.md, scripts, and local Codex CLI; added scripts/agent_runner.py; wired phase1/phase1a/phase1c/phase2a/phase3a/phase4 to --agent claude|codex; added AGENTS.md and docs; verified syntax/help/dry-run.
+  pwd
+  rg --files
+  sed -n '1,220p' CLAUDE.md
+  sed -n '1,260p' TRANSLATE_PLAN.md
+  rg -n "claude|Claude|CLAUDE|anthropic|codex|Codex" scripts *.md rs -S
+  find scripts -maxdepth 2 -type f -print
+  ls -la scripts
+  git status --short
+  sed -n '1,260p' scripts/phase1.py
+  sed -n '500,900p' scripts/phase1.py
+  sed -n '1,220p' scripts/README.md
+  tail -n 40 COMMANDS.log
+  command -v codex
+  codex --help
+  command -v claude
+  codex exec --help
+  sed -n '1,460p' scripts/phase1a.py
+  sed -n '1,380p' scripts/phase1c.py
+  sed -n '460,620p' scripts/phase1a.py
+  sed -n '380,560p' scripts/phase1c.py
+  sed -n '1,220p' scripts/phase2a.py
+  sed -n '460,840p' scripts/phase3a.py
+  sed -n '500,840p' scripts/phase4.py
+  sed -n '1,120p' scripts/phase3a.py
+  sed -n '1,120p' scripts/phase4.py
+  rg -n "LOG_DIR|invoke_claude|claude_log_path|claude  →|claude exit|skipping claude|args\\.model|model=args\\.model|import shlex|import shutil" scripts/phase1.py scripts/phase1a.py scripts/phase1c.py scripts/phase2a.py scripts/phase3a.py scripts/phase4.py
+  env PYTHONPYCACHEPREFIX=/private/tmp/codex-pycache python3 -m py_compile scripts/agent_runner.py scripts/phase1.py scripts/phase1a.py scripts/phase1c.py scripts/phase2a.py scripts/phase3a.py scripts/phase4.py
+
+2026-05-06T00:00:00Z Phase 4 packet_loop.rs implementation: replaced all 9 incomplete bodies with concrete Rust implementations for run_v2/run, packet-loop helper flow, thread context spawn/wake state, create_server, start_server_threads, and open_sockets; added narrow clippy-only fixes in cc_common.rs, tests/util.rs, and tests/congestion.rs needed by the verification gate. `cargo test --no-run` required CARGO_INCREMENTAL=0 on this volume; exact all-features clippy attempted but blocked before compilation by restricted network/DNS while downloading crates.
+  sed -n '1,220p' CLAUDE.md
+  sed -n '1,220p' TRANSLATE_PLAN.md
+  sed -n '1,260p' xlate/impl_translation_guide.md
+  sed -n '1,260p' rs/fq/src/packet_loop.rs
+  rg -n "todo!|unimplemented!|SKIP:" rs/fq/src/packet_loop.rs
+  sed -n '261,860p' rs/fq/src/packet_loop.rs
+  rg -n "packet_loop|picoquic_packet_loop|socket_ctx|open_sockets|network_thread|packet_set" picoquic/*.c picoquic/*.h
+  rg -n "packet_loop|NetworkThreadCtx|open_sockets|SocketCtx|LoopParam|LoopOptions" rs/fq/src/tests rs/fq/src
+  sed -n '340,540p' picoquic/sockloop.c
+  sed -n '1100,1645p' picoquic/sockloop.c
+  sed -n '1680,2075p' picoquic/sockloop.c
+  sed -n '1,260p' rs/fq/src/tests/sockloop.rs
+  sed -n '1,260p' rs/fq/src/socks.rs
+  sed -n '260,620p' rs/fq/src/socks.rs
+  sed -n '1,360p' rs/fq/src/socks_socket2.rs
+  rg -n "fn .*incoming|incoming_packet|prepare_next|get_next_wake|wake|current_time|v_thread_ctx|default_congestion|ecn|default_tp|create_and_configure|set_alpn|perflog|qlog|key_log|unique_log|lb_compat|ticket_encryption|nb_threads|server_port|local_port|dest_if|socket_buffer_size|do_not_use_gso" rs/fq/src
+  rg -n "pub enum Error|NO_ERROR|TERMINATE|SIMULATE|Generic|Unexpected" rs/fq/src
+  rg -n "pub fn (incoming_packet|incoming_packet_ex|prepare_next_packet|prepare_next_packet_ex|next_wake_time|wake_delay|current_time|create_and_configure|create_server|set_alpn|set_key_log|set_use_unique|set_qlog|perflog_setup|set_default_tp|default_tp|set_default_congestion|create\\(|free\\(|crypto_random)" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/config.rs rs/fq/src/performance_log.rs rs/fq/src/qlog.rs
+  sed -n '1080,1300p' rs/fq/src/internal.rs
+  sed -n '1,260p' rs/fq/src/config.rs
+  sed -n '100,150p' rs/fq/src/lib.rs
+  sed -n '450,500p' rs/fq/src/lib.rs
+  sed -n '940,1045p' rs/fq/src/lib.rs
+  sed -n '1340,1395p' rs/fq/src/lib.rs
+  sed -n '1700,1745p' rs/fq/src/lib.rs
+  sed -n '2160,2575p' rs/fq/src/lib.rs
+  sed -n '1250,1370p' rs/fq/src/config.rs
+  sed -n '1370,1455p' rs/fq/src/config.rs
+  rg -n "pub struct Config|nb_threads|ticket_encryption_key|local_port|server_port|is_port_shared|dest_if|socket_buffer_size|do_not_use_gso|performance_log|cnx_id" rs/fq/src/config.rs
+  sed -n '900,990p' rs/fq/src/config.rs
+  rg -n "NO_ERROR_TERMINATE|SIMULATE_NAT|MAX_PACKET_SIZE|PICOQUIC_MAX_PACKET_SIZE|ERROR_UNEXPECTED|ERROR_CLASS" rs/fq/src picoquic/*.h
+  sed -n '1,220p' rs/fq/Cargo.toml
+  rg -n "OsRng|CryptoRng|random|rng" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/crypto.rs rs/fq/src/config.rs
+  sed -n '1160,1245p' rs/fq/src/lib.rs
+  rg -n "pub use internal::\\{|type Quic|pub struct Quic|pub use .*Quic" rs/fq/src/lib.rs rs/fq/src/internal.rs
+  rg -n "use .*internal::.*Quic|pub use internal" rs/fq/src/lib.rs
+  sed -n '400,430p' rs/fq/src/lib.rs
+  rg -n "struct .*Load|LoadBalancer|Compat|config_parse|compat_cid_config|pub fn .*config" rs/fq/src/lb.rs rs/fq/src/lib.rs
+  sed -n '1,170p' rs/fq/src/lb.rs
+  sed -n '480,520p' rs/fq/src/lb.rs
+  rg -n "struct TransportParameters|is_reset_stream_at_enabled|max_datagram_frame_size|reset_stream" rs/fq/src/tp.rs rs/fq/src/lib.rs rs/fq/src/internal.rs
+  sed -n '150,210p' rs/fq/src/tp.rs
+  rg -n "pub fn new\\(" -A30 rs/fq/src/lib.rs
+  rg -n "impl Drop for NetworkThreadCtx|delete_network_thread|wake_up_sender|wake_up_receiver" rs/fq/src/packet_loop.rs rs/fq/src
+  rg -n "picoquic_delete_thread|picoquic_create_thread" picoquic/*.c picoquic/*.h
+  sed -n '1120,1170p' picoquic/util.c
+  sed -n '1170,1195p' picoquic/util.c
+  python3 scripts/phase4_check.py rs/fq/src/packet_loop.rs
+  cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  cargo fmt
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings
+  CARGO_INCREMENTAL=0 cargo clippy --tests -- -D warnings
+  sed -n '470,500p' rs/fq/src/cc_common.rs
+  sed -n '1095,1145p' rs/fq/src/tests/util.rs
+  sed -n '250,270p' rs/fq/src/tests/congestion.rs
+  git status --short
+  cargo fmt
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo clippy --tests -- -D warnings
+  python3 scripts/phase4_check.py rs/fq/src/packet_loop.rs
+  rg -n "fn run_packet_loop|pub fn run_v2|pub fn spawn_custom|impl Drop for NetworkThreadCtx|pub fn create_server|pub fn start_server_threads|pub fn open_sockets" rs/fq/src/packet_loop.rs
+  rg -n "CongestionNotification::EcnEc|checked_div|s_to_c_link_2.as_mut" rs/fq/src/cc_common.rs rs/fq/src/tests/congestion.rs rs/fq/src/tests/util.rs
+  git status --short rs/fq/src/packet_loop.rs rs/fq/src/cc_common.rs rs/fq/src/tests/util.rs rs/fq/src/tests/congestion.rs COMMANDS.log
+  rg -n "todo!|unimplemented!|SKIP:|blocked:|deferred|out of scope|v2" rs/fq/src/packet_loop.rs
+  sed -n '445,462p' rs/fq/src/packet_loop.rs
+  cargo fmt
+  rg -n "todo!|unimplemented!|SKIP:|blocked:|deferred|out of scope" rs/fq/src/packet_loop.rs
+  python3 scripts/phase4_check.py rs/fq/src/packet_loop.rs
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo clippy --tests -- -D warnings
+  tail -n 80 COMMANDS.log
+  git diff --stat
+  git diff -- rs/fq/src/packet_loop.rs
+  git diff -- rs/fq/src/cc_common.rs rs/fq/src/tests/util.rs rs/fq/src/tests/congestion.rs
+  cargo fmt
+  python3 scripts/phase4_check.py rs/fq/src/packet_loop.rs
+  rg -n "todo!|unimplemented!|SKIP:|blocked:|deferred|out of scope" rs/fq/src/packet_loop.rs
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  cargo fmt
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo clippy --tests -- -D warnings
+  python3 scripts/phase4_check.py rs/fq/src/packet_loop.rs
+  python3 scripts/phase1.py --help
+  python3 scripts/phase1c.py --help
+  python3 scripts/phase2a.py --dry-run --agent codex --model gpt-5.3-codex
+  python3 scripts/phase3a.py --help
+  python3 scripts/phase4.py --help
+  git status --short
+  git diff --stat
+  git diff -- scripts/agent_runner.py scripts/phase1.py scripts/phase1a.py scripts/phase1c.py scripts/phase2a.py scripts/phase3a.py scripts/phase4.py
+  git diff -- AGENTS.md CLAUDE.md scripts/README.md TRANSLATE_PLAN.md COMMANDS.log
+  env PYTHONPYCACHEPREFIX=/private/tmp/codex-pycache python3 -m py_compile scripts/agent_runner.py scripts/phase1.py scripts/phase1a.py scripts/phase1c.py scripts/phase2a.py scripts/phase3a.py scripts/phase4.py
+  python3 scripts/phase2a.py --dry-run --agent codex --model gpt-5.3-codex
+  env PYTHONPYCACHEPREFIX=/private/tmp/codex-pycache python3 -m py_compile scripts/agent_runner.py scripts/phase1.py scripts/phase1a.py scripts/phase1c.py scripts/phase2a.py scripts/phase3a.py scripts/phase4.py
+  sed -n '1,240p' CLAUDE.md
+  sed -n '1,260p' TRANSLATE_PLAN.md
+  sed -n '1,260p' xlate/impl_translation_guide.md
+  sed -n '1,260p' rs/fq/src/tests/util.rs
+  sed -n '261,620p' xlate/impl_translation_guide.md
+  sed -n '261,620p' TRANSLATE_PLAN.md
+  sed -n '261,620p' rs/fq/src/tests/util.rs
+  rg -n "todo!|unimplemented!|SKIP:" rs/fq/src/tests/util.rs
+  sed -n '621,1040p' rs/fq/src/tests/util.rs
+  sed -n '1041,1480p' rs/fq/src/tests/util.rs
+  sed -n '1481,2060p' rs/fq/src/tests/util.rs
+  sed -n '2061,2600p' rs/fq/src/tests/util.rs
+  sed -n '2601,3360p' rs/fq/src/tests/util.rs
+  rg -n "stub|ignored|not yet|Phase 4|TODO|todo!|unimplemented!|SKIP:|None|Err\\(crate::Error::Generic\\)|Ok\\(\\(\\)\\)" rs/fq/src/tests/util.rs
+  rg -n "zero_rtt_test_one|warptest_configure|session_resume_test_one|transport_extension_content|picoquic_textlog_transport_extension_content|test_api_init_send_recv_scenario|test_api_queue_initial_queries|test_datagram_next_time_ready|test_datagram_check_ready|tester_simple_ack_frame" picoquic picoquictest rs/fq/src/tests
+  sed -n '3361,3505p' rs/fq/src/tests/util.rs
+  python3 scripts/phase4_check.py rs/fq/src/tests/util.rs
+  cargo test --no-run
+  sed -n '4360,4485p' picoquictest/tls_api_test.c
+  sed -n '4486,4635p' picoquictest/tls_api_test.c
+  sed -n '1450,1515p' picoquictest/warptest.c
+  sed -n '560,710p' picoquictest/ticket_store_test.c
+  sed -n '710,820p' picoquictest/ticket_store_test.c
+  sed -n '980,1045p' picoquictest/transport_param_test.c
+  sed -n '400,930p' picoquictest/tls_api_test.c
+  sed -n '52,75p' picoquictest/datagram_tests.c
+  rg -n "struct Quic|pub struct Quic|impl Quic|stored_tickets|issued_ticket|save_tickets|ticket|bdp|zero_rtt|0rtt|nb_zero|seed_rtt|seed_cwin|resumed_ticket|dont_coalesce|is_multipath_enabled|sum_data_received" rs/fq/src
+  rg -n "fn (add_to_stream|mark_active_stream|start_client|close|first_cnx_mut|create_connection|set_default_tp|set_default_bdp|set_cookie_mode|save_tickets|prepare_transport_extensions|receive_transport_extensions|set_transport_parameters|is_0rtt|tls_is_psk|start_key_rotation)" rs/fq/src
+  rg -n "pub struct Connection|struct Connection|pub .*zero|issued_ticket|resumed_ticket|seed_|max_early|is_multipath|did_receive|nb_zero|local_parameters|remote_parameters|connection_state|stream" rs/fq/src/internal.rs rs/fq/src/*.rs
+  rg -n "pub enum Error|type Result|Generic|Transport|Protocol|Invalid" rs/fq/src/lib.rs rs/fq/src/errors.rs
+  sed -n '720,875p' rs/fq/src/internal.rs
+  sed -n '1670,1705p' rs/fq/src/lib.rs
+  sed -n '1748,1865p' rs/fq/src/lib.rs
+  sed -n '2235,2350p' rs/fq/src/lib.rs
+  sed -n '1528,1670p' rs/fq/src/tests/tls_api.rs
+  sed -n '1048,1110p' rs/fq/src/tests/multipath.rs
+  sed -n '1,70p' rs/fq/src/tests/ticket_store.rs
+  rg -n "warptest_one|WarptestSpec|transport_param_log_test_one|log_tp|ticket_seed_test_one|zero_rtt_test_one" rs/fq/src/tests
+  sed -n '70,115p' rs/fq/src/tests/transport_param.rs
+  sed -n '1045,1135p' picoquictest/transport_param_test.c
+  sed -n '1135,1210p' picoquictest/transport_param_test.c
+  sed -n '1840,1975p' picoquic/logger.c
+  rg -n "textlog_prefix_initial_cid64|textlog_prefix" picoquic/logger.c rs/fq/src/logger.rs rs/fq/src/textlog.rs
+  sed -n '45,60p' picoquic/logger.c
+  rg -n "client_param1|client_param2|client_param3|client_param4|client_param5|server_param1|server_param2|server_param3" picoquictest/transport_param_test.c rs/fq/src/tests/transport_param.rs rs/fq/src/tests/util.rs
+  sed -n '120,235p' picoquictest/transport_param_test.c
+  sed -n '1,110p' rs/fq/src/tp.rs
+  rg -n "fn .*varint.*decode|pub fn varint_decode|varint_decode\\(" rs/fq/src/internal.rs rs/fq/src/frames.rs rs/fq/src/bytestream.rs
+  sed -n '4348,4368p' rs/fq/src/internal.rs
+  sed -n '4368,4378p' rs/fq/src/internal.rs
+  sed -n '1,220p' picoquictest/log_tp_test_ref.txt
+  sed -n '1,95p' rs/fq/src/tests/warptest.rs
+  sed -n '1,170p' picoquictest/warptest.c
+  sed -n '1270,1465p' picoquictest/warptest.c
+  rg -n "warptest_step|warptest_is_finished|warptest_check_stats|warptest_delete_ctx|typedef enum|warptest_audio|warptest_video|warptest_spec_t|warptest_ctx_t" picoquictest/warptest.c picoquictest/picoquictest_internal.h
+  sed -n '174,190p' picoquictest/warptest.c
+  sed -n '1129,1245p' picoquictest/warptest.c
+  sed -n '632,660p' picoquictest/warptest.c
+  rg -n "ticket_file_name|resume_tests_tickets|ticket.*\\.bin|TICKET_FILE" picoquictest/tls_api_test.c rs/fq/src/tests/tls_api.rs rs/fq/src/tests/util.rs
+  rg -n "ech_configure|configure_ech|ECH|client_zero_share|badcrypt|use_bad" rs/fq/src
+  sed -n '2720,2785p' rs/fq/src/lib.rs
+  sed -n '1390,1455p' rs/fq/src/internal.rs
+  sed -n '5520,5660p' rs/fq/src/internal.rs
+  rg -n "send_queue|StreamQueueNode|nb_bytes_queued|queue.*stream|output_streams|sent_offset|fin_requested|fin_sent" rs/fq/src/internal.rs rs/fq/src/lib.rs
+  sed -n '585,610p' rs/fq/src/internal.rs
+  sed -n '5724,5780p' rs/fq/src/internal.rs
+  sed -n '520,590p' picoquictest/ticket_store_test.c
+  sed -n '960,1005p' rs/fq/src/internal.rs
+  sed -n '1040,1098p' rs/fq/src/internal.rs
+  sed -n '1098,1138p' rs/fq/src/internal.rs
+  sed -n '1178,1218p' rs/fq/src/internal.rs
+  python3 scripts/phase4_check.py rs/fq/src/tests/util.rs
+  rg -n "todo!|unimplemented!|SKIP:" rs/fq/src/tests/util.rs
+  cargo fmt
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo clippy --tests -- -D warnings
+  python3 scripts/phase4_check.py rs/fq/src/tests/util.rs
+  cargo fmt
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo clippy --tests -- -D warnings
+  python3 scripts/phase4_check.py rs/fq/src/tests/util.rs
+  CARGO_INCREMENTAL=0 cargo clippy --tests --all-features --offline -- -D warnings
+  CARGO_INCREMENTAL=0 cargo test transport_param_log -- --nocapture
+  diff -u picoquictest/log_tp_test_ref.txt rs/fq/log_tp_test.txt
+  cargo fmt
+  CARGO_INCREMENTAL=0 cargo test transport_param_log -- --nocapture
+  CARGO_INCREMENTAL=0 cargo test --no-run
+  CARGO_INCREMENTAL=0 cargo clippy --tests -- -D warnings
+  python3 scripts/phase4_check.py rs/fq/src/tests/util.rs
+  tail -n 5 COMMANDS.log
+  git diff --stat -- rs/fq/src/tests/util.rs COMMANDS.log
+  git diff -- rs/fq/src/tests/util.rs
+  git diff -- COMMANDS.log
+  git status --short rs/fq/log_tp_test.txt rs/fq/log_tp_fuzz_test.txt
+  rm rs/fq/log_tp_test.txt rs/fq/log_tp_fuzz_test.txt
+
+2026-05-06T00:00:00Z Phase 4 tests/util.rs status follow-up: confirmed tests/util.rs has 0 incomplete bodies, only internal.rs remains marker-bearing (125 SKIP bodies), and reran the full Rust test suite. Passage improved to 236/505 (269 failed), up from the prior 223/505 measurement after the earlier Phase 4 passes; generated test artifacts were removed afterward.
+  python3 scripts/phase4.py --status
+  python3 scripts/phase4_check.py rs/fq/src/tests/util.rs rs/fq/src/internal.rs --detail
+  git status --short rs/fq/src/tests/util.rs xlate/phase4_state.json COMMANDS.log xlate/phase4_runs/20260506T123818.log
+  env CARGO_INCREMENTAL=0 cargo test -- --test-threads=1
+  git status --short
+  tail -n 80 COMMANDS.log
+  find rs/fq -maxdepth 1 -type f -name '*ticket*' -o -name 'log_tp*.txt'
+  rm rs/fq/log_tp_fuzz_test.txt rs/fq/log_tp_test.txt rs/fq/resume_tests_tickets.bin rs/fq/ticket_seed_store.bin
+
+2026-05-06T00:00:00Z Phase 4 internal.rs implementation pass: removed all remaining incomplete markers from rs/fq/src/internal.rs, translated ticket/token persistence, path/CID management, packet/header protection, stream/crypto/ACK/close/datagram frame handling, transport-extension encode/decode, version upgrade, and test crypto setup; verified compile, clippy, and phase4 gate.
+  rg -n "todo!\(|unimplemented!\(|// SKIP:" rs/fq/src/internal.rs
+  python3 scripts/phase4_check.py rs/fq/src/internal.rs
+  cd rs/fq && cargo fmt && CARGO_INCREMENTAL=0 cargo test --no-run
+  sed -n '3300,3465p' rs/fq/src/internal.rs
+  sed -n '3465,3860p' rs/fq/src/internal.rs
+  rg -n "registered_reset_secret|reset_secret|registered_reset|remote_cnx|initial_connection_id|packet_train|needs_removal|connection_by_id_membership|fn insert|struct Hash|pub fn insert" rs/fq/src/internal.rs rs/fq/src/*.rs
+  sed -n '1450,1535p' rs/fq/src/internal.rs
+  sed -n '1880,1945p' rs/fq/src/internal.rs
+  sed -n '2200,2260p' rs/fq/src/internal.rs
+  sed -n '2500,2535p' rs/fq/src/internal.rs
+  cd rs/fq && cargo fmt && CARGO_INCREMENTAL=0 cargo test --no-run
+  sed -n '3710,4810p' rs/fq/src/internal.rs
+  sed -n '5420,5665p' rs/fq/src/internal.rs
+  sed -n '6740,7010p' rs/fq/src/internal.rs
+  sed -n '7220,7310p' rs/fq/src/internal.rs
+  sed -n '7740,8140p' rs/fq/src/internal.rs
+  sed -n '8350,8895p' rs/fq/src/internal.rs
+  sed -n '9325,9370p' rs/fq/src/internal.rs
+  sed -n '7000,7268p' rs/fq/src/internal.rs
+  rg -n "pub struct Packet|pub struct StreamHead|pub struct StreamDataNode|pub struct MiscFrameHeader|pub struct CryptoContext|pub struct PacketHeader|enum FrameType|trait PacketKey|trait HeaderKey|pub struct Datagram" rs/fq/src/internal.rs rs/fq/src/*.rs
+  rg -n "send_queue|receive_queue|received_data|StreamDataNode|datagram|dg_|queue_data_repeat|crypto_context|aead|pn_enc|pn_dec" rs/fq/src/internal.rs rs/fq/src/*.rs
+  sed -n '1,180p' rs/fq/src/tls.rs
+  sed -n '1,220p' rs/fq/src/frames.rs
+  sed -n '220,310p' rs/fq/src/tls.rs
+  sed -n '440,680p' rs/fq/src/internal.rs
+  sed -n '1740,1815p' rs/fq/src/internal.rs
+  sed -n '2120,2145p' rs/fq/src/internal.rs
+  sed -n '680,735p' rs/fq/src/internal.rs
+  sed -n '1160,1205p' rs/fq/src/tls_api.rs
+  rg -n "HeaderProtector|protect|sample|mask\(" rs/fq/src/header_protection.rs rs/fq/src/tls_api.rs rs/fq/src/*.rs
+  sed -n '1,220p' rs/fq/src/header_protection.rs
+  sed -n '360,430p' rs/fq/src/splay.rs
+  sed -n '100,145p' rs/fq/src/arena.rs
+  rg -n "queued_packets|pending\.insert|retransmitted\.insert|PacketToken|PacketContextState" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/tests
+  rg -n "format_ack_frame|decode_stream_frame|format_stream_frame|prepare_transport_extensions|set_test_aead|protect_packet_header|remove_header_protection" rs/fq/src/tests rs/fq/src/*.rs
+  sed -n '540,590p' rs/fq/src/tests/util.rs
+  sed -n '300,355p' rs/fq/src/tests/sacktest.rs
+  sed -n '650,720p' rs/fq/src/tests/sacktest.rs
+  sed -n '600,625p' rs/fq/src/tests/parseheadertest.rs
+  sed -n '3800,3860p' rs/fq/src/tests/util.rs
+  rg -n "fn test_packet_encrypt_one|test_packet_encrypt_one" rs/fq/src/tests/parseheadertest.rs rs/fq/src/tests/util.rs rs/fq/src/tests
+  rg -n "fn .*transport|TransportParameters|encode|decode|serialize|parse" rs/fq/src/tp.rs rs/fq/src/tls_api.rs rs/fq/src/lib.rs
+  sed -n '1,260p' rs/fq/src/tp.rs
+  sed -n '9000,9065p' rs/fq/src/internal.rs
+  sed -n '9065,9175p' rs/fq/src/internal.rs
+  rg -n "parse_packet_header|parse_header|create_packet_header|encrypt_packet|protect_packet" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/tests
+  sed -n '5020,5428p' rs/fq/src/internal.rs
+  sed -n '450,490p' rs/fq/src/tests/parseheadertest.rs
+  sed -n '720,750p' rs/fq/src/tests/parseheadertest.rs
+  sed -n '1600,1645p' rs/fq/src/lib.rs
+  rg -n "pub enum PacketContext|pub enum PacketType|pub enum Epoch|pub enum State" rs/fq/src/internal.rs rs/fq/src/lib.rs
+  sed -n '205,265p' rs/fq/src/lib.rs
+  sed -n '418,448p' rs/fq/src/internal.rs
+  sed -n '1830,1870p' rs/fq/src/internal.rs
+  sed -n '9460,9615p' rs/fq/src/internal.rs
+  rg -n "impl Default for PacketHeader|PacketHeader \{" rs/fq/src/internal.rs
+  sed -n '8895,8955p' rs/fq/src/internal.rs
+  rg -n "create_local_connection_id|local_connection_ids|LocalConnectionIdList" rs/fq/src/internal.rs rs/fq/src/lib.rs
+  sed -n '7485,7785p' rs/fq/src/internal.rs
+  rg -n "fn .*stream|create_stream|find.*stream|get_or_create|insert_output_stream|stream_tree|queue_network_input" rs/fq/src/internal.rs rs/fq/src/lib.rs
+  sed -n '6445,6675p' rs/fq/src/internal.rs
+  sed -n '6675,6745p' rs/fq/src/internal.rs
+  rg -n "impl SackList|fn sack|pub fn first\(|last\(|add_range" rs/fq/src/internal.rs
+  sed -n '6190,6478p' rs/fq/src/internal.rs
+  rg -n "sending_ecn_ack|ecn_ect|is_ack_needed|ack_needed" rs/fq/src/internal.rs
+  sed -n '6090,6145p' rs/fq/src/internal.rs
+  rg -n "fn basic_ack_parse|basic_ack_parse" rs/fq/src/tests/sacktest.rs
+  sed -n '160,290p' rs/fq/src/tests/sacktest.rs
+  sed -n '2368,2390p' rs/fq/src/lib.rs
+  rg -n "SUPPORTED|supported_versions|Version::|pub enum Version|impl Version" rs/fq/src/internal.rs
+  sed -n '230,330p' rs/fq/src/internal.rs
+  rg -n "max_path_id_local|max_path_id" rs/fq/src/internal.rs
+  rg -n "todo!\(|unimplemented!\(|// SKIP:" rs/fq/src/internal.rs
+  cd rs/fq && cargo fmt && CARGO_INCREMENTAL=0 cargo test --no-run
+  sed -n '9488,9515p' rs/fq/src/internal.rs
+  sed -n '7664,7678p' rs/fq/src/internal.rs
+  sed -n '10230,10250p' rs/fq/src/internal.rs
+  rg -n "pub fn receive_transport_extensions|pub fn prepare_transport_extensions" -A10 rs/fq/src/internal.rs
+  nl -ba rs/fq/src/internal.rs | sed -n '7668,7677p;9498,9507p;10296,10303p'
+  cd rs/fq && cargo fmt && CARGO_INCREMENTAL=0 cargo test --no-run
+  python3 scripts/phase4_check.py rs/fq/src/internal.rs
+  git diff --stat -- rs/fq/src/internal.rs
+  git diff -- rs/fq/src/internal.rs | sed -n '1,220p'
+  tail -n 40 COMMANDS.log
+  cd rs/fq && cargo fmt && CARGO_INCREMENTAL=0 cargo test --no-run && cargo clippy --tests --all-features -- -D warnings && cd ../.. && python3 scripts/phase4_check.py rs/fq/src/internal.rs
+  cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings && cd ../.. && python3 scripts/phase4_check.py rs/fq/src/internal.rs
+  sed -n '770,800p' rs/fq/src/internal.rs
+  sed -n '6742,6755p' rs/fq/src/internal.rs
+  sed -n '9460,9605p' rs/fq/src/internal.rs
+  sed -n '10078,10088p' rs/fq/src/internal.rs
+  rg -n "connection_error\([^\n]+\) as i32|bytes\.len\(\) % 4" rs/fq/src/internal.rs
+  rg -n "connection_error\([^\n]+\) as i32" rs/fq/src/internal.rs
+  cd rs/fq && cargo fmt && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings && cd ../.. && python3 scripts/phase4_check.py rs/fq/src/internal.rs
+  cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run
+  python3 scripts/phase4_check.py rs/fq/src/internal.rs
+  git diff --stat -- rs/fq/src/internal.rs
+  git diff -- rs/fq/src/internal.rs | sed -n '1,220p'
+  tail -n 40 COMMANDS.log
+  rg -n "COMMANDS.log|log" CLAUDE.md | head -40
+  sed -n '45,58p' CLAUDE.md
+  git status --short
+
+2026-05-06T00:00:00Z Cleanup tracked generated test artifacts: removed rs/fq/ack_disorder_test.csv, rs/fq/ack_horizon_test.csv, and rs/fq/qlog_error_test.txt from git; verified matching generated output patterns are no longer tracked or untracked.
+  git ls-files 'rs/fq/log_tp*.txt' 'rs/fq/*ticket*.bin' 'rs/fq/token_store_test.bin' 'rs/fq/*_test.csv' 'rs/fq/*test*.txt'
+  git ls-files -o --exclude-standard 'rs/fq/log_tp*.txt' 'rs/fq/*ticket*.bin' 'rs/fq/token_store_test.bin' 'rs/fq/*_test.csv' 'rs/fq/*test*.txt'
+  rg -n "ack_disorder_test\.csv|ack_horizon_test\.csv|qlog_error_test\.txt|config_usage_ref\.txt" rs/fq/src rs/fq/tests picoquictest rs/fq
+ git rm -f rs/fq/ack_disorder_test.csv rs/fq/ack_horizon_test.csv rs/fq/qlog_error_test.txt
+ git status --short
+
+2026-05-06T00:00:00Z Celebration commit prep: reviewed worktree state, included tracked Phase 4 run logs, excluded untracked xlate/codex_logs transcripts, staged translation progress and generated-output cleanup, and committed the checkpoint.
+  git status --short
+  git diff --stat
+  git diff --cached --stat
+  git ls-files xlate/phase4_runs xlate/codex_logs
+  sed -n '1,220p' .gitignore
+  ls -lh xlate/phase4_runs/20260506T*.log
+  du -sh xlate/codex_logs
+  git diff -- xlate/phase4_state.json
+  git add AGENTS.md scripts/agent_runner.py CLAUDE.md TRANSLATE_PLAN.md COMMANDS.log scripts/README.md scripts/phase1.py scripts/phase1a.py scripts/phase1c.py scripts/phase2a.py scripts/phase3a.py scripts/phase4.py rs/fq/src/cc_common.rs rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/logger.rs rs/fq/src/packet_loop.rs rs/fq/src/tests/congestion.rs rs/fq/src/tests/util.rs rs/fq/src/tls_api.rs xlate/phase4_state.json xlate/prompts/phase4/internal.md xlate/prompts/phase4/logger.md xlate/phase4_runs/20260506T114958.log xlate/phase4_runs/20260506T115005.log xlate/phase4_runs/20260506T115037.log xlate/phase4_runs/20260506T115353.log xlate/phase4_runs/20260506T120533.log xlate/phase4_runs/20260506T122230.log xlate/phase4_runs/20260506T122237.log xlate/phase4_runs/20260506T123818.log xlate/phase4_runs/20260506T125754.log
+  git add -u rs/fq/ack_disorder_test.csv rs/fq/ack_horizon_test.csv rs/fq/qlog_error_test.txt
+  git status --short
+  git diff --cached --stat
+  git diff --cached --check
+  git commit -m "Celebrate Phase 4 progress"

@@ -34,6 +34,11 @@
     "changed": true,
     "status": "ok"
   },
+  "internal.rs": {
+    "at": "2026-05-06T13:38:18",
+    "changed": true,
+    "status": "ok"
+  },
   "lb.rs": {
     "at": "2026-05-05T13:01:34",
     "batch": true,
@@ -41,9 +46,10 @@
     "status": "ok"
   },
   "logger.rs": {
-    "at": "2026-05-06T08:54:13",
-    "remaining": 15,
-    "status": "partial"
+    "at": "2026-05-06T11:50:37",
+    "exit_code": 1,
+    "stage": "codex",
+    "status": "fail"
   },
   "performance_log.rs": {
     "at": "2026-05-06T08:22:22",
@@ -91,10 +97,21 @@
     "changed": true,
     "status": "ok"
   },
+  "tests/util.rs": {
+    "at": "2026-05-06T12:54:53",
+    "changed": true,
+    "status": "ok"
+  },
   "textlog.rs": {
     "at": "2026-05-06T07:58:00",
     "changed": true,
     "status": "ok"
+  },
+  "tls_api.rs": {
+    "at": "2026-05-06T12:21:11",
+    "exit_code": 101,
+    "stage": "gate",
+    "status": "fail"
   },
   "utils.rs": {
     "at": "2026-05-05T13:40:22",

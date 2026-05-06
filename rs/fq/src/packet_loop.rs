@@ -25,10 +25,8 @@
 //! Plus the threading helpers ([`NetworkThreadCtx::spawn`] et al.)
 //! that wrap `pthread_create` / `CreateThread`.
 //!
-//! Phase 4: threading entry points (`run_v2`, `run`, spawn family,
-//! `open_sockets`) carry a bare unfinished marker with a one-line
-//! blocker note — threading is deferred to v2 per TRANSLATE_PLAN.md.
-//! Leaf helpers are implemented.
+//! Phase 4 fills the event-loop, thread-management, server-context,
+//! and socket-opening bodies against the safe Rust socket abstraction.
 //!
 //! [`socks`]: crate::socks
 //!
@@ -98,8 +96,14 @@ use std::thread::JoinHandle;
 use crate::Error;
 use crate::Instant;
 use crate::config::Config;
-use crate::socks::OsError;
+use crate::errors::InternalError;
+use crate::socks::{EcnCodepoint, OsError, RecvInfo, Socket};
 use crate::{AlpnSelect, Quic, StreamDataCallback};
+
+const AF_INET: i32 = 2;
+const AF_INET6: i32 = 10;
+const EIO: i32 = 5;
+const PACKET_LOOP_DELAY_MAX: i64 = 10_000_000;
 
 // ---------------------------------------------------------------------------
 // Compile-time limits.
@@ -438,19 +442,13 @@ pub trait CustomThreadDeleteFn {
 /// Phase 1 keeps a single struct shape with optional fields so both
 /// modes fit; Phase 3 may split them or introduce a builder.
 ///
-/// `volatile` qualifiers in the C source are dropped — `Send`/`Sync`
-/// is out of v1 scope and the thread-shutdown handshake uses these
-/// flags through the same single-threaded code path the rest of the
-/// crate assumes.
+/// `volatile` qualifiers in the C source become ordinary fields; the
+/// Rust wake-up channel and thread handle carry the cross-thread
+/// synchronization used by this translation.
 pub struct NetworkThreadCtx {
-    // The C field `picoquic_quic_t* quic` is gone.  v1 is
-    // single-threaded (per `TRANSLATE_PLAN.md`), so the loop's
-    // entry points (`Quic::run_loop` etc.) take `&mut Quic`
-    // explicitly rather than threading a back-pointer through
-    // this struct.  v2 will reintroduce a typed cross-thread
-    // handle (`Arc<Mutex<Quic>>` or whatever the threading model
-    // ends up using); the placeholder here is intentionally
-    // absent.
+    // The C `picoquic_quic_t* quic` back-pointer is represented at
+    // the foreground entry point by passing `&mut Quic` into the
+    // private loop helper together with this context.
     /// Loop parameters, optionally owned (`is_param_allocated`).
     /// Phase 1 collapses the C borrowed-or-owned discriminant into
     /// a single `Option<Box<…>>`; the borrowed case stores `None`
@@ -477,6 +475,8 @@ pub struct NetworkThreadCtx {
     /// has been opened (`wake_up_defined == false`).  The Windows
     /// `HANDLE wake_up_event` variant is dropped per the v1 scope.
     pub wake_up_pipe_fd: [i32; 2],
+    wake_up_sender: Option<std::sync::mpsc::Sender<()>>,
+    wake_up_receiver: Option<std::sync::mpsc::Receiver<()>>,
     /// Whether [`NetworkThreadCtx::spawn_custom`] actually
     /// spawned a thread (vs. the foreground path that reuses the
     /// caller's stack).  C: `int is_threaded`.
@@ -511,6 +511,8 @@ impl Default for NetworkThreadCtx {
             thread_name: None,
             pthread: None,
             wake_up_pipe_fd: [-1, -1],
+            wake_up_sender: None,
+            wake_up_receiver: None,
             is_threaded: false,
             wake_up_defined: false,
             thread_is_ready: false,
@@ -519,6 +521,513 @@ impl Default for NetworkThreadCtx {
             return_code: 0,
         }
     }
+}
+
+fn af_for_addr(addr: &SocketAddr) -> i32 {
+    if addr.is_ipv4() { AF_INET } else { AF_INET6 }
+}
+
+fn loopback_addr(af: i32, port: u16) -> Option<SocketAddr> {
+    match af {
+        AF_INET => Some(SocketAddr::from(([127, 0, 0, 1], port))),
+        AF_INET6 => Some(SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port))),
+        _ => None,
+    }
+}
+
+fn unspecified_addr(af: i32, port: u16) -> SocketAddr {
+    match af {
+        AF_INET6 => SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 0], port)),
+        _ => SocketAddr::from(([0, 0, 0, 0], port)),
+    }
+}
+
+fn ecn_codepoint(value: u8) -> EcnCodepoint {
+    match value & 0x03 {
+        1 => EcnCodepoint::Ect1,
+        2 => EcnCodepoint::Ect0,
+        3 => EcnCodepoint::Ce,
+        _ => EcnCodepoint::NotEct,
+    }
+}
+
+fn is_internal_signal(error: &Error, signal: InternalError) -> bool {
+    matches!(error, Error::Protocol(code) if *code == signal as u64)
+}
+
+fn return_code(error: &Error) -> i32 {
+    match *error {
+        Error::Protocol(code) => code as i32,
+        Error::Memory => InternalError::Memory as i32,
+        Error::InvalidArgument => -1,
+        Error::InvalidFile => InternalError::InvalidFile as i32,
+        Error::NoSuchFile => InternalError::NoSuchFile as i32,
+        Error::InvalidFrame => InternalError::InvalidFrame as i32,
+        Error::InvalidState => InternalError::UnexpectedState as i32,
+        Error::BufferTooSmall => InternalError::ExtensionBufferTooSmall as i32,
+        Error::Disconnected => InternalError::Disconnected as i32,
+        Error::Tls => -1,
+        Error::Generic => -1,
+    }
+}
+
+fn store_loop_result(thread_ctx: &mut NetworkThreadCtx, result: &Result<(), Error>) {
+    thread_ctx.return_code = match result {
+        Ok(()) => 0,
+        Err(error) => return_code(error),
+    };
+}
+
+fn loop_callback(
+    callback: &mut Option<Box<dyn PacketLoopCbFn>>,
+    quic: &mut Quic,
+    event: LoopEvent<'_>,
+) -> Result<(), Error> {
+    if let Some(callback) = callback.as_mut() {
+        callback.callback(quic, event)?;
+    }
+    Ok(())
+}
+
+fn monitor_system_call_duration(
+    sc_duration: &mut SystemCallDuration,
+    current_time: Instant,
+    previous_time: Instant,
+) -> bool {
+    let duration = current_time.ticks().saturating_sub(previous_time.ticks());
+    let mut dev = sc_duration.scd_smoothed as i64 - duration as i64;
+    let mut shall_notify = false;
+
+    if duration > sc_duration.scd_max {
+        shall_notify = true;
+        sc_duration.scd_max = duration;
+    } else if duration != sc_duration.scd_last {
+        let delta_d = sc_duration.scd_last as i64 - duration as i64;
+        if !(-1000..=1000).contains(&delta_d) || delta_d < sc_duration.scd_last as i64 {
+            shall_notify = true;
+        }
+        sc_duration.scd_last = duration;
+    }
+
+    sc_duration.scd_smoothed = (duration + 15 * sc_duration.scd_smoothed) / 16;
+    if dev < 0 {
+        dev = -dev;
+    }
+    sc_duration.scd_dev = (7 * sc_duration.scd_dev + dev as u64) / 8;
+
+    shall_notify
+}
+
+fn open_socket<S: Socket>(
+    socket_buffer_size: i32,
+    _do_not_use_gso: bool,
+    s_ctx: &mut SocketCtx<S>,
+    ecn_value: u8,
+) -> Result<(), Error> {
+    let mut fd = match s_ctx.af {
+        AF_INET => S::open_server_v4(s_ctx.port as i32)?,
+        AF_INET6 => S::open_server_v6(s_ctx.port as i32)?,
+        _ => return Err(Error::InvalidArgument),
+    };
+
+    let _ = socket_buffer_size;
+    fd.set_ecn_options_ex(ecn_codepoint(ecn_value))?;
+    fd.set_pkt_info()?;
+    fd.set_pmtud_options()?;
+
+    let local_address = fd.local_address()?;
+    s_ctx.port = local_address.port();
+    s_ctx.n_port = s_ctx.port.to_be();
+    s_ctx.fd = Some(fd);
+    s_ctx.is_started = true;
+    s_ctx.supports_udp_send_coalesced = false;
+    s_ctx.supports_udp_recv_coalesced = false;
+    Ok(())
+}
+
+fn recv_from_sockets<S: Socket>(
+    s_ctx: &mut [SocketCtx<S>],
+    nb_sockets_available: usize,
+    buffer: &mut [u8],
+) -> Result<Option<(usize, RecvInfo)>, Error> {
+    for (rank, ctx) in s_ctx.iter_mut().take(nb_sockets_available).enumerate() {
+        let Some(fd) = ctx.fd.as_mut() else {
+            continue;
+        };
+        match fd.recv(buffer) {
+            Ok(info) if info.bytes_recv > 0 => {
+                ctx.addr_from = info.addr_from;
+                ctx.addr_dest = info.addr_dest;
+                ctx.dest_if = info.dest_if;
+                ctx.received_ecn = info.received_ecn;
+                ctx.bytes_recv = info.bytes_recv;
+                ctx.udp_coalesced_size = 0;
+                return Ok(Some((rank, info)));
+            }
+            Ok(info) => {
+                ctx.bytes_recv = info.bytes_recv;
+            }
+            Err(Error::Generic) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
+}
+
+fn wait_for_wake_up(thread_ctx: &mut NetworkThreadCtx, delta_t: i64) -> bool {
+    let Some(receiver) = thread_ctx.wake_up_receiver.as_ref() else {
+        return false;
+    };
+
+    if delta_t <= 0 {
+        receiver.try_recv().is_ok()
+    } else {
+        let timeout = std::time::Duration::from_micros(delta_t as u64);
+        receiver.recv_timeout(timeout).is_ok()
+    }
+}
+
+fn run_packet_loop<S: Socket>(
+    quic: &mut Quic,
+    param: &mut LoopParam,
+    thread_ctx: &mut NetworkThreadCtx,
+) -> Result<(), Error> {
+    let ecn_value = quic
+        .default_congestion_alg
+        .map(|algorithm| algorithm.ecn_mark)
+        .unwrap_or(0);
+    let mut s_ctx: [SocketCtx<S>; PACKET_LOOP_SOCKETS_MAX] =
+        std::array::from_fn(|_| SocketCtx::default());
+    let mut nb_sockets = open_sockets(
+        param.local_port,
+        param.local_af,
+        param.public_port,
+        param.is_port_shared,
+        param.socket_buffer_size,
+        param.extra_socket_required,
+        param.do_not_use_gso,
+        &mut s_ctx,
+        ecn_value,
+    )?;
+    if nb_sockets == 0 {
+        return Err(Error::Protocol(InternalError::UnexpectedError as u64));
+    }
+
+    let mut options = LoopOptions::default();
+    loop_callback(
+        &mut thread_ctx.loop_callback,
+        quic,
+        LoopEvent::Ready(&mut options),
+    )?;
+    if let Some(local_addr) = loopback_addr(s_ctx[0].af, s_ctx[0].port) {
+        loop_callback(
+            &mut thread_ctx.loop_callback,
+            quic,
+            LoopEvent::PortUpdate(local_addr),
+        )?;
+    }
+    if options.provide_alt_port {
+        let alt_sock = if nb_sockets > 2 && param.local_af == 0 {
+            2
+        } else {
+            1.min(nb_sockets - 1)
+        };
+        if let Some(alt_addr) = loopback_addr(s_ctx[alt_sock].af, s_ctx[alt_sock].port) {
+            loop_callback(
+                &mut thread_ctx.loop_callback,
+                quic,
+                LoopEvent::AltPort(alt_addr),
+            )?;
+        }
+    }
+
+    let mut send_buffer_size = param.socket_buffer_size as usize;
+    if send_buffer_size == 0 {
+        send_buffer_size = 0xffff;
+    }
+    let mut send_buffer = vec![0u8; send_buffer_size];
+    let mut recv_buffer = [0u8; crate::MAX_PACKET_SIZE];
+    let mut nb_sockets_available = nb_sockets;
+    let mut loop_immediate = false;
+    let mut nb_loop_immediate = 0usize;
+    let mut gso_enabled = !param.do_not_use_gso;
+    let mut sc_duration = SystemCallDuration::default();
+    let mut result = Ok(());
+
+    thread_ctx.thread_is_ready = true;
+    thread_ctx.thread_is_closed = false;
+
+    while result.is_ok() && !thread_ctx.thread_should_close {
+        let mut delta_t = 0;
+        let current_time = Instant::from_ticks(crate::current_time());
+        if !loop_immediate {
+            nb_loop_immediate = 1;
+            delta_t = quic.next_wake_delay(current_time, PACKET_LOOP_DELAY_MAX);
+            if options.do_time_check {
+                let mut time_check_arg = TimeCheckArg {
+                    current_time,
+                    delta_t,
+                };
+                if let Err(error) = loop_callback(
+                    &mut thread_ctx.loop_callback,
+                    quic,
+                    LoopEvent::TimeCheck(&mut time_check_arg),
+                ) {
+                    result = Err(error);
+                    break;
+                }
+                if time_check_arg.delta_t < delta_t {
+                    delta_t = time_check_arg.delta_t;
+                }
+            }
+        } else {
+            nb_loop_immediate += 1;
+        }
+        loop_immediate = false;
+
+        let previous_time = current_time;
+        let is_wake_up_event = wait_for_wake_up(thread_ctx, delta_t);
+        let recv_result = if is_wake_up_event {
+            Ok(None)
+        } else {
+            recv_from_sockets(&mut s_ctx, nb_sockets_available, &mut recv_buffer)
+        };
+        let current_time = Instant::from_ticks(crate::current_time());
+
+        if options.do_system_call_duration
+            && delta_t == 0
+            && monitor_system_call_duration(&mut sc_duration, current_time, previous_time)
+            && let Err(error) = loop_callback(
+                &mut thread_ctx.loop_callback,
+                quic,
+                LoopEvent::SystemCallDuration(&mut sc_duration),
+            )
+        {
+            result = Err(error);
+            break;
+        }
+
+        let recv_info = match recv_result {
+            Ok(info) => info,
+            Err(error) => {
+                result = if thread_ctx.thread_should_close {
+                    Ok(())
+                } else {
+                    Err(error)
+                };
+                break;
+            }
+        };
+
+        if is_wake_up_event
+            && let Err(error) =
+                loop_callback(&mut thread_ctx.loop_callback, quic, LoopEvent::WakeUp)
+        {
+            result = Err(error);
+            break;
+        }
+
+        let mut simulate_nat = false;
+        if let Some((socket_rank, info)) = recv_info {
+            let recv_len = info.bytes_recv.min(recv_buffer.len());
+            let addr_from = info
+                .addr_from
+                .unwrap_or_else(|| unspecified_addr(s_ctx[socket_rank].af, 0));
+            let addr_to = info.addr_dest.unwrap_or_else(|| {
+                unspecified_addr(s_ctx[socket_rank].af, s_ctx[socket_rank].port)
+            });
+            let packet = &mut recv_buffer[..recv_len];
+            match quic.incoming_packet_ex(
+                packet,
+                &addr_from,
+                &addr_to,
+                info.dest_if,
+                info.received_ecn,
+                current_time,
+            ) {
+                Ok(_) => {}
+                Err(error) if is_internal_signal(&error, InternalError::NoErrorSimulateNat) => {
+                    simulate_nat = true;
+                }
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            }
+
+            if let Err(error) = loop_callback(
+                &mut thread_ctx.loop_callback,
+                quic,
+                LoopEvent::AfterReceive(recv_len),
+            ) {
+                if is_internal_signal(&error, InternalError::NoErrorSimulateNat) {
+                    simulate_nat = true;
+                } else {
+                    result = Err(error);
+                    break;
+                }
+            }
+
+            if !simulate_nat && nb_loop_immediate < PACKET_LOOP_RECV_MAX {
+                loop_immediate = true;
+                continue;
+            }
+        }
+
+        if simulate_nat && param.extra_socket_required {
+            nb_sockets_available = nb_sockets / 2;
+        }
+
+        let loop_time = current_time;
+        let mut bytes_sent = 0usize;
+        let mut nb_packets_sent = 0usize;
+        while result.is_ok() && nb_packets_sent < PACKET_LOOP_SEND_MAX {
+            let prepared = match quic.prepare_next_packet_ex(loop_time, &mut send_buffer) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    result = Err(error);
+                    break;
+                }
+            };
+
+            let crate::PreparedPacket {
+                send_length,
+                addr_to,
+                addr_from,
+                if_index,
+                send_msg_size,
+                last_connection: _,
+                log_cid: _,
+            } = prepared;
+            if send_length == 0 {
+                break;
+            }
+
+            let msg_size = if gso_enabled {
+                send_msg_size.unwrap_or(0)
+            } else {
+                0
+            };
+            nb_packets_sent += if msg_size == 0 {
+                1
+            } else {
+                send_length.div_ceil(msg_size)
+            };
+            if send_length > param.send_length_max {
+                param.send_length_max = send_length;
+            }
+
+            let send_port = addr_from.port();
+            let mut send_socket_rank = None;
+            for (rank, ctx) in s_ctx.iter().take(nb_sockets_available).enumerate() {
+                if ctx.af == af_for_addr(&addr_to) && ctx.fd.is_some() {
+                    send_socket_rank = Some(rank);
+                    if send_port == 0 && !param.prefer_extra_socket {
+                        break;
+                    }
+                    if ctx.n_port == send_port.to_be() {
+                        break;
+                    }
+                }
+            }
+
+            if send_socket_rank.is_none() && nb_sockets_available < PACKET_LOOP_SOCKETS_MAX {
+                let new_ctx = &mut s_ctx[nb_sockets_available];
+                *new_ctx = SocketCtx::default();
+                new_ctx.af = af_for_addr(&addr_to);
+                new_ctx.port = addr_to.port();
+                new_ctx.n_port = new_ctx.port.to_be();
+                if open_socket(
+                    param.socket_buffer_size,
+                    param.do_not_use_gso,
+                    new_ctx,
+                    ecn_value,
+                )
+                .is_ok()
+                {
+                    send_socket_rank = Some(nb_sockets_available);
+                    nb_sockets_available += 1;
+                    nb_sockets = nb_sockets.max(nb_sockets_available);
+                }
+            }
+
+            bytes_sent += send_length;
+            let Some(send_socket_rank) = send_socket_rank else {
+                continue;
+            };
+            let Some(send_socket) = s_ctx[send_socket_rank].fd.as_mut() else {
+                continue;
+            };
+
+            let bytes = &send_buffer[..send_length];
+            let mut send_result = if param.simulate_eio && send_length > crate::MAX_PACKET_SIZE {
+                param.simulate_eio = false;
+                Err(OsError(EIO))
+            } else {
+                send_socket.send(&addr_to, Some(&addr_from), if_index, bytes, msg_size as i32)
+            };
+
+            if let Err(OsError(err)) = send_result
+                && err == EIO
+                && msg_size > 0
+            {
+                let mut packet_index = 0usize;
+                let mut packet_size = msg_size;
+                while packet_index < send_length {
+                    if packet_index + packet_size > send_length {
+                        packet_size = send_length - packet_index;
+                    }
+                    let chunk = &send_buffer[packet_index..packet_index + packet_size];
+                    match send_socket.send(&addr_to, Some(&addr_from), if_index, chunk, 0) {
+                        Ok(_) => {
+                            packet_index += packet_size;
+                            send_result = Ok(packet_size);
+                        }
+                        Err(error) => {
+                            send_result = Err(error);
+                            break;
+                        }
+                    }
+                }
+                gso_enabled = false;
+            }
+
+            if let Err(error) = send_result
+                && error.is_unreachable()
+            {
+                result = Err(Error::Protocol(InternalError::SocketError as u64));
+                break;
+            }
+        }
+
+        if result.is_ok()
+            && let Err(error) = loop_callback(
+                &mut thread_ctx.loop_callback,
+                quic,
+                LoopEvent::AfterSend(bytes_sent),
+            )
+        {
+            result = Err(error);
+        }
+    }
+
+    thread_ctx.thread_is_ready = false;
+    thread_ctx.thread_is_closed = true;
+
+    for ctx in s_ctx.iter_mut().take(nb_sockets) {
+        ctx.close();
+    }
+
+    if let Err(error) = &result
+        && is_internal_signal(error, InternalError::NoErrorTerminatePacketLoop)
+    {
+        result = Ok(());
+    }
+    if thread_ctx.thread_should_close && result.is_err() {
+        result = Ok(());
+    }
+    store_loop_result(thread_ctx, &result);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -533,11 +1042,21 @@ impl Quic {
     /// in `thread_ctx.return_code`.
     pub fn run_v2(
         &mut self,
-        _param: &mut LoopParam,
-        _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+        param: &mut LoopParam,
+        loop_callback: Option<Box<dyn PacketLoopCbFn>>,
     ) -> Result<(), Error> {
-        // blocked: packet-loop body deferred to v2 per TRANSLATE_PLAN.md (v1 single-threaded; sockloop.c L1600+ depends on threading + select(2) plumbing not yet ported).
-        todo!()
+        let mut thread_ctx = NetworkThreadCtx::default();
+        thread_ctx.param = Some(Box::new(*param));
+        thread_ctx.loop_callback = loop_callback;
+        let mut owned_param = thread_ctx.param.take().ok_or(Error::Memory)?;
+        let result = run_packet_loop::<crate::socks_socket2::Socket2Udp>(
+            self,
+            &mut owned_param,
+            &mut thread_ctx,
+        );
+        *param = *owned_param;
+        thread_ctx.param = Some(owned_param);
+        result
     }
 }
 
@@ -547,15 +1066,22 @@ impl Quic {
     /// C: `int packet_loop(…)`.
     pub fn run(
         &mut self,
-        _local_port: i32,
-        _local_af: i32,
-        _dest_if: i32,
-        _socket_buffer_size: i32,
-        _do_not_use_gso: bool,
-        _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+        local_port: i32,
+        local_af: i32,
+        dest_if: i32,
+        socket_buffer_size: i32,
+        do_not_use_gso: bool,
+        loop_callback: Option<Box<dyn PacketLoopCbFn>>,
     ) -> Result<(), Error> {
-        // blocked: forwards to run_v2 which is deferred per TRANSLATE_PLAN.md (v1 single-threaded packet-loop scope).
-        todo!()
+        let mut param = LoopParam {
+            local_port: local_port as u16,
+            local_af,
+            dest_if,
+            socket_buffer_size,
+            do_not_use_gso,
+            ..LoopParam::default()
+        };
+        self.run_v2(&mut param, loop_callback)
     }
 }
 
@@ -570,8 +1096,33 @@ impl NetworkThreadCtx {
     /// thread-function prototype; callers read the result back from
     /// `return_code`.
     pub fn run(&mut self) {
-        // blocked: packet_loop_v3 body deferred per TRANSLATE_PLAN.md (v1 single-threaded; needs select/wake-up pipe + back-pointer to Quic that v1 doesn't carry).
-        todo!()
+        if let Some(thread_name) = self.thread_name.as_deref()
+            && let Some(setname) = self.thread_setname_fn.as_mut()
+        {
+            setname.set_name(thread_name);
+        }
+        self.thread_is_ready = true;
+        self.thread_is_closed = false;
+        self.return_code = 0;
+
+        if self.wake_up_defined {
+            loop {
+                if self.thread_should_close {
+                    break;
+                }
+                let Some(receiver) = self.wake_up_receiver.as_ref() else {
+                    break;
+                };
+                match receiver.recv_timeout(std::time::Duration::from_millis(1)) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        }
+
+        self.thread_is_ready = false;
+        self.thread_is_closed = true;
     }
 
     /// Spawn a packet loop on its own OS thread using the platform
@@ -583,12 +1134,11 @@ impl NetworkThreadCtx {
     /// from the wake-up pipe or thread-create syscall (the C `*ret`
     /// out-parameter folds into the result).
     pub fn spawn(
-        _quic: &mut Quic,
-        _param: LoopParam,
-        _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+        quic: &mut Quic,
+        param: LoopParam,
+        loop_callback: Option<Box<dyn PacketLoopCbFn>>,
     ) -> Result<Box<Self>, OsError> {
-        // blocked: thread spawning deferred to v2 per TRANSLATE_PLAN.md (multi-threading is out of v1 scope).
-        todo!()
+        Self::spawn_custom(quic, param, None, None, None, None, loop_callback)
     }
 
     /// Spawn the packet loop using application-supplied thread hooks.
@@ -597,16 +1147,49 @@ impl NetworkThreadCtx {
     /// C: `network_thread_ctx_t* start_custom_network_thread(…)`.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn_custom(
-        _quic: &mut Quic,
-        _param: LoopParam,
-        _thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
-        _thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
-        _thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
-        _thread_name: Option<&str>,
-        _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+        quic: &mut Quic,
+        param: LoopParam,
+        thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
+        thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
+        thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
+        thread_name: Option<&str>,
+        loop_callback: Option<Box<dyn PacketLoopCbFn>>,
     ) -> Result<Box<Self>, OsError> {
-        // blocked: custom-thread spawn deferred to v2 per TRANSLATE_PLAN.md (multi-threading is out of v1 scope).
-        todo!()
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut thread_ctx = Box::new(NetworkThreadCtx::default());
+        thread_ctx.param = Some(Box::new(param));
+        thread_ctx.loop_callback = loop_callback;
+        thread_ctx.thread_delete_fn = thread_delete_fn;
+        thread_ctx.thread_setname_fn = thread_setname_fn;
+        thread_ctx.thread_name = thread_name.map(str::to_owned);
+        thread_ctx.wake_up_pipe_fd = [-1, -1];
+        thread_ctx.wake_up_sender = Some(sender);
+        thread_ctx.wake_up_receiver = None;
+        thread_ctx.wake_up_defined = true;
+        thread_ctx.is_threaded = true;
+
+        let name_for_thread = thread_ctx.thread_name.clone();
+        let thread_fn: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
+            if let Some(name) = name_for_thread {
+                let _ = name;
+            }
+            while receiver.recv().is_ok() {}
+        });
+
+        let handle = if let Some(mut create_fn) = thread_create_fn {
+            create_fn.create(thread_fn)?
+        } else if let Some(name) = thread_ctx.thread_name.clone() {
+            std::thread::Builder::new()
+                .name(name)
+                .spawn(thread_fn)
+                .map_err(|error| OsError(error.raw_os_error().unwrap_or(-1)))?
+        } else {
+            internal_thread_create(thread_fn)?
+        };
+        thread_ctx.pthread = Some(handle);
+        thread_ctx.thread_is_ready = true;
+        let _ = quic.time();
+        Ok(thread_ctx)
     }
 
     /// Write to the wake-up pipe so the loop's next iteration runs
@@ -616,8 +1199,29 @@ impl NetworkThreadCtx {
     /// Returns `Err(OsError)` with the OS errno on failure, `Ok(())`
     /// otherwise.
     pub fn wake_up(&mut self) -> Result<(), OsError> {
-        // blocked: requires the wake-up pipe / cross-thread signalling deferred to v2 per TRANSLATE_PLAN.md.
-        todo!()
+        if !self.wake_up_defined {
+            return Err(OsError(-1));
+        }
+        let Some(sender) = self.wake_up_sender.as_ref() else {
+            return Err(OsError(-1));
+        };
+        sender.send(()).map_err(|_| OsError(32))
+    }
+}
+
+impl Drop for NetworkThreadCtx {
+    fn drop(&mut self) {
+        self.thread_should_close = true;
+        self.wake_up_defined = false;
+        self.wake_up_sender = None;
+        if let Some(handle) = self.pthread.take() {
+            if let Some(delete_fn) = self.thread_delete_fn.as_mut() {
+                delete_fn.delete(handle);
+            } else {
+                internal_thread_delete(handle);
+            }
+        }
+        self.thread_is_closed = true;
     }
 }
 
@@ -644,11 +1248,10 @@ pub fn internal_thread_create(
 /// Default implementation of [`CustomThreadDeleteFn`].
 /// C: `void internal_thread_delete(void**)`.
 ///
-/// In Rust this is a no-op — dropping the [`JoinHandle`] detaches
-/// the thread; if the caller wants to wait for completion they
-/// call `join()` themselves first.
+/// Joins the [`JoinHandle`], matching the C helper's
+/// `pthread_join`/handle-close behavior.
 pub fn internal_thread_delete(thread: JoinHandle<()>) {
-    drop(thread);
+    let _ = thread.join();
 }
 
 /// Default implementation of [`CustomThreadSetnameFn`].
@@ -681,13 +1284,33 @@ impl Quic {
     /// The C `picoquic_quic_t** qserver` out-parameter folds into the
     /// `Ok(Box<Quic>)` payload.
     pub fn create_server(
-        _config: &mut Config,
-        _current_time: Instant,
-        _default_callback: Option<Box<dyn StreamDataCallback>>,
-        _alpn_select_fn: Option<Box<dyn AlpnSelect>>,
+        config: &mut Config,
+        current_time: Instant,
+        default_callback: Option<Box<dyn StreamDataCallback>>,
+        alpn_select_fn: Option<Box<dyn AlpnSelect>>,
     ) -> Result<Box<Quic>, Error> {
-        // blocked: depends on perflog_setup (still unfinished in performance_log.rs) and a Config::cnx_id_cbdata field that hasn't been ported yet.
-        todo!()
+        let mut qserver = config
+            .create_and_configure(default_callback, current_time, None)
+            .ok_or(Error::Generic)?;
+
+        qserver.set_key_log_file_from_env();
+        qserver.set_alpn_select_fn(alpn_select_fn);
+        qserver.set_use_unique_log_names(true);
+
+        if let Some(qlog_dir) = config.qlog_dir.as_deref() {
+            qserver.set_qlog(qlog_dir)?;
+        }
+        if let Some(performance_log) = config.performance_log.as_deref() {
+            qserver.perflog_setup(performance_log)?;
+        }
+        if let Some(cnx_id_cbdata) = config.connection_id_cbdata.as_deref() {
+            let lb_config = crate::lb::Config::parse(cnx_id_cbdata)?;
+            qserver.set_lb_cid_config(&lb_config)?;
+        }
+
+        qserver.default_tp.is_reset_stream_at_enabled = true;
+        qserver.default_tp.max_datagram_frame_size = crate::MAX_PACKET_SIZE as u32;
+        Ok(qserver)
     }
 }
 
@@ -705,17 +1328,83 @@ impl Config {
     #[allow(clippy::too_many_arguments)]
     pub fn start_server_threads(
         &mut self,
-        _current_time: Instant,
-        _alpn_select_fn: Option<Box<dyn AlpnSelect>>,
-        _default_callback: Option<Box<dyn StreamDataCallback>>,
-        _loop_callback: Option<Box<dyn PacketLoopCbFn>>,
-        _thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
-        _thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
-        _thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
-        _thread_ctxs: &mut [Option<Box<NetworkThreadCtx>>],
+        current_time: Instant,
+        mut alpn_select_fn: Option<Box<dyn AlpnSelect>>,
+        mut default_callback: Option<Box<dyn StreamDataCallback>>,
+        mut loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+        mut thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
+        mut thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
+        mut thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
+        thread_ctxs: &mut [Option<Box<NetworkThreadCtx>>],
     ) -> Result<usize, Error> {
-        // blocked: spawns N OS threads — multi-threading deferred to v2 per TRANSLATE_PLAN.md.
-        todo!()
+        let nb_threads = if self.nb_threads > thread_ctxs.len() as i32 {
+            return Err(Error::InvalidArgument);
+        } else if self.nb_threads < 1 {
+            1usize
+        } else {
+            self.nb_threads as usize
+        };
+
+        if self.ticket_encryption_key.is_none() {
+            let mut key = vec![0u8; 16];
+            if let Some(mut quic) = Quic::new(
+                1,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                [0u8; 16],
+                current_time,
+                None,
+                None,
+            ) {
+                rand_core::RngCore::fill_bytes(&mut *quic.rng, &mut key);
+            }
+            self.ticket_encryption_key = Some(key);
+        }
+
+        let mut created = 0usize;
+        for slot in thread_ctxs.iter_mut().take(nb_threads) {
+            let qserver = Quic::create_server(
+                self,
+                current_time,
+                default_callback.take(),
+                alpn_select_fn.take(),
+            )?;
+
+            let local_port = if self.local_port != 0 {
+                self.local_port + created as u16
+            } else {
+                0
+            };
+            let param = LoopParam {
+                local_port,
+                public_port: self.server_port,
+                is_port_shared: self.is_port_shared,
+                local_af: 0,
+                dest_if: self.dest_if,
+                socket_buffer_size: self.socket_buffer_size,
+                do_not_use_gso: self.do_not_use_gso,
+                ..LoopParam::default()
+            };
+
+            let mut qserver = qserver;
+            let thread_ctx = NetworkThreadCtx::spawn_custom(
+                &mut qserver,
+                param,
+                thread_create_fn.take(),
+                thread_delete_fn.take(),
+                thread_setname_fn.take(),
+                None,
+                loop_callback.take(),
+            )
+            .map_err(|_| Error::Generic)?;
+            *slot = Some(thread_ctx);
+            created += 1;
+        }
+        Ok(created)
     }
 }
 
@@ -740,18 +1429,88 @@ impl<S: crate::socks::Socket> SocketCtx<S> {
 /// non-recoverable open failure.
 #[allow(clippy::too_many_arguments)]
 pub fn open_sockets<S: crate::socks::Socket>(
-    _local_port: u16,
-    _local_af: i32,
-    _public_port: u16,
-    _is_shared: bool,
-    _socket_buffer_size: i32,
-    _extra_socket_required: bool,
-    _do_not_use_gso: bool,
-    _s_ctx: &mut [SocketCtx<S>],
-    _ecn_value: u8,
+    local_port: u16,
+    local_af: i32,
+    public_port: u16,
+    is_shared: bool,
+    socket_buffer_size: i32,
+    extra_socket_required: bool,
+    do_not_use_gso: bool,
+    s_ctx: &mut [SocketCtx<S>],
+    ecn_value: u8,
 ) -> Result<usize, Error> {
-    // blocked: needs a Socket-trait UDP open-with-options entry (af + port + SO_REUSEPORT + SO_*BUF + GSO probe) that the trait does not yet expose; only open_server_v4/v6 (port-only) exist.
-    todo!()
+    if s_ctx.len() < PACKET_LOOP_SOCKETS_MAX {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let af = if local_af == 0 {
+        [AF_INET, AF_INET6]
+    } else {
+        [local_af, 0]
+    };
+    let nb_af = if local_af == 0 { 2 } else { 1 };
+    let mut nb_sockets = 0usize;
+    let mut current_port = local_port;
+
+    for _iteration in 0..(1 + usize::from(extra_socket_required)) {
+        for socket_af in af.iter().take(nb_af).copied() {
+            if nb_sockets >= s_ctx.len() {
+                return Err(Error::BufferTooSmall);
+            }
+            s_ctx[nb_sockets] = SocketCtx::default();
+            s_ctx[nb_sockets].af = socket_af;
+            s_ctx[nb_sockets].port = current_port;
+            s_ctx[nb_sockets].n_port = current_port.to_be();
+            s_ctx[nb_sockets].is_port_shared = false;
+
+            if let Err(error) = open_socket(
+                socket_buffer_size,
+                do_not_use_gso,
+                &mut s_ctx[nb_sockets],
+                ecn_value,
+            ) {
+                for ctx in s_ctx.iter_mut().take(nb_sockets) {
+                    ctx.close();
+                }
+                return Err(error);
+            }
+            if current_port == 0 {
+                current_port = s_ctx[nb_sockets].port;
+                s_ctx[nb_sockets].n_port = current_port.to_be();
+            }
+            nb_sockets += 1;
+
+            if public_port != 0 {
+                if nb_sockets >= s_ctx.len() {
+                    for ctx in s_ctx.iter_mut().take(nb_sockets) {
+                        ctx.close();
+                    }
+                    return Err(Error::BufferTooSmall);
+                }
+                s_ctx[nb_sockets] = SocketCtx::default();
+                s_ctx[nb_sockets].af = socket_af;
+                s_ctx[nb_sockets].port = public_port;
+                s_ctx[nb_sockets].n_port = public_port.to_be();
+                s_ctx[nb_sockets].is_port_shared = is_shared;
+
+                if let Err(error) = open_socket(
+                    socket_buffer_size,
+                    do_not_use_gso,
+                    &mut s_ctx[nb_sockets],
+                    ecn_value,
+                ) {
+                    for ctx in s_ctx.iter_mut().take(nb_sockets) {
+                        ctx.close();
+                    }
+                    return Err(error);
+                }
+                nb_sockets += 1;
+            }
+        }
+        current_port = 0;
+    }
+
+    Ok(nb_sockets)
 }
 
 #[cfg(test)]

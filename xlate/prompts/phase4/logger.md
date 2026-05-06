@@ -58,7 +58,7 @@ mirroring the C bodies in `picoquic/`.  The Phase 3 test
 suite is the gate: a function is done when tests that
 exercise it stop panicking.
 
-This file currently has **18** incomplete bodies to fill
+This file currently has **15** incomplete bodies to fill
 (counted across `todo!()` + `unimplemented!()` + `// SKIP:`).
 
 ## What this is

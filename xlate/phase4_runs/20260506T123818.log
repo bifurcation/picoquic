@@ -1,0 +1,52 @@
+Phase 4: 1 target(s) to translate (batch=1)
+  agent:   codex (model=default)
+  run log: xlate/phase4_runs/20260506T123818.log
+  state:   xlate/phase4_state.json
+
+=== tests/util.rs (8 todos) ===
+  prompt  → xlate/prompts/phase4/tests__util.md
+  codex   → invoking (model=default, max-turns=200) …
+  gate    → cargo fmt + cargo test --no-run + cargo clippy
+  $ (cd rs/fq && cargo fmt)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo test --no-run)
+  $ (cd rs/fq && CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings)
+ Downloading crates ...
+  Downloaded quote v1.0.45
+  Downloaded foreign-types-shared v0.1.1
+  Downloaded foreign-types v0.3.2
+  Downloaded shlex v1.3.0
+  Downloaded openssl-macros v0.1.1
+  Downloaded bitflags v2.11.1
+  Downloaded proc-macro2 v1.0.106
+  Downloaded unicode-ident v1.0.24
+  Downloaded syn v2.0.117
+  Downloaded find-msvc-tools v0.1.9
+  Downloaded cc v1.2.61
+  Downloaded pkg-config v0.3.33
+  Downloaded openssl-sys v0.9.115
+  Downloaded vcpkg v0.2.15
+  Downloaded openssl v0.10.79
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v1.3.0
+   Compiling proc-macro2 v1.0.106
+   Compiling vcpkg v0.2.15
+   Compiling unicode-ident v1.0.24
+   Compiling pkg-config v0.3.33
+   Compiling quote v1.0.45
+    Checking foreign-types-shared v0.1.1
+   Compiling openssl v0.10.79
+    Checking bitflags v2.11.1
+   Compiling cc v1.2.61
+    Checking foreign-types v0.3.2
+   Compiling openssl-sys v0.9.115
+   Compiling syn v2.0.117
+   Compiling openssl-macros v0.1.1
+    Checking fq v0.1.0 (/Volumes/richbarn/Projects/picoquic/rs/fq)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 18s
+  ok
+
+=== Phase 4 run summary ===
+  elapsed:   995.5s
+  succeeded: 1
+  failed:    0
+  log:       xlate/phase4_runs/20260506T123818.log

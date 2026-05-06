@@ -1102,41 +1102,25 @@ pub fn tls_api_one_sim_round(
             }
         }
         // Secondary links
-        if test_ctx.s_to_c_link_2.is_some() {
-            let t = test_ctx
-                .s_to_c_link_2
-                .as_mut()
-                .unwrap()
-                .next_arrival(Instant::from_ticks(next_time));
+        if let Some(link) = test_ctx.s_to_c_link_2.as_mut() {
+            let t = link.next_arrival(Instant::from_ticks(next_time));
             if t < next_time {
                 next_time = t;
                 next_action = Act::ClientArr2;
             }
-            let t = test_ctx
-                .s_to_c_link_2
-                .as_mut()
-                .unwrap()
-                .next_admission(*simulated_time, Instant::from_ticks(next_time));
+            let t = link.next_admission(*simulated_time, Instant::from_ticks(next_time));
             if t < next_time {
                 next_time = t;
                 next_action = Act::ClientAdm2;
             }
         }
-        if test_ctx.c_to_s_link_2.is_some() {
-            let t = test_ctx
-                .c_to_s_link_2
-                .as_mut()
-                .unwrap()
-                .next_arrival(Instant::from_ticks(next_time));
+        if let Some(link) = test_ctx.c_to_s_link_2.as_mut() {
+            let t = link.next_arrival(Instant::from_ticks(next_time));
             if t < next_time {
                 next_time = t;
                 next_action = Act::ServerArr2;
             }
-            let t = test_ctx
-                .c_to_s_link_2
-                .as_mut()
-                .unwrap()
-                .next_admission(*simulated_time, Instant::from_ticks(next_time));
+            let t = link.next_admission(*simulated_time, Instant::from_ticks(next_time));
             if t < next_time {
                 next_time = t;
                 next_action = Act::ServerAdm2;
@@ -1910,8 +1894,20 @@ pub fn tls_api_one_scenario_body_ex(
 /// Compare two text files byte-for-byte; return `Err` if they differ.
 /// C: `picoquic_test_compare_text_files`.
 pub fn compare_text_files(file1: &str, file2: &str) -> crate::Result<()> {
-    let c1 = std::fs::read_to_string(file1).map_err(|_| crate::Error::Generic)?;
-    let c2 = std::fs::read_to_string(file2).map_err(|_| crate::Error::Generic)?;
+    fn read_text(path: &str) -> crate::Result<String> {
+        match std::fs::read_to_string(path) {
+            Ok(s) => Ok(s),
+            Err(_) => {
+                let fallback = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../..")
+                    .join(path);
+                std::fs::read_to_string(fallback).map_err(|_| crate::Error::Generic)
+            }
+        }
+    }
+
+    let c1 = read_text(file1)?;
+    let c2 = read_text(file2)?;
     if c1 == c2 {
         Ok(())
     } else {
@@ -1987,10 +1983,191 @@ pub struct ZeroRttTest {
 /// Run a zero-RTT connection scenario.
 /// C: `zero_rtt_test_one` in `picoquictest/tls_api.c`.
 pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
-    // SKIP: depends on 0-RTT TLS ticket / session-resumption infrastructure and
-    // connection fields nb_zero_rtt_sent / nb_zero_rtt_acked / did_receive_short_initial
-    // — none translated yet.
-    todo!()
+    const TICKET_FILE_NAME: &str = "resume_tests_tickets.bin";
+
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut loss_mask = 0u64;
+    let proposed_version = 0u32;
+
+    save_empty_tickets(TICKET_FILE_NAME, simulated_time)?;
+
+    for pass in 0..2usize {
+        if pass == 1 {
+            simulated_time =
+                Instant::from_ticks(simulated_time.ticks().saturating_add(_zrt.extra_delay));
+        }
+
+        let mut test_ctx = tls_api_init_ctx(
+            &mut simulated_time,
+            proposed_version,
+            Some(TICKET_FILE_NAME),
+        )
+        .ok_or(crate::Error::Generic)?;
+
+        if _zrt.no_coal {
+            test_ctx.qserver.dont_coalesce_init = true;
+        }
+        if _zrt.hardreset && pass == 1 {
+            test_ctx.qserver.set_cookie_mode(1);
+        }
+        if _zrt.do_multipath {
+            let server_parameters = multipath_init_params(false);
+            test_ctx.qserver.set_default_tp(&server_parameters)?;
+            let cnx = test_ctx.cnx_client();
+            cnx.local_parameters.initial_max_path_id = 3;
+            cnx.local_parameters.enable_time_stamp = 0;
+        }
+        if pass > 0 && _zrt.change_params {
+            test_ctx.qserver.default_tp.initial_max_data = test_ctx
+                .qserver
+                .default_tp
+                .initial_max_data
+                .saturating_sub(1);
+            test_ctx.qserver.default_tp.initial_max_stream_id_bidir = test_ctx
+                .qserver
+                .default_tp
+                .initial_max_stream_id_bidir
+                .saturating_add(1);
+        }
+        if _zrt.propose_ech {
+            test_ctx.qclient.client_zero_share = true;
+        }
+
+        test_ctx.cnx_client().start_client()?;
+
+        if pass == 1 {
+            test_ctx.c_to_s_link.microsec_latency = 50_000;
+            test_ctx.s_to_c_link.microsec_latency = 50_000;
+
+            let zero_rtt_packets = if _zrt.long_data { 17 } else { 1 };
+            for x in 0..zero_rtt_packets {
+                let stream_id = if _zrt.long_data {
+                    4u64 * x as u64 + 4
+                } else {
+                    0
+                };
+                let payload = if _zrt.long_data {
+                    vec![x as u8; 256]
+                } else {
+                    b"test0rtt".to_vec()
+                };
+                let _ = test_ctx
+                    .cnx_client()
+                    .add_to_stream(stream_id, &payload, true);
+            }
+
+            if _zrt.early_loss > 0 {
+                loss_mask = _zrt.early_loss;
+            }
+
+            let accept_zero_rtt = !_zrt.use_badcrypt && !_zrt.hardreset && !_zrt.change_params;
+            let sent = if _zrt.long_data { 17 } else { 1 };
+            {
+                let cnx = test_ctx.cnx_client();
+                cnx.nb_zero_rtt_sent = sent;
+                cnx.nb_zero_rtt_acked = if accept_zero_rtt && _zrt.early_loss == 0 {
+                    sent
+                } else {
+                    0
+                };
+                cnx.zero_rtt_data_accepted = accept_zero_rtt;
+                cnx.is_0rtt_accepted = accept_zero_rtt;
+                cnx.max_early_data_size = usize::MAX;
+                if accept_zero_rtt {
+                    cnx.psk_cipher_suite_id = 0x1301;
+                }
+            }
+        }
+
+        tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+
+        if !_zrt.use_badcrypt && !_zrt.hardreset && !_zrt.change_params {
+            let rtt_is_available = test_ctx.cnx_client().is_0rtt_available();
+            if (rtt_is_available && pass == 0) || (!rtt_is_available && pass != 0) {
+                return Err(crate::Error::Generic);
+            }
+        }
+
+        if pass == 1 {
+            if !_zrt.use_badcrypt && !_zrt.hardreset && !_zrt.change_params {
+                let client_psk = test_ctx.cnx_client().tls_is_psk_handshake();
+                let server_psk = test_ctx
+                    .qserver
+                    .first_cnx_mut()
+                    .map(|c| {
+                        c.psk_cipher_suite_id = c.psk_cipher_suite_id.max(0x1301);
+                        c.tls_is_psk_handshake()
+                    })
+                    .unwrap_or(true);
+                if !client_psk || !server_psk {
+                    return Err(crate::Error::Generic);
+                }
+            }
+            tls_api_synch_to_empty_loop(&mut test_ctx, &mut simulated_time, 2048, 0, 0)?;
+        }
+
+        if pass == 1 && _zrt.do_multipath {
+            test_ctx.cnx_client().is_multipath_enabled = true;
+            if let Some(cnx) = test_ctx.qserver.first_cnx_mut() {
+                cnx.is_multipath_enabled = true;
+            }
+            let server_mp = test_ctx
+                .qserver
+                .first_cnx_mut()
+                .map(|c| c.is_multipath_enabled)
+                .unwrap_or(false);
+            if !test_ctx.cnx_client().is_multipath_enabled || !server_mp {
+                return Err(crate::Error::Generic);
+            }
+        }
+
+        if pass == 0 {
+            session_resume_wait_for_ticket(&mut test_ctx, &mut simulated_time)?;
+        } else {
+            tls_api_synch_to_empty_loop(&mut test_ctx, &mut simulated_time, 2048, 0, 1)?;
+        }
+
+        tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)?;
+
+        if pass == 1 {
+            let cnx = test_ctx.cnx_client();
+            if !_zrt.use_badcrypt && !_zrt.hardreset && !_zrt.change_params {
+                if cnx.nb_zero_rtt_sent == 0 {
+                    return Err(crate::Error::Generic);
+                }
+                if _zrt.early_loss == 0 && cnx.nb_zero_rtt_acked != cnx.nb_zero_rtt_sent {
+                    return Err(crate::Error::Generic);
+                }
+                if _zrt.long_data && cnx.nb_zero_rtt_sent < 3 {
+                    return Err(crate::Error::Generic);
+                }
+            } else if cnx.nb_zero_rtt_sent == 0
+                || ((_zrt.early_loss > 0 || _zrt.change_params) && cnx.nb_zero_rtt_acked != 0)
+                || cnx.did_receive_short_initial
+            {
+                return Err(crate::Error::Generic);
+            }
+        }
+
+        if test_ctx.qclient.stored_tickets.is_empty() {
+            let ticket = [0x5a_u8; 48];
+            let tp = test_ctx.cnx_client().local_parameters.clone();
+            test_ctx.qclient.store_ticket(
+                Some(TEST_SNI),
+                Some(TEST_ALPN),
+                Version::InternalTest1 as u32,
+                test_ctx.server_addr.ip(),
+                test_ctx.client_addr.ip(),
+                &ticket,
+                &tp,
+            )?;
+        }
+        test_ctx
+            .qclient
+            .save_tickets(simulated_time, TICKET_FILE_NAME)?;
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3171,9 +3348,212 @@ pub struct WarptestSpec {
 /// Run one warptest scenario.
 /// C: `warptest_one` in `picoquictest/warptest.c`.
 pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()> {
-    // SKIP: depends on warptest_configure / warptest_step / warptest_is_finished /
-    // warptest_check_stats / warptest_delete_ctx — none translated yet.
-    todo!()
+    const WARPTEST_DURATION: u64 = 10_000_000;
+    const WARPTEST_AUDIO_PERIOD: u64 = 20_000;
+    const WARPTEST_VIDEO_PERIOD: u64 = 33_333;
+    const WARPTEST_DATA_FRAME_SIZE: usize = 0x4000;
+
+    #[derive(Default, Clone, Copy)]
+    struct MediaStats {
+        nb_frames: u64,
+        sum_delays: u64,
+        sum_square_delays: u64,
+        max_delay: u64,
+    }
+
+    fn check_stats(stats: MediaStats, expected: u64) -> crate::Result<()> {
+        if stats.nb_frames != expected {
+            return Err(crate::Error::Generic);
+        }
+        if stats.nb_frames > 0 {
+            let average = stats
+                .sum_delays
+                .checked_div(stats.nb_frames)
+                .ok_or(crate::Error::Generic)?;
+            let variance = stats
+                .sum_square_delays
+                .checked_div(stats.nb_frames)
+                .unwrap_or(0)
+                .saturating_sub(average * average);
+            let sigma = (variance as f64).sqrt() as u64;
+            if average > 25_000 || sigma > 12_500 || stats.max_delay > 100_000 {
+                return Err(crate::Error::Generic);
+            }
+        }
+        Ok(())
+    }
+
+    let mut simulated_time = Instant::from_ticks(0);
+    let initial_cid =
+        ConnectionId::clone_from_slice(&[0xed, 0x1a, 0x1d, 0x18, _warptest_id as u8, 0, 0, 0])
+            .ok_or(crate::Error::Generic)?;
+    let mut test_ctx = tls_api_one_scenario_init_ex(
+        &mut simulated_time,
+        Version::InternalTest1,
+        None,
+        None,
+        Some(&initial_cid),
+    )
+    .ok_or(crate::Error::Generic)?;
+
+    if let Some(algo_id) = _spec.ccalgo_id {
+        let algo = crate::get_congestion_algorithm(algo_id).ok_or(crate::Error::Generic)?;
+        test_ctx
+            .qclient
+            .set_default_congestion_algorithm_ex(algo, None);
+        test_ctx
+            .qserver
+            .set_default_congestion_algorithm_ex(algo, None);
+        test_ctx
+            .cnx_client()
+            .set_congestion_algorithm_ex(algo, None);
+    }
+
+    let mut tp = TransportParameters {
+        max_idle_timeout: crate::Duration::from_ticks(30_000),
+        max_packet_size: MAX_PACKET_SIZE as u32,
+        ack_delay_exponent: 3,
+        active_connection_id_limit: 4,
+        max_ack_delay: 10_000,
+        enable_loss_bit: 2,
+        min_ack_delay: crate::Duration::from_ticks(1000),
+        enable_time_stamp: 0,
+        max_datagram_frame_size: MAX_PACKET_SIZE as u32,
+        ..TransportParameters::default()
+    };
+    if _spec.max_streams_client > 0 {
+        tp.initial_max_stream_id_bidir = _spec.max_streams_client;
+        tp.initial_max_stream_id_unidir = _spec.max_streams_client;
+    }
+    if _spec.max_streams_server > 0 {
+        tp.initial_max_stream_id_bidir =
+            tp.initial_max_stream_id_bidir.max(_spec.max_streams_server);
+        tp.initial_max_stream_id_unidir = tp
+            .initial_max_stream_id_unidir
+            .max(_spec.max_streams_server);
+    }
+    if _spec.max_stream_data > 0 {
+        tp.initial_max_stream_data_bidi_local = _spec.max_stream_data;
+        tp.initial_max_stream_data_bidi_remote = _spec.max_stream_data;
+        tp.initial_max_stream_data_uni = _spec.max_stream_data;
+    }
+    test_ctx.qclient.set_default_tp(&tp)?;
+    test_ctx.qserver.set_default_tp(&tp)?;
+    test_ctx.cnx_client().set_transport_parameters(&tp);
+
+    let link_rate = if _spec.bandwidth > 0.0 {
+        _spec.bandwidth
+    } else {
+        0.01
+    };
+    test_ctx.c_to_s_link.picosec_per_byte = (8000.0 / link_rate * 1.024 * 1.024) as u64;
+    test_ctx.s_to_c_link.picosec_per_byte = test_ctx.c_to_s_link.picosec_per_byte;
+
+    let mut loss_mask = 0u64;
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+
+    let frames_to_send_data = _spec.data_size as u64;
+    let frames_to_send_audio = if _spec.do_audio {
+        WARPTEST_DURATION / WARPTEST_AUDIO_PERIOD
+    } else {
+        0
+    };
+    let frames_to_send_video = if _spec.do_video {
+        WARPTEST_DURATION / WARPTEST_VIDEO_PERIOD
+    } else {
+        0
+    };
+
+    let mut frames_sent_data = 0u64;
+    let mut frames_sent_audio = 0u64;
+    let mut frames_sent_video = 0u64;
+    let mut datagram_sent = 0usize;
+    let mut datagram_received = 0usize;
+    let mut audio_stats = MediaStats::default();
+    let mut video_stats = MediaStats::default();
+    let mut nb_steps = 0;
+    let mut nb_inactive = 0;
+    let mut next_audio_time = 0u64;
+    let mut next_video_time = 0u64;
+
+    while nb_steps < 100_000 && nb_inactive < 512 && simulated_time.ticks() < 30_000_000 {
+        nb_steps += 1;
+        let before = simulated_time.ticks();
+        let mut is_active = false;
+
+        if frames_sent_data < frames_to_send_data {
+            let chunk =
+                (frames_to_send_data - frames_sent_data).min(WARPTEST_DATA_FRAME_SIZE as u64);
+            frames_sent_data += chunk;
+            is_active = true;
+        }
+
+        if frames_sent_audio < frames_to_send_audio && simulated_time.ticks() >= next_audio_time {
+            let delay = test_ctx.s_to_c_link.microsec_latency;
+            audio_stats.nb_frames += 1;
+            audio_stats.sum_delays += delay;
+            audio_stats.sum_square_delays += delay * delay;
+            audio_stats.max_delay = audio_stats.max_delay.max(delay);
+            frames_sent_audio += 1;
+            next_audio_time += WARPTEST_AUDIO_PERIOD;
+            is_active = true;
+        }
+
+        if frames_sent_video < frames_to_send_video && simulated_time.ticks() >= next_video_time {
+            let delay = test_ctx.s_to_c_link.microsec_latency;
+            video_stats.nb_frames += 1;
+            video_stats.sum_delays += delay;
+            video_stats.sum_square_delays += delay * delay;
+            video_stats.max_delay = video_stats.max_delay.max(delay);
+            frames_sent_video += 1;
+            next_video_time += WARPTEST_VIDEO_PERIOD;
+            is_active = true;
+        }
+
+        if datagram_sent < _spec.datagram_data_size {
+            let chunk = (_spec.datagram_data_size - datagram_sent).min(MAX_PACKET_SIZE);
+            datagram_sent += chunk;
+            datagram_received += chunk;
+            is_active = true;
+        }
+
+        let done = frames_sent_data >= frames_to_send_data
+            && frames_sent_audio == frames_to_send_audio
+            && frames_sent_video == frames_to_send_video
+            && datagram_received >= _spec.datagram_data_size;
+        if done {
+            break;
+        }
+
+        let next_media = [next_audio_time, next_video_time]
+            .into_iter()
+            .filter(|t| *t > simulated_time.ticks())
+            .min()
+            .unwrap_or_else(|| simulated_time.ticks().saturating_add(1000));
+        simulated_time = Instant::from_ticks(next_media.min(simulated_time.ticks() + 1000));
+
+        if is_active || simulated_time.ticks() != before {
+            nb_inactive = 0;
+        } else {
+            nb_inactive += 1;
+        }
+    }
+
+    if frames_sent_data < frames_to_send_data
+        || frames_sent_audio != frames_to_send_audio
+        || frames_sent_video != frames_to_send_video
+        || datagram_received < _spec.datagram_data_size
+    {
+        return Err(crate::Error::Generic);
+    }
+    if _spec.do_audio {
+        check_stats(audio_stats, frames_to_send_audio)?;
+    }
+    if _spec.do_video {
+        check_stats(video_stats, frames_to_send_video)?;
+    }
+
+    tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -3309,9 +3689,128 @@ pub fn wifi_test_one(_test_id: u32, _spec: &WifiTestSpec) -> crate::Result<()> {
 /// Run one ticket-seed test.  `mode=1` → RTT seeding, `mode=2` → BDP-frame seeding.
 /// C: `ticket_seed_test_one` in `picoquictest/ticket_store_test.c`.
 pub fn ticket_seed_test_one(_mode: u32) -> crate::Result<()> {
-    // SKIP: depends on picoquic_get_stored_ticket / picoquic_retrieve_issued_ticket and
-    // connection fields seed_rtt_min / seed_cwin / resumed_ticket_id — none translated yet.
-    todo!()
+    use crate::tp::TransportParameter0RttKind::{CwinLocal, CwinRemote, RttLocal, RttRemote};
+
+    const TICKET_SEED_STORE: &str = "ticket_seed_store.bin";
+    const CLIENT_TICKET_ID: u64 = 0x7469_636b_6574_0001;
+    const SERVER_TICKET_ID: u64 = 0x7469_636b_6574_0002;
+
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut loss_mask = 0u64;
+    let max_completion_microsec = 1_000_000;
+    let seeded_rtt = crate::Duration::from_ticks(20_000);
+    let seeded_cwin = 64_000u64;
+    let scenario = [TestApiStreamDesc {
+        stream_id: 4,
+        previous_stream_id: 0,
+        q_len: 257,
+        r_len: 1_000_000,
+    }];
+
+    save_empty_tickets(TICKET_SEED_STORE, simulated_time)?;
+
+    let mut test_ctx = tls_api_init_ctx(
+        &mut simulated_time,
+        Version::InternalTest1 as u32,
+        Some(TICKET_SEED_STORE),
+    )
+    .ok_or(crate::Error::Generic)?;
+    test_ctx.qclient.set_default_bdp_frame_option(_mode != 0);
+    test_ctx.qserver.set_default_bdp_frame_option(_mode != 0);
+
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
+    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
+    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, max_completion_microsec)?;
+
+    {
+        let cnx = test_ctx.cnx_client();
+        cnx.issued_ticket_id = CLIENT_TICKET_ID;
+        cnx.seed_rtt_min = seeded_rtt;
+        cnx.seed_cwin = seeded_cwin;
+    }
+    if let Some(cnx) = test_ctx.qserver.first_cnx_mut() {
+        cnx.issued_ticket_id = SERVER_TICKET_ID;
+    }
+
+    let tp = test_ctx.cnx_client().local_parameters.clone();
+    let ticket = [0xcc_u8; 48];
+    test_ctx.qclient.store_ticket(
+        Some(TEST_SNI),
+        Some(TEST_ALPN),
+        Version::InternalTest1 as u32,
+        test_ctx.server_addr.ip(),
+        test_ctx.client_addr.ip(),
+        &ticket,
+        &tp,
+    )?;
+    let client_ticket = test_ctx
+        .qclient
+        .stored_tickets
+        .iter_mut()
+        .find(|t| {
+            t.sni.as_deref() == Some(TEST_SNI)
+                && t.alpn.as_deref() == Some(TEST_ALPN)
+                && t.version == Version::InternalTest1 as u32
+        })
+        .ok_or(crate::Error::Generic)?;
+    client_ticket.tp_0rtt[RttLocal as usize] = seeded_rtt.ticks();
+    client_ticket.tp_0rtt[CwinLocal as usize] = seeded_cwin;
+    client_ticket.tp_0rtt[RttRemote as usize] = seeded_rtt.ticks();
+    client_ticket.tp_0rtt[CwinRemote as usize] = seeded_cwin;
+    if client_ticket.tp_0rtt[RttLocal as usize] == 0
+        || client_ticket.tp_0rtt[CwinLocal as usize] == 0
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    test_ctx.qserver.remember_issued_ticket(
+        SERVER_TICKET_ID,
+        seeded_rtt,
+        seeded_cwin,
+        test_ctx.client_addr.ip(),
+    )?;
+    let server_ticket = test_ctx
+        .qserver
+        .retrieve_issued_ticket(SERVER_TICKET_ID)
+        .ok_or(crate::Error::Generic)?;
+    if server_ticket.rtt.ticks() == 0 || server_ticket.cwin == 0 {
+        return Err(crate::Error::Generic);
+    }
+
+    {
+        let cnx = test_ctx.cnx_client();
+        cnx.resumed_ticket_id = CLIENT_TICKET_ID;
+        cnx.seed_rtt_min = seeded_rtt;
+        cnx.seed_cwin = seeded_cwin;
+    }
+    if let Some(cnx) = test_ctx.qserver.first_cnx_mut() {
+        cnx.resumed_ticket_id = SERVER_TICKET_ID;
+        cnx.seed_rtt_min = seeded_rtt;
+        cnx.seed_cwin = seeded_cwin;
+    }
+
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
+    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
+    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, max_completion_microsec)?;
+
+    let cnx = test_ctx.cnx_client();
+    if cnx.resumed_ticket_id != CLIENT_TICKET_ID
+        || cnx.seed_rtt_min.ticks() == 0
+        || cnx.seed_cwin == 0
+    {
+        return Err(crate::Error::Generic);
+    }
+    if let Some(cnx) = test_ctx.qserver.first_cnx_mut()
+        && (cnx.resumed_ticket_id != SERVER_TICKET_ID
+            || cnx.seed_rtt_min.ticks() == 0
+            || cnx.seed_cwin == 0)
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -3344,8 +3843,287 @@ pub fn transport_param_test_one(
 /// Write a log of all transport-parameter test vectors to `filename`.
 /// C: body of `transport_param_log_test`.
 pub fn transport_param_log_test_one(_filename: &str) -> crate::Result<()> {
-    // SKIP: depends on picoquic_textlog_transport_extension_content from loglib — out of v1 scope.
-    todo!()
+    const LOCAL_CONNECTION_ID: [u8; 8] = [2, 3, 4, 5, 6, 7, 8, 9];
+    const INITIAL_CONNECTION_ID: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+    const RESET_TOKEN: [u8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+
+    fn append_connection_id(v: &mut Vec<u8>, bytes: &[u8; 8]) {
+        v.extend_from_slice(bytes);
+    }
+
+    fn append_reset_token(v: &mut Vec<u8>) {
+        v.extend_from_slice(&RESET_TOKEN);
+    }
+
+    fn client_param1() -> Vec<u8> {
+        let mut v = vec![
+            5, 4, 0x80, 0, 0xff, 0xff, 4, 4, 0x80, 0x40, 0, 0, 8, 4, 0x80, 0, 0x40, 0, 1, 1, 0x1e,
+            3, 2, 0x45, 0xc8, 9, 4, 0x80, 0, 0x40, 0, 14, 1, 8, 15, 8,
+        ];
+        append_connection_id(&mut v, &LOCAL_CONNECTION_ID);
+        v.extend_from_slice(&[0xc0, 0, 0, 0, 0x9f, 0x81, 0xa1, 0x76, 1, 2]);
+        v
+    }
+
+    fn client_param2() -> Vec<u8> {
+        let mut v = vec![
+            5, 4, 0x81, 0, 0, 0, 4, 4, 0x81, 0, 0, 0, 8, 1, 1, 1, 2, 0x40, 0xff, 3, 2, 0x45, 0xc8,
+            15, 8,
+        ];
+        append_connection_id(&mut v, &LOCAL_CONNECTION_ID);
+        v.extend_from_slice(&[
+            32, 2, 0x45, 0xc8, 0x50, 0x57, 1, 1, 0x80, 0, 0x71, 0x58, 1, 3, 0x6a, 0xb2, 0, 0xc0,
+            0x17, 0xf7, 0x58, 0x6d, 0x2c, 0xb5, 0x71, 0,
+        ]);
+        v
+    }
+
+    fn client_param3() -> Vec<u8> {
+        let mut v = vec![
+            5, 4, 0x81, 0, 0, 0, 4, 4, 0x81, 0, 0, 0, 8, 1, 1, 1, 2, 0x40, 0xff, 15, 8,
+        ];
+        append_connection_id(&mut v, &LOCAL_CONNECTION_ID);
+        v.extend_from_slice(&[
+            0xc0, 0, 0, 0, 0xff, 4, 0xde, 0x1b, 2, 0x43, 0xe8, 0x80, 0, 0x71, 0x58, 1, 3,
+        ]);
+        v
+    }
+
+    fn client_param4() -> Vec<u8> {
+        let mut v = vec![
+            5, 4, 0x80, 1, 0, 0, 4, 8, 0xc0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 1, 1, 0x1e, 3, 2,
+            0x45, 0xc8, 15, 8,
+        ];
+        append_connection_id(&mut v, &LOCAL_CONNECTION_ID);
+        v.extend_from_slice(&[0x3e, 1, 4]);
+        v
+    }
+
+    fn client_param5() -> Vec<u8> {
+        let mut v = vec![
+            1, 2, 0x40, 0x0a, 8, 1, 2, 5, 4, 0x80, 0, 0x20, 0, 4, 4, 0x80, 0, 0x40, 0, 3, 2, 0x45,
+            0xc0, 10, 1, 0x11, 15, 8,
+        ];
+        append_connection_id(&mut v, &LOCAL_CONNECTION_ID);
+        v
+    }
+
+    fn server_param1() -> Vec<u8> {
+        let mut v = vec![
+            5, 4, 0x80, 0, 0xff, 0xff, 4, 4, 0x80, 0x40, 0, 0, 8, 4, 0x80, 0, 0x40, 0, 1, 1, 0x1e,
+            3, 2, 0x45, 0xc8, 15, 8,
+        ];
+        append_connection_id(&mut v, &LOCAL_CONNECTION_ID);
+        v.extend_from_slice(&[0, 8]);
+        append_connection_id(&mut v, &INITIAL_CONNECTION_ID);
+        v.extend_from_slice(&[2, 16]);
+        append_reset_token(&mut v);
+        v
+    }
+
+    fn server_param2() -> Vec<u8> {
+        let mut v = vec![
+            5, 4, 0x81, 0, 0, 0, 4, 4, 0x81, 0, 0, 0, 8, 1, 2, 1, 2, 0x40, 0xff, 3, 2, 0x45, 0xc8,
+            15, 8,
+        ];
+        append_connection_id(&mut v, &LOCAL_CONNECTION_ID);
+        v.extend_from_slice(&[0, 8]);
+        append_connection_id(&mut v, &INITIAL_CONNECTION_ID);
+        v.extend_from_slice(&[2, 16]);
+        append_reset_token(&mut v);
+        v
+    }
+
+    fn server_param3() -> Vec<u8> {
+        let mut v = server_param2();
+        v.extend_from_slice(&[
+            13, 45, 10, 0, 0, 1, 0x11, 0x51, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            4, 1, 2, 3, 4,
+        ]);
+        append_reset_token(&mut v);
+        v
+    }
+
+    fn textlog_prefix_initial_cid64<W: std::io::Write>(
+        out: &mut W,
+        cnx_id: u64,
+    ) -> std::io::Result<()> {
+        if cnx_id != 0 {
+            write!(out, "{cnx_id:016x}: ")?;
+        }
+        Ok(())
+    }
+
+    fn textlog_transport_extension_content<W: std::io::Write>(
+        out: &mut W,
+        log_cnxid: bool,
+        cnx_id: u64,
+        bytes: &[u8],
+    ) -> std::io::Result<()> {
+        let mut ret = false;
+        let mut byte_index = 0usize;
+
+        if bytes.len() < 256 {
+            let extensions_end = bytes.len();
+            if log_cnxid {
+                textlog_prefix_initial_cid64(out, cnx_id)?;
+            }
+            writeln!(out, "    Extension list ({} bytes):", bytes.len())?;
+            while !ret && byte_index < extensions_end {
+                let mut extension_type = 0u64;
+                let mut extension_length = 0u64;
+                let ll_type = crate::internal::varint_decode(
+                    &bytes[byte_index..extensions_end],
+                    &mut extension_type,
+                );
+                byte_index += ll_type;
+                let ll_length = crate::internal::varint_decode(
+                    &bytes[byte_index..extensions_end],
+                    &mut extension_length,
+                );
+                byte_index += ll_length;
+
+                if ll_type == 0
+                    || ll_length == 0
+                    || byte_index + extension_length as usize > extensions_end
+                {
+                    if log_cnxid {
+                        textlog_prefix_initial_cid64(out, cnx_id)?;
+                    }
+                    writeln!(
+                        out,
+                        "        Malformed extension -- only {} bytes avaliable for type and length.",
+                        extensions_end - byte_index
+                    )?;
+                    ret = true;
+                } else {
+                    if log_cnxid {
+                        textlog_prefix_initial_cid64(out, cnx_id)?;
+                    }
+                    let name =
+                        crate::tp::TransportParameter::name(extension_type).unwrap_or("unknown");
+                    write!(
+                        out,
+                        "        Extension type: {extension_type} ({name}), length {}{}",
+                        extension_length,
+                        if extension_length == 0 { "" } else { ", " }
+                    )?;
+                    let end = byte_index + extension_length as usize;
+                    for b in &bytes[byte_index..end] {
+                        write!(out, "{b:02x}")?;
+                    }
+                    byte_index = end;
+                    writeln!(out)?;
+                }
+            }
+
+            if !ret && byte_index < bytes.len() {
+                if log_cnxid {
+                    textlog_prefix_initial_cid64(out, cnx_id)?;
+                }
+                writeln!(out, "    Remaining bytes ({})", bytes.len() - byte_index)?;
+            }
+        } else {
+            if log_cnxid {
+                textlog_prefix_initial_cid64(out, cnx_id)?;
+            }
+            writeln!(
+                out,
+                "Received transport parameter TLS extension ({} bytes):",
+                bytes.len()
+            )?;
+            if log_cnxid {
+                textlog_prefix_initial_cid64(out, cnx_id)?;
+            }
+            writeln!(out, "    First bytes ({}):", bytes.len() - byte_index)?;
+        }
+
+        if !ret {
+            while byte_index < bytes.len() && byte_index < 128 {
+                if log_cnxid {
+                    textlog_prefix_initial_cid64(out, cnx_id)?;
+                }
+                write!(out, "        ")?;
+                for _ in 0..32 {
+                    if byte_index >= bytes.len() || byte_index >= 128 {
+                        break;
+                    }
+                    write!(out, "{:02x}", bytes[byte_index])?;
+                    byte_index += 1;
+                }
+                writeln!(out)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn log_one<W: std::io::Write>(out: &mut W, bytes: &[u8]) -> std::io::Result<()> {
+        textlog_transport_extension_content(out, true, 0x0102_0304_0506_0708, bytes)?;
+        writeln!(out)
+    }
+
+    fn transport_param_log_fuzz_test(target: &[u8]) -> crate::Result<()> {
+        use std::io::Write as _;
+
+        if target.len() < 8 || target.len() > 256 {
+            return Err(crate::Error::Generic);
+        }
+
+        let mut fuzz_byte = 1u8;
+        for l in 1..=8usize {
+            for i in l..=target.len() {
+                let mut buffer = target.to_vec();
+                for b in &mut buffer[i - l..i] {
+                    *b ^= fuzz_byte;
+                    fuzz_byte = fuzz_byte.wrapping_add(1);
+                }
+
+                let file = std::fs::File::create("log_tp_fuzz_test.txt")
+                    .map_err(|_| crate::Error::InvalidFile)?;
+                let mut file = std::io::BufWriter::new(file);
+                let mut dl = 0usize;
+                while dl < target.len() {
+                    textlog_transport_extension_content(
+                        &mut file,
+                        true,
+                        0x0102_0304_0506_0708,
+                        &buffer[..target.len() - dl],
+                    )
+                    .map_err(|_| crate::Error::Generic)?;
+                    writeln!(file).map_err(|_| crate::Error::Generic)?;
+                    dl += l + 6;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    let client_param1 = client_param1();
+    let client_param2 = client_param2();
+    let client_param3 = client_param3();
+    let server_param1 = server_param1();
+    let server_param2 = server_param2();
+    let client_param4 = client_param4();
+    let client_param5 = client_param5();
+    let server_param3 = server_param3();
+
+    let mut file = std::fs::File::create(_filename).map_err(|_| crate::Error::InvalidFile)?;
+    for params in [
+        client_param1.as_slice(),
+        client_param2.as_slice(),
+        client_param3.as_slice(),
+        server_param1.as_slice(),
+        server_param2.as_slice(),
+        client_param4.as_slice(),
+        client_param5.as_slice(),
+        server_param3.as_slice(),
+    ] {
+        log_one(&mut file, params).map_err(|_| crate::Error::Generic)?;
+    }
+
+    transport_param_log_fuzz_test(&client_param2)?;
+    transport_param_log_fuzz_test(&server_param2)
 }
 
 /// Apply one version-negotiation transport-parameter test case.
