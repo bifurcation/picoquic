@@ -7,9 +7,7 @@
 //!
 //! Phase 4: all function bodies are implemented.
 
-use crate::internal::{
-    CWIN_INITIAL, CWIN_MINIMUM, Connection, Path, TARGET_RENO_RTT, TARGET_SATELLITE_RTT,
-};
+use crate::internal::{CWIN_INITIAL, Connection, Path, TARGET_RENO_RTT, TARGET_SATELLITE_RTT};
 use crate::{CongestionNotification, Duration, Instant, PerAckState};
 
 // ---------------------------------------------------------------------------
@@ -489,7 +487,13 @@ impl NewRenoSimState {
             | CongestionNotification::Timeout
                 if self.recovery_sequence <= ack_state.lost_packet_number =>
             {
-                self.enter_recovery(connection, path_x, notification, current_time);
+                crate::newreno::picoquic_newreno_sim_enter_recovery(
+                    self,
+                    connection,
+                    path_x,
+                    notification,
+                    current_time,
+                );
             }
             CongestionNotification::EcnEc
             | CongestionNotification::Repeat
@@ -523,29 +527,12 @@ impl NewRenoSimState {
         }
     }
 
-    fn enter_recovery(
-        &mut self,
-        connection: &Connection,
-        path_x: &Path,
-        notification: CongestionNotification,
-        current_time: Instant,
-    ) {
-        self.ssthresh = self.cwin / 2;
-        if self.ssthresh < CWIN_MINIMUM {
-            self.ssthresh = CWIN_MINIMUM;
-        }
-        if notification == CongestionNotification::Timeout {
-            self.cwin = CWIN_MINIMUM;
-            self.alg_state = NewRenoAlgState::SlowStart;
-        } else {
-            self.cwin = self.ssthresh;
-            self.alg_state = NewRenoAlgState::CongestionAvoidance;
-        }
-        self.recovery_start = current_time.ticks();
-        self.recovery_sequence = connection.sequence_number(path_x);
-        self.residual_ack = 0;
-    }
-
+    /// Seed the congestion window from an external bandwidth estimate.
+    ///
+    /// Only has an effect during slow start when no `ssthresh` has been set
+    /// yet and the seed value exceeds the current window.
+    ///
+    /// C: `picoquic_newreno_sim_seed_cwin` (picoquic/newreno.c:73-85).
     fn seed_cwin(&mut self, seed_cwin: u64) {
         if self.alg_state == NewRenoAlgState::SlowStart
             && self.ssthresh == u64::MAX

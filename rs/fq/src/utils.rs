@@ -127,6 +127,21 @@ pub fn debug_set_stream(stream: Option<Box<dyn core::fmt::Write>>) {
     DEBUG_OUT.with(|o| *o.borrow_mut() = stream);
 }
 
+/// Returns `true` if a debug output sink is currently installed.
+/// C: `picoquic/util.c:get_debug_out` — callers that checked
+/// `get_debug_out() != NULL` before calling `fprintf` map to
+/// checking this boolean.
+pub fn get_debug_out() -> bool {
+    DEBUG_OUT.with(|o| o.borrow().is_some())
+}
+
+/// Returns `true` if debug output is currently suspended.
+/// C: `picoquic/util.c:get_debug_suspended` — the C `int` (0/1)
+/// maps to `bool`.
+pub fn get_debug_suspended() -> bool {
+    DEBUG_SUSPENDED.with(|s| s.get())
+}
+
 /// `printf`-style write to the installed debug sink.  The C
 /// variadic signature `void debug_printf(const char* fmt, ...)`
 /// becomes a sink for already-formatted text — Rust call sites
@@ -219,11 +234,43 @@ pub fn debug_dump(bytes: &[u8]) {
 // ---------------------------------------------------------------------------
 // String utilities.
 
-// `picoquic_string_create`, `picoquic_string_duplicate`, and
-// `picoquic_string_free` are subsumed by Rust's owned `String`:
-// `String::from(s)` replaces the duplicate / create pair, and the
-// `Drop` impl replaces the `free` shim.  Phase 3 callers should use
-// owned `String` directly rather than going through helpers.
+/// Parse a hex digit character and return its value (0–15), or -1 for
+/// invalid input.  C: `picoquic/util.c:270-284`
+pub fn parse_hexa_digit(x: char) -> i32 {
+    match x {
+        '0'..='9' => x as i32 - '0' as i32,
+        'A'..='F' => x as i32 - 'A' as i32 + 10,
+        'a'..='f' => x as i32 - 'a' as i32 + 10,
+        _ => -1,
+    }
+}
+
+/// Create an owned `String` from the first `len` bytes of `original`.
+/// If `original` is `None` or `len == 0` the result is empty.
+/// C: `picoquic/util.c:45-71` — the C function allocated on the heap and
+/// null-terminated; here Rust's owned `String` subsumes both roles.
+pub fn string_create(original: Option<&str>, len: usize) -> String {
+    let Some(src) = original else {
+        return String::new();
+    };
+    if len == 0 {
+        return String::new();
+    }
+    src[..len.min(src.len())].to_owned()
+}
+
+/// Compute an absolute `SystemTime` deadline `microsec_wait` microseconds
+/// from the current wall clock.  C: `picoquic/util.c:1115-1124`
+/// (the `#ifndef _WINDOWS` branch — the Windows path is out of v1 scope).
+/// Replaces the C `struct timespec *` out-parameter with a return value.
+pub fn set_abs_delay(microsec_wait: u64) -> std::time::SystemTime {
+    std::time::SystemTime::now() + std::time::Duration::from_micros(microsec_wait)
+}
+
+// `picoquic_string_duplicate` and `picoquic_string_free` are subsumed by
+// Rust's owned `String`: `String::from(s)` replaces the duplicate / create
+// pair, and the `Drop` impl replaces the `free` shim.  Phase 3 callers should
+// use owned `String` directly rather than going through helpers.
 
 /// Format `args` into the head of `buf` and report bytes written
 /// via `nb_chars`; truncation returns an `Err`.  C:
@@ -301,10 +348,22 @@ pub fn parse_connection_id(bytes: &[u8]) -> Result<ConnectionId, Error> {
     })
 }
 
-// `is_null` / cmp / `hash_with_seed` / `val64` live as methods on
+/// Three-way compare two connection ids.  Shorter length sorts
+/// before longer; equal-length ids are compared byte-by-byte.
+/// C: `picoquic/util.c:picoquic_compare_connection_id`
+pub fn compare_connection_id(id1: &ConnectionId, id2: &ConnectionId) -> Ordering {
+    let len1 = id1.as_bytes().len();
+    let len2 = id2.as_bytes().len();
+    match len1.cmp(&len2) {
+        Ordering::Equal => id1.as_bytes().cmp(id2.as_bytes()),
+        other => other,
+    }
+}
+
+// `is_null` / `hash_with_seed` / `val64` live as methods on
 // [`ConnectionId`] (see `crate::lib`); they were free fns in the
-// C source.  `Ord` for `ConnectionId` derives the lexicographic
-// byte-then-length order the C `compare_connection_id` produced.
+// C source.  The `Ord` impl on `ConnectionId` and the free
+// `compare_connection_id` above match the C three-way comparator.
 
 // ---------------------------------------------------------------------------
 // Address helpers.
@@ -879,6 +938,50 @@ pub fn frames_cid_encode<'a>(bytes: &'a mut [u8], cid: &ConnectionId) -> Option<
 /// (the NUL is *not* written).  C: `frames_charz_encode`.
 pub fn frames_charz_encode<'a>(bytes: &'a mut [u8], s: &str) -> Option<&'a mut [u8]> {
     frames_length_data_encode(bytes, s.as_bytes())
+}
+
+// ---------------------------------------------------------------------------
+// Fixed-width big-endian frame-field writers (intformat.c).
+//
+// Write exactly N bytes of a big-endian integer into the start of
+// `bytes`, panicking if the slice is too short (same as the C
+// contract: passing an undersized buffer is undefined behaviour).
+
+/// Write `n16` as a big-endian 16-bit value into `bytes[0..2]`.
+/// C: `picoquic/intformat.c:27-31`.
+pub fn picoformat_16(bytes: &mut [u8], n16: u16) {
+    bytes[0] = (n16 >> 8) as u8;
+    bytes[1] = n16 as u8;
+}
+
+/// Write the low 24 bits of `n24` as a big-endian 3-byte value into `bytes[0..3]`.
+/// C: `picoquic/intformat.c:33-38`.
+pub fn picoformat_24(bytes: &mut [u8], n24: u32) {
+    bytes[0] = (n24 >> 16) as u8;
+    bytes[1] = (n24 >> 8) as u8;
+    bytes[2] = n24 as u8;
+}
+
+/// Write `n32` as a big-endian 32-bit value into `bytes[0..4]`.
+/// C: `picoquic/intformat.c:40-46`.
+pub fn picoformat_32(bytes: &mut [u8], n32: u32) {
+    bytes[0] = (n32 >> 24) as u8;
+    bytes[1] = (n32 >> 16) as u8;
+    bytes[2] = (n32 >> 8) as u8;
+    bytes[3] = n32 as u8;
+}
+
+/// Write `n64` as a big-endian 64-bit value into `bytes[0..8]`.
+/// C: `picoquic/intformat.c:48-58`.
+pub fn picoformat_64(bytes: &mut [u8], n64: u64) {
+    bytes[0] = (n64 >> 56) as u8;
+    bytes[1] = (n64 >> 48) as u8;
+    bytes[2] = (n64 >> 40) as u8;
+    bytes[3] = (n64 >> 32) as u8;
+    bytes[4] = (n64 >> 24) as u8;
+    bytes[5] = (n64 >> 16) as u8;
+    bytes[6] = (n64 >> 8) as u8;
+    bytes[7] = n64 as u8;
 }
 
 // ---------------------------------------------------------------------------

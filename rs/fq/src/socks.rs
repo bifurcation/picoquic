@@ -13,6 +13,9 @@
 
 use core::net::SocketAddr;
 
+#[cfg(unix)]
+use libc;
+
 use crate::Error;
 use crate::Instant;
 
@@ -88,9 +91,10 @@ pub trait Socket {
         gso_size: i32,
     ) -> Result<usize, OsError>;
 
-    /// Enable per-packet destination-info delivery on this
-    /// socket (`IP_PKTINFO` / `IPV6_RECVPKTINFO`).  Default:
-    /// no-op for backends that don't surface pktinfo.
+    /// Enable per-packet destination-info delivery on this socket
+    /// (`IP_PKTINFO` / `IPV6_RECVPKTINFO`).  Default: no-op for
+    /// backends that don't surface pktinfo.
+    /// C: `picoquic_socket_set_pkt_info`.
     fn set_pkt_info(&mut self) -> Result<(), Error> {
         Ok(())
     }
@@ -113,6 +117,7 @@ pub trait Socket {
 
     /// Enable Path-MTU-Discovery probing on this socket
     /// (Linux-only; no-op on other platforms by default).
+    /// C: `picoquic_socket_set_pmtud_options`.
     fn set_pmtud_options(&mut self) -> Result<(), Error> {
         Ok(())
     }
@@ -135,6 +140,14 @@ pub trait Socket {
         Self: Sized,
     {
         Err(Error::Generic)
+    }
+
+    /// Underlying OS file descriptor, or `-1` when not available
+    /// (mock/test sockets, non-Unix platforms).  Used by
+    /// `packet_loop::packet_loop_set_fds` to populate a `pollfd` array.
+    /// C: `s_ctx->fd` (a raw `int` fd on POSIX builds).
+    fn raw_fd(&self) -> i32 {
+        -1
     }
 }
 
@@ -366,6 +379,96 @@ pub enum EcnCodepoint {
     Ce = 0b11,
 }
 
+#[cfg(unix)]
+fn setsockopt_uint(
+    sd: libc::c_int,
+    level: libc::c_int,
+    optname: libc::c_int,
+    value: libc::c_uint,
+) -> bool {
+    let value_ptr = &value as *const libc::c_uint as *const libc::c_void;
+    let value_len = core::mem::size_of::<libc::c_uint>() as libc::socklen_t;
+    // SAFETY: `setsockopt` reads `value_len` bytes from `value_ptr` during
+    // this call. `value_ptr` points to the local `value`, and an invalid
+    // socket descriptor is reported by the OS as a negative return value.
+    unsafe { libc::setsockopt(sd, level, optname, value_ptr, value_len) == 0 }
+}
+
+/// Enable ECN receive reporting and, when `ecn_value != NotEct`, request
+/// that outgoing packets use that ECN codepoint.
+/// C: `picoquic_socket_set_ecn_options_ex` (picosocks.c:93-223).
+#[cfg(unix)]
+pub fn picoquic_socket_set_ecn_options_ex(
+    sd: i32,
+    af: i32,
+    ecn_value: EcnCodepoint,
+) -> Result<(bool, bool), Error> {
+    let mut ret = -1;
+    let recv_set;
+    let send_set;
+    let ecn = ecn_value as libc::c_uint;
+
+    if af == libc::AF_INET6 {
+        send_set = if ecn != 0 {
+            setsockopt_uint(sd, libc::IPPROTO_IPV6, libc::IPV6_TCLASS, ecn)
+        } else {
+            true
+        };
+
+        let recv_ok = setsockopt_uint(sd, libc::IPPROTO_IPV6, libc::IPV6_RECVTCLASS, 1);
+        if recv_ok {
+            recv_set = true;
+            ret = 0;
+        } else {
+            recv_set = false;
+        }
+    } else {
+        send_set = if ecn != 0 {
+            setsockopt_uint(sd, libc::IPPROTO_IP, libc::IP_TOS, ecn)
+        } else {
+            true
+        };
+
+        let recv_ok = setsockopt_uint(sd, libc::IPPROTO_IP, libc::IP_RECVTOS, 1);
+        if recv_ok {
+            recv_set = true;
+            ret = 0;
+        } else {
+            recv_set = false;
+        }
+    }
+
+    if ret == 0 {
+        Ok((recv_set, send_set))
+    } else {
+        Err(Error::Generic)
+    }
+}
+
+/// Enable ECN receive reporting and request ECT(1) on outgoing packets.
+/// C: `picoquic_socket_set_ecn_options`.
+#[cfg(unix)]
+pub fn picoquic_socket_set_ecn_options(sd: i32, af: i32) -> Result<(bool, bool), Error> {
+    picoquic_socket_set_ecn_options_ex(sd, af, EcnCodepoint::Ect1)
+}
+
+/// Non-Unix targets are outside the Phase 4 target triple; keep the safe
+/// shape available for cross-target builds.
+#[cfg(not(unix))]
+pub fn picoquic_socket_set_ecn_options_ex(
+    _sd: i32,
+    _af: i32,
+    _ecn_value: EcnCodepoint,
+) -> Result<(bool, bool), Error> {
+    Ok((false, false))
+}
+
+/// Non-Unix companion wrapper for [`picoquic_socket_set_ecn_options_ex`].
+#[cfg(not(unix))]
+pub fn picoquic_socket_set_ecn_options(_sd: i32, _af: i32) -> Result<(bool, bool), Error> {
+    Ok((false, false))
+}
+
 /// Parse the control-message ancillary data attached to a
 /// received `msghdr`.  C: `picoquic_socks_cmsg_parse`.
 pub fn parse_cmsg(_header: &MessageHeader<'_, '_, '_>) -> CmsgInfo {
@@ -388,6 +491,74 @@ pub fn format_cmsg(
     // Control-message formatting requires CMSG_ macros not available in
     // safe Rust through socket2 0.5.  The kernel will pick the source
     // address; GSO segmentation and ECN marking are not applied.
+}
+
+// ---------------------------------------------------------------------------
+// Low-level cmsg helpers (Unix only).
+
+/// Append a new control-message header at the next available slot in the
+/// `msghdr`'s control buffer, zero-fill the required space, write the header
+/// fields (`cmsg_level`, `cmsg_type`, `cmsg_len`), and return a pointer to
+/// the cmsg data area.  `*control_length` is incremented by the padded size
+/// consumed (i.e. `CMSG_SPACE(cmsg_data_len)`).
+///
+/// Returns a null pointer when no further slot is available in the control
+/// buffer.
+///
+/// # Safety
+///
+/// `msg` must point to a valid `msghdr` whose `msg_control` buffer has
+/// capacity for at least `CMSG_SPACE(cmsg_data_len)` bytes beyond the
+/// space already used.  `last_cmsg` must be either null (first entry) or
+/// the pointer returned from the most recent call for this `msg`.
+///
+/// C: `cmsg_format_header_return_data_ptr` (static helper, `#else`
+/// non-Windows branch, `picosocks.c`).
+#[cfg(unix)]
+#[allow(dead_code)]
+pub(crate) unsafe fn cmsg_format_header_return_data_ptr(
+    msg: *mut libc::msghdr,
+    last_cmsg: &mut *mut libc::cmsghdr,
+    control_length: &mut libc::c_int,
+    cmsg_level: libc::c_int,
+    cmsg_type: libc::c_int,
+    cmsg_data_len: usize,
+) -> *mut core::ffi::c_void {
+    // Rust 2024: unsafe operations inside unsafe fn still need explicit
+    // unsafe {} blocks.
+
+    // Locate the next available cmsg slot.  On the first call last_cmsg
+    // is null so CMSG_FIRSTHDR returns the start of the control buffer;
+    // on subsequent calls CMSG_NXTHDR advances past the previous entry.
+    let cmsg: *mut libc::cmsghdr = unsafe {
+        if (*last_cmsg).is_null() {
+            libc::CMSG_FIRSTHDR(msg as *const libc::msghdr)
+        } else {
+            // The C source uses CMSG_ALIGN (Linux) when defined and falls
+            // back to CMSG_NXTHDR otherwise.  CMSG_NXTHDR is correct on
+            // all POSIX platforms we target and is always available.
+            libc::CMSG_NXTHDR(
+                msg as *const libc::msghdr,
+                *last_cmsg as *const libc::cmsghdr,
+            )
+        }
+    };
+
+    if cmsg.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    unsafe {
+        let cmsg_required_space = libc::CMSG_SPACE(cmsg_data_len as libc::c_uint) as usize;
+        *control_length += cmsg_required_space as libc::c_int;
+        // Zero-fill the entire padded region (mirrors the C memset call).
+        core::ptr::write_bytes(cmsg as *mut u8, 0, cmsg_required_space);
+        (*cmsg).cmsg_level = cmsg_level;
+        (*cmsg).cmsg_type = cmsg_type;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(cmsg_data_len as libc::c_uint) as _;
+        *last_cmsg = cmsg;
+        libc::CMSG_DATA(cmsg) as *mut core::ffi::c_void
+    }
 }
 
 #[cfg(test)]

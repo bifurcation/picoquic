@@ -82,6 +82,10 @@ impl DualqQueue {
         self.packets.push_back(packet);
     }
 
+    /// C: `dualq_dequeue_queue` (picoquic/dualq_aqm.c:114)
+    ///
+    /// Remove and return the head packet from this queue, updating
+    /// `queue_bytes` and the packet count.  Returns `None` when empty.
     fn dequeue(&mut self) -> Option<TestSimPacket> {
         let packet = self.packets.pop_front()?;
         if self.packets.is_empty() {
@@ -277,6 +281,11 @@ impl Dualq {
         }
     }
 
+    /// C: `dualq_recur` (picoquic/dualq_aqm.c:182)
+    ///
+    /// Accumulate `likelihood` into `queue.sum_p`; return `true` (fire)
+    /// when the running sum crosses 1.0 and subtract 1.0.  Implements
+    /// the RFC 9332 stochastic drop/mark decision.
     fn recur(queue: &mut DualqQueue, likelihood: f64) -> bool {
         queue.sum_p += likelihood;
         if queue.sum_p > 1.0 {
@@ -287,6 +296,13 @@ impl Dualq {
         }
     }
 
+    /// C: `dualq_scheduler` (picoquic/dualq_aqm.c:193)
+    ///
+    /// Select a packet from one of the two queues using weighted scheduling:
+    /// 15 out of every 16 ticks pull from the L4S queue; 1 tick pulls from
+    /// the Classic queue.  When the preferred queue is empty the other queue
+    /// is tried.  Returns the packet and a flag indicating which queue it
+    /// came from (`true` = L4S, `false` = Classic).
     fn scheduler(&mut self) -> Option<(TestSimPacket, bool)> {
         let mut is_lq = (self.schedule_tick & 0x0f) != 0;
         let mut packet = if is_lq {
@@ -307,6 +323,12 @@ impl Dualq {
         packet.map(|packet| (packet, is_lq))
     }
 
+    /// C: `dualq_laqm` (picoquic/dualq_aqm.c:210)
+    ///
+    /// Native L4S AQM probability derived from the sojourn time of the
+    /// head packet in the L4S queue.  Returns a value in [0.0, 1.0]:
+    /// 0 below `min_th`, linear ramp between `min_th` and `max_th`,
+    /// and 1.0 at or above `max_th`.
     fn laqm(&self, current_time: Instant) -> f64 {
         let mut p_prime = 0.0;
         let mut lq_time = 0;

@@ -8,11 +8,12 @@ default = []
 # Each backend lives behind its own feature so a binary only pays
 # for the implementations it actually links.  See `src/sys/`.
 sys-picotls = []
-sys-openssl = ["dep:openssl"]
+sys-openssl = ["dep:openssl", "dep:openssl-sys", "dep:foreign-types"]
 sys-mbedtls = []
 sys-fusion = []
 
 [dependencies]
+log = { version = "0.4", default-features = false }
 fugit = { version = "0.3", default-features = false }
 rand = { version = "0.9", default-features = false }
 rand_core = { version = "0.9", default-features = false }
@@ -41,5 +42,15 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes", "allo
 # UDP socket abstraction.  std-only.
 socket2 = { version = "0.5", default-features = false, features = ["all"] }
 
+# HPKE (RFC 9180) — used by the ECH opener callback to perform DHKEM
+# decapsulation.  KEM algorithm support is gated per feature below.
+hpke = { version = "0.12", features = ["x25519", "p256", "p384"] }
+
+# Platform socket ancillary-data (cmsg) helpers.  Used only on Unix via
+# `#[cfg(unix)]`; safe to list unconditionally.
+libc = "0.2"
+
 # Optional backend implementations (gated by `sys-*` features).
 openssl = { version = "0.10", optional = true }
+openssl-sys = { version = "0.9", optional = true }
+foreign-types = { version = "0.3", optional = true }

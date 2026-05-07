@@ -674,6 +674,93 @@ fn recv_from_sockets<S: Socket>(
     Ok(None)
 }
 
+/// Close the wake-up channel for the network thread context and mark it
+/// as undefined.
+///
+/// C: `picoquic/sockloop.c:picoquic_close_network_wake_up`.
+#[allow(dead_code)]
+fn close_network_wake_up(thread_ctx: &mut NetworkThreadCtx) {
+    if thread_ctx.wake_up_defined {
+        thread_ctx.wake_up_sender = None;
+        thread_ctx.wake_up_receiver = None;
+        thread_ctx.wake_up_defined = false;
+    }
+}
+
+/// Open the wake-up channel for a network thread context.
+/// Replaces the C `pipe()` call with an `mpsc` channel; both
+/// sender and receiver are stored in `thread_ctx` so the foreground
+/// loop (`wait_for_wake_up`) can block on the receiver.
+/// On success sets `wake_up_defined = true`; `_ret` is left
+/// unchanged (mirrors C where `*ret` is only written on failure).
+///
+/// C: `picoquic/sockloop.c:picoquic_open_network_wake_up` (line 1705–1725).
+#[allow(dead_code)]
+fn open_network_wake_up(thread_ctx: &mut NetworkThreadCtx, _ret: &mut i32) {
+    thread_ctx.wake_up_defined = false;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    thread_ctx.wake_up_sender = Some(sender);
+    thread_ctx.wake_up_receiver = Some(receiver);
+    thread_ctx.wake_up_defined = true;
+}
+
+/// Populate a `pollfd` array for the poll-based packet loop.
+/// Slot 0 holds the wake-up read end (when `thread_ctx.wake_up_defined`);
+/// subsequent slots hold the open socket fds; unused trailing slots are set
+/// to `-1` so `poll(2)` ignores them.
+///
+/// In the Rust translation the internal loop uses `mpsc` channels rather
+/// than `poll(2)`, so `thread_ctx.wake_up_pipe_fd[0]` is always `-1`.
+/// Callers that drive their own `poll(2)` loop should use a real pipe
+/// and set `wake_up_pipe_fd[0]` accordingly.
+///
+/// C: `picoquic/sockloop.c:picoquic_packet_loop_set_fds` (line 884–905,
+/// `#elif defined(PICOQUIC_WITH_POLL)` branch).
+#[cfg(unix)]
+pub fn packet_loop_set_fds<S: crate::socks::Socket>(
+    poll_list: &mut [libc::pollfd],
+    s_ctx: &[SocketCtx<S>],
+    nb_sockets: usize,
+    thread_ctx: &NetworkThreadCtx,
+) {
+    for entry in poll_list.iter_mut() {
+        *entry = libc::pollfd {
+            fd: 0,
+            events: 0,
+            revents: 0,
+        };
+    }
+
+    let mut i_poll = 0usize;
+
+    if thread_ctx.wake_up_defined {
+        if let Some(entry) = poll_list.get_mut(0) {
+            entry.fd = thread_ctx.wake_up_pipe_fd[0];
+            entry.events = libc::POLLIN;
+        }
+        i_poll = 1;
+    }
+
+    for i in 0..nb_sockets.min(PACKET_LOOP_SOCKETS_MAX) {
+        if let Some(entry) = poll_list.get_mut(i_poll) {
+            entry.fd = s_ctx
+                .get(i)
+                .and_then(|c| c.fd.as_ref())
+                .map(|s| s.raw_fd())
+                .unwrap_or(-1);
+            entry.events = libc::POLLIN;
+        }
+        i_poll += 1;
+    }
+
+    while i_poll < PACKET_LOOP_SOCKETS_MAX + 1 {
+        if let Some(entry) = poll_list.get_mut(i_poll) {
+            entry.fd = -1;
+        }
+        i_poll += 1;
+    }
+}
+
 fn wait_for_wake_up(thread_ctx: &mut NetworkThreadCtx, delta_t: i64) -> bool {
     let Some(receiver) = thread_ctx.wake_up_receiver.as_ref() else {
         return false;

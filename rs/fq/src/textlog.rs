@@ -88,5 +88,17 @@ impl Quic {
     }
 }
 
+impl crate::internal::Connection {
+    /// Dispatch a pre-formatted application message to every installed
+    /// log backend (text, binlog, qlog) on this connection.  The C
+    /// `va_list` parameter collapses to [`core::fmt::Arguments`] —
+    /// call sites use `format_args!` as the Rust variadic substitute.
+    ///
+    /// C: `picoquic/unified_log.c:picoquic_log_app_message_v`
+    pub fn log_app_message_v(&mut self, args: core::fmt::Arguments<'_>) {
+        crate::logger::Log::app_message(self, args);
+    }
+}
+
 #[cfg(test)]
 mod test {}

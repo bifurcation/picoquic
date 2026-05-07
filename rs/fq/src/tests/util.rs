@@ -251,6 +251,7 @@ impl TestSimLink {
     // -----------------------------------------------------------------------
     // Private helpers.
 
+    /// C: `picoquic/sim_link.c:picoquictest_sim_link_testloss`.
     fn sim_testloss(&mut self) -> bool {
         if let Some(mask) = self.loss_mask.as_mut() {
             let loss_bit = *mask & 1;
@@ -261,6 +262,7 @@ impl TestSimLink {
         }
     }
 
+    /// C: `picoquic/sim_link.c:picoquictest_sim_link_simloss`.
     fn sim_simloss(&mut self, current_time: Instant) -> bool {
         if self.nb_loss_in_burst == 0 {
             return false;

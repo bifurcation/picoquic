@@ -315,6 +315,8 @@ pub struct ConnectionIdContext {
 }
 
 impl ConnectionIdContext {
+    /// Encode the first byte of a generated CID from the LB config.
+    /// C: `picoquic_lb_compat_cid_generate_first_byte`.
     fn set_first_byte(&self, quic: &Quic, bytes: &mut [u8]) {
         if self.first_byte_encodes_length {
             bytes[0] = (self.rotation_bits as u8) << 6 | (quic.local_connection_id_length - 1);
@@ -322,6 +324,94 @@ impl ConnectionIdContext {
             bytes[0] &= 0x3F;
             bytes[0] |= (self.rotation_bits as u8) << 6;
         }
+    }
+
+    /// Generate a clear-text LB-compatible CID by writing the first byte
+    /// and copying the configured server ID after it.
+    /// C: `picoquic_lb_compat_cid_generate_clear`.
+    fn generate_clear(&self, quic: &Quic, bytes: &mut [u8]) {
+        self.set_first_byte(quic, bytes);
+        bytes[1..1 + self.server_id_length]
+            .copy_from_slice(&self.server_id_encoded[..self.server_id_length]);
+    }
+
+    /// Generate a stream-cipher LB-compatible CID.  The input CID bytes are
+    /// assumed to already contain the nonce and server-use bytes, matching
+    /// the C out-parameter prefill contract.
+    /// C: `picoquic_lb_compat_cid_generate_stream_cipher`.
+    fn generate_stream_cipher(&self, quic: &Quic, bytes: &mut [u8]) {
+        let id_offset = 1 + self.nonce_length;
+        self.set_first_byte(quic, bytes);
+        bytes[id_offset..id_offset + self.server_id_length]
+            .copy_from_slice(&self.server_id_encoded[..self.server_id_length]);
+
+        let enc = self.cid_encryption_context.as_ref().unwrap();
+        Self::one_pass_stream(
+            enc,
+            bytes,
+            1,
+            self.nonce_length,
+            id_offset,
+            self.server_id_length,
+        );
+        Self::one_pass_stream(
+            enc,
+            bytes,
+            id_offset,
+            self.server_id_length,
+            1,
+            self.nonce_length,
+        );
+        Self::one_pass_stream(
+            enc,
+            bytes,
+            1,
+            self.nonce_length,
+            id_offset,
+            self.server_id_length,
+        );
+    }
+
+    /// Generate a block-cipher LB-compatible CID.  The first 16 bytes after
+    /// the first octet are encrypted in place, preserving prefilled
+    /// server-use bytes in that block.
+    /// C: `picoquic_lb_compat_cid_generate_block_cipher`.
+    fn generate_block_cipher(&self, quic: &Quic, bytes: &mut [u8]) {
+        self.set_first_byte(quic, bytes);
+        bytes[1..1 + self.server_id_length]
+            .copy_from_slice(&self.server_id_encoded[..self.server_id_length]);
+        let enc = self.cid_encryption_context.as_ref().unwrap();
+        let block = <&mut [u8; 16]>::try_from(&mut bytes[1..17]).unwrap();
+        enc.process(block);
+    }
+
+    /// Decode the server ID from a clear-text CID.
+    /// C: `picoquic_lb_compat_cid_verify_clear`.
+    fn verify_clear(&self, cnx_id: &ConnectionId) -> u64 {
+        let bytes = cnx_id.as_bytes();
+        let mut s_id64: u64 = 0;
+        for i in 0..self.server_id_length {
+            s_id64 <<= 8;
+            s_id64 += bytes[i + 1] as u64;
+        }
+        s_id64
+    }
+
+    /// Decode the server ID from a block-cipher LB-compatible CID.
+    /// C: `picoquic_lb_compat_cid_verify_block_cipher`.
+    fn verify_block_cipher(&self, cnx_id: &ConnectionId) -> u64 {
+        let bytes = cnx_id.as_bytes();
+        let mut decoded = [0u8; 16];
+        decoded.copy_from_slice(&bytes[1..17]);
+        let dec = self.cid_decryption_context.as_ref().unwrap();
+        dec.process(&mut decoded);
+
+        let mut s_id64: u64 = 0;
+        for b in decoded.iter().take(self.server_id_length) {
+            s_id64 <<= 8;
+            s_id64 += *b as u64;
+        }
+        s_id64
     }
 
     /// One pass of the stream-cipher: fill `mask` from `bytes[nonce_start..]`,
@@ -361,49 +451,10 @@ impl ConnectionIdContext {
         let mut cid = *nonce;
         {
             let bytes = cid.as_bytes_mut();
-            self.set_first_byte(quic, bytes);
             match self.method {
-                ConnectionIdMethod::Clear => {
-                    bytes[1..1 + self.server_id_length]
-                        .copy_from_slice(&self.server_id_encoded[..self.server_id_length]);
-                }
-                ConnectionIdMethod::StreamCipher => {
-                    let id_offset = 1 + self.nonce_length;
-                    bytes[id_offset..id_offset + self.server_id_length]
-                        .copy_from_slice(&self.server_id_encoded[..self.server_id_length]);
-                    let enc = self.cid_encryption_context.as_ref().unwrap();
-                    Self::one_pass_stream(
-                        enc,
-                        bytes,
-                        1,
-                        self.nonce_length,
-                        id_offset,
-                        self.server_id_length,
-                    );
-                    Self::one_pass_stream(
-                        enc,
-                        bytes,
-                        id_offset,
-                        self.server_id_length,
-                        1,
-                        self.nonce_length,
-                    );
-                    Self::one_pass_stream(
-                        enc,
-                        bytes,
-                        1,
-                        self.nonce_length,
-                        id_offset,
-                        self.server_id_length,
-                    );
-                }
-                ConnectionIdMethod::BlockCipher => {
-                    bytes[1..1 + self.server_id_length]
-                        .copy_from_slice(&self.server_id_encoded[..self.server_id_length]);
-                    let enc = self.cid_encryption_context.as_ref().unwrap();
-                    let block = <&mut [u8; 16]>::try_from(&mut bytes[1..17]).unwrap();
-                    enc.process(block);
-                }
+                ConnectionIdMethod::Clear => self.generate_clear(quic, bytes),
+                ConnectionIdMethod::StreamCipher => self.generate_stream_cipher(quic, bytes),
+                ConnectionIdMethod::BlockCipher => self.generate_block_cipher(quic, bytes),
             }
         }
         cid
@@ -422,15 +473,7 @@ impl ConnectionIdContext {
             return None;
         }
         let s_id64 = match self.method {
-            ConnectionIdMethod::Clear => {
-                let bytes = cnx_id.as_bytes();
-                let mut s_id64: u64 = 0;
-                for i in 0..self.server_id_length {
-                    s_id64 <<= 8;
-                    s_id64 += bytes[i + 1] as u64;
-                }
-                s_id64
-            }
+            ConnectionIdMethod::Clear => self.verify_clear(cnx_id),
             ConnectionIdMethod::StreamCipher => {
                 let id_offset = 1 + self.nonce_length;
                 let mut target = [0u8; CONNECTION_ID_MAX_SIZE];
@@ -468,19 +511,7 @@ impl ConnectionIdContext {
                 }
                 s_id64
             }
-            ConnectionIdMethod::BlockCipher => {
-                let bytes = cnx_id.as_bytes();
-                let mut decoded = [0u8; 16];
-                decoded.copy_from_slice(&bytes[1..17]);
-                let dec = self.cid_decryption_context.as_ref().unwrap();
-                dec.process(&mut decoded);
-                let mut s_id64: u64 = 0;
-                for b in decoded.iter().take(self.server_id_length) {
-                    s_id64 <<= 8;
-                    s_id64 += *b as u64;
-                }
-                s_id64
-            }
+            ConnectionIdMethod::BlockCipher => self.verify_block_cipher(cnx_id),
         };
         Some(s_id64)
     }

@@ -142,7 +142,10 @@ pub struct SplayTree<K, V> {
 }
 
 impl<K: Ord, V> SplayTree<K, V> {
-    /// Build an empty tree.
+    /// Build an empty tree.  C: `picosplay_init_tree` — the C form takes
+    /// four callback function pointers (`comparator`, `create`,
+    /// `delete_node`, `node_value`); the Rust form uses `K: Ord` generics
+    /// and a typed `V`, so no callbacks are needed at construction time.
     pub const fn new() -> Self {
         Self {
             slots: Vec::new(),
@@ -150,6 +153,13 @@ impl<K: Ord, V> SplayTree<K, V> {
             root: None,
             len: 0,
         }
+    }
+
+    /// Build an empty owned tree.
+    ///
+    /// C: `picosplay_new_tree` (picoquic/picosplay.c:90-97).
+    pub const fn new_tree() -> Self {
+        Self::new()
     }
 
     // -----------------------------------------------------------------------
@@ -294,12 +304,12 @@ impl<K: Ord, V> SplayTree<K, V> {
     // -----------------------------------------------------------------------
     // Splay rotations (C: picosplay.c rotate / mark_gp / splay)
 
-    fn rotate(&mut self, child: u32) {
-        let parent = self.parent_of(child).expect("rotate requires a parent");
+    /// Reattach `child` under its grandparent, updating the grandparent's
+    /// child pointer and the parent pointers of both `child` and `parent`.
+    /// C: `mark_gp` (`picosplay.c:307`).
+    fn mark_gp(&mut self, child: u32) {
+        let parent = self.parent_of(child).expect("mark_gp requires a parent");
         let grand = self.parent_of(parent);
-        let is_left = self.left_of(parent) == Some(child);
-
-        // Reattach child under grandparent (C: mark_gp).
         self.set_parent(child, grand);
         self.set_parent(parent, Some(child));
         if let Some(g) = grand {
@@ -309,6 +319,12 @@ impl<K: Ord, V> SplayTree<K, V> {
                 self.set_right(g, Some(child));
             }
         }
+    }
+
+    fn rotate(&mut self, child: u32) {
+        let parent = self.parent_of(child).expect("rotate requires a parent");
+        let is_left = self.left_of(parent) == Some(child);
+        self.mark_gp(child);
 
         if is_left {
             let cr = self.right_of(child);

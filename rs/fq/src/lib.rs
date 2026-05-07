@@ -49,24 +49,33 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod arena;
+pub mod bbr;
+pub mod bbr1;
 pub mod binlog;
 pub mod bytestream;
+pub mod c4;
 pub mod cc_common;
 pub mod config;
 pub mod crypto;
+pub mod cubic;
+pub mod ech;
 pub mod errors;
+pub mod fastcc;
 pub mod frames;
 pub mod hash;
 pub mod header_protection;
 pub mod internal;
 pub mod lb;
 pub mod logger;
+pub mod newreno;
 pub mod packet_loop;
 pub mod performance_log;
+pub mod prague;
 pub mod qlog;
 pub mod siphash;
 pub mod socks;
 pub mod socks_socket2;
+pub mod spinbit;
 pub mod splay;
 pub mod stream;
 pub mod sys;
@@ -418,7 +427,7 @@ impl ConnectionId {
 // Full bodies live in `crate::internal`; pull them in for use within
 // this module's signatures (no re-export — callers reach them as
 // `crate::internal::*`).
-use crate::internal::{Connection, Path, Quic};
+use crate::internal::{Connection, ConnectionToken, Path, Quic};
 
 // ---------------------------------------------------------------------------
 // Application callback events.
@@ -860,13 +869,13 @@ static NEWRENO_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "newreno",
     congestion_algorithm_number: 1,
     ecn_mark: ECN_ECT_0,
-    algorithm: &BASELINE_CC,
+    algorithm: &newreno::NEWRENO_CONTROL,
 };
 static RENO_ALIAS_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "reno",
     congestion_algorithm_number: 1,
     ecn_mark: ECN_ECT_0,
-    algorithm: &BASELINE_CC,
+    algorithm: &newreno::NEWRENO_CONTROL,
 };
 static CUBIC_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "cubic",
@@ -884,13 +893,13 @@ static FAST_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "fast",
     congestion_algorithm_number: 4,
     ecn_mark: ECN_ECT_0,
-    algorithm: &BASELINE_CC,
+    algorithm: &fastcc::FASTCC_CONTROL,
 };
 static FASTCC_ALIAS_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "fastcc",
     congestion_algorithm_number: 4,
     ecn_mark: ECN_ECT_0,
-    algorithm: &BASELINE_CC,
+    algorithm: &fastcc::FASTCC_CONTROL,
 };
 static BBR_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "bbr",
@@ -902,7 +911,7 @@ static PRAGUE_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "prague",
     congestion_algorithm_number: 6,
     ecn_mark: ECN_ECT_1,
-    algorithm: &BASELINE_CC,
+    algorithm: &prague::PRAGUE_CONTROL,
 };
 static BBR1_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "bbr1",
@@ -1080,6 +1089,7 @@ impl Quic {
 
     /// Toggle randomised log-file names (defeating accidental
     /// collisions when clients pick non-random initial CIDs).
+    /// C: `picoquic_use_unique_log_names` (quicctx.c:4646).
     pub fn set_use_unique_log_names(&mut self, use_unique_log_names: bool) {
         self.use_unique_log_names = use_unique_log_names;
     }
@@ -1087,6 +1097,7 @@ impl Quic {
     /// Toggle SSL-keylog output.  Phase 1 follows the canonical
     /// build (`WITHOUT_SSLKEYLOG` undefined); a `cfg`-gated variant
     /// lands when build options are translated.
+    /// C: `picoquic_enable_sslkeylog` — `quic->enable_sslkeylog = (enable != 0)`.
     pub fn set_sslkeylog_enabled(&mut self, enable_sslkeylog: bool) {
         self.enable_sslkeylog = enable_sslkeylog;
     }
@@ -1175,6 +1186,7 @@ impl Quic {
     }
 
     /// Toggle per-context port blocking.
+    /// C: `picoquic_disable_port_blocking`.
     pub fn set_port_blocking_disabled(&mut self, is_port_blocking_disabled: bool) {
         self.is_port_blocking_disabled = is_port_blocking_disabled;
     }
@@ -1235,6 +1247,42 @@ pub fn check_addr_blocked(addr_from: &SocketAddr) -> bool {
 // here it is `Quic::new`.  The setters that follow are all on the
 // QUIC context; per-connection siblings live in `impl Connection` further
 // down.
+
+/// Write one transport-parameter slot identified by its wire `tp_type` ID
+/// into `tp`.  Returns `Err(InvalidArgument)` for unknown IDs.
+///
+/// C: `picoquic_set_tp_value_by_type` (quicctx.c:819).
+fn set_tp_value_by_type(
+    tp: &mut TransportParameters,
+    tp_type: u64,
+    tp_value: u64,
+) -> Result<(), Error> {
+    match tp_type {
+        1 => tp.max_idle_timeout = Duration::from_ticks(tp_value),
+        3 => tp.max_packet_size = tp_value as u32,
+        4 => tp.initial_max_data = tp_value,
+        5 => tp.initial_max_stream_data_bidi_local = tp_value,
+        6 => tp.initial_max_stream_data_bidi_remote = tp_value,
+        7 => tp.initial_max_stream_data_uni = tp_value,
+        8 => tp.initial_max_stream_id_bidir = tp_value,
+        9 => tp.initial_max_stream_id_unidir = tp_value,
+        10 => tp.ack_delay_exponent = tp_value as u8,
+        11 => tp.max_ack_delay = tp_value as u32,
+        12 => tp.migration_disabled = tp_value != 0,
+        14 => tp.active_connection_id_limit = tp_value as u32,
+        32 => tp.max_datagram_frame_size = tp_value as u32,
+        0x1057 => tp.enable_loss_bit = (tp_value != 0) as i32,
+        0xff04de1b => tp.min_ack_delay = Duration::from_ticks(tp_value),
+        0x7158 => tp.enable_time_stamp = tp_value as i32,
+        0x2ab2 => tp.do_grease_quic_bit = tp_value != 0,
+        0xebd9 => tp.enable_bdp_frame = tp_value != 0,
+        0x3e => tp.initial_max_path_id = tp_value,
+        0x9f81a176 => tp.address_discovery_mode = tp_value as i32,
+        0x17f7586d2cb571 => tp.is_reset_stream_at_enabled = tp_value != 0,
+        _ => return Err(Error::InvalidArgument),
+    }
+    Ok(())
+}
 
 impl Quic {
     /// Build a QUIC context with the supplied certificate paths,
@@ -1531,78 +1579,11 @@ impl Quic {
 
     /// Override a single transport-parameter slot in the default
     /// set.  `tp_type` is the wire ID; values for unknown types are
-    /// stored verbatim and emitted as extension parameters.
+    /// rejected with [`Error::InvalidArgument`].
+    /// C: `picoquic_set_default_tp_value` — delegates to
+    /// `picoquic_set_tp_value_by_type(&quic->default_tp, …)`.
     pub fn set_default_tp_value(&mut self, tp_type: u64, tp_value: u64) -> Result<(), Error> {
-        let tp = &mut self.default_tp;
-        match tp_type {
-            1 => {
-                tp.max_idle_timeout = Duration::from_ticks(tp_value);
-            }
-            3 => {
-                tp.max_packet_size = tp_value as u32;
-            }
-            4 => {
-                tp.initial_max_data = tp_value;
-            }
-            5 => {
-                tp.initial_max_stream_data_bidi_local = tp_value;
-            }
-            6 => {
-                tp.initial_max_stream_data_bidi_remote = tp_value;
-            }
-            7 => {
-                tp.initial_max_stream_data_uni = tp_value;
-            }
-            8 => {
-                tp.initial_max_stream_id_bidir = tp_value;
-            }
-            9 => {
-                tp.initial_max_stream_id_unidir = tp_value;
-            }
-            10 => {
-                tp.ack_delay_exponent = tp_value as u8;
-            }
-            11 => {
-                tp.max_ack_delay = tp_value as u32;
-            }
-            12 => {
-                tp.migration_disabled = tp_value != 0;
-            }
-            14 => {
-                tp.active_connection_id_limit = tp_value as u32;
-            }
-            32 => {
-                tp.max_datagram_frame_size = tp_value as u32;
-            }
-            0x1057 => {
-                tp.enable_loss_bit = (tp_value != 0) as i32;
-            }
-            0xff04de1b => {
-                tp.min_ack_delay = Duration::from_ticks(tp_value);
-            }
-            0x7158 => {
-                tp.enable_time_stamp = tp_value as i32;
-            }
-            0x2ab2 => {
-                tp.do_grease_quic_bit = tp_value != 0;
-            }
-            0xebd9 => {
-                tp.enable_bdp_frame = tp_value != 0;
-            }
-            0x3e => {
-                tp.initial_max_path_id = tp_value;
-            }
-            0x9f81a176 => {
-                tp.address_discovery_mode = tp_value as i32;
-            }
-            0x17f7586d2cb571 => {
-                tp.is_reset_stream_at_enabled = tp_value != 0;
-            }
-            _ => {
-                return Err(Error::InvalidArgument);
-            }
-        }
-        Ok(())
+        set_tp_value_by_type(&mut self.default_tp, tp_type, tp_value)
     }
 
     /// Install the TLS certificate chain.  The context takes
@@ -1844,9 +1825,14 @@ impl Quic {
     }
 
     /// Install (or remove, with `None`) the ALPN-selection callback.
-    /// The C `_v2` flavour (which differed only in iovec type) is
-    /// gone — both call sites land on this single entry point.
+    /// Clears any static `default_alpn` string, matching the behaviour of both
+    /// the C `picoquic_set_alpn_select_fn` (quicctx.c:4727) and
+    /// `picoquic_set_alpn_select_fn_v2` (quicctx.c:4737), which are folded
+    /// into this single entry point — the two C variants differed only in the
+    /// iovec representation of the ALPN list, a distinction erased by Rust
+    /// slices.
     pub fn set_alpn_select_fn(&mut self, alpn_select_fn: Option<Box<dyn AlpnSelect>>) {
+        self.default_alpn = None;
         self.alpn_select_fn = alpn_select_fn;
     }
 
@@ -2061,6 +2047,53 @@ impl Connection {
     ) -> Result<(), Error> {
         // Complex: involves tuple creation within a path.
         Err(Error::Generic)
+    }
+
+    /// Validate and complete an address pair proposed for a new tuple.
+    /// If either address is `None`, the function searches existing paths
+    /// for one whose first tuple has a matching address family and borrows
+    /// that address and interface index.  Returns the resolved
+    /// `(peer, local, if_index)` triple, or an error when resolution is
+    /// impossible or the supplied addresses belong to different families.
+    /// C: `picoquic_verify_proposed_tuple`
+    pub fn verify_proposed_tuple(
+        &self,
+        addr_peer: Option<SocketAddr>,
+        addr_local: Option<SocketAddr>,
+        if_index: i32,
+    ) -> Result<(SocketAddr, SocketAddr, i32), Error> {
+        let mut if_index = if_index;
+        match (addr_peer, addr_local) {
+            (None, None) => Err(Error::Generic),
+            (None, Some(local)) => {
+                let t = self
+                    .paths
+                    .iter()
+                    .filter_map(|p| p.tuples.first())
+                    .find(|t| t.peer_addr.is_ipv4() == local.is_ipv4())
+                    .ok_or(Error::Generic)?;
+                if_index = t.if_index as i32;
+                Ok((t.peer_addr, local, if_index))
+            }
+            (Some(peer), None) => {
+                // C: checks addr_peer == NULL after this loop (copy-paste error; addr_peer
+                // is non-NULL in this branch).  Translate defensively: fail if no local found.
+                let t = self
+                    .paths
+                    .iter()
+                    .filter_map(|p| p.tuples.first())
+                    .find(|t| t.local_addr.is_ipv4() == peer.is_ipv4())
+                    .ok_or(Error::Generic)?;
+                if_index = t.if_index as i32;
+                Ok((peer, t.local_addr, if_index))
+            }
+            (Some(peer), Some(local)) => {
+                if peer.is_ipv4() != local.is_ipv4() {
+                    return Err(Error::InvalidArgument);
+                }
+                Ok((peer, local, if_index))
+            }
+        }
     }
 
     /// Toggle path-state event callbacks for this connection.
@@ -2281,10 +2314,19 @@ impl Connection {
     }
 
     /// Borrow the QUIC context that owns this connection.
-    pub fn quic(&mut self) -> &mut Quic {
-        // Structural back-pointer: Phase 3 will wire this up when arena
-        // tokens give us back-references.  Panic for now.
-        panic!("Connection::quic() requires Phase 3 arena back-pointer wiring")
+    /// C: `picoquic_get_quic_ctx` (quicctx.c:1419).
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that no other live `&Quic` or `&mut Quic`
+    /// reference is active when this is called.  The raw back-pointer is
+    /// always valid while the `Connection` is live (connections are
+    /// destroyed before the owning `Quic`).
+    pub unsafe fn quic(&mut self) -> &mut Quic {
+        debug_assert!(!self.quic_ptr.is_null(), "quic_ptr not initialised");
+        // SAFETY: quic_ptr is set to `self as *mut Quic` in
+        // create_cnx_internal and remains valid for the connection's lifetime.
+        unsafe { &mut *self.quic_ptr }
     }
 
     /// Walk to the next connection in the QUIC context's list, if
@@ -2310,6 +2352,7 @@ impl Connection {
     }
 
     /// Connection state-machine position.
+    /// C: `picoquic_get_cnx_state` — `cnx->cnx_state`.
     pub fn state(&self) -> State {
         self.connection_state
     }
@@ -2320,8 +2363,9 @@ impl Connection {
         self.padding_minsize = padding_minsize;
     }
 
-    /// Read the per-connection padding policy as `(multiple,
-    /// min-size)`.
+    /// Read the per-connection padding policy as `(multiple, min-size)`.
+    ///
+    /// C: `picoquic_cnx_get_padding_policy` (picoquic/quicctx.c:4526-4531).
     pub fn padding_policy(&self) -> (u32, u32) {
         (self.padding_multiple, self.padding_minsize)
     }
@@ -2414,6 +2458,22 @@ impl Connection {
         self.initial_connection_id
     }
 
+    /// Local connection ID registered on the first path's first tuple.
+    /// C: `picoquic_get_local_cnxid` — `cnx->path[0]->first_tuple->p_local_cnxid->cnx_id`.
+    ///
+    /// Falls back to `initial_connection_id` when no path or no registered
+    /// local CID is present (e.g., a fresh connection before the first path
+    /// is fully initialised).
+    pub fn local_cnxid(&self) -> ConnectionId {
+        self.paths
+            .first()
+            .and_then(|p| p.tuples.first())
+            .and_then(|t| t.local_connection_id)
+            .and_then(|tok| self.local_connection_ids.get(tok))
+            .map(|lcid| lcid.connection_id)
+            .unwrap_or(self.initial_connection_id)
+    }
+
     /// Remote connection ID currently in use.
     pub fn remote_connection_id(&self) -> ConnectionId {
         // Return the initial connection ID as a proxy; full CID rotation is Phase 3.
@@ -2475,8 +2535,15 @@ impl Connection {
 
     /// Borrow this connection's callback (`None` when none was
     /// installed).
+    /// C: `picoquic_get_callback_function` — returns `cnx->callback_fn`.
     pub fn callback(&self) -> Option<&dyn StreamDataCallback> {
         self.callback_fn.as_deref()
+    }
+
+    /// Borrow the raw callback context associated with this connection.
+    /// C: `picoquic_get_callback_context` — returns `cnx->callback_ctx`.
+    pub fn callback_ctx(&self) -> Option<&dyn core::any::Any> {
+        self.callback_ctx.as_deref()
     }
 
     /// Queue a connection-level frame for transmission.
@@ -2538,6 +2605,29 @@ impl Quic {
         self.connections.iter_mut().next()
     }
 
+    /// Return the connection that follows the one identified by `current_token`
+    /// in arena insertion order, or `None` when `current_token` is the last
+    /// live connection.
+    ///
+    /// C: `picoquic_get_next_cnx` — `cnx->next_in_table`.
+    ///
+    /// The C intrusive linked list (`next_in_table` / `previous_in_table`) is
+    /// replaced by an arena; this method scans forward from the slot after
+    /// `current_token.idx` to find the next occupied slot.  Typical usage:
+    ///
+    /// ```ignore
+    /// let mut tok = quic.first_connection().and_then(|c| c.own_token);
+    /// while let Some(t) = tok {
+    ///     let cnx = quic.connections.get_mut(t).unwrap();
+    ///     // ... process cnx ...
+    ///     tok = quic.next_cnx(t).and_then(|c| c.own_token);
+    /// }
+    /// ```
+    pub fn next_cnx(&mut self, current_token: ConnectionToken) -> Option<&mut Connection> {
+        let next_idx = current_token.slot_idx() + 1;
+        self.connections.next_after_idx(next_idx)
+    }
+
     /// Compute the number of microseconds until *any* connection on
     /// this context next needs attention, capped at `delay_max`.
     pub fn next_wake_delay(&self, current_time: Instant, delay_max: i64) -> i64 {
@@ -2589,8 +2679,15 @@ impl Quic {
     }
 
     /// Borrow the default stream callback installed on this context.
+    /// C: `picoquic_get_default_callback_function` — `quic->default_callback_fn`.
     pub fn default_callback(&self) -> Option<&dyn StreamDataCallback> {
         self.default_callback_fn.as_deref()
+    }
+
+    /// Borrow the opaque context associated with the default callback.
+    /// C: `picoquic_get_default_callback_context` — `quic->default_callback_ctx`.
+    pub fn default_callback_ctx(&self) -> Option<&dyn core::any::Any> {
+        self.default_callback_ctx.as_deref()
     }
 }
 
@@ -2605,31 +2702,78 @@ impl Quic {
     #[allow(clippy::too_many_arguments)]
     pub fn incoming_packet(
         &mut self,
-        _bytes: &mut [u8],
-        _addr_from: &SocketAddr,
-        _addr_to: &SocketAddr,
-        _if_index_to: i32,
-        _received_ecn: u8,
-        _current_time: Instant,
+        bytes: &mut [u8],
+        addr_from: &SocketAddr,
+        addr_to: &SocketAddr,
+        if_index_to: i32,
+        received_ecn: u8,
+        current_time: Instant,
     ) -> Result<(), Error> {
-        // Complex: full packet dispatch pipeline — Phase 4 body.
-        Err(Error::Generic)
+        self.incoming_packet_ex(
+            bytes,
+            addr_from,
+            addr_to,
+            if_index_to,
+            received_ecn,
+            current_time,
+        )
+        .map(|_| ())
     }
 
     /// Same as [`Self::incoming_packet`] but additionally identifies
     /// the connection that consumed the packet.
+    ///
+    /// C: `picoquic_incoming_packet_ex` (picoquic/packet.c:2389-2430).
     #[allow(clippy::too_many_arguments)]
     pub fn incoming_packet_ex(
         &mut self,
-        _bytes: &mut [u8],
-        _addr_from: &SocketAddr,
-        _addr_to: &SocketAddr,
-        _if_index_to: i32,
-        _received_ecn: u8,
-        _current_time: Instant,
+        bytes: &mut [u8],
+        addr_from: &SocketAddr,
+        addr_to: &SocketAddr,
+        if_index_to: i32,
+        received_ecn: u8,
+        current_time: Instant,
     ) -> Result<Option<&mut Connection>, Error> {
-        // Complex: full packet dispatch pipeline — Phase 4 body.
-        Err(Error::Generic)
+        let packet_length = bytes.len();
+        let mut consumed_index = 0usize;
+        let mut previous_dest_id = ConnectionId::default();
+        let mut first_cnx = None;
+
+        while consumed_index < packet_length {
+            let mut consumed = 0usize;
+            let ret = self.incoming_segment(
+                &mut bytes[consumed_index..],
+                packet_length - consumed_index,
+                packet_length,
+                &mut consumed,
+                addr_from,
+                addr_to,
+                if_index_to,
+                received_ecn,
+                current_time,
+                current_time,
+                &mut previous_dest_id,
+                &mut first_cnx,
+            );
+
+            if ret == 0 {
+                consumed_index = consumed_index.saturating_add(consumed);
+                if consumed == 0 {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        if let Some(token) = first_cnx
+            && let Some(cnx) = self.connections.get_mut(token)
+            && packet_length > cnx.max_mtu_received
+        {
+            cnx.max_mtu_received = packet_length;
+        }
+
+        Ok(first_cnx.and_then(|token| self.connections.get_mut(token)))
     }
 }
 
@@ -2755,6 +2899,20 @@ fn append_varint(out: &mut Vec<u8>, value: u64) {
     let written = internal::varint_encode(&mut out[start..], value);
     debug_assert!(written > 0);
     out.truncate(start + written);
+}
+
+/// Compare two streams for output-queue ordering: lower `stream_priority`
+/// sorts first; ties are broken by lower `stream_id`.
+///
+/// C: `picoquic_compare_stream_priority` (picoquic/quicctx.c:3486-3500).
+pub fn compare_stream_priority(
+    stream: &internal::StreamHead,
+    other: &internal::StreamHead,
+) -> core::cmp::Ordering {
+    stream
+        .stream_priority
+        .cmp(&other.stream_priority)
+        .then_with(|| stream.stream_id.cmp(&other.stream_id))
 }
 
 fn enqueue_output_stream_token(connection: &mut Connection, token: internal::StreamToken) {
@@ -3262,9 +3420,28 @@ impl Connection {
         self.remote_error
     }
 
-    /// Application-level error reported on close.
+    /// Application-level error reported on close (locally generated).
     pub fn application_error(&self) -> u64 {
         self.application_error
+    }
+
+    /// Application-level error reported by the remote peer on close.
+    /// C: `picoquic_get_application_error` — returns `cnx->remote_application_error`.
+    pub fn remote_application_error(&self) -> u64 {
+        self.remote_application_error
+    }
+
+    /// Return all four close-reason codes in one call:
+    /// `(local_error, remote_error, local_application_error, remote_application_error)`.
+    /// C: `picoquic_get_close_reasons` — fills four out-pointers from the
+    /// corresponding `cnx` fields.
+    pub fn close_reasons(&self) -> (u64, u64, u64, u64) {
+        (
+            self.local_error,
+            self.remote_error,
+            self.application_error,
+            self.remote_application_error,
+        )
     }
 
     /// Per-stream error reported by the peer.
@@ -3426,6 +3603,7 @@ impl Connection {
     }
 
     /// Smoothed round-trip-time estimate (microseconds).
+    /// C: `picoquic_get_rtt` (quicctx.c:5438).
     pub fn rtt(&self) -> u64 {
         self.paths
             .first()
@@ -3457,23 +3635,33 @@ impl Quic {
 
 impl Connection {
     /// Configure client-side ECH on this connection.
-    pub fn ech_configure_client(&mut self, _config_data: &[u8]) -> Result<(), Error> {
-        // TLS: not yet wired — ECH requires TLS backend
-        Err(Error::Tls)
+    ///
+    /// Copies `config_data` (the raw ECHConfigList bytes from an HTTPS record
+    /// or a prior retry) into the connection's ECH client config slot.  The
+    /// TLS backend reads this field when starting the handshake and sets
+    /// `handshake_properties.client.ech.configs` accordingly.  An empty
+    /// slice enables ECH GREASE mode (client sends a random fake ECH extension).
+    ///
+    /// C: `picoquic_ech_configure_client`
+    pub fn ech_configure_client(&mut self, config_data: &[u8]) -> Result<(), Error> {
+        self.ech_client_config = Some(config_data.to_vec());
+        Ok(())
     }
 
     /// Returns `true` when the handshake used ECH.
+    ///
+    /// C: `picoquic_is_ech_handshake`
     pub fn is_ech_handshake(&self) -> bool {
-        // TLS: not yet wired
-        false
+        self.tls_ctx.as_ref().is_some_and(|s| s.is_ech_handshake())
     }
 
     /// Borrow the retry-config bytes the server returned (empty
     /// when no retry config is available).  Two C `uint8_t**` /
     /// `size_t*` output parameters fold into this single borrow.
+    ///
+    /// C: `picoquic_ech_get_retry_config`
     pub fn ech_retry_config(&self) -> &[u8] {
-        // TLS: not yet wired
-        &[]
+        self.tls_ctx.as_ref().map_or(&[], |s| s.retry_configs())
     }
 }
 
@@ -3483,48 +3671,45 @@ pub fn ech_create_config_file(
     _private_key_file: &str,
     _ech_config_file: &str,
 ) -> Result<(), Error> {
-    // TLS: not yet wired — ECH key-gen requires TLS backend
-    Err(Error::Tls)
+    let config =
+        crate::ech::ech_create_config_from_private_key_file(_private_key_file, _public_name)?;
+    crate::ech::ech_save_config_file(&config, _ech_config_file)
 }
 
 /// Read and parse an ECH config from a text file, returning the raw bytes.
 /// C: `picoquic_ech_read_config`.
-pub fn ech_read_config(_ech_config_file: &str) -> Result<Vec<u8>, Error> {
-    // TLS: not yet wired — ECH config parsing requires TLS backend
-    Err(Error::Tls)
+pub fn ech_read_config(ech_config_file: &str) -> Result<Vec<u8>, Error> {
+    crate::ech::ech_read_config_file(ech_config_file)
 }
 
 /// Save ECH config bytes to a text file.
 /// C: `picoquic_ech_save_config`.
-pub fn ech_save_config(_config: &[u8], _ech_config_file: &str) -> Result<(), Error> {
-    // TLS: not yet wired — ECH config serialization requires TLS backend
-    Err(Error::Tls)
+pub fn ech_save_config(config: &[u8], ech_config_file: &str) -> Result<(), Error> {
+    crate::ech::ech_save_config_file(config, ech_config_file)
 }
 
 /// Create an ECH config record from a public-key PEM file.
 /// C: `picoquic_ech_create_config_from_public_key`.
 pub fn ech_create_config_from_public_key(
-    _public_key_file: &str,
-    _public_name: &str,
+    public_key_file: &str,
+    public_name: &str,
 ) -> Result<Vec<u8>, Error> {
-    // TLS: not yet wired
-    Err(Error::Tls)
+    crate::ech::ech_create_config_from_public_key_file(public_key_file, public_name)
 }
 
 /// Create an ECH config record from a private-key PEM file.
 /// C: `picoquic_ech_create_config_from_private_key`.
 pub fn ech_create_config_from_private_key(
-    _private_key_file: &str,
-    _public_name: &str,
+    private_key_file: &str,
+    public_name: &str,
 ) -> Result<Vec<u8>, Error> {
-    // TLS: not yet wired
-    Err(Error::Tls)
+    crate::ech::ech_create_config_from_private_key_file(private_key_file, public_name)
 }
 
 /// Initialise the TLS API (loads crypto providers, registers algorithms).
 /// C: `picoquic_tls_api_init`.
 pub fn tls_api_init() {
-    // TLS: not yet wired — provider initialization requires TLS backend
+    crate::tls_api::tls_api_init();
 }
 
 /// TLS API initialisation flag: exclude the OpenSSL provider.
@@ -3542,24 +3727,22 @@ pub const TLS_API_INIT_FLAGS_NO_FUSION: u64 = 4;
 /// Reset the TLS provider registry to the given configuration flags.
 /// `flags = 0` restores the default (all providers enabled).
 /// C: `picoquic_tls_api_reset`.
-pub fn reset_tls_api(_flags: u64) {
-    // TLS: not yet wired — provider reset requires TLS backend
+pub fn reset_tls_api(flags: u64) {
+    crate::tls_api::tls_api_reset(flags);
 }
 
 /// True when the minicrypto implementation is the active cipher suite
 /// for AES-128-GCM-SHA-256.  C: comparison of
 /// `picoquic_get_aes128gcm_sha256_v(use_low_memory)` against the
 /// address of `ptls_minicrypto_aes128gcmsha256`.
-pub fn is_minicrypto_aes128gcm_sha256(_use_low_memory: bool) -> bool {
-    // The Rust port does not register picotls' minicrypto provider.
-    false
+pub fn is_minicrypto_aes128gcm_sha256(use_low_memory: bool) -> bool {
+    crate::tls_api::is_minicrypto_aes128gcm_sha256(use_low_memory)
 }
 
 /// True when minicrypto is the active private-key loader.
 /// C: `picoquic_set_private_key_from_file_fn == picoquic_minicrypto_set_key_fn`.
 pub fn is_minicrypto_key_loader() -> bool {
-    // The Rust port does not install picotls' minicrypto key loader.
-    false
+    crate::tls_api::is_minicrypto_key_loader()
 }
 
 // The C `base64_decode` / `base64_encode` helpers are gone:
@@ -3941,6 +4124,1599 @@ pub fn aead_decrypt_mp(
     Some(payload.len())
 }
 
+fn decrypt_packet_payload(
+    raw_bytes: &[u8],
+    length: usize,
+    ph: &mut crate::internal::PacketHeader,
+    decrypted_data: &mut crate::internal::StreamDataNode,
+    pn_dec: &dyn crate::tls::HeaderKey,
+    aead: &dyn crate::tls::PacketKey,
+    is_loss_bit_enabled_incoming: bool,
+    sack_list_last: u64,
+) -> i32 {
+    let length = length.min(raw_bytes.len());
+    let mut packet = raw_bytes[..length].to_vec();
+    let hp_ret = crate::internal::remove_header_protection_inner(
+        &mut packet,
+        length,
+        &mut decrypted_data.data,
+        ph,
+        pn_dec,
+        is_loss_bit_enabled_incoming,
+        sack_list_last,
+    );
+    if hp_ret != 0 {
+        return InternalError::AeadNotReady as i32;
+    }
+
+    let pn_length = ((packet[0] & 0x03) + 1) as usize;
+    let header_end = ph.packet_number_offset.saturating_add(pn_length);
+    let cipher_end = ph.packet_number_offset.saturating_add(ph.payload_length);
+    if header_end > cipher_end || cipher_end > packet.len() {
+        return InternalError::PacketHeaderParsing as i32;
+    }
+
+    let header = packet[..header_end].to_vec();
+    let mut payload = packet[header_end..cipher_end].to_vec();
+    if aead
+        .decrypt(ph.packet_number_full, &header, &mut payload)
+        .is_err()
+    {
+        return InternalError::AeadCheck as i32;
+    }
+
+    let len = payload.len().min(decrypted_data.data.len());
+    decrypted_data.stream_data_membership = None;
+    decrypted_data.offset = 0;
+    decrypted_data.length = len;
+    decrypted_data.data[..len].copy_from_slice(&payload[..len]);
+    ph.payload_length = len;
+    0
+}
+
+impl Connection {
+    fn log_packet_on_path(
+        &mut self,
+        path_id: Option<usize>,
+        receiving: bool,
+        current_time: Instant,
+        ph: &crate::internal::PacketHeader,
+        bytes: &[u8],
+    ) {
+        if let Some(path_id) = path_id.filter(|&path_id| path_id < self.paths.len()) {
+            let mut path = self.paths.remove(path_id);
+            crate::logger::Log::packet(self, Some(&mut path), receiving, current_time, ph, bytes);
+            self.paths.insert(path_id, path);
+        } else {
+            crate::logger::Log::packet(self, None, receiving, current_time, ph, bytes);
+        }
+    }
+
+    fn log_dropped_packet_on_path(
+        &mut self,
+        path_id: Option<usize>,
+        ph: &crate::internal::PacketHeader,
+        packet_size: usize,
+        err: i32,
+        current_time: Instant,
+    ) {
+        if let Some(path_id) = path_id.filter(|&path_id| path_id < self.paths.len()) {
+            let mut path = self.paths.remove(path_id);
+            crate::logger::Log::dropped_packet(
+                self,
+                Some(&mut path),
+                ph,
+                packet_size,
+                err,
+                current_time,
+            );
+            self.paths.insert(path_id, path);
+        } else {
+            crate::logger::Log::dropped_packet(self, None, ph, packet_size, err, current_time);
+        }
+    }
+
+    fn log_buffered_packet_on_path(
+        &mut self,
+        path_id: Option<usize>,
+        packet_type: crate::internal::PacketType,
+        current_time: Instant,
+    ) {
+        if let Some(path_id) = path_id.filter(|&path_id| path_id < self.paths.len()) {
+            let mut path = self.paths.remove(path_id);
+            crate::logger::Log::buffered_packet(self, &mut path, packet_type, current_time);
+            self.paths.insert(path_id, path);
+        }
+    }
+
+    fn packet_has_ack_eliciting_frame(
+        &self,
+        bytes: &[u8],
+        ph: &crate::internal::PacketHeader,
+    ) -> bool {
+        let payload = Self::packet_payload(bytes, ph);
+        let mut byte_index = 0usize;
+        while byte_index < payload.len() {
+            let mut frame_length = 0usize;
+            let mut frame_is_pure_ack = 0i32;
+            let skip_ret = crate::internal::skip_frame(
+                &payload[byte_index..],
+                payload.len() - byte_index,
+                &mut frame_length,
+                &mut frame_is_pure_ack,
+            );
+            if skip_ret != 0 || frame_length == 0 {
+                break;
+            }
+            if frame_is_pure_ack == 0 {
+                return true;
+            }
+            byte_index = byte_index.saturating_add(frame_length);
+        }
+        false
+    }
+
+    /// Processing of packets received before their keys are available.
+    ///
+    /// C: `picoquic_incoming_not_decrypted` (picoquic/packet.c:2019-2067).
+    pub fn incoming_not_decrypted(
+        &mut self,
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+        bytes: &[u8],
+        addr_from: &SocketAddr,
+        addr_to: &SocketAddr,
+        if_index_to: i32,
+        received_ecn: u8,
+    ) -> i32 {
+        if self.connection_state >= State::Ready {
+            return 0;
+        }
+
+        let local_cid_matches = self
+            .path_local_connection_id(0)
+            .is_some_and(|cid| !cid.is_empty() && cid == ph.dest_connection_id);
+        if !local_cid_matches {
+            return 0;
+        }
+
+        if !self.paths.is_empty() {
+            let mut path = self.paths.remove(0);
+            self.update_path_rtt(&mut path, -1, self.start_time, current_time, 0, 0);
+            self.paths.insert(0, path);
+        }
+
+        let can_buffer = bytes.len() <= crate::internal::MAX_PACKET_SIZE
+            && ((ph.packet_type == crate::internal::PacketType::Handshake && self.client_mode)
+                || ph.packet_type == crate::internal::PacketType::OneRttProtected);
+        if !can_buffer {
+            return 0;
+        }
+
+        let mut packet = crate::internal::StatelessPacket {
+            addr_to: *addr_from,
+            addr_local: *addr_to,
+            if_index_local: if_index_to,
+            received_ecn,
+            length: bytes.len(),
+            receive_time: current_time,
+            connection_id_log64: ph.dest_connection_id.val64(),
+            initial_connection_id: self.initial_connection_id,
+            packet_type: ph.packet_type,
+            bytes: [0u8; crate::internal::MAX_PACKET_SIZE],
+        };
+        packet.bytes[..bytes.len()].copy_from_slice(bytes);
+        self.sooner_stateless.push_front(packet);
+        1
+    }
+
+    /// Process a server Initial packet on a client connection.
+    ///
+    /// C: `picoquic_incoming_server_initial` (picoquic/packet.c:1619-1701).
+    pub fn incoming_server_initial(
+        &mut self,
+        bytes: &[u8],
+        packet_length: usize,
+        received_data: &mut crate::internal::StreamDataNode,
+        addr_to: Option<&SocketAddr>,
+        if_index_to: u64,
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+    ) -> i32 {
+        if self.connection_state == State::ClientInitSent
+            || self.connection_state == State::ClientInitResent
+        {
+            self.connection_state = State::ClientHandshakeStart;
+        }
+
+        let remote_cid = self.path_remote_connection_id(0).unwrap_or_default();
+        if (!remote_cid.is_empty() || self.connection_state > State::ClientHandshakeStart)
+            && remote_cid != ph.src_connection_id
+        {
+            return InternalError::CnxidCheck as i32;
+        }
+
+        if self.connection_state <= State::ClientHandshakeStart {
+            if let Some(path) = self.paths.get_mut(0)
+                && let Some(tuple) = path.tuples.first_mut()
+            {
+                if Self::socket_addr_is_unspecified(&tuple.local_addr)
+                    && let Some(addr_to) = addr_to
+                {
+                    tuple.local_addr = *addr_to;
+                }
+                tuple.if_index = if_index_to as core::ffi::c_ulong;
+            }
+
+            if ph.payload_length == 0 {
+                return self.connection_error(TransportError::ProtocolViolation as u64, 0);
+            }
+
+            if packet_length < crate::internal::ENFORCED_INITIAL_MTU
+                && self.packet_has_ack_eliciting_frame(bytes, ph)
+                && self.retry_token.is_empty()
+                && self.crypto_context[crate::internal::Epoch::ZeroRtt as usize]
+                    .aead_encrypt
+                    .is_none()
+            {
+                self.log_app_message(&format!(
+                    "Server initial too short ({} bytes)",
+                    packet_length
+                ));
+                return InternalError::InitialTooShort as i32;
+            }
+
+            let payload = Self::packet_payload(bytes, ph);
+            let mut ret = self.decode_frames_on_path(
+                0,
+                payload,
+                received_data,
+                ph.epoch,
+                None,
+                addr_to,
+                ph.packet_number_full,
+                0,
+                current_time,
+            );
+            if ret == 0 {
+                let (tls_ret, _) = self.process_tls_stream_status(current_time);
+                ret = tls_ret;
+            }
+            ret
+        } else if self.connection_state < State::Ready {
+            self.ignore_incoming_handshake(bytes, ph, current_time);
+            0
+        } else {
+            InternalError::UnexpectedPacket as i32
+        }
+    }
+
+    /// Process a server Handshake packet on a client connection.
+    ///
+    /// C: `picoquic_incoming_server_handshake` (picoquic/packet.c:1704-1752).
+    pub fn incoming_server_handshake(
+        &mut self,
+        bytes: &[u8],
+        received_data: &mut crate::internal::StreamDataNode,
+        addr_to: Option<&SocketAddr>,
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+    ) -> i32 {
+        let restricted = self.connection_state != State::ClientHandshakeStart;
+        if self.path_remote_connection_id(0) != Some(ph.src_connection_id) {
+            return InternalError::CnxidCheck as i32;
+        }
+
+        if self.connection_state < State::Ready {
+            if ph.payload_length == 0 {
+                return self.connection_error(TransportError::ProtocolViolation as u64, 0);
+            }
+
+            let payload = Self::packet_payload(bytes, ph);
+            let mut ret = self.decode_frames_on_path(
+                0,
+                payload,
+                received_data,
+                ph.epoch,
+                None,
+                addr_to,
+                ph.packet_number_full,
+                0,
+                current_time,
+            );
+            if ret == 0 && !restricted {
+                let (tls_ret, _) = self.process_tls_stream_status(current_time);
+                ret = tls_ret;
+            }
+            ret
+        } else {
+            InternalError::UnexpectedPacket as i32
+        }
+    }
+
+    /// Account for ECN marks on a successfully processed packet.
+    ///
+    /// C: `picoquic_ecn_accounting` (picoquic/packet.c:1880-1908).
+    pub fn ecn_accounting(
+        &mut self,
+        received_ecn: u8,
+        packet_context: PacketContext,
+        local_connection_id: Option<crate::internal::LocalConnectionIdToken>,
+    ) {
+        if let Some(ack_ctx) = self.ack_ctx_from_cnx_context(packet_context, local_connection_id) {
+            match received_ecn & 0x03 {
+                0x00 => {}
+                ECN_ECT_1 => {
+                    ack_ctx.ecn_ect1_total_local = ack_ctx.ecn_ect1_total_local.saturating_add(1);
+                    ack_ctx.sending_ecn_ack = true;
+                }
+                ECN_ECT_0 => {
+                    ack_ctx.ecn_ect0_total_local = ack_ctx.ecn_ect0_total_local.saturating_add(1);
+                    ack_ctx.sending_ecn_ack = true;
+                }
+                ECN_CE => {
+                    ack_ctx.ecn_ce_total_local = ack_ctx.ecn_ce_total_local.saturating_add(1);
+                    ack_ctx.sending_ecn_ack = true;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+struct ParsedSegment {
+    ret: i32,
+    connection: Option<ConnectionToken>,
+    new_context_created: bool,
+}
+
+impl Quic {
+    fn reinsert_by_wake_time_token(&mut self, token: ConnectionToken, next_time: Instant) {
+        let old_membership = self
+            .connections
+            .get_mut(token)
+            .and_then(|cnx| cnx.connection_wake_membership.take());
+        if let Some(old_membership) = old_membership {
+            self.connection_wake_tree.remove(old_membership);
+        }
+        if let Some(cnx) = self.connections.get_mut(token) {
+            cnx.next_wake_time = next_time;
+        }
+        if let Ok((tree_token, old)) = self.connection_wake_tree.insert(next_time.ticks(), token) {
+            if let Some(cnx) = self.connections.get_mut(token) {
+                cnx.connection_wake_membership = Some(tree_token);
+            }
+            if let Some(old_token) = old
+                && old_token != token
+                && let Some(old_connection) = self.connections.get_mut(old_token)
+            {
+                old_connection.connection_wake_membership = None;
+            }
+        }
+    }
+
+    fn parse_error_status(error: Error) -> i32 {
+        Connection::status_from_error(error)
+    }
+
+    fn decrypt_existing_segment(
+        &mut self,
+        connection: ConnectionToken,
+        raw_bytes: &[u8],
+        length: usize,
+        packet_length: usize,
+        ph: &mut crate::internal::PacketHeader,
+        decrypted_data: &mut crate::internal::StreamDataNode,
+    ) -> i32 {
+        let mut aead_integrity_limit = None;
+        let ret = {
+            let Some(cnx) = self.connections.get(connection) else {
+                return InternalError::UnexpectedPacket as i32;
+            };
+            if !cnx.client_mode
+                && ph.packet_type == crate::internal::PacketType::Initial
+                && packet_length < crate::internal::ENFORCED_INITIAL_MTU
+            {
+                return InternalError::InitialTooShort as i32;
+            }
+            if ph.version_index != cnx.version_index {
+                return InternalError::PacketWrongVersion as i32;
+            }
+
+            let epoch = ph.epoch as usize;
+            let Some(pn_dec) = cnx.crypto_context[epoch].pn_dec.as_deref() else {
+                return InternalError::AeadNotReady as i32;
+            };
+            let Some(aead) = cnx.crypto_context[epoch].aead_decrypt.as_deref() else {
+                return InternalError::AeadNotReady as i32;
+            };
+            if ph.epoch == crate::internal::Epoch::OneRtt {
+                aead_integrity_limit = Some(crate::tls_api::aead_integrity_limit(aead));
+            }
+            let sack_list_last = cnx.ack_ctx[ph.packet_context as usize].sack_list.first();
+            let is_loss_bit_enabled_incoming = cnx.is_loss_bit_enabled_incoming;
+            let already_received = cnx.is_pn_already_received(
+                ph.packet_context,
+                ph.local_connection_id,
+                ph.packet_number_full,
+            );
+            let decrypt_ret = decrypt_packet_payload(
+                raw_bytes,
+                length,
+                ph,
+                decrypted_data,
+                pn_dec,
+                aead,
+                is_loss_bit_enabled_incoming,
+                sack_list_last,
+            );
+            if decrypt_ret == 0 && already_received {
+                InternalError::Duplicate as i32
+            } else {
+                decrypt_ret
+            }
+        };
+
+        if ret == InternalError::AeadCheck as i32
+            && ph.packet_type == crate::internal::PacketType::OneRttProtected
+            && let Some(cnx) = self.connections.get_mut(connection)
+        {
+            cnx.crypto_failure_count = cnx.crypto_failure_count.saturating_add(1);
+            if let Some(limit) = aead_integrity_limit
+                && cnx.crypto_failure_count > limit
+            {
+                cnx.log_app_message(&format!(
+                    "AEAD Integrity limit reached after 0x{:x} failed decryptions.",
+                    cnx.crypto_failure_count
+                ));
+                let _ = cnx.connection_error(TransportError::AeadLimitReached as u64, 0);
+            }
+        }
+
+        ret
+    }
+
+    fn screen_initial_packet(
+        &mut self,
+        raw_bytes: &[u8],
+        packet_length: usize,
+        addr_from: &SocketAddr,
+        ph: &mut crate::internal::PacketHeader,
+        current_time: Instant,
+        decrypted_data: &mut crate::internal::StreamDataNode,
+    ) -> ParsedSegment {
+        if packet_length < crate::internal::ENFORCED_INITIAL_MTU {
+            return ParsedSegment {
+                ret: InternalError::InitialTooShort as i32,
+                connection: None,
+                new_context_created: false,
+            };
+        }
+        if ph.dest_connection_id.len() < crate::internal::ENFORCED_INITIAL_CID_LENGTH as usize {
+            return ParsedSegment {
+                ret: InternalError::InitialCidTooShort as i32,
+                connection: None,
+                new_context_created: false,
+            };
+        }
+        if self.enforce_client_only
+            || self.server_busy
+            || self.current_number_connections >= self.tentative_max_number_connections
+        {
+            return ParsedSegment {
+                ret: InternalError::ServerBusy as i32,
+                connection: None,
+                new_context_created: false,
+            };
+        }
+
+        let initial_context =
+            match self.initial_aead_context(ph.version_index, &ph.dest_connection_id, false, false)
+            {
+                Ok(ctx) => ctx,
+                Err(error) => {
+                    return ParsedSegment {
+                        ret: Self::parse_error_status(error),
+                        connection: None,
+                        new_context_created: false,
+                    };
+                }
+            };
+        let decrypt_ret = decrypt_packet_payload(
+            raw_bytes,
+            packet_length,
+            ph,
+            decrypted_data,
+            initial_context.pn_enc_ctx.as_ref(),
+            initial_context.aead_ctx.as_ref(),
+            false,
+            0,
+        );
+        if decrypt_ret != 0 {
+            return ParsedSegment {
+                ret: decrypt_ret,
+                connection: None,
+                new_context_created: false,
+            };
+        }
+
+        let is_address_blocked = !self.is_port_blocking_disabled && check_addr_blocked(addr_from);
+        let mut has_good_token = false;
+        let mut has_bad_token = false;
+        let mut verified_token = None;
+        if !ph.token_bytes.is_empty() {
+            let token_bytes = ph.token_bytes.clone();
+            match self.verify_retry_token(
+                addr_from,
+                current_time,
+                &ph.dest_connection_id,
+                ph.packet_number_full as u32,
+                &token_bytes,
+                true,
+            ) {
+                Ok(token) => {
+                    has_good_token = true;
+                    verified_token = Some(token);
+                }
+                Err(_) => has_bad_token = true,
+            }
+        }
+
+        if has_bad_token {
+            return ParsedSegment {
+                ret: InternalError::InvalidToken as i32,
+                connection: None,
+                new_context_created: false,
+            };
+        }
+        if !has_good_token
+            && (self.force_check_token
+                || self.max_half_open_before_retry <= self.current_number_half_open
+                || is_address_blocked)
+        {
+            return ParsedSegment {
+                ret: InternalError::RetryNeeded as i32,
+                connection: None,
+                new_context_created: false,
+            };
+        }
+
+        let connection = match self.create_cnx_internal(
+            ph.dest_connection_id,
+            ph.src_connection_id,
+            Some(addr_from),
+            current_time,
+            ph.version,
+            None,
+            None,
+            false,
+            None,
+            None,
+        ) {
+            Ok(token) => token,
+            Err(error) => {
+                return ParsedSegment {
+                    ret: Self::parse_error_status(error),
+                    connection: None,
+                    new_context_created: false,
+                };
+            }
+        };
+
+        if let Some(cnx) = self.connections.get_mut(connection) {
+            cnx.version_index = ph.version_index;
+            cnx.proposed_version = ph.version;
+            if let Some(token) = verified_token {
+                cnx.initial_validated = true;
+                cnx.original_connection_id = token.odcid;
+            }
+        }
+
+        ParsedSegment {
+            ret: 0,
+            connection: Some(connection),
+            new_context_created: true,
+        }
+    }
+
+    fn parse_header_and_decrypt_for_segment(
+        &mut self,
+        raw_bytes: &[u8],
+        length: usize,
+        packet_length: usize,
+        addr_from: &SocketAddr,
+        current_time: Instant,
+        decrypted_data: &mut crate::internal::StreamDataNode,
+        ph: &mut crate::internal::PacketHeader,
+        consumed: &mut usize,
+    ) -> ParsedSegment {
+        let parse_length = length.min(raw_bytes.len());
+        let connection =
+            match self.parse_packet_header(&raw_bytes[..parse_length], Some(addr_from), ph, true) {
+                Ok(connection) => connection,
+                Err(error) => {
+                    return ParsedSegment {
+                        ret: Self::parse_error_status(error),
+                        connection: None,
+                        new_context_created: false,
+                    };
+                }
+            };
+
+        if matches!(
+            ph.packet_type,
+            crate::internal::PacketType::VersionNegotiation
+                | crate::internal::PacketType::Retry
+                | crate::internal::PacketType::Error
+        ) {
+            let copy_len = parse_length.min(decrypted_data.data.len());
+            decrypted_data.data[..copy_len].copy_from_slice(&raw_bytes[..copy_len]);
+            decrypted_data.length = copy_len;
+            *consumed = parse_length;
+            return ParsedSegment {
+                ret: 0,
+                connection,
+                new_context_created: false,
+            };
+        }
+
+        let Some(segment_length) = ph.offset.checked_add(ph.payload_length) else {
+            return ParsedSegment {
+                ret: InternalError::PacketHeaderParsing as i32,
+                connection,
+                new_context_created: false,
+            };
+        };
+        if segment_length > parse_length {
+            return ParsedSegment {
+                ret: InternalError::PacketHeaderParsing as i32,
+                connection,
+                new_context_created: false,
+            };
+        }
+        *consumed = segment_length;
+
+        if let Some(connection) = connection {
+            let ret = self.decrypt_existing_segment(
+                connection,
+                raw_bytes,
+                segment_length,
+                packet_length,
+                ph,
+                decrypted_data,
+            );
+            ParsedSegment {
+                ret,
+                connection: Some(connection),
+                new_context_created: false,
+            }
+        } else if ph.packet_type == crate::internal::PacketType::Initial {
+            self.screen_initial_packet(
+                raw_bytes,
+                packet_length,
+                addr_from,
+                ph,
+                current_time,
+                decrypted_data,
+            )
+        } else if ph.packet_type == crate::internal::PacketType::OneRttProtected
+            && parse_length >= RESET_PACKET_MIN_SIZE
+        {
+            let secret = &raw_bytes[parse_length - RESET_SECRET_SIZE..parse_length];
+            if let Some(connection) = self.connection_by_secret(secret, Some(addr_from)) {
+                if let Some(cnx) = self.connections.get_mut(connection) {
+                    cnx.log_app_message("Found connection from reset secret, ret = 1054");
+                }
+                ParsedSegment {
+                    ret: InternalError::StatelessReset as i32,
+                    connection: Some(connection),
+                    new_context_created: false,
+                }
+            } else {
+                ParsedSegment {
+                    ret: InternalError::UnexpectedPacket as i32,
+                    connection: None,
+                    new_context_created: false,
+                }
+            }
+        } else {
+            ParsedSegment {
+                ret: InternalError::UnexpectedPacket as i32,
+                connection: None,
+                new_context_created: false,
+            }
+        }
+    }
+}
+
+impl Quic {
+    fn queue_version_negotiation_packet(
+        &mut self,
+        addr_from: &SocketAddr,
+        addr_to: &SocketAddr,
+        if_index_to: i32,
+        ph: &crate::internal::PacketHeader,
+    ) {
+        let Ok(mut sp) = self.create_stateless_packet() else {
+            return;
+        };
+        let mut byte_index = 0usize;
+        sp.bytes[byte_index] = 0x80;
+        byte_index += 1;
+        sp.bytes[byte_index..byte_index + 4].fill(0);
+        byte_index += 4;
+        sp.bytes[byte_index] = ph.src_connection_id.len() as u8;
+        byte_index += 1;
+        let dlen = ph.src_connection_id.len();
+        sp.bytes[byte_index..byte_index + dlen].copy_from_slice(ph.src_connection_id.as_bytes());
+        byte_index += dlen;
+        sp.bytes[byte_index] = ph.dest_connection_id.len() as u8;
+        byte_index += 1;
+        let slen = ph.dest_connection_id.len();
+        sp.bytes[byte_index..byte_index + slen].copy_from_slice(ph.dest_connection_id.as_bytes());
+        byte_index += slen;
+        for version in [
+            crate::internal::Version::V1 as u32,
+            crate::internal::Version::V2 as u32,
+            crate::internal::Version::V2Draft as u32,
+        ] {
+            sp.bytes[byte_index..byte_index + 4].copy_from_slice(&version.to_be_bytes());
+            byte_index += 4;
+        }
+        sp.length = byte_index;
+        sp.packet_type = crate::internal::PacketType::VersionNegotiation;
+        sp.addr_to = *addr_from;
+        sp.addr_local = *addr_to;
+        sp.if_index_local = if_index_to;
+        sp.connection_id_log64 = ph.dest_connection_id.val64();
+        self.queue_stateless_packet(sp);
+    }
+
+    fn queue_stateless_retry(
+        &mut self,
+        ph: &crate::internal::PacketHeader,
+        server_cid: &ConnectionId,
+        addr_from: &SocketAddr,
+        addr_to: &SocketAddr,
+        if_index_to: i32,
+        retry_token: &[u8],
+    ) {
+        let Ok(mut sp) = self.create_stateless_packet() else {
+            return;
+        };
+        let mut pn_offset = 0usize;
+        let mut pn_length = 0usize;
+        let mut byte_index = crate::internal::create_long_header(
+            crate::internal::PacketType::Retry,
+            &ph.src_connection_id,
+            server_cid,
+            false,
+            ph.version,
+            ph.version_index,
+            0,
+            &[],
+            &mut sp.bytes,
+            &mut pn_offset,
+            &mut pn_length,
+        );
+        let token_end = byte_index.saturating_add(retry_token.len());
+        if token_end > sp.bytes.len() {
+            return;
+        }
+        sp.bytes[byte_index..token_end].copy_from_slice(retry_token);
+        byte_index = token_end;
+
+        if let Some(integrity_aead) = self.find_retry_protection_context(ph.version_index, true) {
+            byte_index = crate::tls_api::encode_retry_protection(
+                integrity_aead,
+                &mut sp.bytes,
+                byte_index,
+                &ph.dest_connection_id,
+            );
+        } else if byte_index + 1 + ph.dest_connection_id.len() <= sp.bytes.len() {
+            sp.bytes[byte_index] = ph.dest_connection_id.len() as u8;
+            byte_index += 1;
+            let odcid_len = ph.dest_connection_id.len();
+            sp.bytes[byte_index..byte_index + odcid_len]
+                .copy_from_slice(ph.dest_connection_id.as_bytes());
+            byte_index += odcid_len;
+        }
+
+        sp.length = byte_index;
+        sp.packet_type = crate::internal::PacketType::Retry;
+        sp.addr_to = *addr_from;
+        sp.addr_local = *addr_to;
+        sp.if_index_local = if_index_to;
+        sp.connection_id_log64 = ph.dest_connection_id.val64();
+        self.queue_stateless_packet(sp);
+    }
+
+    fn queue_retry_packet(
+        &mut self,
+        addr_from: &SocketAddr,
+        addr_to: &SocketAddr,
+        if_index_to: i32,
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+    ) -> i32 {
+        let mut server_cid = ConnectionId::default();
+        self.create_local_cnx_id(&mut server_cid, ph.dest_connection_id);
+        let mut token_buffer = [0u8; 256];
+        match self.prepare_retry_token(
+            addr_from,
+            current_time,
+            &ph.dest_connection_id,
+            &server_cid,
+            ph.packet_number_full as u32,
+            &mut token_buffer,
+        ) {
+            Ok(token_size) => {
+                self.queue_stateless_retry(
+                    ph,
+                    &server_cid,
+                    addr_from,
+                    addr_to,
+                    if_index_to,
+                    &token_buffer[..token_size],
+                );
+                InternalError::Retry as i32
+            }
+            Err(error) => Self::parse_error_status(error),
+        }
+    }
+
+    fn queue_busy_packet(
+        &mut self,
+        addr_from: &SocketAddr,
+        addr_to: &SocketAddr,
+        if_index_to: i32,
+        ph: &crate::internal::PacketHeader,
+    ) -> i32 {
+        let Ok(mut sp) = self.create_stateless_packet() else {
+            return InternalError::Memory as i32;
+        };
+        let mut server_cid = ConnectionId::default();
+        self.create_local_cnx_id(&mut server_cid, ph.dest_connection_id);
+        let initial_context = match self.initial_aead_context(
+            ph.version_index,
+            &ph.dest_connection_id,
+            false,
+            true,
+        ) {
+            Ok(ctx) => ctx,
+            Err(error) => return Self::parse_error_status(error),
+        };
+        let payload = [
+            crate::frames::FrameType::ConnectionClose as u8,
+            TransportError::ServerBusy as u8,
+            0,
+            0,
+        ];
+        let mut pn_offset = 0usize;
+        let mut pn_length = 0usize;
+        let header_length = crate::internal::create_long_header(
+            crate::internal::PacketType::Initial,
+            &ph.src_connection_id,
+            &server_cid,
+            false,
+            ph.version,
+            ph.version_index,
+            0,
+            &[],
+            &mut sp.bytes,
+            &mut pn_offset,
+            &mut pn_length,
+        );
+        let checksum_len = initial_context.aead_ctx.tag_len();
+        crate::internal::update_payload_length(
+            &mut sp.bytes,
+            pn_offset,
+            header_length.saturating_sub(pn_length),
+            header_length + payload.len() + checksum_len,
+        );
+        let header = sp.bytes[..header_length].to_vec();
+        let mut protected_payload = payload.to_vec();
+        initial_context
+            .aead_ctx
+            .encrypt(0, &header, &mut protected_payload);
+        let send_length = header_length + protected_payload.len();
+        if send_length > sp.bytes.len() {
+            return InternalError::Memory as i32;
+        }
+        sp.bytes[header_length..send_length].copy_from_slice(&protected_payload);
+        crate::internal::protect_packet_header(
+            &mut sp.bytes[..send_length],
+            pn_offset,
+            0x0f,
+            initial_context.pn_enc_ctx.as_ref(),
+        );
+        sp.length = send_length;
+        sp.packet_type = crate::internal::PacketType::Initial;
+        sp.addr_to = *addr_from;
+        sp.addr_local = *addr_to;
+        sp.if_index_local = if_index_to;
+        sp.connection_id_log64 = ph.dest_connection_id.val64();
+        self.queue_stateless_packet(sp);
+        0
+    }
+
+    /// Process a server Retry packet on a client connection.
+    ///
+    /// C: `picoquic_incoming_retry` (picoquic/packet.c:1521-1613).
+    pub fn incoming_retry(
+        &mut self,
+        connection: ConnectionToken,
+        bytes: &mut [u8],
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+    ) -> i32 {
+        let (version_index, initial_cid) = {
+            let Some(cnx) = self.connections.get(connection) else {
+                return InternalError::UnexpectedPacket as i32;
+            };
+            if (cnx.connection_state != State::ClientInitSent
+                && cnx.connection_state != State::ClientInitResent)
+                || !cnx.original_connection_id.is_empty()
+            {
+                return InternalError::UnexpectedPacket as i32;
+            }
+            if ph.version != cnx.negotiated_version() || ph.packet_number_full != 0 {
+                return InternalError::UnexpectedPacket as i32;
+            }
+            (cnx.version_index, cnx.initial_connection_id)
+        };
+
+        let mut byte_index = ph.offset;
+        let mut data_length = ph.offset.saturating_add(ph.payload_length);
+        if data_length > bytes.len() {
+            return InternalError::UnexpectedPacket as i32;
+        }
+
+        let verify_ret = {
+            if let Some(integrity_aead) = self.find_retry_protection_context(version_index, false) {
+                match crate::tls_api::verify_retry_protection(
+                    integrity_aead,
+                    bytes,
+                    data_length,
+                    byte_index,
+                    &initial_cid,
+                ) {
+                    Ok(stripped_length) => {
+                        data_length = stripped_length;
+                        0
+                    }
+                    Err(error) => Self::parse_error_status(error),
+                }
+            } else if byte_index < data_length {
+                let odcil = bytes[byte_index] as usize;
+                byte_index += 1;
+                if odcil != initial_cid.len()
+                    || odcil + 1 > ph.payload_length
+                    || byte_index + odcil > data_length
+                    || &bytes[byte_index..byte_index + odcil] != initial_cid.as_bytes()
+                {
+                    InternalError::UnexpectedPacket as i32
+                } else {
+                    byte_index += odcil;
+                    0
+                }
+            } else {
+                InternalError::UnexpectedPacket as i32
+            }
+        };
+
+        if verify_ret != 0 {
+            if let Some(cnx) = self.connections.get_mut(connection) {
+                cnx.log_app_message("Retry packet rejected: integrity check failed");
+            }
+            return verify_ret;
+        }
+
+        let token = bytes[byte_index..data_length].to_vec();
+        let Some(cnx) = self.connections.get_mut(connection) else {
+            return InternalError::UnexpectedPacket as i32;
+        };
+        crate::logger::Log::close_connection(cnx);
+        if cnx.original_connection_id.is_empty() {
+            cnx.original_connection_id = cnx.initial_connection_id;
+        }
+        cnx.initial_connection_id = ph.src_connection_id;
+        cnx.retry_token = token;
+        if cnx.reset(current_time).is_err() {
+            return InternalError::UnexpectedError as i32;
+        }
+        InternalError::Retry as i32
+    }
+
+    fn incoming_stateless_reset(&mut self, connection: ConnectionToken) -> i32 {
+        let Some(cnx) = self.connections.get_mut(connection) else {
+            return InternalError::AeadCheck as i32;
+        };
+        if cnx.connection_state <= State::Ready {
+            cnx.remote_error = InternalError::StatelessReset as u64;
+        }
+        if let Some(mut callback) = cnx.callback_fn.take() {
+            let _ = callback.callback(cnx, 0, &[], CallbackEvent::StatelessReset, None);
+            cnx.callback_fn = Some(callback);
+        }
+        cnx.connection_disconnect();
+        InternalError::AeadCheck as i32
+    }
+
+    fn incoming_version_negotiation(
+        &mut self,
+        connection: ConnectionToken,
+        bytes: &[u8],
+        ph: &crate::internal::PacketHeader,
+    ) -> i32 {
+        let Some(cnx) = self.connections.get_mut(connection) else {
+            return InternalError::UnexpectedPacket as i32;
+        };
+        if cnx.connection_state != State::ClientInitSent {
+            return 0;
+        }
+        if cnx.path_local_connection_id(0) != Some(ph.dest_connection_id)
+            || ph.version != 0
+            || ph.src_connection_id != cnx.initial_connection_id
+        {
+            return InternalError::Detected as i32;
+        }
+        let mut supported = false;
+        for chunk in bytes.get(ph.offset..).unwrap_or(&[]).chunks_exact(4) {
+            let version = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            if version == cnx.proposed_version {
+                return InternalError::VersionNegotiationSpoofed as i32;
+            }
+            if crate::internal::Version::try_from_wire(version).is_some() {
+                cnx.desired_version = version;
+                supported = true;
+                break;
+            }
+        }
+        if supported {
+            cnx.connection_state = State::ClientRenegotiate;
+            if let Some(mut callback) = cnx.callback_fn.take() {
+                let _ = callback.callback(cnx, 0, &[], CallbackEvent::VersionNegotiation, None);
+                cnx.callback_fn = Some(callback);
+            }
+            InternalError::VersionNegotiation as i32
+        } else {
+            InternalError::VersionNotSupported as i32
+        }
+    }
+
+    fn is_silent_drop_status(ret: i32) -> bool {
+        matches!(
+            ret as u64,
+            x if x == InternalError::AeadCheck as u64
+                || x == InternalError::InitialTooShort as u64
+                || x == InternalError::PacketWrongVersion as u64
+                || x == InternalError::InitialCidTooShort as u64
+                || x == InternalError::PortBlocked as u64
+                || x == InternalError::UnexpectedPacket as u64
+                || x == InternalError::CnxidCheck as u64
+                || x == InternalError::Retry as u64
+                || x == InternalError::Detected as u64
+                || x == InternalError::ServerBusy as u64
+                || x == InternalError::ConnectionDeleted as u64
+                || x == InternalError::CnxidSegment as u64
+                || x == InternalError::VersionNotSupported as u64
+                || x == InternalError::PacketTooLong as u64
+                || x == InternalError::Duplicate as u64
+                || x == InternalError::AeadNotReady as u64
+                || x == InternalError::Redirected as u64
+        )
+    }
+
+    fn silent_drop_status_returns_zero(ret: i32) -> bool {
+        matches!(
+            ret as u64,
+            x if x == InternalError::AeadCheck as u64
+                || x == InternalError::PacketWrongVersion as u64
+                || x == InternalError::AeadNotReady as u64
+                || x == InternalError::PacketTooLong as u64
+                || x == InternalError::VersionNotSupported as u64
+                || x == InternalError::Retry as u64
+                || x == InternalError::ServerBusy as u64
+                || x == InternalError::Redirected as u64
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_initial_segment(
+        &mut self,
+        connection: ConnectionToken,
+        bytes: &[u8],
+        packet_length: usize,
+        received_data: &mut crate::internal::StreamDataNode,
+        addr_from: &SocketAddr,
+        addr_to: &SocketAddr,
+        if_index_to: i32,
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+        new_context_created: bool,
+        is_first_segment: bool,
+        first_cnx: &mut Option<ConnectionToken>,
+    ) -> i32 {
+        if ph.has_reserved_bit_set {
+            return InternalError::PacketHeaderParsing as i32;
+        }
+
+        let (client_mode, dest_ok) = {
+            let Some(cnx_ref) = self.connections.get(connection) else {
+                return InternalError::UnexpectedPacket as i32;
+            };
+            (
+                cnx_ref.client_mode,
+                (!cnx_ref.client_mode && ph.dest_connection_id == cnx_ref.initial_connection_id)
+                    || cnx_ref.path_local_connection_id(0) == Some(ph.dest_connection_id),
+            )
+        };
+        if !dest_ok {
+            return InternalError::Detected as i32;
+        }
+
+        if let Some(cnx_ref) = self.connections.get_mut(connection) {
+            let remote_cid = cnx_ref.path_remote_connection_id(0);
+            if remote_cid.is_none_or(|cid| cid.is_empty()) {
+                if let Some(stash) = cnx_ref.remote_connection_id_stashes.first_mut()
+                    && let Some(remote_cid) = stash.connection_ids.first_mut()
+                {
+                    remote_cid.connection_id = ph.src_connection_id;
+                }
+            } else if remote_cid != Some(ph.src_connection_id) {
+                return InternalError::UnexpectedPacket as i32;
+            }
+        }
+
+        if !client_mode {
+            if is_first_segment && let Some(cnx_ref) = self.connections.get_mut(connection) {
+                cnx_ref.initial_data_received = cnx_ref
+                    .initial_data_received
+                    .saturating_add(packet_length as u64);
+            }
+            let (ret, live_connection) = self.incoming_client_initial(
+                connection,
+                bytes,
+                packet_length,
+                received_data,
+                Some(addr_from),
+                Some(addr_to),
+                if_index_to as u64,
+                ph,
+                current_time,
+                new_context_created,
+            );
+            *first_cnx = live_connection;
+            ret
+        } else if let Some(cnx_ref) = self.connections.get_mut(connection) {
+            cnx_ref.incoming_server_initial(
+                bytes,
+                packet_length,
+                received_data,
+                Some(addr_to),
+                if_index_to as u64,
+                ph,
+                current_time,
+            )
+        } else {
+            InternalError::UnexpectedPacket as i32
+        }
+    }
+
+    fn dispatch_handshake_segment(
+        &mut self,
+        connection: ConnectionToken,
+        bytes: &[u8],
+        received_data: &mut crate::internal::StreamDataNode,
+        addr_to: &SocketAddr,
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+    ) -> i32 {
+        if ph.has_reserved_bit_set {
+            if let Some(cnx_ref) = self.connections.get_mut(connection) {
+                return cnx_ref.connection_error(TransportError::ProtocolViolation as u64, 0);
+            }
+            return InternalError::UnexpectedPacket as i32;
+        }
+
+        let client_mode = self
+            .connections
+            .get(connection)
+            .map(|cnx_ref| cnx_ref.client_mode)
+            .unwrap_or(false);
+        if let Some(cnx_ref) = self.connections.get_mut(connection) {
+            if client_mode {
+                cnx_ref.incoming_server_handshake(
+                    bytes,
+                    received_data,
+                    Some(addr_to),
+                    ph,
+                    current_time,
+                )
+            } else {
+                cnx_ref.incoming_client_handshake(bytes, received_data, ph, current_time)
+            }
+        } else {
+            InternalError::UnexpectedPacket as i32
+        }
+    }
+
+    fn dispatch_zero_rtt_segment(
+        &mut self,
+        connection: ConnectionToken,
+        bytes: &[u8],
+        received_data: &mut crate::internal::StreamDataNode,
+        packet_length: usize,
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+        is_first_segment: bool,
+    ) -> i32 {
+        if ph.has_reserved_bit_set {
+            if let Some(cnx_ref) = self.connections.get_mut(connection) {
+                return cnx_ref.connection_error(TransportError::ProtocolViolation as u64, 0);
+            }
+            return InternalError::UnexpectedPacket as i32;
+        }
+
+        if is_first_segment && let Some(cnx_ref) = self.connections.get_mut(connection) {
+            cnx_ref.initial_data_received = cnx_ref
+                .initial_data_received
+                .saturating_add(packet_length as u64);
+        }
+        if let Some(cnx_ref) = self.connections.get_mut(connection) {
+            cnx_ref.incoming_0rtt(bytes, received_data, ph, current_time)
+        } else {
+            InternalError::UnexpectedPacket as i32
+        }
+    }
+}
+
+impl Quic {
+    /// Process one segment from a received UDP datagram.
+    ///
+    /// C: `picoquic_incoming_segment` (picoquic/packet.c:2073-2387).
+    #[allow(clippy::too_many_arguments)]
+    pub fn incoming_segment(
+        &mut self,
+        raw_bytes: &mut [u8],
+        length: usize,
+        packet_length: usize,
+        consumed: &mut usize,
+        addr_from: &SocketAddr,
+        addr_to: &SocketAddr,
+        if_index_to: i32,
+        received_ecn: u8,
+        current_time: Instant,
+        receive_time: Instant,
+        previous_dest_id: &mut ConnectionId,
+        first_cnx: &mut Option<ConnectionToken>,
+    ) -> i32 {
+        let mut ph = crate::internal::PacketHeader::default();
+        let mut decrypted_data = match self.stream_data_node_alloc() {
+            Ok(node) => node,
+            Err(_) => return -1,
+        };
+
+        let parsed = self.parse_header_and_decrypt_for_segment(
+            raw_bytes,
+            length,
+            packet_length,
+            addr_from,
+            current_time,
+            &mut decrypted_data,
+            &mut ph,
+            consumed,
+        );
+        let mut ret = parsed.ret;
+        let mut cnx = parsed.connection;
+        let new_context_created = parsed.new_context_created;
+        let mut is_first_segment = false;
+        let mut is_buffered = false;
+        let mut path_id = None;
+        let mut path_is_not_allocated = 0i32;
+
+        if ret == 0
+            && let Some(connection) = cnx
+        {
+            if ph.packet_type == crate::internal::PacketType::OneRttProtected {
+                let lookup = {
+                    let Some(cnx_ref) = self.connections.get_mut(connection) else {
+                        return -1;
+                    };
+                    cnx_ref.find_incoming_path(
+                        &mut ph,
+                        addr_from,
+                        addr_to,
+                        if_index_to,
+                        current_time,
+                    )
+                };
+                match lookup {
+                    Ok(lookup) => {
+                        path_id = Some(lookup.path_id);
+                        path_is_not_allocated = i32::from(lookup.created);
+                    }
+                    Err(error) => ret = Self::parse_error_status(error),
+                }
+            } else {
+                path_id = Some(0);
+            }
+        }
+
+        if previous_dest_id.is_empty() {
+            *previous_dest_id = ph.dest_connection_id;
+            is_first_segment = true;
+            *first_cnx = cnx;
+            if let Some(connection) = cnx {
+                if let Some(cnx_ref) = self.connections.get_mut(connection) {
+                    let unique_path_id = path_id
+                        .and_then(|idx| cnx_ref.paths.get(idx))
+                        .map(|path| path.unique_path_id)
+                        .unwrap_or(0);
+                    crate::logger::Log::pdu(
+                        cnx_ref,
+                        true,
+                        current_time,
+                        addr_from,
+                        addr_to,
+                        packet_length,
+                        unique_path_id,
+                        received_ecn,
+                    );
+                }
+            } else {
+                self.log_pdu(
+                    true,
+                    current_time,
+                    ph.dest_connection_id.val64(),
+                    addr_from,
+                    addr_to,
+                    packet_length,
+                );
+            }
+        } else {
+            if (ret == 0 && *previous_dest_id != ph.dest_connection_id)
+                || ret == InternalError::VersionNotSupported as i32
+            {
+                ret = InternalError::CnxidSegment as i32;
+            }
+            if ret == InternalError::CnxidSegment as i32
+                && *first_cnx != cnx
+                && let Some(first) = *first_cnx
+                && let Some(first_ref) = self.connections.get_mut(first)
+            {
+                first_ref.log_dropped_packet_on_path(
+                    None,
+                    &ph,
+                    length,
+                    InternalError::PaddingPacket as i32,
+                    current_time,
+                );
+            }
+        }
+
+        if ret == InternalError::AeadNotReady as i32
+            && let Some(connection) = cnx
+            && let Some(cnx_ref) = self.connections.get_mut(connection)
+        {
+            is_buffered = cnx_ref.incoming_not_decrypted(
+                &ph,
+                current_time,
+                raw_bytes,
+                addr_from,
+                addr_to,
+                if_index_to,
+                received_ecn,
+            ) != 0;
+        }
+
+        if let Some(connection) = cnx {
+            if ret == 0 && ph.packet_type == crate::internal::PacketType::OneRttProtected {
+                if ph.payload_length == 0 {
+                    if let Some(cnx_ref) = self.connections.get_mut(connection) {
+                        ret = cnx_ref.connection_error(TransportError::ProtocolViolation as u64, 0);
+                    }
+                } else if ph.has_reserved_bit_set
+                    && let Some(cnx_ref) = self.connections.get_mut(connection)
+                {
+                    ret = cnx_ref.connection_error(TransportError::ProtocolViolation as u64, 0);
+                }
+            }
+
+            if let Some(cnx_ref) = self.connections.get_mut(connection) {
+                if ret == 0 {
+                    cnx_ref.log_packet_on_path(
+                        path_id,
+                        true,
+                        current_time,
+                        &ph,
+                        &decrypted_data.data[..decrypted_data.length],
+                    );
+                } else if is_buffered {
+                    cnx_ref.log_buffered_packet_on_path(path_id, ph.packet_type, current_time);
+                } else {
+                    cnx_ref.log_dropped_packet_on_path(path_id, &ph, length, ret, current_time);
+                }
+            }
+        }
+
+        if ret == InternalError::VersionNotSupported as i32 {
+            if packet_length >= crate::internal::ENFORCED_INITIAL_MTU
+                && (self.is_port_blocking_disabled || !check_addr_blocked(addr_from))
+            {
+                self.queue_version_negotiation_packet(addr_from, addr_to, if_index_to, &ph);
+            }
+        } else if ret == InternalError::RetryNeeded as i32 {
+            if packet_length >= crate::internal::ENFORCED_INITIAL_MTU
+                && (self.is_port_blocking_disabled || !check_addr_blocked(addr_from))
+            {
+                ret = self.queue_retry_packet(addr_from, addr_to, if_index_to, &ph, current_time);
+            }
+        } else if ret == InternalError::ServerBusy as i32 {
+            if packet_length >= crate::internal::ENFORCED_INITIAL_MTU
+                && (self.is_port_blocking_disabled || !check_addr_blocked(addr_from))
+            {
+                ret = self.queue_busy_packet(addr_from, addr_to, if_index_to, &ph);
+            }
+        } else if ret == 0 {
+            if let Some(connection) = cnx {
+                if let Some(cnx_ref) = self.connections.get_mut(connection) {
+                    cnx_ref.quic_bit_received_0 |= ph.quic_bit_is_zero;
+                }
+                let bytes_len = decrypted_data.length;
+                let mut packet_bytes = [0u8; crate::internal::MAX_PACKET_SIZE];
+                packet_bytes[..bytes_len].copy_from_slice(&decrypted_data.data[..bytes_len]);
+                let mut received_frame_data = crate::internal::StreamDataNode {
+                    stream_data_membership: None,
+                    offset: 0,
+                    data: [0u8; crate::internal::MAX_PACKET_SIZE],
+                    length: 0,
+                };
+                match ph.packet_type {
+                    crate::internal::PacketType::VersionNegotiation => {
+                        let bytes = &packet_bytes[..bytes_len];
+                        ret = self.incoming_version_negotiation(connection, bytes, &ph);
+                    }
+                    crate::internal::PacketType::Initial => {
+                        let bytes = &packet_bytes[..bytes_len];
+                        ret = self.dispatch_initial_segment(
+                            connection,
+                            bytes,
+                            packet_length,
+                            &mut received_frame_data,
+                            addr_from,
+                            addr_to,
+                            if_index_to,
+                            &ph,
+                            current_time,
+                            new_context_created,
+                            is_first_segment,
+                            first_cnx,
+                        );
+                        cnx = *first_cnx;
+                    }
+                    crate::internal::PacketType::Retry => {
+                        ret = self.incoming_retry(connection, raw_bytes, &ph, current_time);
+                    }
+                    crate::internal::PacketType::Handshake => {
+                        let bytes = &packet_bytes[..bytes_len];
+                        ret = self.dispatch_handshake_segment(
+                            connection,
+                            bytes,
+                            &mut received_frame_data,
+                            addr_to,
+                            &ph,
+                            current_time,
+                        );
+                    }
+                    crate::internal::PacketType::ZeroRttProtected => {
+                        let bytes = &packet_bytes[..bytes_len];
+                        ret = self.dispatch_zero_rtt_segment(
+                            connection,
+                            bytes,
+                            &mut received_frame_data,
+                            packet_length,
+                            &ph,
+                            current_time,
+                            is_first_segment,
+                        );
+                    }
+                    crate::internal::PacketType::OneRttProtected => {
+                        if let Some(cnx_ref) = self.connections.get_mut(connection) {
+                            let bytes = &mut packet_bytes[..bytes_len];
+                            ret = cnx_ref.incoming_1rtt(
+                                path_id.unwrap_or(0),
+                                bytes,
+                                &mut received_frame_data,
+                                &ph,
+                                Some(addr_from),
+                                Some(addr_to),
+                                if_index_to,
+                                path_is_not_allocated,
+                                current_time,
+                            );
+                        }
+                    }
+                    _ => ret = InternalError::Detected as i32,
+                }
+            } else {
+                if !ph.dest_connection_id.is_empty()
+                    && (self.is_port_blocking_disabled || !check_addr_blocked(addr_from))
+                {
+                    self.queue_version_negotiation_packet(addr_from, addr_to, if_index_to, &ph);
+                }
+                ret = InternalError::Detected as i32;
+            }
+        } else if ret == InternalError::StatelessReset as i32 {
+            if let Some(connection) = cnx {
+                ret = self.incoming_stateless_reset(connection);
+            }
+        } else if ret == InternalError::AeadCheck as i32
+            && ph.packet_type == crate::internal::PacketType::Handshake
+            && let Some(connection) = cnx
+            && let Some(cnx_ref) = self.connections.get_mut(connection)
+            && (cnx_ref.connection_state == State::ClientInitSent
+                || cnx_ref.connection_state == State::ClientInitResent)
+            && !cnx_ref.pkt_ctx[PacketContext::Initial as usize]
+                .pending
+                .is_empty()
+            && cnx_ref
+                .paths
+                .first()
+                .is_some_and(|path| path.nb_retransmit == 0)
+            && let Some(first_pending) = cnx_ref.pkt_ctx[PacketContext::Initial as usize]
+                .pending
+                .values()
+                .next()
+                .and_then(|packet| cnx_ref.queued_packets.get(*packet))
+            && let Some(path) = cnx_ref.paths.first_mut()
+        {
+            path.retransmit_timer = Duration::from_ticks(
+                current_time
+                    .ticks()
+                    .saturating_sub(first_pending.send_time.ticks()),
+            );
+        }
+
+        if ret == 0 {
+            if let Some(connection) = cnx
+                && let Some(cnx_ref) = self.connections.get_mut(connection)
+                && cnx_ref.connection_state != State::Disconnected
+                && ph.packet_type != crate::internal::PacketType::VersionNegotiation
+            {
+                cnx_ref.nb_packets_received = cnx_ref.nb_packets_received.saturating_add(1);
+                cnx_ref.latest_receive_time = current_time;
+                ret = cnx_ref.record_pn_received(
+                    ph.packet_context,
+                    ph.local_connection_id,
+                    ph.packet_number_full,
+                    receive_time,
+                );
+                cnx_ref.ecn_accounting(received_ecn, ph.packet_context, ph.local_connection_id);
+            }
+            if let Some(connection) = cnx {
+                self.reinsert_by_wake_time_token(connection, current_time);
+            }
+        } else if Self::is_silent_drop_status(ret) {
+            let normalized = if Self::silent_drop_status_returns_zero(ret) {
+                0
+            } else {
+                -1
+            };
+            if let Some(connection) = cnx {
+                self.reinsert_by_wake_time_token(connection, current_time);
+            }
+            ret = normalized;
+        } else if ret != 0 {
+            ret = -1;
+        }
+
+        decrypted_data.stream_data_node_recycle();
+        ret
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 3A helpers for skip_frame / satellite / spinbit tests.
 
@@ -4001,6 +5777,430 @@ impl Quic {
 }
 
 impl Connection {
+    fn packet_payload<'a>(bytes: &'a [u8], ph: &crate::internal::PacketHeader) -> &'a [u8] {
+        let payload_length = ph.payload_length.min(bytes.len());
+        if ph.offset <= bytes.len()
+            && ph
+                .offset
+                .checked_add(payload_length)
+                .is_some_and(|end| end <= bytes.len())
+        {
+            &bytes[ph.offset..ph.offset + payload_length]
+        } else {
+            &bytes[..payload_length]
+        }
+    }
+
+    fn packet_payload_mut<'a>(
+        bytes: &'a mut [u8],
+        ph: &crate::internal::PacketHeader,
+    ) -> &'a mut [u8] {
+        let payload_length = ph.payload_length.min(bytes.len());
+        if ph.offset <= bytes.len()
+            && ph
+                .offset
+                .checked_add(payload_length)
+                .is_some_and(|end| end <= bytes.len())
+        {
+            &mut bytes[ph.offset..ph.offset + payload_length]
+        } else {
+            &mut bytes[..payload_length]
+        }
+    }
+
+    fn status_from_error(error: Error) -> i32 {
+        match error {
+            Error::Protocol(code) => code as i32,
+            Error::Memory => InternalError::Memory as i32,
+            Error::InvalidArgument => InternalError::UnexpectedError as i32,
+            Error::BufferTooSmall => InternalError::FrameBufferTooSmall as i32,
+            Error::NoSuchFile => InternalError::NoSuchFile as i32,
+            Error::InvalidFile => InternalError::InvalidFile as i32,
+            Error::Disconnected => InternalError::Disconnected as i32,
+            Error::InvalidState => InternalError::UnexpectedState as i32,
+            Error::InvalidFrame => InternalError::InvalidFrame as i32,
+            Error::Tls => InternalError::AeadCheck as i32,
+            Error::Generic => InternalError::UnexpectedError as i32,
+        }
+    }
+
+    fn process_tls_stream_status(&mut self, current_time: Instant) -> (i32, usize) {
+        match self.process_tls_stream(current_time) {
+            Ok(consumed) => (0, consumed),
+            Err(error) => (Self::status_from_error(error), 0),
+        }
+    }
+
+    fn path_local_connection_id(&self, path_index: usize) -> Option<ConnectionId> {
+        self.paths
+            .get(path_index)
+            .and_then(|path| path.tuples.first())
+            .and_then(|tuple| tuple.local_connection_id)
+            .and_then(|token| self.local_connection_ids.get(token))
+            .map(|local_cid| local_cid.connection_id)
+    }
+
+    fn path_remote_connection_id(&self, path_index: usize) -> Option<ConnectionId> {
+        let path = self.paths.get(path_index)?;
+        let tuple = path.tuples.first()?;
+        let cid_index = tuple.remote_connection_id_index.unwrap_or(0);
+        self.remote_connection_id_stashes
+            .iter()
+            .find(|stash| stash.unique_path_id == path.unique_path_id)
+            .and_then(|stash| stash.connection_ids.get(cid_index))
+            .map(|remote_cid| remote_cid.connection_id)
+    }
+
+    fn negotiated_version(&self) -> u32 {
+        crate::internal::Version::try_from_wire(self.proposed_version)
+            .or(match self.version_index {
+                0 => Some(crate::internal::Version::V1),
+                1 => Some(crate::internal::Version::V2),
+                2 => Some(crate::internal::Version::V2Draft),
+                3 => Some(crate::internal::Version::PostIesg),
+                4 => Some(crate::internal::Version::TwentyFirstInterop),
+                5 => Some(crate::internal::Version::TwentiethInterop),
+                6 => Some(crate::internal::Version::TwentiethPreInterop),
+                7 => Some(crate::internal::Version::NineteenthBisInterop),
+                8 => Some(crate::internal::Version::NineteenthInterop),
+                9 => Some(crate::internal::Version::EighteenthInterop),
+                10 => Some(crate::internal::Version::SeventeenthInterop),
+                11 => Some(crate::internal::Version::InternalTest2),
+                12 => Some(crate::internal::Version::InternalTest1),
+                _ => None,
+            })
+            .unwrap_or(crate::internal::Version::V1) as u32
+    }
+
+    fn socket_addr_is_unspecified(addr: &SocketAddr) -> bool {
+        addr.port() == 0
+            && match addr.ip() {
+                core::net::IpAddr::V4(ip) => ip.is_unspecified(),
+                core::net::IpAddr::V6(ip) => ip.is_unspecified(),
+            }
+    }
+
+    fn decode_frames_on_path(
+        &mut self,
+        path_index: usize,
+        bytes: &[u8],
+        received_data: &mut crate::internal::StreamDataNode,
+        epoch: crate::internal::Epoch,
+        addr_from: Option<&SocketAddr>,
+        addr_to: Option<&SocketAddr>,
+        pn64: u64,
+        path_is_not_allocated: i32,
+        current_time: Instant,
+    ) -> i32 {
+        if path_index >= self.paths.len() {
+            return InternalError::UnexpectedPacket as i32;
+        }
+        let mut path = self.paths.remove(path_index);
+        let ret = self.decode_frames(
+            &mut path,
+            bytes,
+            bytes.len(),
+            received_data,
+            epoch as i32,
+            addr_from,
+            addr_to,
+            pn64,
+            path_is_not_allocated,
+            current_time,
+        );
+        self.paths.insert(path_index, path);
+        ret
+    }
+
+    /// Process unexpected Initial or Handshake payloads only enough to
+    /// discover whether an ACK should be sent.
+    ///
+    /// C: `picoquic_ignore_incoming_handshake` (picoquic/packet.c:1345-1387).
+    pub fn ignore_incoming_handshake(
+        &mut self,
+        bytes: &[u8],
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+    ) {
+        let pc = match ph.packet_type {
+            crate::internal::PacketType::Initial => PacketContext::Initial,
+            crate::internal::PacketType::Handshake => PacketContext::Handshake,
+            _ => return,
+        };
+
+        let payload = Self::packet_payload(bytes, ph);
+        let mut byte_index = 0usize;
+        let mut ret = 0i32;
+        let mut ack_needed = false;
+
+        while ret == 0 && byte_index < payload.len() {
+            let mut frame_length = 0usize;
+            let mut frame_is_pure_ack = 0i32;
+            ret = crate::internal::skip_frame(
+                &payload[byte_index..],
+                payload.len() - byte_index,
+                &mut frame_length,
+                &mut frame_is_pure_ack,
+            );
+            byte_index = byte_index.saturating_add(frame_length);
+            if frame_is_pure_ack == 0 {
+                ack_needed = true;
+            }
+            if ret == 0 && frame_length == 0 {
+                ret = -1;
+            }
+        }
+
+        if ret == 0 && ack_needed {
+            self.set_ack_needed_on_path(current_time, pc, 0, 0);
+        }
+    }
+
+    /// Process a client Handshake packet on a server connection.
+    ///
+    /// C: `picoquic_incoming_client_handshake` (picoquic/packet.c:1753-1811).
+    pub fn incoming_client_handshake(
+        &mut self,
+        bytes: &[u8],
+        received_data: &mut crate::internal::StreamDataNode,
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+    ) -> i32 {
+        self.initial_validated = true;
+        self.initial_repeat_needed = false;
+
+        let mut ret = 0;
+        if self.connection_state < State::ServerAlmostReady {
+            if self.path_remote_connection_id(0) != Some(ph.src_connection_id) {
+                ret = InternalError::CnxidCheck as i32;
+            } else if ph.payload_length == 0 {
+                ret = self.connection_error(TransportError::ProtocolViolation as u64, 0);
+            } else {
+                let payload = Self::packet_payload(bytes, ph);
+                ret = self.decode_frames_on_path(
+                    0,
+                    payload,
+                    received_data,
+                    ph.epoch,
+                    None,
+                    None,
+                    ph.packet_number_full,
+                    0,
+                    current_time,
+                );
+                if ret == 0 {
+                    self.implicit_handshake_ack(PacketContext::Initial, current_time);
+                    self.crypto_context[crate::internal::Epoch::Initial as usize].free_handles();
+                    let (tls_ret, _) = self.process_tls_stream_status(current_time);
+                    ret = tls_ret;
+                    if ret == 0
+                        && !self.client_mode
+                        && self.connection_state < State::Ready
+                        && self.is_tls_complete()
+                    {
+                        self.ready_state_transition(current_time);
+                    }
+                }
+            }
+        } else if self.connection_state <= State::Ready {
+            self.ignore_incoming_handshake(bytes, ph, current_time);
+        } else {
+            ret = InternalError::UnexpectedPacket as i32;
+        }
+
+        ret
+    }
+
+    /// Process a client 0-RTT packet on a server connection.
+    ///
+    /// C: `picoquic_incoming_0rtt` (picoquic/packet.c:1835-1877).
+    pub fn incoming_0rtt(
+        &mut self,
+        bytes: &[u8],
+        received_data: &mut crate::internal::StreamDataNode,
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+    ) -> i32 {
+        let dest_matches = ph.dest_connection_id == self.initial_connection_id
+            || self.path_local_connection_id(0) == Some(ph.dest_connection_id);
+        let src_matches = self.path_remote_connection_id(0) == Some(ph.src_connection_id);
+
+        if !dest_matches || !src_matches {
+            return InternalError::CnxidCheck as i32;
+        }
+
+        if self.connection_state == State::ServerAlmostReady
+            || self.connection_state == State::ServerFalseStart
+            || (self.connection_state == State::Ready && !self.is_1rtt_received)
+        {
+            if ph.version != self.negotiated_version() || ph.payload_length == 0 {
+                self.connection_error(TransportError::ProtocolViolation as u64, 0)
+            } else {
+                self.nb_zero_rtt_received = self.nb_zero_rtt_received.saturating_add(1);
+                let payload = Self::packet_payload(bytes, ph);
+                let mut ret = self.decode_frames_on_path(
+                    0,
+                    payload,
+                    received_data,
+                    ph.epoch,
+                    None,
+                    None,
+                    ph.packet_number_full,
+                    0,
+                    current_time,
+                );
+                if ret == 0 {
+                    let (tls_ret, _) = self.process_tls_stream_status(current_time);
+                    ret = tls_ret;
+                }
+                ret
+            }
+        } else {
+            InternalError::UnexpectedPacket as i32
+        }
+    }
+
+    /// Process a 1-RTT protected packet.
+    ///
+    /// C: `picoquic_incoming_1rtt` (picoquic/packet.c:1910-2017).
+    pub fn incoming_1rtt(
+        &mut self,
+        path_id: usize,
+        bytes: &mut [u8],
+        received_data: &mut crate::internal::StreamDataNode,
+        ph: &crate::internal::PacketHeader,
+        addr_from: Option<&SocketAddr>,
+        addr_to: Option<&SocketAddr>,
+        if_index_to: i32,
+        path_is_not_allocated: i32,
+        current_time: Instant,
+    ) -> i32 {
+        if self.connection_state < State::ClientAlmostReady {
+            return InternalError::UnexpectedPacket as i32;
+        }
+        if self.connection_state == State::Disconnected {
+            return InternalError::UnexpectedPacket as i32;
+        }
+
+        if self.connection_state >= State::Disconnecting {
+            if self.connection_state == State::Closing
+                || self.connection_state == State::Disconnecting
+            {
+                let payload = Self::packet_payload_mut(bytes, ph);
+                let mut closing_received = 0;
+                let ret = crate::internal::decode_closing_frames(
+                    payload,
+                    payload.len(),
+                    &mut closing_received,
+                );
+                if ret == 0 {
+                    if closing_received != 0 {
+                        if self.client_mode {
+                            self.connection_disconnect();
+                        } else {
+                            self.connection_state = State::Draining;
+                        }
+                    } else {
+                        self.set_ack_needed_on_path(current_time, ph.packet_context, path_id, 0);
+                    }
+                }
+                ret
+            } else {
+                InternalError::UnexpectedPacket as i32
+            }
+        } else {
+            if path_id >= self.paths.len() {
+                return InternalError::UnexpectedPacket as i32;
+            }
+
+            let payload = Self::packet_payload(bytes, ph);
+            let mut path = self.paths.remove(path_id);
+            if let Some(tuple) = path.tuples.first_mut() {
+                tuple.if_index = if_index_to as core::ffi::c_ulong;
+            }
+            self.is_1rtt_received = true;
+            if let Some(policy) =
+                crate::internal::SPIN_FUNCTION_TABLE.get(self.spin_policy as usize)
+            {
+                policy.incoming(self, &mut path, ph);
+            }
+
+            let mut ret = self.decode_frames(
+                &mut path,
+                payload,
+                payload.len(),
+                received_data,
+                ph.epoch as i32,
+                addr_from,
+                addr_to,
+                ph.packet_number_full,
+                path_is_not_allocated,
+                current_time,
+            );
+
+            let mut recompute_ack_frequency = None;
+            if ret == 0 {
+                path.received = path.received.saturating_add(
+                    (ph.offset as u64)
+                        .saturating_add(ph.payload_length as u64)
+                        .saturating_add(
+                            self.get_checksum_length(crate::internal::Epoch::OneRtt) as u64
+                        ),
+                );
+                if path.receive_rate_epoch == 0 {
+                    path.received_prior = path.received;
+                    path.receive_rate_epoch = current_time.ticks();
+                } else {
+                    let delta = current_time.ticks().saturating_sub(path.receive_rate_epoch);
+                    if delta > path.smoothed_rtt.ticks()
+                        && delta > crate::internal::BANDWIDTH_TIME_INTERVAL_MIN
+                    {
+                        path.receive_rate_estimate = crate::utils::rate_from_bytes(
+                            path.received.saturating_sub(path.received_prior),
+                            delta,
+                        );
+                        path.received_prior = path.received;
+                        path.receive_rate_epoch = current_time.ticks();
+                        if path.receive_rate_estimate > path.receive_rate_max {
+                            path.receive_rate_max = path.receive_rate_estimate;
+                            if path_id == 0 && !self.is_ack_frequency_negotiated {
+                                recompute_ack_frequency =
+                                    Some((path.rtt_min, path.receive_rate_max));
+                            }
+                        }
+                    }
+                }
+            }
+
+            self.paths.insert(path_id, path);
+
+            if let Some((rtt_min, receive_rate_max)) = recompute_ack_frequency {
+                let mut ack_gap = self.ack_gap_remote;
+                let mut ack_delay = self.ack_delay_remote.ticks();
+                self.compute_ack_gap_and_delay(
+                    rtt_min,
+                    crate::internal::ACK_DELAY_MIN.ticks(),
+                    receive_rate_max,
+                    &mut ack_gap,
+                    &mut ack_delay,
+                );
+                self.ack_gap_remote = ack_gap;
+                self.ack_delay_remote = Duration::from_ticks(ack_delay);
+            }
+
+            if ret == 0 {
+                let (tls_ret, _) = self.process_tls_stream_status(current_time);
+                ret = tls_ret;
+            }
+
+            if ret == 0 && self.is_still_logging() {
+                crate::logger::Log::cc_dump(self, current_time);
+            }
+
+            ret
+        }
+    }
+
     /// MTU currently used for sending on the primary path.
     /// C: `cnx->path[0]->send_mtu`.
     pub fn primary_path_send_mtu(&self) -> u64 {
@@ -4030,6 +6230,215 @@ impl Connection {
     /// C: `picoquic_log_app_message(cnx, "%s", msg)`.
     pub fn log_app_message(&mut self, msg: &str) {
         crate::logger::Log::app_message(self, format_args!("{}", msg));
+    }
+
+    /// Given a `SplayToken` from this connection's stream tree, return the
+    /// arena token for the corresponding [`crate::internal::StreamHead`].
+    ///
+    /// In the C source `picoquic_stream_from_node` (quicctx.c:3459) was a
+    /// pointer cast: `picosplay_node_t` was the first field of
+    /// `picoquic_stream_head_t` so casting the node pointer directly to a
+    /// stream-head pointer was valid.  The Rust port stores
+    /// [`crate::internal::StreamToken`]s as values inside the splay tree, so
+    /// the cast becomes a plain table lookup.
+    ///
+    /// C: `picoquic_stream_from_node` (quicctx.c:3459).
+    pub fn stream_from_node(
+        &self,
+        node: crate::splay::SplayToken,
+    ) -> Option<crate::internal::StreamToken> {
+        self.stream_tree.get(node).copied()
+    }
+}
+
+impl Quic {
+    /// Queue an immediate close packet for `connection` if packet preparation
+    /// produces bytes to send.
+    ///
+    /// C: `picoquic_queue_immediate_close` (picoquic/packet.c:1317-1334).
+    fn queue_immediate_close(&mut self, connection: ConnectionToken, current_time: Instant) {
+        let Ok(mut sp) = self.create_stateless_packet() else {
+            return;
+        };
+        let prepared = self
+            .connections
+            .get_mut(connection)
+            .and_then(|cnx| cnx.prepare_packet_ex(current_time, &mut sp.bytes).ok());
+
+        if let Some(prepared) = prepared
+            && prepared.send_length > 0
+        {
+            sp.length = prepared.send_length;
+            sp.addr_to = prepared.addr_to;
+            sp.addr_local = prepared.addr_from;
+            sp.if_index_local = prepared.if_index;
+            self.queue_stateless_packet(sp);
+        }
+    }
+
+    /// Process an incoming client Initial packet on a server connection.
+    /// Returns the C-style status code and the still-live connection token.
+    ///
+    /// C: `picoquic_incoming_client_initial` (picoquic/packet.c:1394-1505).
+    pub fn incoming_client_initial(
+        &mut self,
+        connection: ConnectionToken,
+        bytes: &[u8],
+        packet_length: usize,
+        received_data: &mut crate::internal::StreamDataNode,
+        addr_from: Option<&SocketAddr>,
+        addr_to: Option<&SocketAddr>,
+        if_index_to: u64,
+        ph: &crate::internal::PacketHeader,
+        current_time: Instant,
+        new_context_created: bool,
+    ) -> (i32, Option<ConnectionToken>) {
+        let server_busy = self.server_busy;
+        let over_connection_limit =
+            self.current_number_connections > self.tentative_max_number_connections;
+        let mut ret = 0;
+        let mut queue_close = false;
+        let mut delete_created_connection = false;
+
+        {
+            let Some(cnx) = self.connections.get_mut(connection) else {
+                return (InternalError::UnexpectedPacket as i32, None);
+            };
+
+            if cnx
+                .path_local_connection_id(0)
+                .is_some_and(|cid| !cid.is_empty() && cid == ph.dest_connection_id)
+            {
+                cnx.initial_validated = true;
+            }
+
+            if !cnx.initial_validated
+                && !cnx.pkt_ctx[PacketContext::Initial as usize]
+                    .pending
+                    .is_empty()
+                && packet_length >= crate::internal::ENFORCED_INITIAL_MTU
+            {
+                cnx.initial_repeat_needed = true;
+            }
+
+            if cnx.connection_state == State::ServerInit && (server_busy || over_connection_limit) {
+                cnx.local_error = TransportError::ServerBusy as u64;
+                cnx.connection_state = State::HandshakeFailure;
+            } else if cnx.connection_state == State::ServerInit
+                && cnx.initial_connection_id.len()
+                    < crate::internal::ENFORCED_INITIAL_CID_LENGTH as usize
+            {
+                cnx.local_error = TransportError::ProtocolViolation as u64;
+                cnx.connection_state = State::HandshakeFailure;
+            } else if cnx.connection_state < State::ServerAlmostReady {
+                if let Some(path) = cnx.paths.get_mut(0)
+                    && let Some(tuple) = path.tuples.first_mut()
+                {
+                    if Connection::socket_addr_is_unspecified(&tuple.local_addr)
+                        && let Some(addr) = addr_to
+                    {
+                        tuple.local_addr = *addr;
+                    }
+                    if Connection::socket_addr_is_unspecified(&tuple.peer_addr)
+                        && let Some(addr) = addr_from
+                    {
+                        tuple.peer_addr = *addr;
+                    }
+                    tuple.if_index = if_index_to as core::ffi::c_ulong;
+                }
+
+                let highest_ack_before =
+                    cnx.pkt_ctx[PacketContext::Initial as usize].highest_acknowledged;
+                let payload = Connection::packet_payload(bytes, ph);
+                ret = cnx.decode_frames_on_path(
+                    0,
+                    payload,
+                    received_data,
+                    ph.epoch,
+                    addr_from,
+                    addr_to,
+                    ph.packet_number_full,
+                    0,
+                    current_time,
+                );
+                if cnx.pkt_ctx[PacketContext::Initial as usize].highest_acknowledged
+                    > highest_ack_before
+                    && cnx.random_initial > 1
+                {
+                    cnx.initial_validated = true;
+                }
+
+                if ret == 0 {
+                    let (tls_ret, data_consumed) = cnx.process_tls_stream_status(current_time);
+                    ret = tls_ret;
+                    if data_consumed > 0 {
+                        cnx.initial_repeat_needed = false;
+                    }
+                }
+            } else if cnx.connection_state < State::Ready {
+                cnx.ignore_incoming_handshake(bytes, ph, current_time);
+            } else {
+                ret = InternalError::UnexpectedPacket as i32;
+            }
+
+            if ret == InternalError::InvalidToken as i32
+                && cnx.connection_state == State::HandshakeFailure
+            {
+                ret = 0;
+            }
+
+            if ret == 0 && cnx.connection_state == State::HandshakeFailure && new_context_created {
+                queue_close = true;
+            }
+
+            if ret != 0 || cnx.connection_state == State::Disconnected {
+                delete_created_connection = new_context_created;
+            }
+        }
+
+        if queue_close {
+            self.queue_immediate_close(connection, current_time);
+        }
+
+        if delete_created_connection {
+            self.delete_connection(connection);
+            (InternalError::ConnectionDeleted as i32, None)
+        } else {
+            (ret, Some(connection))
+        }
+    }
+}
+
+impl crate::internal::Path {
+    /// Remove `tuple` (identified by its Vec index) from this path's tuple
+    /// list without freeing any associated resources.  The caller is
+    /// responsible for cleaning up CID references before calling this.
+    ///
+    /// In the C source `picoquic_unchain_tuple` (quicctx.c:1733) traversed a
+    /// singly-linked intrusive list to splice out the target node.  The Rust
+    /// port stores tuples in a plain `Vec`, so splicing is `Vec::remove`.
+    ///
+    /// C: `picoquic_unchain_tuple` (quicctx.c:1733).
+    pub fn unchain_tuple(&mut self, index: usize) {
+        if index < self.tuples.len() {
+            self.tuples.remove(index);
+        }
+    }
+}
+
+impl crate::internal::IssuedTicket {
+    /// Update the network-measurement fields on an already-inserted ticket
+    /// in place.
+    ///
+    /// C: `picoquic_update_issued_ticket` (quicctx.c:444) — the C function
+    /// accepted a raw `(ip_addr, ip_addr_length)` byte pair; the Rust port
+    /// takes a typed [`core::net::IpAddr`] which carries its own length.
+    ///
+    /// C: `picoquic_update_issued_ticket` (quicctx.c:444).
+    pub fn update(&mut self, rtt: Duration, cwin: u64, ip_addr: core::net::IpAddr) {
+        self.rtt = rtt;
+        self.cwin = cwin;
+        self.ip_addr = ip_addr;
     }
 }
 

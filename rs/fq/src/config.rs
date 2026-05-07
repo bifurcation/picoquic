@@ -537,8 +537,71 @@ static OPTION_TABLE: &[OptionEntry] = &[
     },
 ];
 
+/// C: `config_parse_target_version` (picoquic/config.c:116)
+///
+/// Parses a hex-encoded QUIC version number.  Returns 0 on any invalid input,
+/// matching the C behaviour of breaking on the first unrecognised character.
 fn parse_hex_version(s: &str) -> u32 {
     u32::from_str_radix(s, 16).unwrap_or(0)
+}
+
+/// C: `config_optval_string` (picoquic/config.c:181)
+///
+/// Copies at most `buffer.len() - 1` bytes from `p` into `buffer`,
+/// null-terminates, and returns the filled prefix as a `str`.
+/// Matches the C truncation-and-NUL-terminate contract exactly.
+fn config_optval_string<'a>(buffer: &'a mut [u8], p: &[u8]) -> &'a str {
+    let len = p.len().min(buffer.len().saturating_sub(1));
+    buffer[..len].copy_from_slice(&p[..len]);
+    if !buffer.is_empty() {
+        buffer[len] = 0;
+    }
+    core::str::from_utf8(&buffer[..len]).unwrap_or("")
+}
+
+/// C: `config_optval_param_string` (picoquic/config.c:191)
+///
+/// Bounds-checked wrapper around [`config_optval_string`]: copies
+/// `params[x]` into `buffer` (NUL-terminated, truncated to fit) and
+/// returns the filled prefix.  Writes a single NUL and returns `""` when
+/// `x` is out of bounds — matching the C behaviour for `params == NULL`
+/// or `x < 0 || x >= nb_param`.
+///
+/// In the C implementation this helper exists because `option_param_t`
+/// carries a raw pointer and length that need explicit bounds checking.
+/// The Rust `&[&str]` slice already encodes the length, so the only
+/// real work is the `x >= params.len()` guard.
+#[allow(dead_code)]
+fn config_optval_param_string<'a>(buffer: &'a mut [u8], params: &[&str], x: usize) -> &'a str {
+    if x >= params.len() {
+        if !buffer.is_empty() {
+            buffer[0] = 0;
+        }
+        return "";
+    }
+    config_optval_string(buffer, params[x].as_bytes())
+}
+
+/// C: `config_atoi` (picoquic/config.c:202)
+///
+/// Parse a decimal (ASCII digit only) integer from `params[x]`.
+///
+/// Returns `Ok(value)` on success.  Returns `Err(InvalidArgument)` when `x`
+/// is out of bounds or any character in `params[x]` is not an ASCII digit —
+/// mirroring the C behaviour of setting `*ret = -1` and returning `-1` on error.
+pub fn config_atoi(params: &[&str], x: usize) -> Result<i32, Error> {
+    if x >= params.len() {
+        return Err(Error::InvalidArgument);
+    }
+    let mut v: i32 = 0;
+    for b in params[x].bytes() {
+        let digit = b.wrapping_sub(b'0');
+        if digit > 9 {
+            return Err(Error::InvalidArgument);
+        }
+        v = v * 10 + digit as i32;
+    }
+    Ok(v)
 }
 
 fn base64_decode(s: &str) -> Result<Vec<u8>, Error> {
@@ -590,6 +653,66 @@ fn option_entry_by_name(name: &str) -> Option<(usize, &'static OptionEntry)> {
         .find(|(_, e)| e.name == name)
 }
 
+/// C: `config_set_string_param` (picoquic/config.c:148)
+///
+/// Replace `*v` with an owned copy of `params[x]`.  Clears `*v` first
+/// (mirrors the `free(*v)` in C), then sets it if the selected param
+/// is non-empty.  Returns `Err(InvalidArgument)` when `x` is out of
+/// bounds or the param is empty (the C path where `length == 0` causes
+/// `malloc` to be skipped and `-1` is returned).
+#[allow(dead_code)]
+fn config_set_string_param(v: &mut Option<String>, params: &[&str], x: usize) -> Result<(), Error> {
+    *v = None;
+    if x < params.len() && !params[x].is_empty() {
+        *v = Some(params[x].to_string());
+        Ok(())
+    } else {
+        Err(Error::InvalidArgument)
+    }
+}
+
+/// C: `picoquic_config_get_option_char_index` (picoquic/config.c:641)
+///
+/// Return the index in `OPTION_TABLE` of the entry whose single-character
+/// flag equals `opt`, or `-1` if not found.
+pub fn picoquic_config_get_option_char_index(opt: char) -> i32 {
+    OPTION_TABLE
+        .iter()
+        .position(|e| e.letter == opt)
+        .map_or(-1, |i| i as i32)
+}
+
+/// C: `picoquic_config_get_option_name_index` (picoquic/config.c:654)
+///
+/// Return the index in `OPTION_TABLE` of the first entry whose long name
+/// matches the first `l` bytes of `s` (mirrors `strncmp(s, name, l) == 0`),
+/// or `-1` if not found.
+pub fn picoquic_config_get_option_name_index(s: &str, l: usize) -> i32 {
+    let l = l.min(s.len());
+    let prefix = &s[..l];
+    OPTION_TABLE
+        .iter()
+        .position(|e| e.name.len() >= l && &e.name[..l] == prefix)
+        .map_or(-1, |i| i as i32)
+}
+
+/// C: `picoquic_config_get_command_line_option_index` (picoquic/config.c:667)
+///
+/// Inspect `opt_string` and return the `OPTION_TABLE` index:
+/// * `-x` (exactly two bytes, second is the flag letter) → char-index lookup.
+/// * `--name` (starts with `--`, at least one char after) → name-index lookup.
+/// * Anything else → `-1`.
+pub fn picoquic_config_get_command_line_option_index(opt_string: &str) -> i32 {
+    parse_option_string(opt_string).map_or(-1, |(i, _)| i as i32)
+}
+
+/// C: `config_set_option` (picoquic/config.c:274)
+///
+/// Applies a single option — identified by `entry.id` — to `config`.  Each
+/// arm mirrors the corresponding `case` in the C `switch (option_desc->option_num)`.
+/// Error conditions that C prints to `stderr` via `config_optval_param_string`
+/// are surfaced as `Err(Error::InvalidArgument)` instead; the C `int` return
+/// (`0` / `-1`) maps to `Ok(())` / `Err`.
 fn apply_option(config: &mut Config, entry: &OptionEntry, params: &[&str]) -> Result<(), Error> {
     let p0 = params.first().copied();
     let p1 = params.get(1).copied();
@@ -1079,6 +1202,18 @@ impl Default for Config {
 }
 
 impl Config {
+    /// C: `picoquic_config_clear` (picoquic/config.c:1046)
+    ///
+    /// Frees all owned fields and resets every member to the defaults that
+    /// [`Config::default`] produces.  In the C version each `const char*`
+    /// field is individually `free`d and then `picoquic_config_init` is
+    /// called; in Rust the old values are dropped automatically when the
+    /// struct is overwritten, so the entire operation collapses to a single
+    /// assignment.
+    pub fn clear(&mut self) {
+        *self = Config::default();
+    }
+
     /// Apply one option, selected by `option`, to the config.
     /// C: `picoquic_config_set_option`.
     ///
@@ -1400,4 +1535,70 @@ impl Config {
 }
 
 #[cfg(test)]
-mod test {}
+mod test {
+    use super::*;
+
+    // --- config_atoi ---
+
+    #[test]
+    fn atoi_valid_integer() {
+        assert_eq!(config_atoi(&["42"], 0), Ok(42));
+    }
+
+    #[test]
+    fn atoi_zero() {
+        assert_eq!(config_atoi(&["0"], 0), Ok(0));
+    }
+
+    #[test]
+    fn atoi_multi_digit() {
+        assert_eq!(config_atoi(&["12345"], 0), Ok(12345));
+    }
+
+    #[test]
+    fn atoi_out_of_bounds_index() {
+        assert_eq!(config_atoi(&["5"], 1), Err(Error::InvalidArgument));
+    }
+
+    #[test]
+    fn atoi_empty_params() {
+        assert_eq!(config_atoi(&[], 0), Err(Error::InvalidArgument));
+    }
+
+    #[test]
+    fn atoi_non_digit_char() {
+        assert_eq!(config_atoi(&["12a3"], 0), Err(Error::InvalidArgument));
+    }
+
+    #[test]
+    fn atoi_negative_sign_rejected() {
+        // C version rejects any non-digit byte; '-' is not a digit
+        assert_eq!(config_atoi(&["-5"], 0), Err(Error::InvalidArgument));
+    }
+
+    // --- config_optval_string ---
+
+    #[test]
+    fn optval_string_copies_within_capacity() {
+        let mut buf = [0u8; 16];
+        let result = config_optval_string(&mut buf, b"hello");
+        assert_eq!(result, "hello");
+        assert_eq!(buf[5], 0); // null terminator
+    }
+
+    #[test]
+    fn optval_string_truncates_to_buffer_minus_one() {
+        let mut buf = [0u8; 4]; // capacity 4 → max 3 bytes + NUL
+        let result = config_optval_string(&mut buf, b"abcdef");
+        assert_eq!(result, "abc");
+        assert_eq!(buf[3], 0);
+    }
+
+    #[test]
+    fn optval_string_empty_input() {
+        let mut buf = [0xffu8; 8];
+        let result = config_optval_string(&mut buf, b"");
+        assert_eq!(result, "");
+        assert_eq!(buf[0], 0);
+    }
+}

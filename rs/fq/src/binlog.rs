@@ -163,6 +163,40 @@ fn write_record(f: &mut File, payload: &[u8]) {
     let _ = f.write_all(payload);
 }
 
+/// Open a binlog file and write its fixed 16-byte stream header.
+///
+/// C: `create_binlog` (`logwriter.c:1123-1145`).
+pub fn create_binlog<P: AsRef<FsPath>>(
+    binlog_file: P,
+    creation_time: u64,
+    is_multipath_supported: bool,
+) -> Option<File> {
+    let path = binlog_file.as_ref();
+    let mut f_binlog = match File::create(path) {
+        Ok(file) => file,
+        Err(_) => {
+            log::debug!("Cannot open file {} for write.", path.display());
+            return None;
+        }
+    };
+
+    let mut buf = ByteStreamBuf::default();
+    let mut stream = buf.stream(16)?;
+    let flags: u16 = if is_multipath_supported { 0x01 } else { 0 };
+    let header_result = stream
+        .write_u32(crate::fourcc(b'q', b'l', b'o', b'g'))
+        .and_then(|()| stream.write_u16(flags))
+        .and_then(|()| stream.write_u16(0x01))
+        .and_then(|()| stream.write_u64(creation_time));
+
+    if header_result.is_err() || f_binlog.write_all(stream.as_bytes()).is_err() {
+        log::debug!("Cannot write header for file {}.", path.display());
+        return None;
+    }
+
+    Some(f_binlog)
+}
+
 /// Write the per-record common prefix.  C: `binlog_compose_event_header`.
 fn compose_event_header(
     msg: &mut ByteStream<'_>,
@@ -985,6 +1019,11 @@ pub trait Binlog {
     /// uint8_t*)`.
     fn transport_extension(&mut self, is_local: bool, params: &[u8]);
 
+    /// Write a free-form information message.
+    ///
+    /// C: `picoquic_binlog_message_v` (`logwriter.c:1237-1272`).
+    fn message_v(&mut self, args: core::fmt::Arguments<'_>);
+
     /// Open the per-connection binlog file and emit the
     /// `new_connection` record.  Idempotent — the C body is a no-op
     /// when neither `quic->binlog_dir` nor `quic->qlog_dir` are
@@ -1247,6 +1286,32 @@ impl Binlog for Connection {
         }
     }
 
+    fn message_v(&mut self, args: core::fmt::Arguments<'_>) {
+        if self.f_binlog.is_none() {
+            return;
+        }
+
+        let cid = self.initial_connection_id;
+        let now = self.quic_time();
+        let mut buf = ByteStreamBuf::default();
+        let Some(mut msg) = buf.stream(BYTESTREAM_MAX_BUFFER_SIZE) else {
+            return;
+        };
+
+        compose_event_header(&mut msg, &cid, now, 0, LogEventType::InfoMessage);
+
+        let message = args.to_string();
+        let max_len = msg.remaining().saturating_sub(1);
+        let message_len = message.len().min(max_len);
+        let _ = msg.write_bytes(&message.as_bytes()[..message_len]);
+
+        let payload = msg.as_bytes().to_vec();
+        drop(msg);
+        if let Some(f) = self.f_binlog.as_mut() {
+            write_record(f, &payload);
+        }
+    }
+
     fn new_connection(&mut self) {
         // The C body opens a new file using `cnx->quic->binlog_dir`.
         // `Connection` carries no back-pointer to its `Quic`, so the
@@ -1488,6 +1553,16 @@ impl Quic {
         self.enable_binlog();
         Ok(())
     }
+
+    /// No-op context-level close callback — binlog close is per-connection
+    /// only (see [`Binlog::close_connection`]).  Wired into the C
+    /// `binlog_functions` vtable so the unified-logging dispatcher has a
+    /// consistent function-pointer shape; in Rust the per-context close path
+    /// calls this directly when tearing down a [`Quic`] instance that has the
+    /// binlog backend enabled.
+    ///
+    /// C: `picoquic/logwriter.c:1309-1315`.
+    pub fn binlog_close(&self) {}
 
     /// Enable binary logging without setting a directory — used
     /// when autoqlog wants the binlog stream as scratch space.

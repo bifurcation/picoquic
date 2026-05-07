@@ -13,6 +13,7 @@ The script intentionally refuses to run unless the Phase 4A plan says
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import time
@@ -31,6 +32,29 @@ from phase4_common import (
 
 PLAN_MD = XLATE / "phase4a_plan.md"
 PROMPTS_DIR = XLATE / "prompts" / "phase4b"
+CALL_GRAPH = XLATE / "call_graph.json"
+
+
+def _load_callgraph_heights() -> dict[str, int]:
+    """Load the C call-graph height-of-each-function from Phase 0.
+
+    Higher height = farther from leaves.  Used to order Phase 4B work
+    leaves-first so a function's callees are translated before the
+    function itself.
+    """
+    if not CALL_GRAPH.is_file():
+        return {}
+    try:
+        return json.loads(CALL_GRAPH.read_text()).get("height_of", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _sort_key_leaves_first(heights: dict[str, int], entry: dict) -> tuple[int, str]:
+    name = entry.get("c", {}).get("name", "")
+    h = heights.get(name)
+    # Unmapped names (heights miss them) go after all mapped ones.
+    return (h if h is not None else 10**6, entry.get("c_id", ""))
 
 ALLOWED_TOOLS = (
     "Read Edit Write Glob Grep "
@@ -52,7 +76,20 @@ def is_plan_approved() -> bool:
     return False
 
 
-def required_entries(mapping: dict, only: str | None = None) -> list[dict]:
+def required_entries(
+    mapping: dict,
+    only: str | None = None,
+    order: str = "leaves-first",
+) -> list[dict]:
+    """Return required_missing entries.
+
+    `order`:
+      * `leaves-first` (default) — sort by C call-graph height
+        (`xlate/call_graph.json`'s `height_of`), lowest first, so
+        callees land before callers.  Falls back to `c_id` for names
+        not in the graph.
+      * `original` — keep the map's order.
+    """
     out = [
         e for e in mapping.get("entries", [])
         if e.get("required_action") == "required_missing"
@@ -62,6 +99,9 @@ def required_entries(mapping: dict, only: str | None = None) -> list[dict]:
             e for e in out
             if e.get("c_id") == only or e.get("c", {}).get("name") == only
         ]
+    if order == "leaves-first":
+        heights = _load_callgraph_heights()
+        out.sort(key=lambda e: _sort_key_leaves_first(heights, e))
     return out
 
 
@@ -95,13 +135,47 @@ def compose_prompt(batch: list[dict]) -> str:
     return "\n".join([
         "# Phase 4B missing implementation batch",
         "",
+        "## NO SHORTCUTS — do the hard work",
+        "",
+        "Phase 4B implements approved required_missing items.  Past sweeps",
+        "produced hundreds of stubs that compile but don't translate the",
+        "C body — that is failure, not completion.  The gate flags all",
+        "of these patterns identically:",
+        "",
+        "* `todo!()`",
+        "* `unimplemented!()`",
+        "* `// SKIP:` or any placeholder marker (None / Err(Generic) /",
+        "  Ok(()) returns plus an excuse comment) — forbidden",
+        "* Fabricated default returns (0, false, None, empty Vec) when",
+        "  the C body computes a real value — forbidden",
+        "* Half-translated bodies that punt error paths to `todo!()` —",
+        "  forbidden",
+        "",
+        "**Nothing in picoquic is fundamentally untranslatable.**  Every",
+        "function has a body — translate it.  Concrete mappings:",
+        "  * `pthread_create` → `std::thread::spawn`",
+        "  * `pipe()` wake-up → `std::sync::mpsc` or `Condvar`",
+        "  * `select`/`poll`/`io_uring` → `mio` crate",
+        "  * loglib helpers → `log` crate + standard file I/O",
+        "  * borrow-checker issues → `&mut self`, `RefCell`, restructure",
+        "",
+        "**Forbidden 'blocker' excuses** (every one is a shortcut):",
+        "'out of scope', 'deferred to a later pass', 'multi-threading",
+        "not in scope', 'loglib not in scope', 'sub-system not yet",
+        "translated', 'needs design thought', 'borrow-checker issue'.",
+        "",
+        "The ONLY acceptable bare `todo!()` is a concrete external",
+        "dependency outside our reach (e.g. 'blocked: needs picotls API",
+        "not yet exposed in the Rust binding') — and even then, prefer",
+        "translating the dependency first.",
+        "",
+        "## Implementation rules",
+        "",
         "Implement the approved missing Rust functions/items listed below.",
         "Follow `CLAUDE.md`, `TRANSLATE_PLAN.md`, and",
         "`xlate/impl_translation_guide.md`.",
         "",
-        "Rules:",
         "* Translate the C behavior faithfully into safe, idiomatic Rust.",
-        "* Do not add stubs, placeholders, `todo!()`, or `unimplemented!()`.",
         "* Keep the approved module structure unless implementation proves",
         "  it wrong; if it is wrong, stop and report the needed Phase 4A",
         "  plan amendment.",
@@ -110,12 +184,24 @@ def compose_prompt(batch: list[dict]) -> str:
         "* Edit only `rs/fq/`, `scripts/`, `xlate/`, or markdown files",
         "  allowed by the repository instructions.",
         "",
-        "After implementing, run the relevant narrow tests if known, then:",
+        "## Verification — run ONLY these cargo commands",
+        "",
+        "* **`cargo test --no-run`** — compile-only.  Use this as your",
+        "  build gate.  Do NOT run `cargo test` (full suite) — it will",
+        "  run all 505 tests and take 2+ hours.",
+        "* **`cargo test <specific_test_name>`** — running a single",
+        "  named test for narrow verification is fine.",
+        "* **`cargo fmt`** and **`cargo clippy --tests --all-features",
+        "  -- -D warnings`** — final polish.",
+        "* **Do NOT prefix with `CARGO_INCREMENTAL=0`** — the allowlist",
+        "  blocks env-var prefixes; just run `cargo ...` directly.",
+        "",
+        "Run these after implementing:",
         "",
         "```sh",
         "cargo fmt",
-        "CARGO_INCREMENTAL=0 cargo test --no-run",
-        "CARGO_INCREMENTAL=0 cargo clippy --tests --all-features -- -D warnings",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings",
         "```",
         "",
         "\n".join(sections),
@@ -166,6 +252,8 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=1, help="entries per agent invocation")
     parser.add_argument("--max-turns", type=int, default=250)
     parser.add_argument("--skip-gate", action="store_true", help="skip cargo fmt/test/clippy gate after each batch")
+    parser.add_argument("--order", choices=("leaves-first", "original"), default="leaves-first",
+                        help="entry order: leaves-first (default, by call-graph height) or original (map order)")
     args = parser.parse_args()
 
     mapping = load_function_map()
@@ -184,10 +272,10 @@ def main() -> int:
         print("Phase 4A plan is not marked approved. Edit xlate/phase4a_plan.md to `Status: approved` or pass --approved.")
         return 2
 
-    selected = required_entries(mapping, args.only)
+    selected = required_entries(mapping, args.only, order=args.order)
     if args.limit is not None:
         selected = selected[: args.limit]
-    print(f"selected required_missing entries: {len(selected)}")
+    print(f"selected required_missing entries: {len(selected)} (order={args.order})")
     if args.dry_run:
         for e in selected:
             print(f"  {e['c_id']} -> {(e.get('phase4a_plan') or {}).get('rust_destination', '?')}")

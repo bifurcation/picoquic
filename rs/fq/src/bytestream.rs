@@ -142,6 +142,11 @@ impl<'a> ByteStream<'a> {
         }
     }
 
+    /// C: `bytestream_error` (picoquic/bytestream.c:433)
+    ///
+    /// Sets the cursor to end-of-buffer, disabling all subsequent operations.
+    /// Callers additionally return `Err(Error::BufferTooSmall)` — the Rust
+    /// equivalent of the C `-1` return value.
     fn set_error(&mut self) {
         let cap = self.data_ref().len();
         self.ptr = cap;
@@ -641,6 +646,15 @@ impl ByteStream<'_> {
             8
         }
     }
+}
+
+/// C: `bytestream_vint_len` (picoquic/bytestream.c:163)
+///
+/// Returns the encoded byte-length of `value` as a QUIC variable-length
+/// integer (1, 2, 4, or 8 bytes).  Delegates to
+/// [`ByteStream::varint_encoded_len`].
+pub fn bytestream_vint_len(value: u64) -> usize {
+    ByteStream::varint_encoded_len(value)
 }
 
 #[cfg(test)]

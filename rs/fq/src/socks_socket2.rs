@@ -19,7 +19,7 @@ use crate::socks::{OsError, RecvInfo, Socket};
 /// orphan-rules forbid `impl crate::Socket for socket2::Socket`
 /// directly, since neither type belongs to this crate before
 /// the trait moves in).
-pub struct Socket2Udp(pub socket2::Socket);
+pub struct Socket2Udp(pub socket2::Socket, i32);
 
 impl Socket2Udp {
     /// Open a UDP client socket on address family `af`
@@ -30,7 +30,7 @@ impl Socket2Udp {
         let domain = socket2::Domain::from(af);
         let sock = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))
             .map_err(|_| Error::Generic)?;
-        let mut udp = Socket2Udp(sock);
+        let mut udp = Socket2Udp(sock, af);
         let _ = udp.set_pkt_info();
         let _ = udp.set_ecn_options();
         let _ = udp.set_pmtud_options();
@@ -41,6 +41,7 @@ impl Socket2Udp {
     /// C: `picoquic_bind_to_port`.
     pub fn bind_to_port(&mut self, af: i32, port: i32) -> Result<(), Error> {
         use core::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+        self.1 = af;
         let addr = if socket2::Domain::from(af) == socket2::Domain::IPV6 {
             SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port as u16, 0, 0))
         } else {
@@ -55,7 +56,12 @@ impl Socket2Udp {
         use core::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
         let sock = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))
             .map_err(|_| Error::Generic)?;
-        let mut udp = Socket2Udp(sock);
+        let af = if domain == socket2::Domain::IPV6 {
+            libc::AF_INET6
+        } else {
+            libc::AF_INET
+        };
+        let mut udp = Socket2Udp(sock, af);
         let _ = udp.set_pkt_info();
         let _ = udp.set_ecn_options();
         let _ = udp.set_pmtud_options();
@@ -101,9 +107,32 @@ impl Socket for Socket2Udp {
     }
 
     fn set_pkt_info(&mut self) -> Result<(), Error> {
-        // IPV6_V6ONLY is the part socket2 exposes; IP_PKTINFO /
-        // IPV6_RECVPKTINFO require direct setsockopt (not in socket2 0.5).
-        let _ = self.0.set_only_v6(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = self.0.as_raw_fd();
+            let val: libc::c_int = 1;
+            let vp = &val as *const libc::c_int as *const libc::c_void;
+            let vl = core::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            // IPv6 path: IPV6_V6ONLY=1 then IPV6_RECVPKTINFO=1.
+            // setsockopt returns -1 on an AF_INET socket (wrong protocol),
+            // so the if-check naturally skips IPV6_RECVPKTINFO on IPv4 sockets.
+            let r6only =
+                unsafe { libc::setsockopt(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, vp, vl) };
+            if r6only == 0 {
+                unsafe { libc::setsockopt(fd, libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, vp, vl) };
+            }
+            // IPv4 path: IP_PKTINFO (Linux/Android) or IP_RECVDSTADDR (BSD/macOS).
+            // setsockopt returns -1 on an AF_INET6 socket; error is ignored.
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            unsafe {
+                libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_PKTINFO, vp, vl)
+            };
+            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+            unsafe {
+                libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_RECVDSTADDR, vp, vl)
+            };
+        }
         Ok(())
     }
 
@@ -115,17 +144,33 @@ impl Socket for Socket2Udp {
         &mut self,
         ecn: crate::socks::EcnCodepoint,
     ) -> Result<(bool, bool), Error> {
-        let ecn = ecn as u32;
-        let recv_v4 = self.0.set_recv_tos(true).is_ok();
-        let recv_v6 = self.0.set_recv_tclass_v6(true).is_ok();
-        let send_v4 = self.0.set_tos(ecn).is_ok();
-        let send_v6 = self.0.set_tclass_v6(ecn).is_ok();
-        Ok((recv_v4 || recv_v6, send_v4 || send_v6))
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            crate::socks::picoquic_socket_set_ecn_options_ex(self.0.as_raw_fd(), self.1, ecn)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = ecn;
+            Ok((false, false))
+        }
     }
 
     fn set_pmtud_options(&mut self) -> Result<(), Error> {
-        // IP_MTU_DISCOVER / IPV6_MTU_DISCOVER are Linux-only and not
-        // exposed by socket2 0.5; no-op on other platforms.
+        // Linux only: IP_MTU_DISCOVER / IPV6_MTU_DISCOVER with IP_PMTUDISC_PROBE.
+        // No-op on other platforms, matching the C #ifdef __linux guard.
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = self.0.as_raw_fd();
+            let val: libc::c_int = libc::IP_PMTUDISC_PROBE;
+            let vp = &val as *const libc::c_int as *const libc::c_void;
+            let vl = core::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            // Apply to both families; the one that doesn't match the socket's
+            // AF will return -1 (ignored), matching the C af-branch behavior.
+            unsafe { libc::setsockopt(fd, libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER, vp, vl) };
+            unsafe { libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_MTU_DISCOVER, vp, vl) };
+        }
         Ok(())
     }
 
@@ -135,6 +180,12 @@ impl Socket for Socket2Udp {
 
     fn open_server_v6(port: i32) -> Result<Self, Error> {
         Self::open_bound(socket2::Domain::IPV6, port)
+    }
+
+    #[cfg(unix)]
+    fn raw_fd(&self) -> i32 {
+        use std::os::unix::io::AsRawFd;
+        self.0.as_raw_fd()
     }
 }
 

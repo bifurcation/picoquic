@@ -67,6 +67,12 @@ impl<T> Token<T> {
             _phantom: PhantomData,
         }
     }
+
+    /// Raw slot index.  Used by `Arena::next_after_idx` to resume
+    /// iteration from a known position.
+    pub(crate) fn slot_idx(self) -> usize {
+        self.idx as usize
+    }
 }
 
 /// A slot in the arena storage vector.
@@ -219,6 +225,21 @@ impl<T> Arena<T> {
             Slot::Filled { value, .. } => Some(value),
             Slot::Free { .. } => None,
         })
+    }
+
+    /// Return a mutable reference to the first live value at or after slot
+    /// index `start_idx`, or `None` when no such slot exists.
+    ///
+    /// Used by `Quic::next_cnx` to implement `picoquic_get_next_cnx`-style
+    /// traversal without an intrusive linked list.
+    pub fn next_after_idx(&mut self, start_idx: usize) -> Option<&mut T> {
+        self.slots
+            .get_mut(start_idx..)?
+            .iter_mut()
+            .find_map(|slot| match slot {
+                Slot::Filled { value, .. } => Some(value),
+                Slot::Free { .. } => None,
+            })
     }
 }
 

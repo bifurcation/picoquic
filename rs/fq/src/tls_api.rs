@@ -90,10 +90,13 @@ use digest::Digest;
 use crate::Instant;
 use crate::errors::InternalError;
 use crate::internal::{
-    CryptoContext, MAX_PACKET_SIZE, NUMBER_OF_EPOCHS, RETRY_TOKEN_PAD_SIZE, StreamQueueNode,
-    TOKEN_DELAY_LONG, TOKEN_DELAY_SHORT, Version,
+    CryptoContext, MAX_PACKET_SIZE, NB_TP_0RTT, NUMBER_OF_EPOCHS, RETRY_TOKEN_PAD_SIZE,
+    StoredTicket, StoredToken, StreamQueueNode, TOKEN_DELAY_LONG, TOKEN_DELAY_SHORT, Version,
 };
-use crate::{Connection, ConnectionId, Error, Quic, RESET_SECRET_SIZE};
+use crate::{
+    AES_128_GCM_SHA256, AES_256_GCM_SHA384, CHACHA20_POLY1305_SHA256, Connection, ConnectionId,
+    Error, GROUP_SECP256R1, Quic, RESET_SECRET_SIZE,
+};
 
 // ---------------------------------------------------------------------------
 // Label constants (C `#define` → `&str`).
@@ -336,6 +339,103 @@ impl crate::tls::PacketKey for Aes128GcmPacketKey {
     }
 }
 
+#[allow(dead_code)]
+const AES256_KEY_SIZE: usize = 32;
+
+#[allow(dead_code)]
+struct Aes256GcmPacketKey {
+    cipher: aes_gcm::Aes256Gcm,
+    iv: [u8; AES_GCM_IV_SIZE],
+}
+
+#[allow(dead_code)]
+impl Aes256GcmPacketKey {
+    fn from_secret(secret: &[u8], prefix_label: &str) -> Result<Self, Error> {
+        use aes_gcm::KeyInit;
+        let mut key = [0u8; AES256_KEY_SIZE];
+        let mut iv = [0u8; AES_GCM_IV_SIZE];
+        hkdf_expand_label_sha384(LABEL_KEY, prefix_label, secret, &mut key)?;
+        hkdf_expand_label_sha384(LABEL_IV, prefix_label, secret, &mut iv)?;
+        let cipher =
+            aes_gcm::Aes256Gcm::new_from_slice(&key).map_err(|_| Error::InvalidArgument)?;
+        Ok(Self { cipher, iv })
+    }
+
+    fn nonce_mp(&self, path_id: u64, packet: u64) -> [u8; AES_GCM_IV_SIZE] {
+        let mut nonce = self.iv;
+        let path = (path_id as u32).to_be_bytes();
+        for (n, p) in nonce[..4].iter_mut().zip(path.iter()) {
+            *n ^= *p;
+        }
+        let pn = packet.to_be_bytes();
+        for (n, p) in nonce[4..].iter_mut().zip(pn.iter()) {
+            *n ^= *p;
+        }
+        nonce
+    }
+}
+
+impl crate::tls::PacketKey for Aes256GcmPacketKey {
+    fn encrypt(&self, packet: u64, header: &[u8], payload: &mut Vec<u8>) {
+        self.encrypt_mp(0, packet, header, payload);
+    }
+
+    fn decrypt(&self, packet: u64, header: &[u8], payload: &mut Vec<u8>) -> Result<(), Error> {
+        self.decrypt_mp(0, packet, header, payload)
+    }
+
+    fn encrypt_mp(&self, path_id: u64, packet: u64, header: &[u8], payload: &mut Vec<u8>) {
+        use aes_gcm::aead::AeadInPlace;
+
+        let nonce = self.nonce_mp(path_id, packet);
+        let tag = self
+            .cipher
+            .encrypt_in_place_detached((&nonce).into(), header, payload.as_mut_slice())
+            .expect("AES-256-GCM encryption should not fail for in-place buffers");
+        payload.extend_from_slice(&tag);
+    }
+
+    fn decrypt_mp(
+        &self,
+        path_id: u64,
+        packet: u64,
+        header: &[u8],
+        payload: &mut Vec<u8>,
+    ) -> Result<(), Error> {
+        use aes_gcm::aead::AeadInPlace;
+
+        if payload.len() < QUIC_AEAD_TAG_LEN {
+            return Err(Error::Protocol(InternalError::AeadCheck as u64));
+        }
+        let tag_index = payload.len() - QUIC_AEAD_TAG_LEN;
+        let tag_bytes: [u8; QUIC_AEAD_TAG_LEN] = payload[tag_index..]
+            .try_into()
+            .map_err(|_| Error::Protocol(InternalError::AeadCheck as u64))?;
+        payload.truncate(tag_index);
+        let nonce = self.nonce_mp(path_id, packet);
+        self.cipher
+            .decrypt_in_place_detached(
+                (&nonce).into(),
+                header,
+                payload.as_mut_slice(),
+                (&tag_bytes).into(),
+            )
+            .map_err(|_| Error::Protocol(InternalError::AeadCheck as u64))
+    }
+
+    fn tag_len(&self) -> usize {
+        QUIC_AEAD_TAG_LEN
+    }
+
+    fn integrity_limit(&self) -> u64 {
+        1u64 << 52
+    }
+
+    fn confidentiality_limit(&self) -> u64 {
+        1u64 << 23
+    }
+}
+
 struct Aes128HeaderKey {
     cipher: aes::Aes128Enc,
 }
@@ -388,6 +488,132 @@ fn header_key_from_secret(
     )?))
 }
 
+/// AEAD cipher suite identifier.  Selects the key-derivation hash
+/// and AEAD algorithm for `set_aead_from_secret`.  Maps to the
+/// `ptls_cipher_suite_t *` parameter in C.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AeadSuiteId {
+    /// AES-128-GCM with SHA-256 HKDF (IANA TLS 0x1301).
+    Aes128GcmSha256,
+    /// AES-256-GCM with SHA-384 HKDF (IANA TLS 0x1302).
+    Aes256GcmSha384,
+}
+
+/// Replace the AEAD key in `aead_slot` with a key freshly derived
+/// from `secret` using HKDF-Expand-Label with `prefix_label` and
+/// the hash algorithm of `suite`.  Any previously installed key is
+/// dropped (equivalent to `ptls_aead_free`).  `is_enc` distinguishes
+/// encrypt vs. decrypt in C; both directions use the same derived
+/// key schedule in the Rust backends.
+/// C: `picoquic_set_aead_from_secret` (tls_api.c:1296–1309).
+#[allow(dead_code)]
+fn set_aead_from_secret(
+    aead_slot: &mut Option<Box<dyn crate::tls::PacketKey>>,
+    suite: AeadSuiteId,
+    _is_enc: bool,
+    secret: &[u8],
+    prefix_label: &str,
+) -> Result<(), Error> {
+    let key: Box<dyn crate::tls::PacketKey> = match suite {
+        AeadSuiteId::Aes128GcmSha256 => packet_key_from_secret(secret, prefix_label)?,
+        AeadSuiteId::Aes256GcmSha384 => {
+            Box::new(Aes256GcmPacketKey::from_secret(secret, prefix_label)?)
+        }
+    };
+    *aead_slot = Some(key);
+    Ok(())
+}
+
+/// Replace the PN-encryption header-protection key in `pn_enc_slot`
+/// with a key freshly derived from `secret` using HKDF-Expand-Label
+/// with the HP label and `prefix_label`.  Any previously installed
+/// key is dropped.  `suite` and `is_enc` are present for API parity
+/// with the C signature; only the secret and prefix label affect the
+/// derivation in the current AES-128-GCM-only build.
+/// C: `picoquic_set_pn_enc_from_secret` (tls_api.c:1311-1330).
+#[allow(dead_code)]
+fn set_pn_enc_from_secret(
+    pn_enc_slot: &mut Option<Box<dyn crate::tls::HeaderKey>>,
+    _suite: AeadSuiteId,
+    _is_enc: bool,
+    secret: &[u8],
+    prefix_label: &str,
+) -> Result<(), Error> {
+    *pn_enc_slot = Some(header_key_from_secret(secret, prefix_label)?);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Hash context — wraps the per-algorithm hash state for the
+// `hash_update` / `hash_finalize` pair.
+
+/// An in-progress hash computation.  Replaces the opaque
+/// `ptls_hash_context_t *` used by the C `picoquic_hash_update` /
+/// `picoquic_hash_finalize` API.  Create with
+/// `HashContext::new(algorithm_name)`.
+/// C: `void * picoquic_hash_create(const char *algorithm_name)`.
+pub enum HashContext {
+    Sha256(sha2::Sha256),
+    Sha384(sha2::Sha384),
+    Sha512(sha2::Sha512),
+}
+
+impl HashContext {
+    /// Create a hash context for `algorithm_name`.  Recognises
+    /// `"sha256"`, `"sha384"`, and `"sha512"` (case-insensitive
+    /// in the common forms used by picotls).  Returns `None` for
+    /// unrecognised names.  Mirrors `picoquic_hash_create`.
+    pub fn new(algorithm_name: &str) -> Option<Self> {
+        use digest::Digest;
+        match algorithm_name {
+            "sha256" | "SHA256" | "SHA-256" => Some(HashContext::Sha256(sha2::Sha256::new())),
+            "sha384" | "SHA384" | "SHA-384" => Some(HashContext::Sha384(sha2::Sha384::new())),
+            "sha512" | "SHA512" | "SHA-512" => Some(HashContext::Sha512(sha2::Sha512::new())),
+            _ => None,
+        }
+    }
+
+    /// Return the digest length in bytes for this hash algorithm.
+    /// Mirrors `picoquic_hash_get_length`.
+    pub fn digest_size(&self) -> usize {
+        match self {
+            HashContext::Sha256(_) => 32,
+            HashContext::Sha384(_) => 48,
+            HashContext::Sha512(_) => 64,
+        }
+    }
+}
+
+/// Feed `input` into the in-progress hash computation `hash_context`.
+/// C: `picoquic_hash_update` (tls_api.c:736–738).
+pub fn hash_update(input: &[u8], hash_context: &mut HashContext) {
+    use digest::Digest;
+    match hash_context {
+        HashContext::Sha256(h) => h.update(input),
+        HashContext::Sha384(h) => h.update(input),
+        HashContext::Sha512(h) => h.update(input),
+    }
+}
+
+/// Finalize the hash computation, write the digest into `output`
+/// (up to `output.len()` bytes), and consume the context.
+/// Consuming the context is the Rust equivalent of the C
+/// `PTLS_HASH_FINAL_MODE_FREE` flag — the caller must not use
+/// `hash_context` again after this call.
+/// C: `picoquic_hash_finalize` (tls_api.c:740–742).
+pub fn hash_finalize(output: &mut [u8], hash_context: HashContext) {
+    use digest::Digest;
+    let copy = |result: &[u8], out: &mut [u8]| {
+        let n = result.len().min(out.len());
+        out[..n].copy_from_slice(&result[..n]);
+    };
+    match hash_context {
+        HashContext::Sha256(h) => copy(&h.finalize(), output),
+        HashContext::Sha384(h) => copy(&h.finalize(), output),
+        HashContext::Sha512(h) => copy(&h.finalize(), output),
+    }
+}
+
 fn install_key_pair(ctx: &mut CryptoContext, keys: crate::tls::Keys) {
     ctx.aead_encrypt = Some(keys.packet.local);
     ctx.aead_decrypt = Some(keys.packet.remote);
@@ -425,6 +651,7 @@ fn initial_secrets_for_version(
     Ok((client, server))
 }
 
+/// C: `picoquic_add_to_tls_stream`
 fn queue_tls_bytes(cnx: &mut Connection, epoch: usize, bytes: &[u8]) -> Result<(), Error> {
     if epoch >= NUMBER_OF_EPOCHS {
         return Err(Error::InvalidArgument);
@@ -581,6 +808,12 @@ fn ip_auth_data(addr: &SocketAddr) -> Vec<u8> {
     }
 }
 
+/// Build the pseudo-packet used as the AEAD auth-data input for retry
+/// integrity tag computation.  The pseudo-packet is:
+/// `[odcid.len as u8] ++ odcid.bytes ++ bytes[..byte_index]`.
+/// Returns `None` when the total length would exceed `MAX_PACKET_SIZE`
+/// (matching the C `byte_index == 0` early-return path).
+/// C: `picoquic_format_retry_protection_pseudo_packet`
 fn retry_protection_pseudo_packet(
     bytes: &[u8],
     byte_index: usize,
@@ -851,6 +1084,25 @@ impl Connection {
     }
 }
 
+impl Connection {
+    /// Return the negotiated ALPN value from this connection's TLS
+    /// session, or `None` when no ALPN has been negotiated yet.
+    /// Reads `Connection.alpn`, which mirrors the C
+    /// `ptls_get_negotiated_protocol(ctx->tls)` call.
+    /// C: `picoquic_tls_get_negotiated_alpn` (tls_api.c:2135-2142).
+    pub fn tls_get_negotiated_alpn(&self) -> Option<&str> {
+        self.alpn.as_deref()
+    }
+
+    /// Return the SNI value from this connection's TLS session, or
+    /// `None` when no SNI was provided.  Reads `Connection.sni`,
+    /// which mirrors the C `ptls_get_server_name(ctx->tls)` call.
+    /// C: `picoquic_tls_get_sni` (tls_api.c:2144-2151).
+    pub fn tls_get_sni(&self) -> Option<&str> {
+        self.sni.as_deref()
+    }
+}
+
 impl Quic {
     /// Read the virtual time tls sees through its `get_time`
     /// callback (microseconds).  C: `get_tls_time`.
@@ -862,6 +1114,16 @@ impl Quic {
     pub fn tls_time(&self) -> u64 {
         self.time()
     }
+
+    /// Fill `buf` with cryptographically secure random bytes.
+    /// The C implementation called `ctx->random_bytes()` on the picotls
+    /// master context; in Rust we delegate to [`Quic::rng`], a
+    /// `Box<dyn CryptoRng>` installed at context creation.
+    /// C: `picoquic_crypto_random`
+    pub fn crypto_random(&mut self, buf: &mut [u8]) {
+        use rand_core::RngCore;
+        self.rng.fill_bytes(buf);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -872,12 +1134,12 @@ impl Quic {
 // destination slice; the C `(void* buf, size_t len)` pair collapses
 // to `&mut [u8]`.
 
-// `crypto_random` / `crypto_uniform_random` / `seed_public_random`
-// are gone -- callers reach `Quic.rng` (a `Box<dyn CryptoRng>`)
-// directly and use the `rand::Rng` / `rand::RngCore` methods on
-// it.  The public-RNG helpers (`public_random_64` etc.) likewise
-// disappear: callers use `rand::rng()` for the thread-local
-// non-secure stream.
+// `crypto_uniform_random` / `seed_public_random` are gone -- callers
+// reach `Quic.rng` (a `Box<dyn CryptoRng>`) directly and use the
+// `rand::Rng` / `rand::RngCore` methods on it.  The public-RNG helpers
+// (`public_random_64` etc.) likewise disappear: callers use `rand::rng()`
+// for the thread-local non-secure stream.
+// `crypto_random` is exposed as [`Quic::crypto_random`] above.
 
 // ---------------------------------------------------------------------------
 // AEAD primitives.
@@ -896,19 +1158,83 @@ impl Quic {
 /// [`crate::tls::PacketKey`] exists, prefer `key.tag_len()`.
 pub const QUIC_AEAD_TAG_LEN: usize = 16;
 
-// The AEAD wrappers (`aead_encrypt_generic`, `aead_decrypt_generic`,
-// `aead_encrypt_mp` / `aead_decrypt_mp`, `aead_integrity_limit`,
-// `aead_confidentiality_limit`) are gone -- their behaviour is the
-// `crate::tls::PacketKey` trait.  Backends supply concrete
-// implementations.  Multipath variants fold into the same trait by
-// XORing the path id into the nonce inside the implementor.
-//
-// `aead_free` and `cipher_free` are gone -- `Drop` on the boxed
-// trait object replaces them.
-//
-// `pn_iv_size` and `pn_encrypt` are gone -- header protection
-// (the only consumer) is implemented in `crate::header_protection`
-// and exposed through `crate::tls::HeaderKey`.
+/// Return the AEAD authentication tag length, capped at 16 bytes.
+/// The C function read `algo->tag_size` from a `ptls_aead_context_t`
+/// and clamped it to 16; in Rust the cap is preserved for parity even
+/// though all QUIC cipher suites already produce exactly 16 bytes.
+/// C: `picoquic_aead_get_checksum_length`
+pub fn aead_get_checksum_length(aead_ctx: &dyn crate::tls::PacketKey) -> usize {
+    aead_ctx.tag_len().min(16)
+}
+
+/// Return the confidentiality limit for the AEAD algorithm: the
+/// maximum number of packets that may be sent before a key update is
+/// required (RFC 9001 §6.6).
+/// C: `picoquic_aead_confidentiality_limit`
+pub fn aead_confidentiality_limit(aead_ctx: &dyn crate::tls::PacketKey) -> u64 {
+    aead_ctx.confidentiality_limit()
+}
+
+/// Decrypt `input` and write the plaintext to `output`, verifying the
+/// authentication tag.  Returns the number of plaintext bytes written.
+/// The C function accepted a nullable `void* aead_ctx` and returned
+/// `SIZE_MAX` when the pointer was null or decryption failed; here
+/// a missing context is represented as `None` and both failure modes
+/// become `Err(Error::Protocol(AeadCheck))`.
+/// C: `picoquic_aead_decrypt_generic`
+pub fn aead_decrypt_generic(
+    output: &mut [u8],
+    input: &[u8],
+    seq_num: u64,
+    auth_data: &[u8],
+    aead_ctx: Option<&dyn crate::tls::PacketKey>,
+) -> Result<usize, Error> {
+    let aead_ctx = aead_ctx.ok_or(Error::Protocol(
+        crate::errors::InternalError::AeadCheck as u64,
+    ))?;
+    let mut buf = input.to_vec();
+    aead_ctx.decrypt(seq_num, auth_data, &mut buf)?;
+    if buf.len() > output.len() {
+        return Err(Error::BufferTooSmall);
+    }
+    output[..buf.len()].copy_from_slice(&buf);
+    Ok(buf.len())
+}
+
+/// Encrypt `input` and write ciphertext + authentication tag to
+/// `output`.  Returns the total number of bytes written (plaintext
+/// length + tag length).
+/// C: `picoquic_aead_encrypt_generic`
+pub fn aead_encrypt_generic(
+    output: &mut [u8],
+    input: &[u8],
+    seq_num: u64,
+    auth_data: &[u8],
+    aead_ctx: &dyn crate::tls::PacketKey,
+) -> usize {
+    let mut buf = input.to_vec();
+    aead_ctx.encrypt(seq_num, auth_data, &mut buf);
+    let len = buf.len();
+    let copy_len = len.min(output.len());
+    output[..copy_len].copy_from_slice(&buf[..copy_len]);
+    len
+}
+
+// `aead_encrypt_mp` / `aead_decrypt_mp` fold into `PacketKey::encrypt_mp` /
+// `decrypt_mp` which XOR the path id into the nonce inside the implementor.
+// `aead_free` and `cipher_free` are gone -- `Drop` on the boxed trait object
+// replaces them.
+// `pn_iv_size` and `pn_encrypt` are gone -- header protection is in
+// `crate::header_protection`, exposed through `crate::tls::HeaderKey`.
+
+/// Return the integrity limit for the AEAD algorithm: the maximum number of
+/// failed decryption attempts before the key must be discarded (RFC 9001 §6.6).
+/// The C function read `algo->integrity_limit` from a `ptls_aead_context_t`;
+/// in Rust it delegates to [`crate::tls::PacketKey::integrity_limit`].
+/// C: `picoquic_aead_integrity_limit`
+pub fn aead_integrity_limit(aead_ctx: &dyn crate::tls::PacketKey) -> u64 {
+    aead_ctx.integrity_limit()
+}
 
 // ---------------------------------------------------------------------------
 // Initial-secret derivation.
@@ -963,6 +1289,24 @@ pub fn setup_initial_secrets(
         &master_secret[..SHA256_SIZE],
         &mut server_secret[..SHA256_SIZE],
     )
+}
+
+/// Return the cleartext AEAD salt bytes for `version_index`.  When
+/// the version table entry has a non-empty AEAD key those bytes are
+/// returned directly; otherwise the 20-byte all-zeros null salt is
+/// returned.  Mirrors the C static `picoquic_cleartext_null_salt[]`
+/// fallback.
+/// C: `picoquic_setup_cleartext_aead_salt` (tls_api.c:2532-2541).
+#[allow(dead_code)]
+fn setup_cleartext_aead_salt(version_index: i32) -> &'static [u8] {
+    static NULL_SALT: [u8; 20] = [0u8; 20];
+    if let Some(version) = version_from_index(version_index) {
+        let params = version.parameters();
+        if !params.version_aead_key.is_empty() {
+            return params.version_aead_key;
+        }
+    }
+    &NULL_SALT
 }
 
 impl Connection {
@@ -1510,6 +1854,15 @@ pub fn hash_get_length(algorithm_name: &str) -> usize {
     }
 }
 
+/// Obtain a streaming hash context for the named algorithm by searching the
+/// cipher-suite table.  Recognized names: `"sha256"`, `"sha384"`, `"sha512"`
+/// (and common aliases).  Returns `None` for unknown names, matching the C
+/// `NULL` return when the name is not found in the suite table.
+/// C: `picoquic_get_hash_algorithm_by_name`
+pub fn get_hash_algorithm_by_name(hash_algorithm_name: &str) -> Option<Box<dyn digest::DynDigest>> {
+    hash_create(hash_algorithm_name)
+}
+
 // `hash_update` and `hash_finalize` are gone -- callers use
 // `digest::DynDigest`'s `update` and `finalize_into` methods on
 // the boxed trait object returned by `hash_create`.
@@ -1664,6 +2017,30 @@ pub fn verify_retry_protection(
 }
 
 // ---------------------------------------------------------------------------
+// PN header-protection helpers.
+
+/// Return the ciphertext sample (IV) size expected by the header-protection
+/// cipher keyed by `pn_enc`.  For all QUIC-defined cipher suites (AES-128,
+/// AES-256, ChaCha20) the sample is always 16 bytes — RFC 9001 §5.4.
+/// C: `picoquic_pn_iv_size` (tls_api.c:2369–2372).
+pub fn pn_iv_size(_pn_enc: &dyn crate::tls::HeaderKey) -> usize {
+    16
+}
+
+/// Apply header protection: compute the keystream mask by feeding
+/// `sample` (a 16-byte slice of ciphertext immediately following the
+/// packet-number field) into the header-protection cipher, then copy
+/// the first `output.len()` mask bytes into `output`.  Callers
+/// initialize `output` to zeros before calling, so the result is the
+/// raw keystream (AES-ECB(sample) for AES suites).
+/// C: `picoquic_pn_encrypt` (tls_api.c:2374–2378).
+pub fn pn_encrypt(pn_enc: &dyn crate::tls::HeaderKey, sample: &[u8; 16], output: &mut [u8]) {
+    let mask = pn_enc.mask(*sample);
+    let n = output.len().min(mask.len());
+    output[..n].copy_from_slice(&mask[..n]);
+}
+
+// ---------------------------------------------------------------------------
 // Cipher-suite accessors and ECB cipher for CID encryption.
 
 // The cipher-suite lookup functions (`get_cipher_suite_by_id_v`,
@@ -1726,15 +2103,447 @@ impl Aes128EcbContext {
     }
 }
 
+/// Return whether `ecb_cipher_name` names a supported ECB cipher algorithm.
+/// Mirrors the C search over the cipher-suite table for a matching
+/// `aead->ecb_cipher->name`; the only ECB cipher in the Rust build is
+/// `"AES128-ECB"` (backed by [`Aes128EcbContext`]).
+/// C: `picoquic_get_ecb_cipher_by_id`
+fn get_ecb_cipher_by_name(ecb_cipher_name: &str) -> bool {
+    ecb_cipher_name == "AES128-ECB"
+}
+
+/// Create an AES-128-ECB cipher context for CID encryption, looked up by
+/// algorithm name.  Returns `None` if `alg_name` is not a recognized ECB
+/// cipher (only `"AES128-ECB"` is supported).
+/// C: `picoquic_ecb_create_by_name`
+pub fn ecb_create_by_name(
+    is_enc: bool,
+    ecb_key: &[u8; 16],
+    alg_name: &str,
+) -> Option<Aes128EcbContext> {
+    if get_ecb_cipher_by_name(alg_name) {
+        Some(Aes128EcbContext::new(is_enc, ecb_key))
+    } else {
+        None
+    }
+}
+
 // The C `tls_api_init` / `tls_api_unload` / `tls_api_reset` family
-// loaded picotls' optional providers (OpenSSL / minicrypto / fusion
-// / mbedtls) into a global registry.  The Rust shape is direct
-// backend selection: the application picks an implementation of
-// [`crate::tls::TlsBackend`] (e.g. `crate::sys::picotls::Picotls`)
-// and hands it to the QUIC context.  No global init step.
-//
-// `tls_api_log_versions` likewise disappears — the active backend
-// owns its own version-string surface.
+// loads picotls' optional providers into bounded global tables.  The
+// Rust QUIC runtime still selects concrete TLS backends directly, but
+// the translated provider-load entry points preserve those C-visible
+// registration side effects for tests and API queries that inspect the
+// active fallback provider.
+
+const PICOQUIC_CIPHER_SUITES_NB_MAX: usize = 8;
+const PICOQUIC_KEY_EXCHANGES_NB_MAX: usize = 4;
+const GROUP_X25519: u16 = 29;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum CryptoProvider {
+    Minicrypto,
+    #[cfg(feature = "sys-openssl")]
+    OpenSsl,
+    #[cfg(feature = "sys-fusion")]
+    Fusion,
+    #[cfg(feature = "sys-mbedtls")]
+    MbedTls,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct CipherSuiteSlot {
+    id: u16,
+    high_memory_suite: Option<CryptoProvider>,
+    low_memory_suite: Option<CryptoProvider>,
+}
+
+impl CipherSuiteSlot {
+    const EMPTY: Self = Self {
+        id: 0,
+        high_memory_suite: None,
+        low_memory_suite: None,
+    };
+}
+
+#[derive(Debug, Copy, Clone)]
+struct KeyExchangeSlot {
+    id: u16,
+    provider: Option<CryptoProvider>,
+}
+
+impl KeyExchangeSlot {
+    const EMPTY: Self = Self {
+        id: 0,
+        provider: None,
+    };
+}
+
+#[derive(Debug)]
+struct TlsApiState {
+    init_flags: u64,
+    is_init: bool,
+    cipher_suites: [CipherSuiteSlot; PICOQUIC_CIPHER_SUITES_NB_MAX],
+    key_exchanges: [KeyExchangeSlot; PICOQUIC_KEY_EXCHANGES_NB_MAX],
+    key_exchange_secp256r1: Option<CryptoProvider>,
+    crypto_random_provider: Option<CryptoProvider>,
+    private_key_provider: Option<CryptoProvider>,
+}
+
+impl TlsApiState {
+    const fn new() -> Self {
+        Self {
+            init_flags: 0,
+            is_init: false,
+            cipher_suites: [CipherSuiteSlot::EMPTY; PICOQUIC_CIPHER_SUITES_NB_MAX],
+            key_exchanges: [KeyExchangeSlot::EMPTY; PICOQUIC_KEY_EXCHANGES_NB_MAX],
+            key_exchange_secp256r1: None,
+            crypto_random_provider: None,
+            private_key_provider: None,
+        }
+    }
+
+    /// Clear the provider tables and callback slots.
+    /// C: `picoquic_tls_api_zero`.
+    fn zero(&mut self) {
+        self.cipher_suites = [CipherSuiteSlot::EMPTY; PICOQUIC_CIPHER_SUITES_NB_MAX];
+        self.key_exchanges = [KeyExchangeSlot::EMPTY; PICOQUIC_KEY_EXCHANGES_NB_MAX];
+        self.key_exchange_secp256r1 = None;
+        self.crypto_random_provider = None;
+        self.private_key_provider = None;
+    }
+
+    /// Register or replace a TLS cipher suite.  The first matching slot by
+    /// ID wins; otherwise the first empty slot is filled.
+    /// C: `picoquic_register_ciphersuite`.
+    fn register_ciphersuite(
+        &mut self,
+        suite_id: u16,
+        is_low_memory: bool,
+        provider: CryptoProvider,
+    ) {
+        for slot in &mut self.cipher_suites {
+            if slot.high_memory_suite.is_none() || slot.id == suite_id {
+                slot.id = suite_id;
+                slot.high_memory_suite = Some(provider);
+                if is_low_memory {
+                    slot.low_memory_suite = Some(provider);
+                }
+                break;
+            }
+        }
+    }
+
+    /// Register or replace a TLS key-exchange algorithm.
+    /// C: `picoquic_register_key_exchange_algorithm`.
+    fn register_key_exchange_algorithm(&mut self, key_exchange_id: u16, provider: CryptoProvider) {
+        for slot in &mut self.key_exchanges {
+            if slot.provider.is_none() || slot.id == key_exchange_id {
+                slot.id = key_exchange_id;
+                slot.provider = Some(provider);
+                break;
+            }
+        }
+
+        if key_exchange_id == GROUP_SECP256R1 {
+            self.key_exchange_secp256r1 = Some(provider);
+        }
+    }
+
+    /// Register the provider used by `Quic::crypto_random`.
+    /// C: `picoquic_register_crypto_random_provider_fn`.
+    fn register_crypto_random_provider(&mut self, provider: CryptoProvider) {
+        self.crypto_random_provider = Some(provider);
+    }
+
+    /// Register the private-key loading callback family.
+    /// C: `picoquic_register_tls_key_provider_fn`.
+    fn register_tls_key_provider(&mut self, provider: CryptoProvider) {
+        self.private_key_provider = Some(provider);
+    }
+
+    fn cipher_suite_provider(&self, suite_id: u16, use_low_memory: bool) -> Option<CryptoProvider> {
+        self.cipher_suites
+            .iter()
+            .find(|slot| slot.id == suite_id && slot.high_memory_suite.is_some())
+            .and_then(|slot| {
+                if use_low_memory {
+                    slot.low_memory_suite
+                } else {
+                    slot.high_memory_suite
+                }
+            })
+    }
+}
+
+static TLS_API_STATE: std::sync::Mutex<TlsApiState> = std::sync::Mutex::new(TlsApiState::new());
+
+fn tls_api_state() -> std::sync::MutexGuard<'static, TlsApiState> {
+    TLS_API_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn ptls_minicrypto_load_locked(state: &mut TlsApiState, unload: i32) {
+    if unload != 0 {
+        clear_minicrypto();
+    } else {
+        init_minicrypto();
+
+        state.register_ciphersuite(AES_128_GCM_SHA256, true, CryptoProvider::Minicrypto);
+        state.register_ciphersuite(AES_256_GCM_SHA384, true, CryptoProvider::Minicrypto);
+        state.register_ciphersuite(CHACHA20_POLY1305_SHA256, true, CryptoProvider::Minicrypto);
+        state.register_key_exchange_algorithm(GROUP_SECP256R1, CryptoProvider::Minicrypto);
+        state.register_key_exchange_algorithm(GROUP_X25519, CryptoProvider::Minicrypto);
+        state.register_crypto_random_provider(CryptoProvider::Minicrypto);
+        state.register_tls_key_provider(CryptoProvider::Minicrypto);
+    }
+}
+
+#[cfg(feature = "sys-openssl")]
+fn ptls_openssl_load_locked(state: &mut TlsApiState, unload: i32) {
+    if let Some(registration) = crate::sys::openssl::picoquic_ptls_openssl_load(unload) {
+        for suite in registration.cipher_suites {
+            state.register_ciphersuite(suite.id, suite.is_low_memory, CryptoProvider::OpenSsl);
+        }
+        for key_exchange in registration.key_exchanges {
+            state.register_key_exchange_algorithm(key_exchange.group_id, CryptoProvider::OpenSsl);
+        }
+        state.register_crypto_random_provider(CryptoProvider::OpenSsl);
+        state.register_tls_key_provider(CryptoProvider::OpenSsl);
+    }
+}
+
+#[cfg(feature = "sys-fusion")]
+fn ptls_fusion_load_locked(state: &mut TlsApiState, unload: i32) {
+    if unload == 0 {
+        state.register_ciphersuite(AES_128_GCM_SHA256, false, CryptoProvider::Fusion);
+        state.register_ciphersuite(AES_256_GCM_SHA384, false, CryptoProvider::Fusion);
+    }
+}
+
+#[cfg(feature = "sys-mbedtls")]
+fn mbedtls_load_locked(state: &mut TlsApiState, unload: i32) {
+    if unload == 0 {
+        state.register_ciphersuite(AES_128_GCM_SHA256, true, CryptoProvider::MbedTls);
+        state.register_ciphersuite(AES_256_GCM_SHA384, true, CryptoProvider::MbedTls);
+        state.register_ciphersuite(CHACHA20_POLY1305_SHA256, true, CryptoProvider::MbedTls);
+        state.register_key_exchange_algorithm(GROUP_SECP256R1, CryptoProvider::MbedTls);
+        state.register_key_exchange_algorithm(GROUP_X25519, CryptoProvider::MbedTls);
+        state.register_crypto_random_provider(CryptoProvider::MbedTls);
+        state.register_tls_key_provider(CryptoProvider::MbedTls);
+    }
+}
+
+/// Load or unload all configured TLS providers in C priority order.
+/// C: `picoquic_tls_api_init_providers`.
+fn tls_api_init_providers_locked(state: &mut TlsApiState, unload: i32) {
+    if (state.init_flags & crate::TLS_API_INIT_FLAGS_NO_MINICRYPTO) == 0 {
+        ptls_minicrypto_load_locked(state, unload);
+    }
+
+    #[cfg(feature = "sys-openssl")]
+    if (state.init_flags & crate::TLS_API_INIT_FLAGS_NO_OPENSSL) == 0 {
+        ptls_openssl_load_locked(state, unload);
+    }
+
+    #[cfg(feature = "sys-fusion")]
+    if (state.init_flags & crate::TLS_API_INIT_FLAGS_NO_FUSION) == 0 {
+        ptls_fusion_load_locked(state, unload);
+    }
+
+    #[cfg(feature = "sys-mbedtls")]
+    {
+        mbedtls_load_locked(state, unload);
+    }
+}
+
+/// Initialise the TLS provider registry.
+/// C: `picoquic_tls_api_init`.
+pub fn tls_api_init() {
+    let mut state = tls_api_state();
+    if !state.is_init {
+        state.zero();
+        tls_api_init_providers_locked(&mut state, 0);
+        state.is_init = true;
+    }
+}
+
+/// Unload the TLS provider registry.
+/// C: `picoquic_tls_api_unload`.
+pub fn tls_api_unload() {
+    let mut state = tls_api_state();
+    if state.is_init {
+        tls_api_init_providers_locked(&mut state, 1);
+        state.zero();
+        state.is_init = false;
+    }
+}
+
+/// Reset the TLS provider registry to the given initialization flags.
+/// C: `picoquic_tls_api_reset`.
+pub fn tls_api_reset(init_flags: u64) {
+    let mut state = tls_api_state();
+    if state.is_init {
+        state.is_init = false;
+        tls_api_init_providers_locked(&mut state, 2);
+    }
+    state.zero();
+    state.init_flags = init_flags;
+    tls_api_init_providers_locked(&mut state, 0);
+    state.is_init = true;
+}
+
+/// Load or unload the PTLS fusion AES-GCM cipher suites.  In the C
+/// implementation this registers `ptls_fusion_aes128gcm` and
+/// `ptls_fusion_aes256gcm` into the global cipher-suite registry when
+/// the CPU supports the required instructions.  In Rust there is no
+/// global registry — the application selects a backend directly — so
+/// this is a deliberate no-op for the non-fusion case.
+/// C: `picoquic_ptls_fusion_load`.
+pub fn ptls_fusion_load(_unload: bool) {}
+
+/// Load or unload the picotls minicrypto provider.  On load this registers
+/// the three QUIC TLS 1.3 cipher suites, P-256 and X25519 key exchanges,
+/// the crypto-random provider, and the private-key loader into the translated
+/// provider registry.
+/// C: `picoquic_ptls_minicrypto_load`.
+pub fn ptls_minicrypto_load(unload: bool) {
+    let mut state = tls_api_state();
+    ptls_minicrypto_load_locked(&mut state, i32::from(unload));
+}
+
+/// True when minicrypto is the active AES-128-GCM-SHA-256 provider.
+/// C: comparison of `picoquic_get_aes128gcm_sha256_v(use_low_memory)`
+/// against `ptls_minicrypto_aes128gcmsha256`.
+pub fn is_minicrypto_aes128gcm_sha256(use_low_memory: bool) -> bool {
+    let state = tls_api_state();
+    state.cipher_suite_provider(AES_128_GCM_SHA256, use_low_memory)
+        == Some(CryptoProvider::Minicrypto)
+}
+
+/// True when minicrypto is the active private-key loader.
+/// C: `picoquic_set_private_key_from_file_fn == picoquic_minicrypto_set_key_fn`.
+pub fn is_minicrypto_key_loader() -> bool {
+    let state = tls_api_state();
+    state.private_key_provider == Some(CryptoProvider::Minicrypto)
+}
+
+/// Initialize the minicrypto provider.  In the current C implementation
+/// the function body is empty (`/* Nothing for now */`); the Rust
+/// translation matches.  C: `picoquic_init_minicrypto`.
+pub fn init_minicrypto() {}
+
+/// Load a PEM private key from `keypem` for the minicrypto backend.
+/// The C implementation delegates to `ptls_minicrypto_load_private_key`;
+/// in Rust the file is read and validated as a PEM private-key block.
+/// Returns `Err(NoSuchFile)` when the path is unreadable and
+/// `Err(InvalidFile)` when no private-key PEM header is found.
+/// C: `set_minicrypto_private_key_from_key_file`.
+pub fn set_minicrypto_private_key_from_key_file(keypem: &str) -> Result<(), Error> {
+    let contents = std::fs::read_to_string(keypem).map_err(|_| Error::NoSuchFile)?;
+    if contents.contains("-----BEGIN ") && contents.contains("PRIVATE KEY-----") {
+        Ok(())
+    } else {
+        Err(Error::InvalidFile)
+    }
+}
+
+/// Tear down any state set up by `picoquic_init_minicrypto`.  In the
+/// current C implementation the function body is empty
+/// (`/* Nothing for now */`); the Rust translation matches.
+/// C: `picoquic_clear_minicrypto`.
+pub fn clear_minicrypto() {}
+
+// ---------------------------------------------------------------------------
+// Ticket construction.
+
+/// Construct a [`StoredTicket`] from its raw components.
+///
+/// The C function heap-allocates a `picoquic_stored_ticket_t` and
+/// writes all the fields into a single buffer; this Rust version
+/// constructs the equivalent owned struct directly.  The caller is
+/// responsible for inserting the result into a ticket store (e.g.
+/// via [`crate::Quic::store_ticket`]).
+///
+/// C: `picoquic/ticket_store.c:picoquic_format_ticket` (line 29–99).
+#[allow(clippy::too_many_arguments)]
+pub fn format_ticket(
+    time_valid_until: crate::Instant,
+    sni: Option<&str>,
+    alpn: Option<&str>,
+    version: u32,
+    ip_addr: core::net::IpAddr,
+    ip_addr_client: core::net::IpAddr,
+    ticket: &[u8],
+    tp: Option<&crate::TransportParameters>,
+) -> StoredTicket {
+    use crate::tp::TransportParameter0RttKind::*;
+    let tp_0rtt = if let Some(tp) = tp {
+        let mut arr = [0u64; NB_TP_0RTT];
+        arr[MaxData as usize] = tp.initial_max_data;
+        arr[MaxStreamDataBidiLocal as usize] = tp.initial_max_stream_data_bidi_local;
+        arr[MaxStreamDataBidiRemote as usize] = tp.initial_max_stream_data_bidi_remote;
+        arr[MaxStreamDataUni as usize] = tp.initial_max_stream_data_uni;
+        arr[MaxStreamsIdBidir as usize] = tp.initial_max_stream_id_bidir;
+        arr[MaxStreamsIdUnidir as usize] = tp.initial_max_stream_id_unidir;
+        arr
+    } else {
+        [0u64; NB_TP_0RTT]
+    };
+    StoredTicket {
+        sni: sni.map(str::to_owned),
+        alpn: alpn.map(str::to_owned),
+        ip_addr,
+        ip_addr_client,
+        tp_0rtt,
+        ticket: ticket.to_vec(),
+        time_valid_until,
+        version,
+        was_used: false,
+    }
+}
+
+/// Construct a [`StoredToken`] from its raw components.
+///
+/// The C function heap-allocates a `picoquic_stored_token_t` and
+/// lays all fields into a single arena buffer; this Rust version
+/// builds the equivalent owned struct directly.  The caller is
+/// responsible for inserting the result into a token store (e.g.
+/// via [`crate::Quic::store_token`]).
+///
+/// C: `picoquic/token_store.c:picoquic_format_token` (lines 29-59).
+pub fn format_token(
+    time_valid_until: crate::Instant,
+    sni: Option<&str>,
+    ip_addr: core::net::IpAddr,
+    token: &[u8],
+) -> StoredToken {
+    StoredToken {
+        sni: sni.map(str::to_owned),
+        token: token.to_vec(),
+        ip_addr,
+        time_valid_until,
+        was_used: false,
+    }
+}
+
+impl Connection {
+    /// Push a proposed ALPN string onto the connection's handshake ALPN list.
+    /// C: `picoquic_add_proposed_alpn` (tls_api.c:2207).
+    ///
+    /// In C: pushed into `tls_ctx->alpn_vec[alpn_count]` with a bounds check
+    /// against `alpn_vec_size` (max [`crate::internal::ALPN_NUMBER_MAX`]).
+    /// In Rust: stored in `Connection::alpn_proposals`; the TLS backend reads
+    /// this slice when starting the handshake.  For server-side ALPN selection
+    /// use [`crate::Quic::set_alpn_select_fn`] or `Quic::default_alpn`.
+    pub fn add_proposed_alpn(&mut self, alpn: &str) -> Result<(), Error> {
+        if self.alpn_proposals.len() >= crate::internal::ALPN_NUMBER_MAX {
+            return Err(Error::BufferTooSmall);
+        }
+        self.alpn_proposals.push(alpn.to_owned());
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod test {}

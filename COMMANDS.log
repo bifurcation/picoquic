@@ -1,5 +1,78 @@
 # Shell commands run during Phase 0 execution.
+# [2026-05-07] Phase 4B missing batch (5 items): dcubic_exit_slow_start (cubic.rs, private method on CubicState: exits slow start in delay-based CUBIC by setting ssthresh/w_max/epoch or re-entering recovery); dcubic_notify (cubic.rs, public method: delay-based variant of cubic_notify, uses hystart-only exit for Repeat/Timeout, updates cwin for long-RTT in Recovery/SlowStart, delegates other notifications to notify()); dualq_scheduler (tests/dualq.rs, added C doc reference to existing private scheduler method); ech_init_opener (ech.rs, reads base64-encoded ECHConfigList, parses kem_id from bytes[7:9], reads PEM private key and extracts raw scalar bytes via RFC5915/PKCS8 DER parsing); ech_create_config_from_pk (ech.rs, derives kem from group_id, selects cipher suites, computes config_id, encodes ECHConfig wire format); helpers: base64_decode, pem_base64_decode, extract_private_key_der, ech_encode_config, ech_read_config_file -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+# [2026-05-07] Phase 4B required-missing batch (5 items: BBR1SetPacingRateWithGain, BBR1UpdateControlParameters, BBR1UpdateModelAndState, BBR1ltbwIntervalDone, BBR1ltbwResetSampling): ltbw_reset_sampling and ltbw_interval_done already existed as private methods; added set_pacing_rate_with_gain, set_pacing_rate (helper), is_next_cycle_phase (helper), check_cycle_phase, check_drain, update_btl_bw, update_model_and_state, update_control_parameters to bbr1.rs; added CWIN_MINIMUM to imports -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+# [2026-05-07] Phase 4B required-missing batch (5 items: BBR1ExitStartupSeedBDP, BBR1HandleProbeRTT, BBR1Inflight, BBR1SaveCwnd, BBR1SetCwnd): BBR1HandleProbeRTT and BBR1SaveCwnd already existed (made pub); added inflight(), update_target_cwnd(), enter_drain() helpers, plus exit_startup_seed_bdp() and set_cwnd() in rs/fq/src/bbr1.rs; 35/35 bbr1 unit tests pass -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+# [2026-05-07] Phase 4B missing batch (5 items: BBRStartProbeBW_UP, BBRUpdateACKAggregation, BBRUpdateControlParameters, BBRUpdateMaxBw, BBRUpdateMinRTT): added update_round private helper + 5 pub(crate) methods in bbr.rs with full C body translations; added MINRTT_MARGIN to imports -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+# [2026-05-07] Phase 4B missing batch (5 items: BBRInitRoundCounting, BBROnInit, BBRSetBdpSeed, BBRSetCwnd, BBRSetPacingRate): added impl Default for BbrState (equivalent to C memset); added helpers update_max_inflight + bound_cwnd_for_probe_rtt; all 5 functions implemented in bbr.rs with full C body translation -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+# [2026-05-07] Phase 4B missing batch (5 items: ech_get_retry_config, get_default_callback_context, get_rtt, registered_token_create, add_proposed_alpn): items 1-3 were already implemented — stale body-line numbers in the map caused false-positive "incomplete" flags; fixed by scripts/fix_phase4b_map_entries.py; items 4-5 had no Rust counterpart — added RegisteredToken::splay_node (C: registered_token_create, architectural equivalent of intrusive node extractor) in internal.rs and Connection::add_proposed_alpn (C: add_proposed_alpn, pushes ALPN string to alpn_proposals Vec bounded by ALPN_NUMBER_MAX) in tls_api.rs; added alpn_proposals: Vec<String> field to Connection struct -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+# [2026-05-07] Phase 4B missing impl batch: parse_hexa_digit + string_create + set_abs_delay in utils.rs; adapt_lower_bounds_from_congestion + adapt_upper_bounds + helpers (advance_max_bw_filter, probe_inflight_hi_upward, start_round, start_probe_bw_down, handle_inflight_too_high, check_inflight_too_high, pick_probe_wait, pick_probe_wait_early, bbr_random, random_int_between) in bbr.rs -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+# [2026-05-07] Phase 4B missing batch (5 items: open_network_wake_up, packet_loop_set_fds, spinbit_basic_incoming, spinbit_basic_outgoing, spinbit_null_incoming): add open_network_wake_up() to packet_loop.rs creating mpsc channel (C: sockloop.c:1705); add packet_loop_set_fds() to packet_loop.rs populating pollfd array (C: sockloop.c:884, #[cfg(unix)]); add raw_fd() default method to Socket trait (socks.rs) + Socket2Udp impl (socks_socket2.rs); create spinbit.rs with BasicSpinBit/NullSpinBit/RandomSpinBit implementing SpinBitPolicy (C: spinbit.c:29-53); add pub mod spinbit to lib.rs; populate SPIN_FUNCTION_TABLE in internal.rs -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+# [2026-05-07] Phase 4B missing batch (5 items: c4_logger, c4_loss_threshold, c4_exit_recovery, c4_initial_handle_ack, c4_notify): implemented all 5 approved items plus all required dependencies (enter_cruise, exit_initial, apply_rate_and_cwin, notify_congestion, initial_handle_loss, update_rtt, initial_handle_rtt_excess, handle_rtt_excess, update_min_max_rtt, enter_push, handle_ack, reset) in rs/fq/src/c4.rs; added log crate to Cargo.toml for c4_logger → log::debug! translation -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+# [2026-05-07] Phase 4B missing batch (5 items: c4_ecn_threshold, c4_enter_initial, c4_enter_recovery, c4_era_check, c4_era_reset): added ecn_threshold() pub fn, era_check/era_reset/enter_initial/enter_recovery private helpers to C4State impl in c4.rs; added ConnectionCc+PathCc imports for sequence_number/lowest_not_ack; added State import for Ready check; added 3 new constants (C4_PROBE_LEVEL_DEFAULT, C4_ALPHA_INITIAL, C4_ALPHA_RECOVER_1024); added 3 ecn_threshold unit tests; 27/27 c4 unit tests pass -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+
+[2026-05-07] Phase 4B batch: 5 approved missing items in internal.rs:
+  SackList::select_ack_ranges C: annotation, create_long_packet_type (free fn),
+  Connection::check_cc_feedback_timer, handle_app_wake_time, next_mtu_probe_length:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Phase 4B batch: sack + verify_proposed_tuple: add C: doc refs to SackList::is_empty/size; fix SackList::item_record_sent and item_record_reset to maintain rc histogram; add Connection::verify_proposed_tuple in rs/fq/src/lib.rs:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Phase 4B missing batch (session 2): implement 5 approved items:
+  Session::is_ech_handshake + retry_configs (tls.rs), Connection::is_ech_handshake +
+  ech_retry_config (lib.rs), ech_get_kem_from_curve + parse_public_key_asn1 (ech.rs),
+  fastcc_delay_threshold + new fastcc.rs module:
+  cd rs/fq && cargo test --no-run && cargo fmt && cargo clippy --tests --all-features -- -D warnings
+
+
+[2026-05-07] Phase 4B missing batch: implement cubic_reset (rs/fq/src/cubic.rs), add /// C: doc comments to cubic_root, dualq_dequeue_queue, dualq_laqm, dualq_recur (rs/fq/src/tests/dualq.rs):
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Phase 4B missing batch: implement c4_update_loss_rate, c4_update_ecn_alpha, config_parse_target_version, config_optval_string, config_atoi in rs/fq/src/c4.rs + config.rs:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings && cargo test ecn_alpha && cargo test loss_rate && cargo test atoi && cargo test optval_string
+
+[2026-05-07] Phase 4B missing batch: implement BBR1GetBtlBW, BBR1EnterStartupLongRTT, BBR1RestoreCwnd, BBR1ModulateCwndForRecovery, BBR1ModulateCwndForProbeRTT in rs/fq/src/bbr1.rs:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings && cargo test get_btl_bw
+
+[2026-05-07] Phase 4B missing batch: implement c4_sensitivity_1024, c4_growth_reset, c4_set_options, c4_seed_cwin, c4_observe in rs/fq/src/c4.rs:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings && cargo test c4
+
+[2026-05-07] Phase 4B missing batch 2: implement BBR1SetMinimalGain, BBR1SetSendQuantum, BBR1UpdateRTprop, BBR1ltbwResetInterval, InLossRecovery1 in rs/fq/src/bbr1.rs:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings && cargo test bbr1::
+
+[2026-05-07] Phase 4B batch: implement update_windowed_max_filter, start_windowed_max_filter_period, IsInflightTooHigh, IsRTTTooHigh, picoquic_bbr_observe in rs/fq/src/bbr.rs; cargo fmt + cargo test --no-run + clippy all clean:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Phase 4B batch: implement InLossRecovery, IsInAProbeBWState, BBRUpdateOffloadBudget, BBRUpdateRTTJitterBuffer, BBRUpdateRecoveryOnLoss in rs/fq/src/bbr.rs; cargo test --no-run and clippy both clean:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Phase 4B batch: implement BBRSetRsFromAckState, BBRSetSendQuantum, BBRStartProbeBW_CRUISE, BBRTargetInflight, BBRUpdateLatestDeliverySignals in rs/fq/src/bbr.rs; cargo test --no-run, clippy, and 3 new unit tests all pass:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings && cargo test start_probe_bw_cruise target_inflight update_latest_delivery_signals
 # Format: one block per command, with timestamp + description + the literal command.
+
+[2026-05-07] Phase 4B missing batch: implement 5 approved items in rs/fq/src/tls_api.rs:
+  set_pn_enc_from_secret (C: tls_api.c:1311-1330), setup_cleartext_aead_salt (C: tls_api.c:2532-2541),
+  Connection::tls_get_negotiated_alpn (C: tls_api.c:2135-2142), Connection::tls_get_sni (C: tls_api.c:2144-2151),
+  format_token (C: token_store.c:29-59); added StoredToken to imports:
+  cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Phase 4B missing batch (5 items): c4_notify_congestion (already private helper in c4.rs — confirmed complete), c4_reset (already in c4.rs — made pub to match C non-static linkage), config_optval_param_string (added private helper to config.rs), config_set_option (apply_option in config.rs — added /// C: doc reference), picoquic_config_clear (added Config::clear() pub method = *self = Config::default()):
+  cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Phase 4B batch: implement BBRResetLowerBounds, BBRResetRTTJitterBuffer, BBRRestoreCwnd, BBRSetOptions, BBRSetPacingRateWithGain in rs/fq/src/bbr.rs; add RTT jitter buffer fields to BbrState; 26/26 unit tests pass, cargo clippy clean:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings && cargo test bbr::tests
+
+[2026-05-06] Phase 4B batch: implement 5 BBR private helper functions (BBREnterStartup, BBREnterStartupLongRTT, BBREnterStartupResume, BBRExitLostFeedback, BBRHasElapsedInPhase) in rs/fq/src/bbr.rs — all new bbr unit tests pass, cargo clippy clean:
+  cd rs/fq && cargo fmt && cargo check && cargo clippy --tests --all-features -- -D warnings && cargo test
+
+[2026-05-06] Phase 4B batch: implement 5 BBR private helper functions (BBRCheckAppLimitedEnded, BBRCheckStartupFullBandwidth, BBRCheckStartupFullBandwidthGeneric, BBREnterDrain, BBREnterProbeRTT) in rs/fq/src/bbr.rs — 11 unit tests all pass:
+  cd rs/fq && cargo fmt && cargo check && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings && cargo test bbr
+
+[2026-05-07] Phase 4B missing batch: add C: doc to set_first_byte; extract verify_clear helper (lb.rs); add ptls_fusion_load + clear_minicrypto (tls_api.rs); add mbedtls_load (sys/mod.rs):
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Phase 4B batch: implement picoformat_16/24/32/64 (rs/fq/src/utils.rs) and binlog_close (rs/fq/src/binlog.rs); cargo fmt + cargo test --no-run + clippy all clean:
+  cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
 
 [2026-05-04] Phase 3A config_test.c translation — all 6 tests (config_option_letters, config_option, config_quic, config_usage, config_preferred, config_set_port); added Config::set_port stub, 5 Quic accessor stubs, fixture file:
   cd rs/fq && cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
@@ -145,6 +218,147 @@
 [2026-04-30] Inspect why topo order put democlient.h before h3zero.h:
   grep -E '^#\s*include' picohttp/democlient.h
   grep -E '^#\s*include' picohttp/h3zero.h
+
+[2026-05-07] Phase 4B LB/minicrypto batch: read repository instructions:
+  sed -n '1,240p' CLAUDE.md
+
+[2026-05-07] Phase 4B LB/minicrypto batch: read translation plan start:
+  sed -n '1,260p' TRANSLATE_PLAN.md
+
+[2026-05-07] Phase 4B LB/minicrypto batch: read Phase 4 implementation guide:
+  sed -n '1,260p' xlate/impl_translation_guide.md
+
+[2026-05-07] Phase 4B LB/minicrypto batch: read translation plan continuation:
+  sed -n '261,620p' TRANSLATE_PLAN.md
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect command log format:
+  sed -n '1,220p' COMMANDS.log
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect LB Rust module start:
+  sed -n '1,260p' rs/fq/src/lb.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect TLS API Rust module start:
+  sed -n '1,180p' rs/fq/src/tls_api.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: read C LB source bodies:
+  sed -n '1,240p' picoquic/picoquic_lb.c
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect existing LB Rust implementation:
+  sed -n '260,620p' rs/fq/src/lb.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: search existing minicrypto/provider symbols:
+  rg -n "minicrypto|ptls_.*load|fusion_load|mbedtls_load|Aes128Ecb|aes128|picoquic_ptls" rs/fq/src/tls_api.rs rs/fq/src -g '*.rs'
+
+[2026-05-07] Phase 4B LB/minicrypto batch: read C minicrypto provider-load source:
+  sed -n '1,130p' picoquic/picoquic_ptls_minicrypto.c
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect TLS ECB/provider region:
+  sed -n '2030,2185p' rs/fq/src/tls_api.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect root TLS API wrappers:
+  sed -n '3680,3770p' rs/fq/src/lib.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: search TLS registry/reset symbols:
+  rg -n "register_ciphersuite|register_key_exchange|register_crypto_random|register_tls_key|TLS_API_INIT|reset_tls_api|init_tls_api|minicrypto_load|ptls_minicrypto" rs/fq/src -g '*.rs'
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect minicrypto translated tests:
+  sed -n '1,170p' rs/fq/src/tests/minicrypto.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect Cargo features/dependencies:
+  sed -n '1,220p' rs/fq/Cargo.toml
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect Quic RNG/provider field notes:
+  sed -n '1840,1905p' rs/fq/src/internal.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: search random/provider uses:
+  rg -n "random_provider|crypto_random|Random|fill_random|random_bytes|register_.*cipher|active.*cipher|cipher_suite|key_exchange" rs/fq/src -g '*.rs'
+
+[2026-05-07] Phase 4B LB/minicrypto batch: search C/Rust TLS init/load references:
+  rg -n "tls_api_init|reset_tls_api|ptls_.*load|openssl_load|mbedtls_load|fusion_load|minicrypto" picoquic rs/fq/src -g '*.[ch]' -g '*.rs'
+
+[2026-05-07] Phase 4B LB/minicrypto batch: read C TLS API init/reset implementation:
+  sed -n '140,260p' picoquic/tls_api.c
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect Quic set_cipher/key_exchange methods:
+  sed -n '1480,1545p' rs/fq/src/lib.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect TLS random helper region:
+  sed -n '1120,1165p' rs/fq/src/tls_api.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect crate module/constants start:
+  sed -n '1,120p' rs/fq/src/lib.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: search root TLS API exports:
+  rg -n "pub use .*tls_api|tls_api::|pub fn ptls|pub fn init_minicrypto|pub fn clear_minicrypto|set_minicrypto" rs/fq/src/lib.rs rs/fq/src/*.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: read C provider registration helpers:
+  sed -n '260,360p' picoquic/tls_api.c
+
+[2026-05-07] Phase 4B LB/minicrypto batch: search Quic constructors:
+  rg -n "fn new\(|impl Quic|pub struct Quic|rng: Box" rs/fq/src/lib.rs rs/fq/src/internal.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect Quic constructor RNG setup:
+  sed -n '1340,1410p' rs/fq/src/lib.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: search OpenSSL provider load helpers:
+  rg -n "pub fn .*openssl.*load|openssl_load|ptls_openssl_load|fn .*load" rs/fq/src/sys/openssl.rs rs/fq/src/sys/mod.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect OpenSSL init/clear helpers:
+  sed -n '250,315p' rs/fq/src/sys/openssl.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect sys module provider stubs:
+  sed -n '1,55p' rs/fq/src/sys/mod.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect TLS constants:
+  sed -n '180,205p' rs/fq/src/lib.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: search group/cipher constants:
+  rg -n "GROUP_|X255|AES_128_GCM|CHACHA20|AES_256_GCM" rs/fq/src/lib.rs rs/fq/src/tls_api.rs rs/fq/src/internal.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect C provider declarations:
+  sed -n '112,140p' picoquic/tls_api.c
+
+[2026-05-07] Phase 4B LB/minicrypto batch: read C fusion load body:
+  sed -n '54,90p' picoquic/picoquic_ptls_fusion.c
+
+[2026-05-07] Phase 4B LB/minicrypto batch: read C OpenSSL load body:
+  sed -n '408,450p' picoquic/picoquic_ptls_openssl.c
+
+[2026-05-07] Phase 4B LB/minicrypto batch: check TLS init flag definitions:
+  rg -n "NO_MBEDTLS|TLS_API_INIT_FLAGS" picoquic/tls_api.h rs/fq/src/lib.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: check C header TLS init flags:
+  rg -n "TLS_API_INIT_FLAGS" picoquic/tls_api.h picoquic/picoquic.h
+
+[2026-05-07] Phase 4B LB/minicrypto batch: search TLS unload counterpart:
+  rg -n "tls_api_unload|picoquic_tls_api_unload" rs/fq/src picoquic -g '*.[ch]' -g '*.rs'
+
+[2026-05-07] Phase 4B LB/minicrypto batch: find provider table sizes:
+  rg -n "CIPHER_SUITES_NB_MAX|KEY_EXCHANGES_NB_MAX|HPKE_CIPHER" picoquic
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect LB helper region after patch-context miss:
+  sed -n '318,470p' rs/fq/src/lb.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: inspect LB verify block region:
+  sed -n '470,540p' rs/fq/src/lb.rs
+
+[2026-05-07] Phase 4B LB/minicrypto batch: format after implementation:
+  cargo fmt
+
+[2026-05-07] Phase 4B LB/minicrypto batch: compile test targets:
+  cargo test --no-run
+
+[2026-05-07] Phase 4B LB/minicrypto batch: format after cfg cleanup:
+  cargo fmt
+
+[2026-05-07] Phase 4B LB/minicrypto batch: compile test targets after cfg cleanup:
+  cargo test --no-run
+
+[2026-05-07] Phase 4B LB/minicrypto batch: final clippy gate:
+  cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Phase 4B LB/minicrypto batch: targeted minicrypto registry verification:
+  cargo test minicrypto_is_last
 
 [2026-04-30] Re-run Phase 0 with narrowed scope (picoquic/ only):
   rm -f xlate/phase1_state.json
@@ -1335,3 +1549,905 @@
 2026-05-06 Codex: restage command log before commit: git add COMMANDS.log
 2026-05-06 Codex: commit Phase 4 marker cleanup: git commit -m "Complete Phase 4 marker cleanup"
 2026-05-06 Codex: run full Rust test suite after Phase 4 marker cleanup: cd rs/fq && CARGO_INCREMENTAL=0 cargo test
+2026-05-07 Phase 4B missing batch: implement BBRIsProbingBW, BBRLossLowerBounds, BBRModulateCwndForRecovery, BBRRaiseInflightHiSlope, BBRResetCongestionSignals in rs/fq/src/bbr.rs: cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings
+2026-05-07 Phase 4B missing batch: add update_windowed_min_filter to bbr.rs; create bbr1.rs with BBR1EnterStartup, BBR1CheckFullPipe, BBR1EnterProbeRTT, BBR1AfterOneRoundtripInFastRecovery; add pub mod bbr1 to lib.rs; cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean); 9 new unit tests pass
+2026-05-07 Phase 4B missing batch: implement picoquic_bbr1_observe, picoquic_bbr1_set_options, picoquic_bbr1_suspension_almost_over in bbr1.rs; add C doc ref to bytestream_error (set_error) in bytestream.rs; create c4.rs with C4State struct, C4AlgState, C4Congestion enums, and c4_growth_evaluate; add pub mod c4 to lib.rs; cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean); 12 new unit tests pass
+2026-05-07 Phase 4B missing batch: implement config_set_string_param, picoquic_config_get_option_char_index, picoquic_config_get_option_name_index in config.rs; create cubic.rs with CubicAlgState enum, CubicState struct, w_cubic private method (C: cubic_W_cubic), observe public method (C: cubic_observe), observe_into wrapper, enter_avoidance, cubic_root; add pub mod cubic to lib.rs; cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean); 4 new unit tests pass
+2026-05-07 Phase 4B ECH batch: create rs/fq/src/ech.rs with HPKE constants (kem_id/kdf_id/aead_id), HpkeCipherSuiteId, EchOpenerState.open (C: ech_opener_callback — todo! for DHKEM), base64_encode (C: picoquic_base64_encode), ech_get_ciphers_from_kem (C: picoquic_ech_get_ciphers_from_kem), ech_config_id_from_config (private helper); add ech_client_config field to Connection in internal.rs; implement ech_configure_client in lib.rs; add pub mod ech to lib.rs; cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean); 12 new unit tests pass
+2026-05-07 Phase 4B missing batch: add FastccAlgState enum, FastccState struct, fastcc_seed_cwin (C: picoquic_fastcc_seed_cwin fastcc.c:85-92), fastcc_observe (C: picoquic_fastcc_observe fastcc.c:320-325) to fastcc.rs; add compute_ack_gap private helper (C: picoquic_compute_ack_gap frames.c:2997-3045), compute_ack_delay_max (C: picoquic_compute_ack_delay_max frames.c:3047-3064), ack_gap_override_if_needed (C: picoquic_ack_gap_override_if_needed frames.c:4290-4307) to internal.rs; cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean); 8 new unit tests pass
+2026-05-07 Phase 4B missing batch (frames.c): add Path::estimate_max_path_bandwidth (C: picoquic_estimate_max_path_bandwidth frames.c:2924-2961), Connection::compute_packets_in_window (C: picoquic_compute_packets_in_window frames.c:2974-2995), Connection::queue_data_repeat_node_create (C: picoquic_queue_data_repeat_node_create frames.c:2133-2136), Connection::queue_data_repeat_node_value (C: picoquic_queue_data_repeat_node_value frames.c:2138-2141), StreamHead::enforce_reset_stream_frame (C: picoquic_enforce_reset_stream_frame frames.c:252-282) to internal.rs; cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (newreno/pacing/paths): create rs/fq/src/newreno.rs with NewrenoState struct + observe() (C: picoquic_newreno_observe newreno.c:309-314); add /// C: picoquic_newreno_sim_seed_cwin doc comment to seed_cwin in cc_common.rs; fix /// C: picoquic_pacing_init doc comment in internal.rs; add tuple_challenge_time free fn (C: picoquic_tuple_challenge_time paths.c:238-257) and Connection::verify_path_available (C: picoquic_verify_path_available paths.c:326-373) to internal.rs; add pub mod newreno to lib.rs; update function_translation_map.json for 5 items; cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (minicrypto + openssl): add init_minicrypto() (C: picoquic_init_minicrypto minicrypto.c:48-51, no-op) and set_minicrypto_private_key_from_key_file() (C: set_minicrypto_private_key_from_key_file minicrypto.c:35-38, PEM reader) to tls_api.rs; add init_openssl() (C: picoquic_init_openssl openssl.c:71-88), clear_openssl() (C: picoquic_clear_openssl openssl.c:90-108), KeyExchangeContext + openssl_keyex_from_key_file() (C: openssl_keyex_from_key_file openssl.c:344-365) to sys/openssl.rs; cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B final batch (ech HPKE + openssl root certs + socks cmsg): implement EchOpenerState::open (C: ech_opener_callback ech.c:230-267) with hpke_setup_receiver (DHKEM decap via hpke crate); implement CertificateVerifier::set_root_certificates (C: picoquic_openssl_set_tls_root_certificates picoquic_ptls_openssl.c:298-319) using X509_STORE_add_cert FFI (add openssl-sys + foreign-types optional deps to Cargo.toml); add SignCertificate struct + set_sign_certificate_from_key (C: set_openssl_sign_certificate_from_key picoquic_ptls_openssl.c:110-136) to sys/openssl.rs; add cmsg_format_header_return_data_ptr (C: cmsg_format_header_return_data_ptr picosocks.c:519-543, cfg(unix)) to socks.rs (add libc dep); add hpke dep to Cargo.toml; cargo test --no-run --all-features && cargo fmt --check && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (socks/splay/port_blocking): add /// C: picoquic_socket_set_pkt_info to Socket::set_pkt_info (socks.rs) + implement full libc setsockopt body in Socket2Udp::set_pkt_info (socks_socket2.rs: IPV6_V6ONLY+IPV6_RECVPKTINFO / IP_PKTINFO|IP_RECVDSTADDR); add /// C: picoquic_socket_set_pmtud_options to Socket::set_pmtud_options (socks.rs) + Linux-only body in Socket2Udp::set_pmtud_options (IP/IPV6_MTU_DISCOVER+IP_PMTUDISC_PROBE); extract mark_gp() private method from rotate() in SplayTree (splay.rs, /// C: mark_gp picosplay.c:307); add /// C: picosplay_init_tree to SplayTree::new() (splay.rs); add /// C: picoquic_disable_port_blocking to set_port_blocking_disabled() (lib.rs); cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (prague + padding policy + stream priority): create rs/fq/src/prague.rs with PragueAlgState enum, PragueState struct, prague_get_pkt_ctx() (C: picoquic_prague_get_pkt_ctx prague.c:144-154), prague_init_reno() (C: picoquic_prague_init_reno prague.c:118-124), PragueState::observe() (C: picoquic_prague_observe prague.c:407-412); add pub mod prague to lib.rs; add /// C: picoquic_cnx_get_padding_policy doc comment to Connection::padding_policy() (lib.rs); add compare_stream_priority() free fn (C: picoquic_compare_stream_priority quicctx.c:3486-3500) to lib.rs; cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (quicctx.c accessor batch): add /// C: picoquic_enable_sslkeylog doc ref to Quic::set_sslkeylog_enabled (lib.rs); add Connection::remote_application_error() returning self.remote_application_error (C: picoquic_get_application_error); add Connection::close_reasons() returning (local_error, remote_error, application_error, remote_application_error) tuple (C: picoquic_get_close_reasons); add /// C: picoquic_get_callback_function doc ref to Connection::callback(); add Connection::callback_ctx() returning Option<&dyn Any> (C: picoquic_get_callback_context); update function_translation_map.json for 5 items; cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (quicctx.c 5-item accessor batch): add /// C: picoquic_get_cnx_state to Connection::state() (lib.rs:2323); add /// C: picoquic_get_default_callback_function to Quic::default_callback() (lib.rs); add Quic::default_callback_ctx() returning Option<&dyn Any> (C: picoquic_get_default_callback_context); add Connection::local_cnxid() traversing paths[0].tuples[0].local_connection_id through Arena (C: picoquic_get_local_cnxid); add Arena::next_after_idx() + Token::slot_idx() + Connection::own_token field + Quic::next_cnx() (C: picoquic_get_next_cnx) — cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (quicctx.c 5-item back-pointer/accessor batch): add quic_ptr field to Connection (internal.rs) + set in create_cnx_internal; implement unsafe Connection::quic() using quic_ptr (C: picoquic_get_quic_ctx quicctx.c:1419); add Quic::insert_cnx_in_list() private helper counting current_number_connections (C: picoquic_insert_cnx_in_list quicctx.c:1436), called from create_cnx_internal; document RegisteredToken explaining picoquic_registered_token_create is absorbed into SplayTree design (quicctx.c:551); add C doc ref to Connection::rtt() (C: picoquic_get_rtt quicctx.c:5438); update Quic::set_alpn_select_fn() to clear default_alpn (C: picoquic_set_alpn_select_fn_v2 quicctx.c:4737) -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (quicctx.c 5 items): extract set_tp_value_by_type() as private free function in lib.rs and refactor set_default_tp_value to delegate (C: picoquic_set_tp_value_by_type quicctx.c:819); add Connection::stream_from_node() via splay-token lookup (C: picoquic_stream_from_node quicctx.c:3459); add Path::unchain_tuple(index) via Vec::remove (C: picoquic_unchain_tuple quicctx.c:1733); add IssuedTicket::update() setter (C: picoquic_update_issued_ticket quicctx.c:444); add /// C: doc ref to set_use_unique_log_names (C: picoquic_use_unique_log_names quicctx.c:4646) -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (5 items: packet_type_from_epoch, program_app_wake_time, testloss, simloss, close_network_wake_up): add packet_type_from_epoch() free fn mapping epoch i32 0-3 to PacketType (C: sender.c:1745, internal.rs); add Connection::program_app_wake_time() updating next_wake_time from app_wake_time (C: sender.c:3894, internal.rs); add testloss()/simloss() private helpers to tests/harness.rs with C: references (C: sim_link.c:144,160); add /// C: doc refs to existing sim_testloss/sim_simloss methods in tests/util.rs; add close_network_wake_up() to packet_loop.rs clearing mpsc wake channel (C: sockloop.c:1691) -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (5 items: spinbit_null_outgoing C: doc, spinbit_random_incoming C: doc, format_ticket, update_path_rtt_one_way, add_proposed_alpn note): add /// C: ref to NullSpinBit::outgoing (spinbit.rs, C: spinbit.c:55-59); RandomSpinBit::incoming already had comment; add format_ticket() free fn to tls_api.rs constructing StoredTicket from components (C: ticket_store.c:29-99); add Connection::update_path_rtt_one_way() to internal.rs with full clock-offset validation logic (C: timing.c:122-172); add add_proposed_alpn design-replacement note in tls_api.rs explaining Phase 2 AlpnSelect supersession (C: tls_api.c:2207) -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (5 tls_api.rs items): add /// C: picoquic_add_to_tls_stream to queue_tls_bytes(); replace "gone" comment block with public aead_get_checksum_length() (C: tls_api.c:2393), aead_confidentiality_limit() (C: tls_api.c:2450), aead_decrypt_generic() with Option<&dyn PacketKey> for C NULL guard (C: tls_api.c:2456), aead_encrypt_generic() (C: tls_api.c:2473) -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (5 tls_api.rs items): add pub fn aead_integrity_limit() delegating to PacketKey::integrity_limit (C: tls_api.c:2445); add Quic::crypto_random() filling buf via self.rng (C: tls_api.c:771); add /// C: doc ref to retry_protection_pseudo_packet (C: tls_api.c:3173); add private fn get_ecb_cipher_by_name() returning bool for AES128-ECB (C: tls_api.c:451) + pub fn ecb_create_by_name() (C: tls_api.c:478); add pub fn get_hash_algorithm_by_name() wrapping hash_create (C: tls_api.c:494) -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (5 tls_api.rs items: hash_finalize, hash_update, pn_encrypt, pn_iv_size, set_aead_from_secret): add Aes256GcmPacketKey struct+PacketKey impl (AES-256-GCM-SHA384, C: ptls_aead_new); add AeadSuiteId enum; add private set_aead_from_secret() (C: tls_api.c:1296-1309); add HashContext enum (Sha256/Sha384/Sha512)+new()+digest_size(); add pub hash_update() (C: tls_api.c:736-738); add pub hash_finalize() consuming context (C: tls_api.c:740-742); add pub pn_iv_size()->16 (C: tls_api.c:2369-2372); add pub pn_encrypt() via HeaderKey::mask (C: tls_api.c:2374-2378) -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (5 items: negotiate_multipath_option, log_app_message_v, get_debug_out, get_debug_suspended, compare_connection_id): add Connection::negotiate_multipath_option() to internal.rs (C: transport.c:283-304) setting is_multipath_enabled and max_path_id fields; add Connection::log_app_message_v() to textlog.rs delegating to Log::app_message (C: unified_log.c:59-73); add get_debug_out()->bool and get_debug_suspended()->bool to utils.rs reading thread-local state (C: util.c:111-119); add compare_connection_id() to utils.rs with length-first three-way compare (C: util.c:353-365) -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (5 items in bbr.rs: BBRAdvanceEcnFrac, BBRAdvanceMaxBwFilter, BBRBDPMultiple, BBRBoundCwndForModel, BBRCheckPathSaturated): BBRAdvanceMaxBwFilter already existed as advance_max_bw_filter with correct C: ref; added BbrState::bdp_multiple() delegating to bdp_multiple_with_bw at self.bw (C: bbr.c:878); added BbrState::bound_cwnd_for_model() capping cwin via inflight_hi/headroom/inflight_lo/floor (C: bbr.c:647); added BbrState::advance_ecn_frac() using access_ecn_packet_context to update ecn_alpha per round (C: bbr.c:2288); added BbrState::check_path_saturated() resetting max_bw_filter and entering Drain on saturated bandwidth probe (C: bbr.c:1699, RTTJitterBufferProbe always enabled) -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (5 items in bbr.rs: BBRCheckStartupLongRtt, BBRCheckStartupResume, BBRCheckTimeToCruise, BBRCheckTimeToProbeBW, BBRComputeEcnFrac): added quantization_budget/inflight_with_bw/start_probe_bw_refill/is_reno_coexistence_probe_time/check_drain/exit_startup_long_rtt helpers; added BbrState::check_startup_long_rtt (pub, C: bbr.c:2128) using hystart_test + hystart_loss_volume_test; added check_startup_resume (pub(crate), C: bbr.c:1982); added check_time_to_cruise (pub(crate), C: bbr.c:1626); added check_time_to_probe_bw (pub(crate), C: bbr.c:1780); added compute_ecn_frac (pub, C: bbr.c:2262); added CongestionNotification import -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B missing batch (5 items in bbr.rs: BBRUpdateModelAndState, BBRUpdateProbeBWCyclePhase, BBRUpdateRound, BBRUpdateStartupLongRtt, picoquic_bbr_notify): BBRUpdateRound was already present as update_round; added update_congestion_signals (C: bbr.c:1067), update_probe_bw_cycle_phase (C: bbr.c:1850), update_model_and_state (C: bbr.c:2307), update_on_ack (C: bbr.c:2335), update_startup_long_rtt (C: bbr.c:2155), enter_lost_feedback (C: bbr.c:767), on_enter_rto (C: bbr.c:794), on_spurious_loss (C: bbr.c:840), notify_ack (C: bbr.c:2388), notify (C: bbr.c:2404); added State + PathCc imports -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B approved missing batch (5 items: picoquic_bbr_notify_ack + 4 bbr1 items): picoquic_bbr_notify_ack was already implemented in bbr.rs (C: bbr.c:2388, added in prior batch); for bbr1.rs: added BBR1AdvanceCyclePhase (C: bbr1.c:731), BBR1ExitProbeRTT (C: bbr1.c:892), BBR1CheckProbeRTT (C: bbr1.c:955), BBR1ExitFastRecovery (C: bbr1.c:1112) plus required helpers save_cwnd, ltbw_reset_sampling, ltbw_interval_done, reset_probe_bw_mode, ltbw_sampling, enter_probe_bw; added 9 new constants + BBR1_PACING_GAIN_CYCLE static; added rate_from_bytes import; 5 advance_cycle_phase unit tests -- cargo fmt && cargo clippy --tests --all-features -- -D warnings (clean); cargo test advance_cycle_phase (5/5 pass)
+2026-05-07 Phase 4B required-missing batch (5 items): bytestream_vint_len (bytestream.rs, standalone fn delegating to ByteStream::varint_encoded_len); c4_delay_threshold (c4.rs, method on C4State using sensitivity_1024 + MULT1024, capped at C4_DELAY_THRESHOLD_MAX=25000); picoquic_bbr1_reset (bbr1.rs, zeroes all state then runs startup init); picoquic_bbr1_notify_congestion (bbr1.rs, filters repeated events, halves cwin, drives state machine); picoquic_bbr1_notify (bbr1.rs, dispatches CongestionNotification variants); added helpers exit_startup_long_rtt, suspension_exit, update_on_ack; updated imports -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+2026-05-07 Phase 4B required-missing batch (5 items): picoquic_config_get_command_line_option_index (config.rs, delegates to parse_option_string → i32 index); cubic_init as CubicState::init (cubic.rs, boxes CubicState into path.congestion_alg_state); cubic_enter_recovery as CubicState::enter_recovery (cubic.rs, fast-convergence + ssthresh + avoidance/slowstart); cubic_correct_spurious as CubicState::correct_spurious (cubic.rs, undo recovery on spurious loss); cubic_notify as CubicState::notify (cubic.rs, full event dispatch incl. HyStart RTT-rise, SeedCwin, Reset) -- cargo fmt && cargo test --no-run && cargo clippy --tests --all-features -- -D warnings (all clean)
+
+[2026-05-07] Codex Phase 4B resume snapshot using local Cargo target dir:
+  python3 scripts/phase4b.py --status
+  jq -r '.entries | group_by(.required_action)[] | "\(.[0].required_action) \(length)"' xlate/function_translation_map.json
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test -- --list
+
+[2026-05-07] Codex Phase 4B resume test snapshot using local Cargo target dir:
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test --quiet
+
+[2026-05-07] Codex Phase 4B resume doctest snapshot using local Cargo target dir:
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test --doc --quiet
+
+[2026-05-07] Codex Phase 4B inspect first pending map entries and existing Rust implementations:
+  jq '.entries[] | select(.required_action=="required_missing") | {c_id, c, rust, reason, phase4a_plan} | select(.c.name=="picoquic_ech_get_retry_config" or .c.name=="picoquic_get_default_callback_context" or .c.name=="picoquic_get_rtt" or .c.name=="picoquic_bbr_notify" or .c.name=="picoquic_ech_create_config_from_private_key" or .c.name=="picoquic_ech_create_config_from_public_key")' xlate/function_translation_map.json
+  rg -n "ech_get_retry_config|get_default_callback_context|get_rtt|picoquic_bbr_notify|create_config_from_private|create_config_from_public|retry_config|default_callback_ctx|fn rtt|pub fn notify" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/bbr.rs rs/fq/src/ech.rs picoquic/ech.c picoquic/quicctx.c picoquic/bbr.c
+
+[2026-05-07] Codex Phase 4B inspect mapped incomplete Rust bodies:
+  sed -n '2320,2405p' rs/fq/src/bbr.rs
+  sed -n '2678,2740p' rs/fq/src/lib.rs
+  sed -n '3548,3678p' rs/fq/src/lib.rs
+  sed -n '840,930p' picoquic/ech.c
+  sed -n '1060,1080p' picoquic/ech.c
+  sed -n '5434,5445p' picoquic/quicctx.c
+
+[2026-05-07] Codex Phase 4B inspect stale map fixer and Rust function scanner:
+  sed -n '1,180p' scripts/fix_phase4b_map_entries.py
+  rg -n "def rust|body_start|body_end|incomplete|TODO_PATTERN|Phase 4 body|not yet wired" scripts/phase4_common.py scripts/fix_phase4b_map_entries.py
+
+[2026-05-07] Codex Phase 4B apply stale-entry map fixer:
+  python3 scripts/fix_phase4b_map_entries.py
+  jq -r '.entries | group_by(.required_action)[] | "\(.[0].required_action) \(length)"' xlate/function_translation_map.json
+
+[2026-05-07] Codex Phase 4B inspect BBR notify C EcnEc behavior:
+  sed -n '2400,2468p' picoquic/bbr.c
+
+[2026-05-07] Codex Phase 4B verify BBR notify marker cleanup:
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo fmt
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test --no-run
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo clippy --tests --all-features -- -D warnings
+  python3 scripts/phase4a.py
+  jq -r '.entries | group_by(.required_action)[] | "\(.[0].required_action) \(length)"' xlate/function_translation_map.json
+
+[2026-05-07] Codex Phase 4B inspect clippy failures in existing BBR/C4/BBR1/CUBIC code:
+  sed -n '300,330p' rs/fq/src/bbr.rs
+  sed -n '330,382p' rs/fq/src/bbr1.rs
+  sed -n '1100,1136p' rs/fq/src/bbr1.rs
+  sed -n '392,410p' rs/fq/src/c4.rs
+  sed -n '556,580p' rs/fq/src/c4.rs
+  sed -n '330,410p' rs/fq/src/cubic.rs
+
+[2026-05-07] Codex Phase 4B verify clippy cleanup after mechanical lint fixes:
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo fmt
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test --no-run
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Codex Phase 4B refresh function map after BBR cleanup and reapply stale-entry fixer:
+  python3 scripts/phase4a.py
+  python3 scripts/fix_phase4b_map_entries.py
+  jq -r '.entries | group_by(.required_action)[] | "\(.[0].required_action) \(length)"' xlate/function_translation_map.json
+
+[2026-05-07] Codex Phase 4B list next pending entries after map refresh:
+  python3 scripts/phase4b.py --status
+
+[2026-05-07] Codex Phase 4B inspect ECH pending implementation cluster:
+  rg -n "create_config|create_rr|parse_public|read_config|save_config|base64|pem|public_key|private_key|config_list|C: `picoquic_ech" rs/fq/src/ech.rs rs/fq/src/lib.rs
+  sed -n '1,260p' rs/fq/src/ech.rs
+  sed -n '260,620p' rs/fq/src/ech.rs
+  sed -n '620,980p' rs/fq/src/ech.rs
+  sed -n '700,930p' picoquic/ech.c
+  sed -n '930,1060p' picoquic/ech.c
+
+[2026-05-07] Codex Phase 4B inspect local hpke key derivation APIs:
+  rg -n "trait Kem|sk_to_pk|derive|PublicKey|PrivateKey|to_bytes|from_bytes" ~/.cargo/registry/src/index.crates.io-*/hpke-0.12.0 ~/.cargo/registry/src/index.crates.io-*/p256-0.13.2 ~/.cargo/registry/src/index.crates.io-*/elliptic-curve-0.13.8
+
+[2026-05-07] Codex Phase 4B verify ECH config creation implementation:
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo fmt
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test ech_config --quiet
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test ech_config_p --quiet
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test --no-run
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo clippy --tests --all-features -- -D warnings
+
+[2026-05-07] Codex Phase 4B refresh map after ECH config implementation:
+  python3 scripts/phase4a.py
+  python3 scripts/fix_phase4b_map_entries.py
+  jq -r '.entries | group_by(.required_action)[] | "\(.[0].required_action) \(length)"' xlate/function_translation_map.json
+
+[2026-05-07] Codex Phase 4B list next pending entries after ECH config cluster:
+  python3 scripts/phase4b.py --status
+
+[2026-05-07] Codex Phase 4B verify tls_api_init placeholder wording cleanup:
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo fmt
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test ech_config_p --quiet
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test --no-run
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo clippy --tests --all-features -- -D warnings
+  python3 scripts/phase4a.py
+  python3 scripts/fix_phase4b_map_entries.py
+  jq -r '.entries | group_by(.required_action)[] | "\(.[0].required_action) \(length)"' xlate/function_translation_map.json
+
+[2026-05-07] Codex Phase 4B frames internal.rs batch: read required repository instructions and command-log format:
+  sed -n '1,240p' CLAUDE.md
+  sed -n '1,260p' TRANSLATE_PLAN.md
+  sed -n '1,260p' xlate/impl_translation_guide.md
+  sed -n '1,80p' COMMANDS.log
+  tail -n 30 COMMANDS.log
+
+[2026-05-07] Codex Phase 4B frames internal.rs batch: inspect C/Rust frame implementations and verify required cargo gates:
+  rg -n "encode_length_of_stream_frame|format_ack_frame_in_context|format_data_blocked_frame|format_datagram_frame|format_new_token_frame|stream_frame|ack_frame|data_blocked|datagram|new_token" rs/fq/src/internal.rs
+  sed -n '980,1045p' picoquic/frames.c
+  sed -n '1660,1850p' picoquic/frames.c
+  sed -n '4060,4230p' picoquic/frames.c
+  sed -n '5270,5320p' picoquic/frames.c
+  sed -n '7800,8355p' rs/fq/src/internal.rs
+  sed -n '8550,8835p' rs/fq/src/internal.rs
+  sed -n '8835,9045p' rs/fq/src/internal.rs
+  sed -n '9525,9895p' rs/fq/src/internal.rs
+  rg -n "fn encode_stream_like_frame|fn encode_varint_at|fn encode_varint_vec|fn format_time_stamp_frame|time_stamp" rs/fq/src/internal.rs
+  rg -n "struct AckContext|struct Sack|SackList|select_ack_ranges|item_record_sent|nb_times_sent|sack_last|last_item|previous_item|first_range" rs/fq/src/internal.rs
+  rg -n "pub enum FrameType|DataBlocked|NewToken|DatagramL|AckEcn|PathAck" rs/fq/src/frames.rs
+  rg -n "ack_delay_exponent|local_parameters|remote_parameters|is_time_stamp_sent|is_immediate_ack_required" rs/fq/src/internal.rs
+  sed -n '1760,1955p' rs/fq/src/internal.rs
+  sed -n '6410,6828p' rs/fq/src/internal.rs
+  sed -n '8380,8525p' rs/fq/src/internal.rs
+  sed -n '9980,10028p' rs/fq/src/internal.rs
+  sed -n '8525,8588p' rs/fq/src/internal.rs
+  sed -n '1,180p' rs/fq/src/internal.rs
+  sed -n '1810,1965p' picoquic/frames.c
+  sed -n '1965,2115p' picoquic/frames.c
+  sed -n '2115,2265p' picoquic/frames.c
+  rg -n "picoquic_sack_last_item|sack_last_item|sack_previous_item|sack_next_item|picoquic_sack_item_record_sent|picoquic_sack_select_ack_ranges|picoquic_sack_list_last" picoquic/sacks.c picoquic/*.h
+  sed -n '1,90p' rs/fq/src/frames.rs
+  rg -n "enum PacketContext|pub enum PacketContext" rs/fq/src/lib.rs rs/fq/src/internal.rs
+  sed -n '50,100p' picoquic/sacks.c
+  sed -n '300,335p' picoquic/sacks.c
+  sed -n '90,140p' picoquic/sacks.c
+  rg -n "range_counts" rs/fq/src/internal.rs
+  rg -n "sack_item_range_end|range_end" picoquic/sacks.c picoquic/picoquic_internal.h
+  sed -n '456,486p' picoquic/sacks.c
+  rg -n "picoquic_format_time_stamp_frame" -C 8 picoquic/frames.c
+  sed -n '5719,5732p' picoquic/frames.c
+  sed -n '4215,4315p' picoquic/frames.c
+  rg -n "struct Path|path_is_demoted|is_demoted|unique_path_id|ack_ctx" rs/fq/src/internal.rs
+  sed -n '2030,2070p' rs/fq/src/internal.rs
+  rg -n "allow\\(clippy::too_many_arguments|too_many_arguments|#!\\[allow" rs/fq/src/lib.rs rs/fq/src/internal.rs
+  sed -n '8490,8580p' rs/fq/src/internal.rs
+  cargo fmt
+  cargo test --no-run
+  cargo clippy --tests --all-features -- -D warnings
+  cargo fmt
+  cargo test --no-run
+  cargo clippy --tests --all-features -- -D warnings
+  git diff -- rs/fq/src/internal.rs
+  git diff -- COMMANDS.log
+
+[2026-05-07] Codex Phase 4B frames internal.rs batch: locate implemented frame functions for final summary:
+  rg -n "fn encode_length_of_stream_frame|pub fn format_ack_frame_in_context|pub fn format_data_blocked_frame|pub fn format_datagram_frame|pub fn format_new_token_frame" rs/fq/src/internal.rs
+
+[2026-05-07] Codex Phase 4B missing frame formatters: read required guidance and target C/Rust context:
+  sed -n '1,220p' CLAUDE.md
+  sed -n '1,240p' TRANSLATE_PLAN.md
+  sed -n '1,260p' xlate/impl_translation_guide.md
+  tail -n 20 COMMANDS.log
+  sed -n '260,320p' picoquic/frames.c
+  sed -n '470,515p' picoquic/frames.c
+  sed -n '5848,5888p' picoquic/frames.c
+  sed -n '6100,6135p' picoquic/frames.c
+  sed -n '6210,6245p' picoquic/frames.c
+  rg -n "reset_stream|path_available|path_backup|paths_blocked|path_cid_blocked|format_.*blocked|enforce_reset|more_data|is_pure_ack|StreamHead|struct Stream" rs/fq/src/internal.rs
+  rg -n "frames_varint|varint_encode|uint8_encode|frame_type_reset_stream|RESET_STREAM|PATH_AVAILABLE|PATH_BACKUP|PATHS_BLOCKED|PATH_CID_BLOCKED" rs/fq/src
+  sed -n '1760,1915p' rs/fq/src/internal.rs
+  sed -n '7770,8025p' rs/fq/src/internal.rs
+  sed -n '8350,8438p' rs/fq/src/internal.rs
+  sed -n '9680,9825p' rs/fq/src/internal.rs
+  sed -n '9825,10035p' rs/fq/src/internal.rs
+  sed -n '10360,10475p' rs/fq/src/internal.rs
+  sed -n '10650,10730p' rs/fq/src/internal.rs
+  sed -n '10980,11090p' rs/fq/src/internal.rs
+  sed -n '1,260p' rs/fq/src/frames.rs
+  sed -n '5220,5375p' rs/fq/src/internal.rs
+  rg -n "format_reset_stream_frame|format_reset_stream_at_frame|format_path_available_or_backup_frame|format_paths_blocked_frame|format_path_cid_blocked_frame|RESET_STREAM_AT|reset_stream_at|PathCidBlocked|PathsBlocked" rs/fq/src/tests rs/fq/src/internal.rs rs/fq/src/frames.rs
+  rg -n "frame_type_reset_stream|frame_type_reset_stream_at|frame_type_path_available|frame_type_path_backup|frame_type_paths_blocked|frame_type_path_cid_blocked" picoquic/picoquic_internal.h picoquic/*.h picoquic/*.c
+  sed -n '8100,8230p' rs/fq/src/internal.rs
+  sed -n '9110,9325p' rs/fq/src/internal.rs
+  sed -n '10000,10220p' rs/fq/src/internal.rs
+  sed -n '10730,10925p' rs/fq/src/internal.rs
+  rg -n "queue_paths_blocked|queue_path_cid_blocked|path_cid_next_sequence_number|paths_blocked|sending_path_cid_blocked_frame|max_path_id_acknowledged|path_cid" rs/fq/src/internal.rs
+  sed -n '6126,6185p' picoquic/frames.c
+  sed -n '6237,6325p' picoquic/frames.c
+  sed -n '10880,10925p' rs/fq/src/internal.rs
+  rg -n "picoquic_varint_encode\\(|picoquic_frames_varint_encode\\(" picoquic/intformat.c picoquic/*.c picoquic/*.h
+  sed -n '1,180p' picoquic/intformat.c
+  rg -n "fn frames_uint8_encode|frames_uint8_encode|uint8_encode" rs/fq/src/internal.rs rs/fq/src/utils.rs
+  rg -n "pub fn .*reset.*stream|reset_stream\\(" rs/fq/src/internal.rs rs/fq/src/lib.rs
+  sed -n '930,950p' picoquic/util.c
+  sed -n '852,868p' rs/fq/src/utils.rs
+  sed -n '3160,3210p' rs/fq/src/lib.rs
+  rg -n "format_.*frame\\(.*stream: &mut StreamHead|StreamHead,.*more_data" rs/fq/src/internal.rs
+  tail -n 80 rs/fq/src/internal.rs
+  rg -n "#\\[cfg\\(test\\)\\]|mod test" rs/fq/src/internal.rs
+  sed -n '8200,8265p' rs/fq/src/internal.rs
+  sed -n '9660,9708p' rs/fq/src/internal.rs
+  rg -n "impl Default for StreamHead|StreamHead \\{|stream_head|create_stream|fn new\\(.*StreamHead|SackList \\{" rs/fq/src/internal.rs rs/fq/src/tests
+  sed -n '7440,7498p' rs/fq/src/internal.rs
+  sed -n '9339,9408p' rs/fq/src/internal.rs
+  sed -n '2920,2990p' rs/fq/src/internal.rs
+  sed -n '7790,7875p' rs/fq/src/internal.rs
+  sed -n '10420,10525p' rs/fq/src/internal.rs
+  sed -n '11038,11080p' rs/fq/src/internal.rs
+  rg -n "C: `picoquic_format_(reset_stream_frame|reset_stream_at_frame|path_available_or_backup_frame|paths_blocked_frame|path_cid_blocked_frame)`|pub fn format_(reset_stream_frame|reset_stream_at_frame|path_available_or_backup_frame|paths_blocked_frame|path_cid_blocked_frame)" rs/fq/src/internal.rs
+  sed -n '10520,10570p' rs/fq/src/internal.rs
+  sed -n '11100,11165p' rs/fq/src/internal.rs
+  rg -n 'picoquic_format_(reset_stream_frame|reset_stream_at_frame|path_available_or_backup_frame|paths_blocked_frame|path_cid_blocked_frame)|pub fn format_(reset_stream_frame|reset_stream_at_frame|path_available_or_backup_frame|paths_blocked_frame|path_cid_blocked_frame)' rs/fq/src/internal.rs
+  rg -n "Err\\(Error::Generic\\)|Err\\(crate::Error::Generic\\)|Complex: requires|todo!\\(\\)|unimplemented!\\(\\)|SKIP:" rs/fq/src/internal.rs rs/fq/src/lib.rs
+  sed -n '11165,11225p' rs/fq/src/internal.rs
+  (cd rs/fq && cargo fmt)
+  (cd rs/fq && cargo test --no-run)
+  (cd rs/fq && cargo clippy --tests --all-features -- -D warnings)
+  rg -n 'pub fn format_(reset_stream_frame|reset_stream_at_frame|path_available_or_backup_frame|paths_blocked_frame|path_cid_blocked_frame)|queue_path_available_or_backup_frame' rs/fq/src/internal.rs
+2026-05-07 - Read repository coding instructions: sed -n '1,220p' CLAUDE.md
+2026-05-07 - Read translation plan: sed -n '1,260p' TRANSLATE_PLAN.md
+2026-05-07 - Read Phase 4 implementation guide: sed -n '1,260p' xlate/impl_translation_guide.md
+2026-05-07 - Inspect existing command log tail before appending current session commands: tail -n 20 COMMANDS.log
+2026-05-07 - Continue reading translation plan: sed -n '261,520p' TRANSLATE_PLAN.md
+2026-05-07 - Continue reading translation plan: sed -n '521,780p' TRANSLATE_PLAN.md
+2026-05-07 - Finish reading translation plan: sed -n '781,1040p' TRANSLATE_PLAN.md
+2026-05-07 - Check for any remaining translation plan content: sed -n '1041,1300p' TRANSLATE_PLAN.md
+2026-05-07 - Read C retire connection ID frame body: nl -ba picoquic/frames.c | sed -n '780,850p'
+2026-05-07 - Read C stop sending frame body: nl -ba picoquic/frames.c | sed -n '1060,1125p'
+2026-05-07 - Read C stream blocked frame bodies: nl -ba picoquic/frames.c | sed -n '1680,1760p'
+2026-05-07 - Read C ACK-needed body: nl -ba picoquic/frames.c | sed -n '4280,4365p'
+2026-05-07 - Search internal.rs for existing target names and related fields: rg -n "format_retire_connection_id_frame|format_stop_sending_frame|format_stream_blocked_frame|format_stream_data_blocked_frame|is_ack_needed_in_ctx|ack_gap_override_if_needed|queue_retire_connection_id|stop_sending|stream_data_blocked|stream_blocked" rs/fq/src/internal.rs
+2026-05-07 - Search internal.rs for frame encoding helpers and frame type usage: rg -n "pub fn frames_.*encode|fn frames_.*encode|frames_varint_encode|frames_uint8_encode|FrameEncode|FrameFormat|Frame" rs/fq/src/internal.rs
+2026-05-07 - Locate StreamHead, Connection, AckContext, and packet context types: rg -n "pub struct StreamHead|struct StreamHead|pub struct Connection|struct Connection|pub struct AckContext|struct AckContext|pub struct AckContextTimeState|enum PacketContext" rs/fq/src/internal.rs
+2026-05-07 - Inspect StreamHead and ACK context structures: nl -ba rs/fq/src/internal.rs | sed -n '1780,1965p'
+2026-05-07 - Inspect Connection stream-blocked fields: nl -ba rs/fq/src/internal.rs | sed -n '2180,2245p'
+2026-05-07 - Inspect existing ACK gap override implementation: nl -ba rs/fq/src/internal.rs | sed -n '7120,7185p'
+2026-05-07 - Inspect nearby frame-formatting implementations: nl -ba rs/fq/src/internal.rs | sed -n '9800,10075p'
+2026-05-07 - Inspect varint helpers: nl -ba rs/fq/src/internal.rs | sed -n '5300,5385p'
+2026-05-07 - Search frame type constants used by this batch: rg -n "enum FrameType|StopSending|StreamDataBlocked|StreamsBlockedBidir|RetireConnectionId|PathRetireConnectionId" rs/fq/src/frames.rs rs/fq/src/internal.rs
+2026-05-07 - Locate varint encoding helper definitions: rg -n "fn encode_varint_at|pub fn encode_varint_at|fn varint_encode|pub fn varint_encode|fn encode_varint_length" rs/fq/src/internal.rs rs/fq/src/*.rs
+2026-05-07 - Inspect low-level varint encoder body: nl -ba rs/fq/src/internal.rs | sed -n '5200,5285p'
+2026-05-07 - Inspect encode_varint_at helper: nl -ba rs/fq/src/internal.rs | sed -n '8420,8465p'
+2026-05-07 - Inspect frame type enum values: nl -ba rs/fq/src/frames.rs | sed -n '1,70p'
+2026-05-07 - Search for last-wake and frame constants in Rust sources: rg -n "last_wake|SET_LAST_WAKE|set_last_wake|PICOQUIC_FRAME|Frame" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Search Instant and Duration type usage: rg -n "pub type Instant|type Instant|from_ticks|Duration" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Locate Connection fields needed by this batch: rg -n "pub ack_gap_remote|pub ack_delay_remote|pub nb_packets_received|pub paths|pub quic|pub ack_ctx|pub max_stream_id_bidir_remote|pub max_stream_id_unidir_remote" rs/fq/src/internal.rs
+2026-05-07 - Inspect nearby next-wake handling code: nl -ba rs/fq/src/internal.rs | sed -n '9680,9735p'
+2026-05-07 - Search ACK tracking and SACK list helpers: rg -n "sack_list_last|fn .*last\\(|pub fn .*last\\(|ack_needed|is_immediate_ack_required|ack_after_fin|out_of_order_received" rs/fq/src/internal.rs
+2026-05-07 - Inspect existing simplified ACK-needed implementation: nl -ba rs/fq/src/internal.rs | sed -n '6320,6425p'
+2026-05-07 - Inspect ACK context reset code: nl -ba rs/fq/src/internal.rs | sed -n '10150,10190p'
+2026-05-07 - Inspect SackList first/last semantics: nl -ba rs/fq/src/internal.rs | sed -n '6670,6715p'
+2026-05-07 - Search packet context enum and application uses: rg -n "pub enum PacketContext|enum PacketContext|PacketContext::Application|packet_context_application" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect Quic struct area for last-wake equivalents: nl -ba rs/fq/src/internal.rs | sed -n '1440,1505p'
+2026-05-07 - Inspect Connection state fields for ACK and stream limits: nl -ba rs/fq/src/internal.rs | sed -n '2350,2510p'
+2026-05-07 - Inspect PacketContext enum definition: nl -ba rs/fq/src/lib.rs | sed -n '240,270p'
+2026-05-07 - Search tests and Rust sources for batch function coverage: rg -n "format_retire_connection_id_frame|retire_connection_id|format_stop_sending_frame|stop_sending|format_stream_blocked_frame|stream_data_blocked|is_ack_needed_in_ctx|is_ack_needed\\(" rs/fq/src/tests rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Locate Phase 4A map entries for requested functions: rg -n "picoquic_format_retire_connection_id_frame|picoquic_format_stop_sending_frame|picoquic_format_stream_blocked_frame|picoquic_format_stream_data_blocked_frame|picoquic_is_ack_needed_in_ctx" xlate/function_translation_map.json xlate/phase4a_plan.md
+2026-05-07 - Read C is_ack_needed wrapper around requested helper: nl -ba picoquic/frames.c | sed -n '4355,4395p'
+2026-05-07 - Inspect function map entry for retire CID formatter: sed -n '12680,12735p' xlate/function_translation_map.json
+2026-05-07 - Inspect function map entry for stop sending formatter: sed -n '12980,13035p' xlate/function_translation_map.json
+2026-05-07 - Inspect function map entries for stream blocked formatters: sed -n '13425,13495p' xlate/function_translation_map.json
+2026-05-07 - Inspect function map entry for ACK-needed helper: sed -n '14950,15005p' xlate/function_translation_map.json
+2026-05-07 - Inspect targeted sacktest call site for is_ack_needed mutability: nl -ba rs/fq/src/tests/sacktest.rs | sed -n '300,335p'
+2026-05-07 - Inspect sacktest connection binding for mutability inference: nl -ba rs/fq/src/tests/sacktest.rs | sed -n '250,305p'
+2026-05-07 - Search C and Rust for SET_LAST_WAKE translation support: rg -n "#define SET_LAST_WAKE|SET_LAST_WAKE|PICOQUIC_FRAME" picoquic rs/fq/src
+2026-05-07 - Inspect utils wake provenance guidance: nl -ba rs/fq/src/utils.rs | sed -n '1,85p'
+2026-05-07 - Search wake provenance fields and helpers: rg -n "wake_file|wake_line|wake" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/*.rs
+2026-05-07 - Inspect Quic wake provenance fields: nl -ba rs/fq/src/internal.rs | sed -n '1648,1662p'
+2026-05-07 - Search quic back-pointer and wake field usage: rg -n "quic_ptr|wake_file|wake_line" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect unsafe quic back-pointer accessor: nl -ba rs/fq/src/lib.rs | sed -n '2310,2335p'
+2026-05-07 - Inspect connection quic_ptr initialization: nl -ba rs/fq/src/internal.rs | sed -n '3250,3278p'
+2026-05-07 - Search C and Rust SACK first/last semantics: rg -n "picoquic_sack_list_last|picoquic_sack_list_first" picoquic rs/fq/src/internal.rs
+2026-05-07 - Inspect C SACK list implementation beginning: nl -ba picoquic/sacks.c | sed -n '1,120p'
+2026-05-07 - Inspect C SACK first/last return values: nl -ba picoquic/sacks.c | sed -n '400,430p'
+2026-05-07 - Inspect ACK frame formatting highest_ack_sent update: nl -ba rs/fq/src/internal.rs | sed -n '8850,9060p'
+2026-05-07 - Inspect ready-stream selection for stop-sending state: nl -ba rs/fq/src/internal.rs | sed -n '7720,7795p'
+2026-05-07 - Search callers for blocked and stop-sending formatters: rg -n "format_one_blocked_frame|format_blocked_frames|format_stop_sending|stop_sending_sent|stream_data_blocked_sent|format_max_stream_data_frame" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/tests
+2026-05-07 - Inspect skip_frame blocked-frame test expectations: nl -ba rs/fq/src/tests/skip_frame.rs | sed -n '580,655p'
+2026-05-07 - Locate stream ID helper methods: rg -n "pub fn rank|from_parts|is_bidir|struct StreamId|enum Role|enum Direction" rs/fq/src/stream.rs
+2026-05-07 - Inspect StreamId helper implementation: nl -ba rs/fq/src/stream.rs | sed -n '1,75p'
+2026-05-07 - Inspect StreamId rank helper details: nl -ba rs/fq/src/stream.rs | sed -n '71,90p'
+2026-05-07 - Inspect internal.rs imports around PacketContext: sed -n '50,75p' rs/fq/src/internal.rs
+2026-05-07 - Check lib.rs internal module declaration: rg -n "mod internal|pub mod internal|use internal|pub use internal" rs/fq/src/lib.rs
+2026-05-07 - Inspect full internal.rs top imports: sed -n '1,100p' rs/fq/src/internal.rs
+2026-05-07 - Inspect encode_misc_frame signature: nl -ba rs/fq/src/internal.rs | sed -n '8468,8485p'
+2026-05-07 - Locate encode_misc_frame helper: rg -n "fn encode_misc_frame|pub fn encode_misc_frame" rs/fq/src/internal.rs
+2026-05-07 - Inspect encode_misc_frame body: nl -ba rs/fq/src/internal.rs | sed -n '8598,8625p'
+2026-05-07 - Failed quote-heavy search for newly added functions: rg -n "C: `picoquic_format_retire_connection_id_frame|C: `picoquic_format_stop_sending_frame|C: `picoquic_format_stream_data_blocked_frame|C: `picoquic_format_stream_blocked_frame|C: `picoquic_is_ack_needed_in_ctx|pub fn format_retire_connection_id_frame|pub fn format_stop_sending_frame|pub fn format_stream_data_blocked_frame|pub fn format_stream_blocked_frame|pub fn is_ack_needed_in_ctx" rs/fq/src/internal.rs
+2026-05-07 - Inspect updated ACK-needed helper region: nl -ba rs/fq/src/internal.rs | sed -n '6350,6445p'
+2026-05-07 - Inspect updated retire CID and queue formatter region: nl -ba rs/fq/src/internal.rs | sed -n '9880,10090p'
+2026-05-07 - Inspect updated stop-sending and stream blocked region: nl -ba rs/fq/src/internal.rs | sed -n '10090,10195p'
+2026-05-07 - Search newly added C doc references and function names: rg -n 'picoquic_format_retire_connection_id_frame|picoquic_format_stop_sending_frame|picoquic_format_stream_data_blocked_frame|picoquic_format_stream_blocked_frame|picoquic_is_ack_needed_in_ctx|pub fn format_retire_connection_id_frame|pub fn format_stop_sending_frame|pub fn format_stream_data_blocked_frame|pub fn format_stream_blocked_frame|pub fn is_ack_needed_in_ctx' rs/fq/src/internal.rs
+2026-05-07 - Inspect updated is_ack_needed wrapper region: nl -ba rs/fq/src/internal.rs | sed -n '6445,6505p'
+2026-05-07 - Inspect updated stream blocked helper and format_one caller: nl -ba rs/fq/src/internal.rs | sed -n '10190,10275p'
+2026-05-07 - Inspect ACK computation context near helper insertion: nl -ba rs/fq/src/internal.rs | sed -n '7170,7215p'
+2026-05-07 - Inspect updated ack_gap_override method: nl -ba rs/fq/src/internal.rs | sed -n '7245,7295p'
+2026-05-07 - Inspect ack_gap_override_for_path helper: nl -ba rs/fq/src/internal.rs | sed -n '7290,7325p'
+2026-05-07 - Locate targeted test names for blocked and ACK paths: rg -n "fn .*blocked|fn .*ack|fn sack|#\\[test\\]" rs/fq/src/tests/skip_frame.rs rs/fq/src/tests/sacktest.rs
+2026-05-07 - Search tests for specific blocked and ACK references: rg -n "format_one_blocked_frame_test|blocked_frame|ack|sack" rs/fq/src/tests/mod.rs rs/fq/src/tests/skip_frame.rs rs/fq/src/tests/sacktest.rs
+2026-05-07 - Run targeted blocked-frame test: cargo test send_stream_blocked
+2026-05-07 - Run targeted ACK loop test: cargo test ack_loop
+2026-05-07 - Locate ACK frame formatting helper callers: rg -n "format_ack_frame_written|format_ack_frame\\(" rs/fq/src/tests/util.rs rs/fq/src/internal.rs
+2026-05-07 - Mistakenly inspect unrelated util region while debugging ACK test: nl -ba rs/fq/src/tests/util.rs | sed -n '2760,2805p'
+2026-05-07 - Inspect Rust ACK frame formatter region: nl -ba rs/fq/src/internal.rs | sed -n '9055,9185p'
+2026-05-07 - Read C ACK frame formatter for comparison: nl -ba picoquic/frames.c | sed -n '4074,4215p'
+2026-05-07 - Inspect test ACK wrapper helper: nl -ba rs/fq/src/tests/util.rs | sed -n '560,590p'
+2026-05-07 - Inspect ACK loop test packet number constants: nl -ba rs/fq/src/tests/sacktest.rs | sed -n '20,70p'
+2026-05-07 - Locate C ACK loop test body: rg -n "sendack_loop_test_one|sendack_loop_test" picoquictest/sacktest.c
+2026-05-07 - Read C ACK loop test body: nl -ba picoquictest/sacktest.c | sed -n '421,538p'
+2026-05-07 - Inspect Rust ACK loop assertion region: nl -ba rs/fq/src/tests/sacktest.rs | sed -n '336,365p'
+2026-05-07 - Locate SACK next/previous helpers: rg -n "fn sack_next_item|fn sack_previous_item|sack_next_item|sack_previous" rs/fq/src/internal.rs
+2026-05-07 - Inspect SACK next/previous helper bodies: nl -ba rs/fq/src/internal.rs | sed -n '6728,6758p'
+2026-05-07 - Inspect area before set_ack_needed while debugging ACK loop: nl -ba rs/fq/src/internal.rs | sed -n '8350,8428p'
+2026-05-07 - Inspect set_ack_needed body: nl -ba rs/fq/src/internal.rs | sed -n '8488,8535p'
+2026-05-07 - Inspect set_ack_needed_on_path body: nl -ba rs/fq/src/internal.rs | sed -n '8530,8575p'
+2026-05-07 - Locate SplayTree neighbor helpers: rg -n "pub fn previous|pub fn next|pub fn first|pub fn last" rs/fq/src/splay.rs
+2026-05-07 - Inspect SplayTree left/right traversal helpers: nl -ba rs/fq/src/splay.rs | sed -n '300,380p'
+2026-05-07 - Inspect SplayTree first/last/previous/next implementations: nl -ba rs/fq/src/splay.rs | sed -n '470,550p'
+2026-05-07 - Rerun ACK loop test with temporary panic-coordinate diagnostic: cargo test ack_loop
+2026-05-07 - Inspect ACK loop test combinations: nl -ba rs/fq/src/tests/sacktest.rs | sed -n '697,710p'
+2026-05-07 - Locate SackList update and range fields: rg -n "pub fn update\\(|fn update\\(|start_of_sack_range|end_of_sack_range" rs/fq/src/internal.rs | head -n 80
+2026-05-07 - Inspect Rust SackList helpers around first/last/update context: nl -ba rs/fq/src/internal.rs | sed -n '6758,6885p'
+2026-05-07 - Read C SACK update implementation: nl -ba picoquic/sacks.c | sed -n '120,270p'
+2026-05-07 - Inspect Rust SackItem methods and record counters: nl -ba rs/fq/src/internal.rs | sed -n '6888,6970p'
+2026-05-07 - Search SackList insert and counter helpers: rg -n "insert_item|record_reset|item_record|range_counts|nb_times_sent" rs/fq/src/internal.rs
+2026-05-07 - Inspect Rust SackList counter helpers and neighboring code: nl -ba rs/fq/src/internal.rs | sed -n '6900,7045p'
+2026-05-07 - Inspect SackList insert_item implementation: nl -ba rs/fq/src/internal.rs | sed -n '6698,6728p'
+2026-05-07 - Locate SplayTree find_previous helper: rg -n "find_previous|find_prev|find_next|pub fn find" rs/fq/src/splay.rs
+2026-05-07 - Inspect SplayTree find implementation: nl -ba rs/fq/src/splay.rs | sed -n '430,468p'
+2026-05-07 - Inspect SplayTree find_previous implementation: nl -ba rs/fq/src/splay.rs | sed -n '458,485p'
+2026-05-07 - Locate Arena remove support: rg -n "pub fn remove|fn remove" rs/fq/src/arena.rs rs/fq/src/internal.rs | head -n 40
+2026-05-07 - Inspect Arena remove start: nl -ba rs/fq/src/arena.rs | sed -n '150,172p'
+2026-05-07 - Inspect Arena remove completion: nl -ba rs/fq/src/arena.rs | sed -n '172,190p'
+2026-05-07 - Locate SplayTree remove support: rg -n "pub fn remove" rs/fq/src/splay.rs
+2026-05-07 - Inspect SplayTree remove signature: nl -ba rs/fq/src/splay.rs | sed -n '568,585p'
+2026-05-07 - Inspect SplayTree insert replacement behavior: nl -ba rs/fq/src/splay.rs | sed -n '390,435p'
+2026-05-07 - Locate C SACK record reset helper: rg -n "picoquic_sack_item_record_reset" -n picoquic/sacks.c picoquic/*.c
+2026-05-07 - Inspect C SACK record sent/reset helpers: nl -ba picoquic/sacks.c | sed -n '470,505p'
+2026-05-07 - Inspect current Rust SackList update location after patch context miss: nl -ba rs/fq/src/internal.rs | sed -n '6540,6620p'
+2026-05-07 - Format Rust crate after translating SackList update merge path: cargo fmt
+2026-05-07 - Rerun targeted ACK loop test after SackList merge fix: cargo test ack_loop
+2026-05-07 - Refresh function line starts for map update: rg -n 'picoquic_format_retire_connection_id_frame|picoquic_format_stop_sending_frame|picoquic_format_stream_data_blocked_frame|picoquic_format_stream_blocked_frame|picoquic_is_ack_needed_in_ctx|pub fn format_retire_connection_id_frame|pub fn format_stop_sending_frame|pub fn format_stream_data_blocked_frame|pub fn format_stream_blocked_frame|pub fn is_ack_needed_in_ctx' rs/fq/src/internal.rs
+2026-05-07 - Inspect is_ack_needed_in_ctx line span: nl -ba rs/fq/src/internal.rs | sed -n '6415,6455p'
+2026-05-07 - Inspect nearby retire CID region for map update: nl -ba rs/fq/src/internal.rs | sed -n '10045,10085p'
+2026-05-07 - Inspect retire queue region for context: nl -ba rs/fq/src/internal.rs | sed -n '10205,10285p'
+2026-05-07 - Inspect retire formatter line span: nl -ba rs/fq/src/internal.rs | sed -n '10125,10165p'
+2026-05-07 - Inspect stop sending and stream blocked formatter spans: nl -ba rs/fq/src/internal.rs | sed -n '10290,10395p'
+2026-05-07 - Inspect stream blocked end and format_one integration: nl -ba rs/fq/src/internal.rs | sed -n '10395,10445p'
+2026-05-07 - Inspect implemented map entry shape: sed -n '12735,12780p' xlate/function_translation_map.json
+2026-05-07 - Check function map for doc_refs fields: rg -n '"doc_refs"' xlate/function_translation_map.json | head -n 5
+2026-05-07 - Verify map entries for requested functions and remaining global required_missing count: rg -n 'picoquic_format_retire_connection_id_frame|picoquic_format_stop_sending_frame|picoquic_format_stream_data_blocked_frame|picoquic_format_stream_blocked_frame|picoquic_is_ack_needed_in_ctx|required_missing' xlate/function_translation_map.json
+2026-05-07 - Inspect updated retire CID map entry: sed -n '12695,12735p' xlate/function_translation_map.json
+2026-05-07 - Inspect updated stop sending map entry: sed -n '12990,13030p' xlate/function_translation_map.json
+2026-05-07 - Inspect updated stream blocked map entries: sed -n '13435,13495p' xlate/function_translation_map.json
+2026-05-07 - Inspect updated stream blocked end and ACK-needed map entry with combined sed command: sed -n '13495,13520p' xlate/function_translation_map.json && sed -n '14980,15020p' xlate/function_translation_map.json
+2026-05-07 - Final formatting gate: cargo fmt
+2026-05-07 - Final compile-only test gate: cargo test --no-run
+2026-05-07 - Final clippy gate: cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Format after clippy style fix: cargo fmt
+2026-05-07 - Re-run compile-only test gate after clippy style fix: cargo test --no-run
+2026-05-07 - Re-run final clippy gate after style fix: cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Refresh mapped function starts after final formatting: rg -n 'picoquic_format_retire_connection_id_frame|picoquic_format_stop_sending_frame|picoquic_format_stream_data_blocked_frame|picoquic_format_stream_blocked_frame|picoquic_is_ack_needed_in_ctx|pub fn format_retire_connection_id_frame|pub fn format_stop_sending_frame|pub fn format_stream_data_blocked_frame|pub fn format_stream_blocked_frame|pub fn is_ack_needed_in_ctx' rs/fq/src/internal.rs
+2026-05-07 - Inspect final ACK helper line span: nl -ba rs/fq/src/internal.rs | sed -n '6420,6448p'
+2026-05-07 - Inspect final ACK map entry line span: sed -n '14985,15010p' xlate/function_translation_map.json
+2026-05-07 - Inspect final git status: git status --short
+2026-05-07 - Inspect final retire formatter line span: nl -ba rs/fq/src/internal.rs | sed -n '10128,10160p'
+2026-05-07 - Inspect final stop and stream data formatter line spans: nl -ba rs/fq/src/internal.rs | sed -n '10292,10365p'
+2026-05-07 - Inspect final stream blocked formatter end span: nl -ba rs/fq/src/internal.rs | sed -n '10365,10408p'
+2026-05-07 - Verify updated retire map line span: sed -n '12705,12730p' xlate/function_translation_map.json
+2026-05-07 - Verify updated stop sending map line span: sed -n '13010,13030p' xlate/function_translation_map.json
+2026-05-07 - Verify updated stream blocked map line spans: sed -n '13460,13505p' xlate/function_translation_map.json
+2026-05-07 - Verify updated ACK-needed map line span: sed -n '14990,15010p' xlate/function_translation_map.json
+2026-05-07 - Show diff stats for touched files: git diff --stat -- rs/fq/src/internal.rs xlate/function_translation_map.json COMMANDS.log
+2026-05-07 - Inspect internal.rs diff excerpt: git diff -- rs/fq/src/internal.rs | sed -n '1,260p'
+2026-05-07 - Inspect function map diff excerpt: git diff -- xlate/function_translation_map.json | sed -n '1,220p'
+2026-05-07 - Format Rust crate after fixing set_ack_needed dependency: cargo fmt
+2026-05-07 - Rerun targeted ACK loop test after set_ack_needed fix: cargo test ack_loop
+2026-05-07 - Format Rust crate after implementing Phase 4B functions: cargo fmt
+2026-05-07 - Compile Rust tests without running them: cargo test --no-run
+2026-05-07 - Read Claude repository instructions: sed -n '1,220p' CLAUDE.md
+2026-05-07 - Read translation plan start: sed -n '1,260p' TRANSLATE_PLAN.md
+2026-05-07 - Read Phase 4 implementation guide start: sed -n '1,260p' xlate/impl_translation_guide.md
+2026-05-07 - Read translation plan continuation: sed -n '261,620p' TRANSLATE_PLAN.md
+2026-05-07 - Check remaining Claude instructions section: sed -n '221,520p' CLAUDE.md
+2026-05-07 - Read Phase 4 implementation guide continuation: sed -n '261,620p' xlate/impl_translation_guide.md
+2026-05-07 - Count instruction document lengths: wc -l TRANSLATE_PLAN.md CLAUDE.md xlate/impl_translation_guide.md
+2026-05-07 - Read translation plan Phase 2 through Phase 3 section: sed -n '621,980p' TRANSLATE_PLAN.md
+2026-05-07 - Read translation plan Phase 4 and completion sections: sed -n '981,1300p' TRANSLATE_PLAN.md
+2026-05-07 - Locate command-log and Phase 4 instruction references: rg -n "log every|COMMANDS|Phase 4B|phase4" TRANSLATE_PLAN.md CLAUDE.md xlate/impl_translation_guide.md
+2026-05-07 - Inspect C stream reset body: sed -n '300,335p' picoquic/frames.c
+2026-05-07 - Inspect C data repeat compare body: sed -n '2135,2180p' picoquic/frames.c
+2026-05-07 - Inspect C path CID next sequence body: sed -n '6230,6262p' picoquic/frames.c
+2026-05-07 - Inspect C create_binlog body: sed -n '1115,1152p' picoquic/logwriter.c
+2026-05-07 - Inspect C binlog message body: sed -n '1230,1280p' picoquic/logwriter.c
+2026-05-07 - Search Rust targets for related functions and fields: rg -n "path_cid|queue_data_repeat|signal_stream_reset|Stream|reset_signalled|data_repeat|RemoteCnxid|cnxid_stash|binlog|message_v|create_binlog|Binlog|f_binlog" rs/fq/src/internal.rs rs/fq/src/binlog.rs rs/fq/src -g '*.rs'
+2026-05-07 - Read binlog module header and helpers: sed -n '1,240p' rs/fq/src/binlog.rs
+2026-05-07 - Read internal module header and core types: sed -n '1,260p' rs/fq/src/internal.rs
+2026-05-07 - Inspect Cargo manifest dependencies: sed -n '1,220p' rs/fq/Cargo.toml
+2026-05-07 - Inspect packet and stream queue structs: sed -n '560,720p' rs/fq/src/internal.rs
+2026-05-07 - Inspect stream head struct: sed -n '1780,1905p' rs/fq/src/internal.rs
+2026-05-07 - Inspect path and remote CID structs: sed -n '1980,2105p' rs/fq/src/internal.rs
+2026-05-07 - Inspect connection fields around queues and log handles: sed -n '2400,2525p' rs/fq/src/internal.rs
+2026-05-07 - Inspect data-repeat node helper methods: sed -n '4735,4805p' rs/fq/src/internal.rs
+2026-05-07 - Inspect stream management methods: sed -n '7640,7870p' rs/fq/src/internal.rs
+2026-05-07 - Inspect remaining stream management methods: sed -n '7870,8065p' rs/fq/src/internal.rs
+2026-05-07 - Search stream reset and max stream helpers: rg -n "update_max_stream_ID_local|update_max_stream|signal_stream|reset_signalled|CallbackEvent::StreamReset|stream_reset" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src -g '*.rs'
+2026-05-07 - Search remote connection ID stash helpers: rg -n "find_or_create_remote_cnxid_stash|remote_connection_id_stashes|RemoteConnectionId|connection_ids|cnxid_stash" rs/fq/src/internal.rs rs/fq/src -g '*.rs'
+2026-05-07 - Inspect path and remote CID helper region: sed -n '3900,4210p' rs/fq/src/internal.rs
+2026-05-07 - Inspect remote CID stash helper region: sed -n '4210,4565p' rs/fq/src/internal.rs
+2026-05-07 - Inspect local max stream ID update helper: sed -n '8310,8365p' rs/fq/src/internal.rs
+2026-05-07 - Inspect max stream ID helper end: sed -n '8365,8405p' rs/fq/src/internal.rs
+2026-05-07 - Inspect callback trait definition: sed -n '430,535p' rs/fq/src/lib.rs
+2026-05-07 - Search callback use sites: rg -n "fn callback|on_stream|StreamDataCallback|callback_fn|app_stream_ctx" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect active stream callback handling: sed -n '2950,3000p' rs/fq/src/lib.rs
+2026-05-07 - Inspect app wake callback handling: sed -n '12950,13005p' rs/fq/src/internal.rs
+2026-05-07 - Inspect internal callback-related traits: sed -n '1420,1455p' rs/fq/src/internal.rs
+2026-05-07 - Search transport error and reset frame constants: rg -n "TRANSPORT_INTERNAL_ERROR|InternalError|ResetStream|frame_type_reset_stream|PICOQUIC_TRANSPORT_INTERNAL_ERROR" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/errors.rs rs/fq/src/frames.rs
+2026-05-07 - Search frame type enum reset variants: rg -n "enum FrameType|ResetStream" rs/fq/src/frames.rs rs/fq/src/internal.rs
+2026-05-07 - Inspect error enum definitions: sed -n '1,160p' rs/fq/src/errors.rs
+2026-05-07 - Inspect transport error enum definitions: sed -n '200,240p' rs/fq/src/errors.rs
+2026-05-07 - Search data-repeat queue usage: rg -n "queue_data_repeat_tree|data_repeat_priority|is_queued_for_data_repeat|data_repeat_stream_offset|queue_data_repeat_compare" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/tests -g '*.rs'
+2026-05-07 - Inspect retransmit dequeue data-repeat interaction: sed -n '4628,4732p' rs/fq/src/internal.rs
+2026-05-07 - Inspect reset stream frame region: sed -n '8065,8160p' rs/fq/src/internal.rs
+2026-05-07 - Inspect splay tree implementation: sed -n '1,260p' rs/fq/src/splay.rs
+2026-05-07 - Search C data-repeat queue functions and callers: rg -n "queue_data_repeat_compare|data_repeat_tree|first_data_repeat_packet|queue_data_repeat_packet|data_repeat" picoquic/frames.c picoquic/*.c picoquic/*.h
+2026-05-07 - Inspect splay insertion duplicate behavior: rg -n "pub fn insert|duplicate|Ordering::Equal|fn find|fn first" rs/fq/src/splay.rs
+2026-05-07 - Read splay insert implementation: sed -n '380,430p' rs/fq/src/splay.rs
+2026-05-07 - Inspect skip-frame retransmit packet setup: sed -n '420,455p' rs/fq/src/tests/skip_frame.rs
+2026-05-07 - Inspect skip-frame data repeat test: sed -n '700,735p' rs/fq/src/tests/skip_frame.rs
+2026-05-07 - Search binlog creation and message tests: rg -n "create_binlog|binlog_message|message_v|InfoMessage|create binlog" rs/fq/src/binlog.rs rs/fq/src/tests -g '*.rs'
+2026-05-07 - Inspect binlog new and close connection methods: sed -n '1240,1345p' rs/fq/src/binlog.rs
+2026-05-07 - Inspect binlog low-level writers: sed -n '760,910p' rs/fq/src/binlog.rs
+2026-05-07 - Search bytestream write helpers used by binlog: rg -n "FOURCC|qlog|write_i|write_int|write_varint|write_cid|write_bytes" rs/fq/src/bytestream.rs rs/fq/src/binlog.rs
+2026-05-07 - Locate C FOURCC macro: rg -n "#define FOURCC|FOURCC\\(" picoquic/logwriter.c picoquic/*.h picoquic/*.c
+2026-05-07 - Locate C bytewrite integer functions: rg -n "bytewrite_int32|bytewrite_int16|bytewrite_int64" picoquic/logwriter.c picoquic/*.c picoquic/*.h
+2026-05-07 - Inspect C bytewrite integer implementations: sed -n '200,275p' picoquic/bytestream.c
+2026-05-07 - Search Rust bytestream cursor and write methods: rg -n "fn write_u16|write_u32|write_u64|write_u8|as_bytes|position|ptr" rs/fq/src/bytestream.rs
+2026-05-07 - Inspect Rust binlog reader header handling: sed -n '123,180p' rs/fq/src/tests/picolog.rs
+2026-05-07 - Search qlog and FOURCC related references: rg -n "qlog|golq|FOURCC" picoquic loglib rs/fq/src/tests rs/fq/src -g '*.*'
+2026-05-07 - Inspect Rust fourcc helper: sed -n '195,215p' rs/fq/src/lib.rs
+2026-05-07 - Search binlog file-handle assignment: rg -n "f_binlog\\s*=|binlog_file_name|create_binlog|set_binlog|new_connection" rs/fq/src/binlog.rs rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/logger.rs
+2026-05-07 - Inspect C binlog new-connection flow: sed -n '1005,1125p' picoquic/logwriter.c
+2026-05-07 - Search app message logging surface: rg -n "app_message|message_v|info_message|InfoMessage|log_event_info" rs/fq/src/logger.rs rs/fq/src/binlog.rs rs/fq/src/textlog.rs rs/fq/src/qlog.rs rs/fq/src/lib.rs picoquic/logwriter.c
+2026-05-07 - Inspect logger app-message traits: sed -n '70,125p' rs/fq/src/logger.rs && sed -n '300,455p' rs/fq/src/logger.rs
+2026-05-07 - Inspect logger module implementation regions: sed -n '1,75p' rs/fq/src/logger.rs && sed -n '455,875p' rs/fq/src/logger.rs
+2026-05-07 - Search concrete logger references: rg -n "LoggerRef|Logger for|impl crate::logger::Logger|impl .*Logger" rs/fq/src
+2026-05-07 - Locate requested entries in Phase 4A artifacts: rg -n "picoquic_path_cid_next_sequence_number|picoquic_queue_data_repeat_compare|picoquic_signal_stream_reset|create_binlog|picoquic_binlog_message_v" xlate/function_translation_map.json xlate/phase4a_plan.md
+2026-05-07 - Inspect function translation map start: sed -n '1,80p' xlate/function_translation_map.json
+2026-05-07 - Inspect requested function-map entries: sed -n '12270,12330p' xlate/function_translation_map.json
+2026-05-07 - Inspect requested data-repeat map entry: sed -n '13812,13872p' xlate/function_translation_map.json
+2026-05-07 - Inspect requested path-CID map entry: sed -n '17172,17232p' xlate/function_translation_map.json
+2026-05-07 - Inspect requested binlog map entries: sed -n '21648,21755p' xlate/function_translation_map.json
+2026-05-07 - Check dirty worktree before edits: git status --short
+2026-05-07 - Inspect existing target-file diffs: git diff -- rs/fq/src/internal.rs rs/fq/src/binlog.rs xlate/function_translation_map.json | sed -n '1,260p'
+2026-05-07 - Inspect recent command log entries: tail -40 COMMANDS.log
+2026-05-07 - Search updated data-repeat queue type usage: rg -n "queue_data_repeat_tree\\.find|queue_data_repeat_tree\\.insert|SplayTree<u64, PacketToken>|queue_data_repeat_tree" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/tests -g '*.rs'
+2026-05-07 - Verify new function names in Rust targets: rg -n "queue_data_repeat_compare|signal_stream_reset|path_cid_next_sequence_number|create_binlog|message_v" rs/fq/src/internal.rs rs/fq/src/binlog.rs
+2026-05-07 - Inspect Binlog trait before adding message method: sed -n '914,1018p' rs/fq/src/binlog.rs
+2026-05-07 - Inspect Binlog trait end: sed -n '1018,1055p' rs/fq/src/binlog.rs
+2026-05-07 - Inspect binlog implementation insertion point: sed -n '1200,1268p' rs/fq/src/binlog.rs
+2026-05-07 - Inspect binlog implementation after transport extension: sed -n '1268,1318p' rs/fq/src/binlog.rs
+2026-05-07 - Format Rust crate after implementing missing Phase 4B items: cargo fmt
+2026-05-07 - Compile Rust tests without running after implementation: cargo test --no-run
+2026-05-07 - Refresh implemented function line starts: rg -n "pub fn queue_data_repeat_compare|pub fn signal_stream_reset|pub fn path_cid_next_sequence_number|pub fn create_binlog|fn message_v" rs/fq/src/internal.rs rs/fq/src/binlog.rs
+2026-05-07 - Inspect queue data repeat compare line span: nl -ba rs/fq/src/internal.rs | sed -n '730,770p'
+2026-05-07 - Inspect path CID sequence line span: nl -ba rs/fq/src/internal.rs | sed -n '4240,4275p'
+2026-05-07 - Inspect signal stream reset line span: nl -ba rs/fq/src/internal.rs | sed -n '8488,8535p'
+2026-05-07 - Inspect create_binlog line span: nl -ba rs/fq/src/binlog.rs | sed -n '160,205p'
+2026-05-07 - Inspect binlog message_v line spans: nl -ba rs/fq/src/binlog.rs | sed -n '1018,1032p'; nl -ba rs/fq/src/binlog.rs | sed -n '1288,1318p'
+2026-05-07 - Verify requested map updates and remaining required_missing count: rg -n "picoquic_signal_stream_reset|picoquic_queue_data_repeat_compare|picoquic_path_cid_next_sequence_number|create_binlog|picoquic_binlog_message_v|required_missing" xlate/function_translation_map.json
+2026-05-07 - Inspect updated signal stream reset map entry: sed -n '12282,12335p' xlate/function_translation_map.json
+2026-05-07 - Inspect updated data-repeat compare map entry: sed -n '13822,13878p' xlate/function_translation_map.json
+2026-05-07 - Inspect updated path-CID sequence map entry: sed -n '17182,17238p' xlate/function_translation_map.json
+2026-05-07 - Inspect updated binlog map entries: sed -n '21658,21775p' xlate/function_translation_map.json
+2026-05-07 - Inspect function-map summary: tail -60 xlate/function_translation_map.json
+2026-05-07 - Run final clippy gate after implementation: cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Format Rust crate after clippy style fix: cargo fmt
+2026-05-07 - Rerun compile-only test gate after clippy style fix: cargo test --no-run
+2026-05-07 - Rerun final clippy gate after style fix: cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Inspect final create_binlog line span after style fix: nl -ba rs/fq/src/binlog.rs | sed -n '160,202p'
+2026-05-07 - Inspect final binlog message_v line span after style fix: nl -ba rs/fq/src/binlog.rs | sed -n '1018,1030p'; nl -ba rs/fq/src/binlog.rs | sed -n '1284,1314p'
+2026-05-07 - Refresh final binlog function starts after style fix: rg -n "pub fn create_binlog|fn message_v" rs/fq/src/binlog.rs
+2026-05-07 - Inspect final worktree status: git status --short
+2026-05-07 - Show final diff stat for touched files: git diff --stat -- COMMANDS.log rs/fq/src/internal.rs rs/fq/src/binlog.rs xlate/function_translation_map.json
+2026-05-07 - Inspect final source and map diff excerpt: git diff -- rs/fq/src/internal.rs rs/fq/src/binlog.rs xlate/function_translation_map.json | sed -n '1,360p'
+2026-05-07 - Read repository instructions for Phase 4B packet batch: sed -n '1,220p' CLAUDE.md
+2026-05-07 - Read translation plan for Phase 4B packet batch: sed -n '1,260p' TRANSLATE_PLAN.md
+2026-05-07 - Read implementation translation guide for Phase 4B packet batch: sed -n '1,260p' xlate/impl_translation_guide.md
+2026-05-07 - Check dirty worktree before packet batch edits: git status --short
+2026-05-07 - Find Phase 4 sections and todo policy in translation plan: rg -n "Phase 4|todo!|required_missing|C:" TRANSLATE_PLAN.md
+2026-05-07 - Locate requested packet C and Rust symbols: rg -n "picoquic_ignore_incoming_handshake|picoquic_incoming_0rtt|picoquic_incoming_1rtt|picoquic_incoming_client_handshake|picoquic_incoming_client_initial" rs/fq/src/lib.rs picoquic/packet.c
+2026-05-07 - Inspect requested C packet bodies: sed -n '1320,2035p' picoquic/packet.c
+2026-05-07 - Search existing Rust packet handler mappings: rg -n "ignore_incoming_handshake|incoming_0rtt|incoming_1rtt|incoming_client_handshake|incoming_client_initial|C: picoquic/packet.c" rs/fq/src/lib.rs
+2026-05-07 - Read Phase 4 and 4B plan sections: sed -n '900,1120p' TRANSLATE_PLAN.md
+2026-05-07 - Inspect lib.rs near existing ignore_incoming_handshake helper: sed -n '3800,4350p' rs/fq/src/lib.rs
+2026-05-07 - Search incoming packet methods in lib.rs: rg -n "pub fn .*incoming|fn .*incoming|incoming_|ignore_incoming|zero_rtt|1rtt|client_initial|handshake" rs/fq/src/lib.rs
+2026-05-07 - Search Rust support helpers for packet handlers: rg -n "fn .*decode_frames|decode_frames\\(|tls_stream_process|implicit_handshake_ack|crypto_context_free|ready_state_transition|set_ack_needed|skip_frame|decode_closing_frames|compute_ack_gap|connection_error|get_checksum_length|cnx_is_still_logging|log_cc_dump|spinbit_incoming|PICOQUIC_RATE_FROM_BYTES|rate_from_bytes|bandwidth" rs/fq/src
+2026-05-07 - Locate requested Phase 4A map entries: rg -n "picoquic_incoming_client_initial|picoquic_incoming_client_handshake|picoquic_incoming_0rtt|picoquic_incoming_1rtt|picoquic_ignore_incoming_handshake" xlate/function_translation_map.json xlate/phase4a_plan.md scripts/phase4b.py
+2026-05-07 - Inspect crate root imports and public types: sed -n '1,220p' rs/fq/src/lib.rs
+2026-05-07 - Inspect internal header translation start: sed -n '1,760p' rs/fq/src/internal.rs
+2026-05-07 - Inspect Connection fields around packet state: sed -n '2420,2585p' rs/fq/src/internal.rs
+2026-05-07 - Search packet handler names across Rust source: rg -n "picoquic_incoming_client_initial|picoquic_incoming_client_handshake|picoquic_incoming_0rtt|picoquic_incoming_1rtt|incoming_client_initial|incoming_client_handshake|incoming_0rtt|incoming_1rtt|ZeroRtt|OneRtt|client_initial|client_handshake" rs/fq/src
+2026-05-07 - Inspect incoming_packet stubs in lib.rs: sed -n '2650,2760p' rs/fq/src/lib.rs
+2026-05-07 - Inspect loss recovery support near packet queues: sed -n '9500,9800p' rs/fq/src/internal.rs
+2026-05-07 - Inspect decode_frames and skip_frame support: sed -n '12380,13220p' rs/fq/src/internal.rs
+2026-05-07 - Inspect Connection and path field initialization in internal.rs: sed -n '2585,2785p' rs/fq/src/internal.rs
+2026-05-07 - Inspect path initialization details in internal.rs: sed -n '2785,3065p' rs/fq/src/internal.rs
+2026-05-07 - Inspect connection initialization details in internal.rs: sed -n '3065,3345p' rs/fq/src/internal.rs
+2026-05-07 - Inspect remaining connection initialization fields in internal.rs: sed -n '3345,3860p' rs/fq/src/internal.rs
+2026-05-07 - Search error constants and protocol mappings: rg -n "SERVER_BUSY|PROTOCOL_VIOLATION|UNEXPECTED_PACKET|CNXID_CHECK|CONNECTION_DELETED|INVALID_TOKEN|INITIAL_TOO_SHORT|STATELESS_RESET|AEAD_CHECK|Error::Protocol|InternalError|TransportError" rs/fq/src
+2026-05-07 - Inspect Rust error code definitions: sed -n '1,260p' rs/fq/src/errors.rs
+2026-05-07 - Search error-code APIs in Rust sources: rg -n "pub const .*ERROR|pub const .*TRANSPORT|enum InternalError|enum TransportError|impl From|as_i32|code" rs/fq/src/errors.rs rs/fq/src/lib.rs rs/fq/src/internal.rs
+2026-05-07 - Inspect ticket helper area while checking internal support: sed -n '1240,1330p' rs/fq/src/internal.rs
+2026-05-07 - Find public Quic/Connection aliases and TLS/log helpers: rg -n "pub type Quic|pub use .*Connection|pub struct Quic|pub struct Connection|type Connection|use internal::" rs/fq/src/lib.rs
+2026-05-07 - Inspect public state and ConnectionId definitions: sed -n '210,360p' rs/fq/src/lib.rs
+2026-05-07 - Search TLS stream and logging support methods: rg -n "fn tls_stream_process|tls_stream_process\\(|is_tls_complete|crypto_context_free|setup_initial_traffic_keys|ready_state_transition|connection_disconnect|cnx_is_still_logging|log_cc_dump|Log::cc_dump|disconnect" rs/fq/src/internal.rs rs/fq/src/tls_api.rs rs/fq/src/logger.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect TLS stream and state transition implementations: sed -n '980,1090p' rs/fq/src/tls_api.rs && sed -n '1480,1525p' rs/fq/src/tls_api.rs && sed -n '6500,6700p' rs/fq/src/internal.rs && sed -n '5000,5160p' rs/fq/src/internal.rs && sed -n '430,450p' rs/fq/src/logger.rs
+2026-05-07 - Search decode_frames and path remove patterns: rg -n "decode_frames\\(" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/tests -g '*.rs'
+2026-05-07 - Search path mutation patterns: rg -n "take\\(&mut self.paths|mem::take\\(&mut self.paths|Path::new|self.paths\\.remove|self.paths\\[.*\\]" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Search immediate close and packet preparation helpers: rg -n "queue_immediate_close|prepare_packet_ex|prepare_next_packet|immediate_close|create_stateless_packet" rs/fq/src/lib.rs rs/fq/src/internal.rs
+2026-05-07 - Search connection state references: rg -n "ServerInit|ServerAlmostReady|ServerFalseStart|ClientAlmostReady|Ready|HandshakeFailure|Disconnected|Disconnecting|Closing|Draining|state_" rs/fq/src -g '*.rs'
+2026-05-07 - Inspect parse/decrypt and ACK helper area: sed -n '6680,6860p' rs/fq/src/internal.rs
+2026-05-07 - Inspect ACK helper continuation: sed -n '6860,7100p' rs/fq/src/internal.rs
+2026-05-07 - Inspect connection lookup helpers: sed -n '5160,5380p' rs/fq/src/internal.rs
+2026-05-07 - Inspect ACK gap helpers: sed -n '7600,7795p' rs/fq/src/internal.rs
+2026-05-07 - Inspect packet preparation stubs and ACK setter: sed -n '2750,2835p' rs/fq/src/lib.rs
+2026-05-07 - Inspect logger cc dump trait declaration: sed -n '420,445p' rs/fq/src/logger.rs
+2026-05-07 - Inspect set_ack_needed_on_path helper: sed -n '10190,10285p' rs/fq/src/internal.rs
+2026-05-07 - Inspect bandwidth helper implementation: sed -n '5440,5475p' rs/fq/src/internal.rs && sed -n '80,100p' rs/fq/src/utils.rs
+2026-05-07 - Inspect set_ack_needed_on_path body: sed -n '10260,10295p' rs/fq/src/internal.rs
+2026-05-07 - Inspect ConnectionId accessors: sed -n '339,420p' rs/fq/src/lib.rs
+2026-05-07 - Inspect opaque type imports: sed -n '420,475p' rs/fq/src/lib.rs
+2026-05-07 - Search queue_immediate_close and sender map entries: rg -n "picoquic_queue_immediate_close|queue_immediate_close|picoquic_prepare_packet_ex|prepare_packet_ex" xlate/function_translation_map.json xlate/phase4a_plan.md rs/fq/src
+2026-05-07 - Search internal sender helper functions: rg -n "fn prepare_.*packet|prepare_packet_|prepare_.*frames|predict_packet_header|finalize_and_protect|packet_body|format_packet|retransmit_needed|select_next_path" rs/fq/src/internal.rs
+2026-05-07 - Inspect frame/sender helpers in internal.rs: sed -n '8400,9365p' rs/fq/src/internal.rs
+2026-05-07 - Inspect retransmission and packet helper implementation: sed -n '9365,10330p' rs/fq/src/internal.rs
+2026-05-07 - Inspect Quic fields needed by client Initial handler: rg -n "pub struct Quic|server_busy|tentative_max_number_connections|current_number_connections|random_initial|max_half_open|check_token" rs/fq/src/internal.rs
+2026-05-07 - Inspect Quic struct fields: sed -n '1640,1845p' rs/fq/src/internal.rs
+2026-05-07 - Inspect Quic struct continuation and context_from_epoch: sed -n '1845,1985p' rs/fq/src/internal.rs
+2026-05-07 - Inspect Quic constructor defaults: sed -n '1400,1470p' rs/fq/src/lib.rs
+2026-05-07 - Inspect random initial packet-number initialization: sed -n '7540,7585p' rs/fq/src/internal.rs
+2026-05-07 - Search CID helper references: rg -n "remote_connection_id_index|LocalConnectionIdToken|connection_id\\)|remote_cid|local_cid|first_tuple|path.*connection_id" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect ACK context by CID helper: sed -n '7340,7375p' rs/fq/src/internal.rs
+2026-05-07 - Inspect incoming path lookup and path challenge helpers: sed -n '3920,4075p' rs/fq/src/internal.rs
+2026-05-07 - Inspect packet header protection and formatting helpers: sed -n '6300,6510p' rs/fq/src/internal.rs
+2026-05-07 - Inspect TLS session creation search results: rg -n "tls_ctx\\s*=\\s*Some|Some\\(.*Session|new_client|new_server|TlsSession|Session" rs/fq/src -g '*.rs'
+2026-05-07 - Inspect TLS context creation: sed -n '900,970p' rs/fq/src/tls_api.rs
+2026-05-07 - Search TLS context creation call sites: rg -n "create_tls_context\\(" rs/fq/src -g '*.rs'
+2026-05-07 - Inspect incoming packet C dispatch: sed -n '2200,2310p' picoquic/packet.c
+2026-05-07 - Inspect incoming segment C decrypt setup: sed -n '2130,2205p' picoquic/packet.c
+2026-05-07 - Inspect incoming segment C start: sed -n '2060,2135p' picoquic/packet.c
+2026-05-07 - Search logging continuation helper: rg -n "is_still_logging|still_logging|nb_packets_logged|use_long_log" rs/fq/src/internal.rs rs/fq/src/logger.rs rs/fq/src/binlog.rs rs/fq/src/textlog.rs
+2026-05-07 - Inspect logger is_still_logging call sites: sed -n '450,475p' rs/fq/src/logger.rs && sed -n '840,865p' rs/fq/src/logger.rs
+2026-05-07 - Locate is_still_logging method: rg -n "fn is_still_logging|is_still_logging\\(" rs/fq/src/logger.rs rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect is_still_logging body: sed -n '3415,3435p' rs/fq/src/lib.rs
+2026-05-07 - Inspect arena token copy semantics: sed -n '1,120p' rs/fq/src/arena.rs
+2026-05-07 - Format after packet handler implementation: cargo fmt
+2026-05-07 - Compile-only test gate after packet handler implementation: cargo test --no-run
+2026-05-07 - Refresh packet handler line starts: rg -n "picoquic_ignore_incoming_handshake|picoquic_incoming_client_initial|picoquic_incoming_client_handshake|picoquic_incoming_0rtt|picoquic_incoming_1rtt|picoquic_queue_immediate_close" rs/fq/src/lib.rs
+2026-05-07 - Inspect packet handler source span before map update: sed -n '4140,4615p' rs/fq/src/lib.rs
+2026-05-07 - Inspect client Initial source span before map update: sed -n '4615,4755p' rs/fq/src/lib.rs
+2026-05-07 - Inspect requested packet map entries before update: sed -n '23600,23940p' xlate/function_translation_map.json
+2026-05-07 - Inspect line spans for ignore and handshake handlers: nl -ba rs/fq/src/lib.rs | sed -n '4275,4330p'
+2026-05-07 - Inspect line span for client handshake and 0-RTT start: nl -ba rs/fq/src/lib.rs | sed -n '4320,4385p'
+2026-05-07 - Inspect line span for 0-RTT and 1-RTT start: nl -ba rs/fq/src/lib.rs | sed -n '4375,4435p'
+2026-05-07 - Inspect line span for 1-RTT handler: nl -ba rs/fq/src/lib.rs | sed -n '4425,4620p'
+2026-05-07 - Inspect line span for client Initial helper: nl -ba rs/fq/src/lib.rs | sed -n '4619,4755p'
+2026-05-07 - Inspect client Initial closing line span: nl -ba rs/fq/src/lib.rs | sed -n '4755,4805p'
+2026-05-07 - Run required cargo fmt after map update: cargo fmt
+2026-05-07 - Run required compile-only test gate after map update: cargo test --no-run
+2026-05-07 - Run required clippy gate after map update: cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Rerun cargo fmt after clippy style fixes: cargo fmt
+2026-05-07 - Rerun compile-only test gate after clippy style fixes: cargo test --no-run
+2026-05-07 - Rerun clippy gate after clippy style fixes: cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Refresh final packet handler line starts after clippy fixes: rg -n "picoquic_ignore_incoming_handshake|picoquic_incoming_client_initial|picoquic_incoming_client_handshake|picoquic_incoming_0rtt|picoquic_incoming_1rtt" rs/fq/src/lib.rs
+2026-05-07 - Inspect final connection packet handler line spans: nl -ba rs/fq/src/lib.rs | sed -n '4275,4568p'
+2026-05-07 - Inspect final client Initial line span: nl -ba rs/fq/src/lib.rs | sed -n '4640,4778p'
+2026-05-07 - Verify final requested map entry references: rg -n 'picoquic_incoming_client_initial|picoquic_incoming_0rtt|picoquic_incoming_1rtt|body_end_line": 4773|body_end_line": 4425|body_end_line": 4566' xlate/function_translation_map.json
+2026-05-07 - Inspect packet batch diff excerpt: git diff -- rs/fq/src/lib.rs xlate/function_translation_map.json | sed -n '1,260p'
+2026-05-07 - Show packet batch diff stat: git diff --stat -- rs/fq/src/lib.rs xlate/function_translation_map.json
+2026-05-07 - Verify packet map entry names after updates: rg -n 'picoquic_ignore_incoming_handshake|picoquic_incoming_client_initial|picoquic_incoming_client_handshake|picoquic_incoming_0rtt|picoquic_incoming_1rtt' xlate/function_translation_map.json
+2026-05-07 - Inspect recent command log tail before appending this batch: git diff -- COMMANDS.log | tail -60
+2026-05-07 - Inspect command log tail for append context: tail -20 COMMANDS.log
+2026-05-07 - Inspect C prepare_packet_ex dependency for immediate close: sed -n '3940,4195p' picoquic/sender.c
+2026-05-07 - Search Rust packet preparation wrappers after immediate close check: rg -n "prepare_packet_ex|prepare_packet\\(|prepare_next_packet_ex|prepare_next_packet\\(|prepare_ready|prepare_.*packet|prepare_tls|packet_to_send" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Search connection-close frame helpers after immediate close check: rg -n "format_connection_close|format_application_close|queue_close|close_frame|ConnectionClose|ApplicationClose|packet_prepare" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/frames.rs
+2026-05-07 - Search packet formatting helpers after immediate close check: rg -n "predict_packet_header_length|create_long_header|finalize_and_protect|format_.*frame|prepare_.*frames|retransmit_needed|is_ack_needed|is_tls_stream_ready|misc_frame|queue_handshake_done" rs/fq/src/internal.rs
+2026-05-07 - Read Codex repository guidance: sed -n '1,240p' CLAUDE.md
+2026-05-07 - Read translation plan guidance: sed -n '1,260p' TRANSLATE_PLAN.md
+2026-05-07 - Read Phase 4 implementation guide: sed -n '1,260p' xlate/impl_translation_guide.md
+2026-05-07 - Inspect command log tail before Phase 4B packet batch: tail -n 40 COMMANDS.log
+2026-05-07 - Locate requested packet functions in Rust: rg -n "picoquic_incoming_not_decrypted|picoquic_incoming_packet_ex|picoquic_incoming_retry|picoquic_incoming_segment|picoquic_incoming_server_handshake" rs/fq/src/lib.rs
+2026-05-07 - Inspect C incoming retry body: sed -n '1500,1625p' picoquic/packet.c
+2026-05-07 - Inspect C server handshake and not-decrypted bodies: sed -n '1680,2075p' picoquic/packet.c
+2026-05-07 - Inspect C incoming segment and packet_ex bodies: sed -n '2070,2445p' picoquic/packet.c
+2026-05-07 - Search all Rust sources for requested packet symbols: rg -n "incoming_not_decrypted|incoming_packet_ex|incoming_retry|incoming_segment|incoming_server_handshake|not_decrypted|server_handshake" rs/fq/src
+2026-05-07 - Search translation map for requested packet symbols: rg -n "picoquic_incoming_not_decrypted|picoquic_incoming_packet_ex|picoquic_incoming_retry|picoquic_incoming_segment|picoquic_incoming_server_handshake" xlate/function_translation_map.json
+2026-05-07 - Inspect packet-related Rust source around existing incoming handlers: rg -n "incoming_|Incoming|PacketHeader|PacketType|Retry|Handshake" rs/fq/src/lib.rs
+2026-05-07 - Inspect Quic incoming packet wrapper in Rust: sed -n '2660,2765p' rs/fq/src/lib.rs
+2026-05-07 - Inspect existing Rust packet handler block: sed -n '4100,4785p' rs/fq/src/lib.rs
+2026-05-07 - Inspect requested translation map packet entries: sed -n '23650,24045p' xlate/function_translation_map.json
+2026-05-07 - Search Rust internals for packet parsing and decrypt helpers: rg -n "parse_header|decrypt|PacketHeader|StreamDataNode|find_incoming_path|version_negotiation|retry|busy|unexpected_cnxid|stateless|record_pn_received|ecn" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/*.rs
+2026-05-07 - Inspect internal packet header definitions: sed -n '1,260p' rs/fq/src/internal.rs
+2026-05-07 - Inspect internal packet parsing helpers: rg -n "pub fn .*parse|fn .*parse|parse_header|decrypt" rs/fq/src/internal.rs rs/fq/src/*.rs
+2026-05-07 - Inspect packet header and stateless packet structs: sed -n '450,620p' rs/fq/src/internal.rs
+2026-05-07 - Inspect Quic and Connection fields needed by packet dispatch: sed -n '1580,1805p' rs/fq/src/internal.rs
+2026-05-07 - Inspect packet context and crypto/path fields: sed -n '2020,2485p' rs/fq/src/internal.rs
+2026-05-07 - Inspect remaining Connection packet fields: sed -n '2485,2675p' rs/fq/src/internal.rs
+2026-05-07 - Inspect incoming path helper implementation: sed -n '3860,3945p' rs/fq/src/internal.rs
+2026-05-07 - Inspect parse packet header implementation: sed -n '5880,6115p' rs/fq/src/internal.rs
+2026-05-07 - Inspect parse header and decrypt implementation: sed -n '6680,6770p' rs/fq/src/internal.rs
+2026-05-07 - Inspect packet number received and stream data alloc helpers: sed -n '6960,7015p' rs/fq/src/internal.rs && sed -n '11235,11275p' rs/fq/src/internal.rs
+2026-05-07 - Inspect parse short packet header continuation: sed -n '6115,6175p' rs/fq/src/internal.rs
+2026-05-07 - Search error code enum names for packet dispatch mapping: sed -n '1,230p' rs/fq/src/errors.rs
+2026-05-07 - Inspect public Error enum and reexports: sed -n '1,140p' rs/fq/src/lib.rs
+2026-05-07 - Search Quic connection lookup and delete helper methods: rg -n "fn connection_by_id|pub fn connection_by_id|connection_by_icid|connection_by_net|delete_connection|reinsert_by_wake_time|prepare_version_negotiation|queue_retry|queue_busy|process_unexpected|check_addr_blocked|reset_cnx|verify_retry|find_retry" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/tls_api.rs
+2026-05-07 - Inspect QUIC connection indexing and deletion helpers: sed -n '3420,3525p' rs/fq/src/internal.rs && sed -n '5140,5205p' rs/fq/src/internal.rs && sed -n '5588,5615p' rs/fq/src/internal.rs
+2026-05-07 - Inspect retry protection helpers in TLS API: sed -n '1915,2025p' rs/fq/src/tls_api.rs
+2026-05-07 - Inspect address block helper in public API: sed -n '1220,1250p' rs/fq/src/lib.rs
+2026-05-07 - Inspect logger methods for incoming packet dispatch: sed -n '300,380p' rs/fq/src/logger.rs && sed -n '440,580p' rs/fq/src/logger.rs
+2026-05-07 - Search logger trait method names: rg -n "fn packet|fn quic_pdu|fn dropped|fn buffered|log_pdu|log_packet|log_dropped|buffered_packet|quic_pdu" rs/fq/src/logger.rs rs/fq/src/binlog.rs rs/fq/src/textlog.rs
+2026-05-07 - Inspect logger dropped and buffered implementations: sed -n '560,645p' rs/fq/src/logger.rs
+2026-05-07 - Inspect logger QUIC PDU dispatcher: sed -n '240,295p' rs/fq/src/logger.rs
+2026-05-07 - Inspect tests calling incoming_packet_ex: sed -n '480,555p' rs/fq/src/tests/parseheadertest.rs && sed -n '660,795p' rs/fq/src/tests/edge_cases.rs
+2026-05-07 - Inspect packet encryption/decryption test expectations: sed -n '555,710p' rs/fq/src/tests/parseheadertest.rs
+2026-05-07 - Locate C parse_header_and_decrypt function: rg -n "picoquic_parse_header_and_decrypt|parse_header_and_decrypt" picoquic/packet.c picoquic/*.c
+2026-05-07 - Inspect C parse_header_and_decrypt body: sed -n '1180,1315p' picoquic/packet.c
+2026-05-07 - Inspect actual C parse_header_and_decrypt body: sed -n '740,900p' picoquic/packet.c
+2026-05-07 - Inspect C parse_header_and_decrypt close: sed -n '900,940p' picoquic/packet.c
+2026-05-07 - Locate C screen_initial_packet: rg -n "screen_initial_packet|picoquic_screen_initial_packet" picoquic/packet.c picoquic/*.c
+2026-05-07 - Inspect C screen_initial_packet body: sed -n '520,740p' picoquic/packet.c
+2026-05-07 - Inspect actual C screen_initial_packet body: sed -n '70,220p' picoquic/packet.c
+2026-05-07 - Search Rust initial AEAD helpers and create connection internals: rg -n "get_initial_aead|initial_aead|initial_secret|create_cnx_internal|create_connection\\(" rs/fq/src/internal.rs rs/fq/src/tls_api.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect create_cnx_internal signature and initial crypto setup: sed -n '2725,2785p' rs/fq/src/internal.rs && sed -n '1310,1375p' rs/fq/src/tls_api.rs
+2026-05-07 - Inspect create_cnx_internal body continuation: sed -n '2785,3435p' rs/fq/src/internal.rs
+2026-05-07 - Inspect remove_header_protection_inner signature: sed -n '6380,6460p' rs/fq/src/internal.rs
+2026-05-07 - Inspect PacketHeader default implementation: sed -n '13640,13690p' rs/fq/src/internal.rs
+2026-05-07 - Inspect ConnectionId implementation: rg -n "pub struct ConnectionId|impl ConnectionId|fn val64|val64_connection|as_bytes|clone_from_slice" rs/fq/src/lib.rs rs/fq/src/utils.rs rs/fq/src/internal.rs
+2026-05-07 - Inspect ConnectionId methods: sed -n '520,660p' rs/fq/src/lib.rs
+2026-05-07 - Inspect actual ConnectionId methods: sed -n '330,415p' rs/fq/src/lib.rs
+2026-05-07 - Inspect PacketType and Epoch enum definitions: rg -n "pub enum PacketType|pub enum Epoch|pub enum PacketContext|enum State" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect PacketType enum body: sed -n '260,455p' rs/fq/src/internal.rs
+2026-05-07 - Inspect State enum body: sed -n '200,240p' rs/fq/src/lib.rs
+2026-05-07 - Inspect PacketContext enum body: sed -n '248,263p' rs/fq/src/lib.rs
+2026-05-07 - Search lib.rs for ConnectionToken references and imports: rg -n "ConnectionToken|InternalError|TransportError|use crate::errors" rs/fq/src/lib.rs
+2026-05-07 - Inspect lib.rs internal type imports: sed -n '420,435p' rs/fq/src/lib.rs
+2026-05-07 - Search MAX_PACKET_SIZE root reexport: rg -n "MAX_PACKET_SIZE|pub use internal::.*MAX" rs/fq/src/lib.rs
+2026-05-07 - Search duplicate packet number helper: rg -n "is_pn_already|already_received|sack_list_last|first\\(\\)" rs/fq/src/internal.rs
+2026-05-07 - Inspect duplicate packet number helper and sack first: sed -n '6935,6960p' rs/fq/src/internal.rs && sed -n '7375,7395p' rs/fq/src/internal.rs
+2026-05-07 - Inspect verify_retry_token signature: sed -n '1740,1818p' rs/fq/src/tls_api.rs
+2026-05-07 - Search connection reset and log-close helpers: rg -n "reset_cnx|fn reset|reset_connection|log_close_connection|close_connection|connection_disconnect|fn connection_disconnect" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/logger.rs
+2026-05-07 - Inspect connection reset and log close helpers: sed -n '5020,5058p' rs/fq/src/internal.rs && sed -n '812,848p' rs/fq/src/logger.rs
+2026-05-07 - Inspect connection reset close: sed -n '5058,5088p' rs/fq/src/internal.rs
+2026-05-07 - Search path RTT update helper: rg -n "update_path_rtt|path_rtt|rtt_update" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect update_path_rtt signature: sed -n '7948,7988p' rs/fq/src/internal.rs
+2026-05-07 - Search version negotiation and stateless response queue helpers: rg -n "prepare_version_negotiation|queue_retry_packet|queue_busy_packet|stateless_retry|version_negotiation" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/tls_api.rs
+2026-05-07 - Search retry token and long-header formatting helpers: rg -n "prepare_retry_token|create_local_cnx_id|create_long_header|encode_retry_protection|update_payload_length|protect_packet_header|connection_close" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/tls_api.rs rs/fq/src/frames.rs
+2026-05-07 - Inspect stateless response helper dependencies: sed -n '3595,3615p' rs/fq/src/internal.rs && sed -n '1670,1718p' rs/fq/src/tls_api.rs && sed -n '6270,6315p' rs/fq/src/internal.rs && sed -n '11035,11065p' rs/fq/src/internal.rs
+2026-05-07 - Inspect stateless response helper dependency continuations: sed -n '1718,1740p' rs/fq/src/tls_api.rs && sed -n '6315,6328p' rs/fq/src/internal.rs && sed -n '11065,11080p' rs/fq/src/internal.rs
+2026-05-07 - Inspect create_long_header body for Retry: sed -n '6150,6235p' rs/fq/src/internal.rs
+2026-05-07 - Search Rust incoming version negotiation helper: rg -n "incoming_version_negotiation|version_negotiation" rs/fq/src/lib.rs rs/fq/src/internal.rs
+2026-05-07 - Search ack context helper for ECN accounting: rg -n "ack_ctx_from_cnx_context|ack_context|from_cnx_context" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect ack context helper implementation: sed -n '7328,7374p' rs/fq/src/internal.rs
+2026-05-07 - Locate C reinsert_by_wake_time behavior: rg -n "picoquic_reinsert_by_wake_time" picoquic/*.c picoquic/*.h
+2026-05-07 - Inspect C reinsert_by_wake_time body: sed -n '1508,1535p' picoquic/quicctx.c
+2026-05-07 - Inspect splay tree API for wake reinsert: sed -n '1,150p' rs/fq/src/splay.rs
+2026-05-07 - Search splay tree mutation API: rg -n "pub fn remove|fn remove|pub fn insert|pub fn clear" rs/fq/src/splay.rs
+2026-05-07 - Search AEAD integrity limit helper: rg -n "integrity_limit|aead_integrity" rs/fq/src
+2026-05-07 - Search AEAD limit transport error: rg -n "Aead|Limit" rs/fq/src/errors.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect C incoming_server_initial body: sed -n '1619,1703p' picoquic/packet.c
+2026-05-07 - Search tests for version negotiation packet handling: rg -n "version_negotiation|VersionNegotiation|incoming_version|packet_version" rs/fq/src/tests rs/fq/src
+2026-05-07 - Search callback invocation pattern: rg -n "callback_fn|CallbackEvent::Stateless|StatelessReset|callback_.*reset" rs/fq/src/lib.rs rs/fq/src/internal.rs
+2026-05-07 - Inspect callback enum and callback invocation samples: sed -n '432,455p' rs/fq/src/lib.rs && sed -n '5490,5532p' rs/fq/src/internal.rs
+2026-05-07 - Search stateless reset packet minimum constant: rg -n "RESET_PACKET_MIN|RESET_SECRET_SIZE|PACKET_MIN" rs/fq/src/lib.rs rs/fq/src/internal.rs picoquic/picoquic_internal.h
+2026-05-07 - Inspect aead_decrypt_mp insertion point after failed patch context: sed -n '4050,4090p' rs/fq/src/lib.rs
+2026-05-07 - Inspect new incoming_segment dispatch borrow area: sed -n '4700,4915p' rs/fq/src/lib.rs
+2026-05-07 - Format after implementing Phase 4B incoming packet handlers: cargo fmt
+2026-05-07 - Compile-only gate after implementing Phase 4B incoming packet handlers: cargo test --no-run
+2026-05-07 - Reformat after Instant duration fix: cargo fmt
+2026-05-07 - Rerun compile-only gate after Instant duration fix: cargo test --no-run
+2026-05-07 - Run clippy gate after Phase 4B packet implementation: cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Inspect clippy warning locations in incoming segment: sed -n '5470,5725p' rs/fq/src/lib.rs
+2026-05-07 - Reformat after clippy simplification fixes: cargo fmt
+2026-05-07 - Rerun clippy gate after simplification fixes: cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Final required cargo fmt for Phase 4B packet batch: cargo fmt
+2026-05-07 - Final required compile-only cargo test gate for Phase 4B packet batch: cargo test --no-run
+2026-05-07 - Final required clippy gate for Phase 4B packet batch: cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Verify requested C references and no old packet stubs remain: rg -n "picoquic_incoming_not_decrypted|picoquic_incoming_packet_ex|picoquic_incoming_retry|picoquic_incoming_segment|picoquic_incoming_server_handshake|Complex: full packet dispatch|Err\\(Error::Generic\\)" rs/fq/src/lib.rs
+2026-05-07 - Inspect final diff summary for Phase 4B packet batch: git diff --stat -- rs/fq/src/lib.rs COMMANDS.log
+2026-05-07 - Inspect final lib.rs packet implementation diff excerpt: git diff -- rs/fq/src/lib.rs | sed -n '1,260p'
+2026-05-07 - Check requested packet handler area for forbidden placeholders: rg -n "todo!|unimplemented!|SKIP:|Complex: full packet dispatch|picoquic_incoming_not_decrypted|picoquic_incoming_packet_ex|picoquic_incoming_retry|picoquic_incoming_segment|picoquic_incoming_server_handshake" rs/fq/src/lib.rs
+2026-05-07 - Run targeted incoming initial packet test: cargo test incoming_initial
+2026-05-07 - Inspect incoming_initial packet fixture dimensions: rg -n "PACKET_INTEL_BUG|incoming_initial" rs/fq/src/tests/parseheadertest.rs
+2026-05-07 - Inspect PACKET_INTEL_BUG fixture bytes: sed -n '1,90p' rs/fq/src/tests/parseheadertest.rs
+2026-05-07 - Inspect PACKET_INTEL_BUG declaration and comment: sed -n '100,170p' rs/fq/src/tests/parseheadertest.rs
+2026-05-07 - Locate C incoming_initial_test behavior: rg -n "incoming_initial_test|packet_intel_bug" picoquictest/parseheadertest.c
+2026-05-07 - Inspect C incoming_initial_test body: sed -n '440,500p' picoquictest/parseheadertest.c
+2026-05-07 - Inspect C packet_initial_dec_one and incoming_initial test close: sed -n '940,1005p' picoquictest/parseheadertest.c
+2026-05-07 - Locate C packet_initial_dec_one helper: rg -n "packet_initial_dec_one" picoquictest/parseheadertest.c
+2026-05-07 - Inspect C packet_initial_dec_one setup: sed -n '916,950p' picoquictest/parseheadertest.c
+2026-05-07 - Inspect expected h_intel_bug header: rg -n "h_intel_bug|packet_intel_bug" picoquictest/parseheadertest.c rs/fq/src/tests/parseheadertest.rs
+2026-05-07 - Inspect expected h_intel_bug values and Rust fixture expectation: sed -n '400,425p' picoquictest/parseheadertest.c && sed -n '330,400p' rs/fq/src/tests/parseheadertest.rs
+2026-05-07 - Inspect Rust parseheader Intel expectation close: sed -n '400,430p' rs/fq/src/tests/parseheadertest.rs
+2026-05-07 - Inspect process_tls_stream implementation: rg -n "fn process_tls_stream|pub fn process_tls_stream" rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect process_tls_stream body: sed -n '12490,12580p' rs/fq/src/internal.rs
+2026-05-07 - Search all process_tls_stream definitions: rg -n "process_tls_stream" rs/fq/src
+2026-05-07 - Inspect tls_api process_tls_stream body: sed -n '990,1035p' rs/fq/src/tls_api.rs
+2026-05-07 - Inspect tls_api process_tls_stream close: sed -n '1035,1085p' rs/fq/src/tls_api.rs
+2026-05-07 - Search TLS session creation helpers: rg -n "create_tls|tls_ctx|DynServerConfig|start_server|new_server|server_session|client_session|create_session" rs/fq/src/tls*.rs rs/fq/src/internal.rs rs/fq/src/lib.rs
+2026-05-07 - Inspect TLS context creation helper and traits: sed -n '870,965p' rs/fq/src/tls_api.rs && sed -n '180,230p' rs/fq/src/tls.rs
+2026-05-07 - Inspect LocalSession visibility: rg -n "struct LocalSession|impl LocalSession|pub struct LocalSession" rs/fq/src/tls_api.rs
+2026-05-07 - Inspect Quic::new TLS initialization area: sed -n '1360,1405p' rs/fq/src/lib.rs
+2026-05-07 - Inspect Quic::new return area: sed -n '1495,1535p' rs/fq/src/lib.rs
+2026-05-07 - Locate create_cnx_internal connection construction: rg -n "let cnx = Connection" rs/fq/src/internal.rs
+2026-05-07 - Inspect create_cnx_internal insertion point: sed -n '3370,3410p' rs/fq/src/internal.rs
+2026-05-07 - Format after TLS context creation dependency fix: cargo fmt
+2026-05-07 - Rerun targeted incoming initial packet test after TLS context fix: cargo test incoming_initial
+2026-05-07 - Final rerun cargo fmt after TLS context fix: cargo fmt
+2026-05-07 - Final rerun compile-only cargo test gate after TLS context fix: cargo test --no-run
+2026-05-07 - Final rerun clippy gate after TLS context fix: cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Final check requested packet handler placeholders after TLS fix: rg -n "todo!|unimplemented!|SKIP:|Complex: full packet dispatch|picoquic_incoming_not_decrypted|picoquic_incoming_packet_ex|picoquic_incoming_retry|picoquic_incoming_segment|picoquic_incoming_server_handshake" rs/fq/src/lib.rs
+2026-05-07 - Final diff summary for Phase 4B packet batch including TLS context dependency: git diff --stat -- rs/fq/src/lib.rs rs/fq/src/internal.rs COMMANDS.log
+2026-05-07 - Inspect final worktree status for touched files: git status --short -- rs/fq/src/lib.rs rs/fq/src/internal.rs COMMANDS.log
+2026-05-07 - Capture final line references for packet handlers and TLS context dependency: rg -n "picoquic_incoming_packet_ex|picoquic_incoming_not_decrypted|picoquic_incoming_retry|picoquic_incoming_segment|picoquic_incoming_server_handshake|create_tls_context\\(self\\)" rs/fq/src/lib.rs rs/fq/src/internal.rs
+2026-05-07 - Inspect public create_connection wrapper: sed -n '1860,1910p' rs/fq/src/lib.rs
+2026-05-07 - Phase 4B missing implementation batch (version negotiation, unexpected CID, packet protection, tuple challenge, path control) instruction/context reads: sed -n '1,220p' CLAUDE.md; sed -n '1,260p' TRANSLATE_PLAN.md; sed -n '1,260p' xlate/impl_translation_guide.md
+2026-05-07 - Inspect prior command log and C source bodies for requested functions: sed -n '1,220p' COMMANDS.log; sed -n '600,790p' picoquic/packet.c; sed -n '970,1150p' picoquic/packet.c; sed -n '1,340p' picoquic/paths.c
+2026-05-07 - Search internal.rs for existing packet/path structures and helpers: rg -n "prepare_version_negotiation|process_unexpected_cnxid|remove_packet_protection|check_path_control_needed|prepare_tuple_challenge|Tuple|Path|PacketHeader|PacketType|Stateless|aead|crypto_rotation|challenge_required|response_required|challenge_failed|challenge_verified|first_tuple" rs/fq/src/internal.rs
+2026-05-07 - Read internal.rs structure ranges: sed -n '1,260p' rs/fq/src/internal.rs; sed -n '260,620p' rs/fq/src/internal.rs; sed -n '620,1040p' rs/fq/src/internal.rs; sed -n '1540,1845p' rs/fq/src/internal.rs; sed -n '2030,2665p' rs/fq/src/internal.rs; sed -n '3600,4060p' rs/fq/src/internal.rs; sed -n '6300,6770p' rs/fq/src/internal.rs
+2026-05-07 - Read path/packet helper areas and related existing APIs: sed -n '14320,14610p' rs/fq/src/internal.rs; sed -n '11580,11675p' rs/fq/src/internal.rs; rg -n "already_received|is_pn_already_received|crypto_rotation_sequence|compute_new_rotated|apply_rotated|aead_integrity|connection_error|TRANSPORT_AEAD|AEAD_LIMIT|remove_packet" rs/fq/src; rg -n "create_cnxid_reset_secret|stateless reset|public_random|uniform_random|val64_connection|parse_connection_id|cnx_by_net|cnx_by_id|cnx_by_icid|version_negotiation|log_quic_pdu|context_free_app" rs/fq/src/internal.rs rs/fq/src
+2026-05-07 - Inspect lib.rs packet/version-negotiation/decrypt equivalents: sed -n '380,420p' rs/fq/src/lib.rs; sed -n '4000,4105p' rs/fq/src/lib.rs; sed -n '4480,4605p' rs/fq/src/lib.rs; sed -n '4810,4875p' rs/fq/src/lib.rs; sed -n '5520,5670p' rs/fq/src/lib.rs; sed -n '4105,4165p' rs/fq/src/lib.rs; sed -n '6900,6975p' rs/fq/src/internal.rs; sed -n '5100,5145p' rs/fq/src/internal.rs; sed -n '1400,1475p' rs/fq/src/tls_api.rs; sed -n '1220,1242p' rs/fq/src/tls_api.rs; sed -n '4165,4205p' rs/fq/src/lib.rs
+2026-05-07 - Inspect random/version/reset support: rg -n "pub fn public_random|public_random\\(" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/tls_api.rs rs/fq/src/utils.rs; sed -n '1010,1045p' rs/fq/src/utils.rs; sed -n '1,140p' rs/fq/Cargo.toml; rg -n "SUPPORTED|supported_versions|NB_SUPPORTED|Version::" rs/fq/src/internal.rs rs/fq/src/lib.rs; rg -n "picoquic_supported_versions|picoquic_nb_supported_versions" picoquic; sed -n '129,250p' picoquic/quicctx.c; sed -n '5790,5872p' rs/fq/src/internal.rs
+2026-05-07 - Inspect lookup, packet parsing, reset secret, and logger helpers: sed -n '5145,5225p' rs/fq/src/internal.rs; rg -n "reset_secret|RESET_SECRET|create.*secret|stateless_reset" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/tls_api.rs rs/fq/src; sed -n '1565,1595p' rs/fq/src/tls_api.rs; rg -n "use crate::utils|format_32|parse_32|format_64|parse_connection_id" rs/fq/src/internal.rs | head -80; sed -n '5620,5670p' rs/fq/src/internal.rs; sed -n '170,190p' rs/fq/src/lib.rs; rg -n "picoquic_public_uniform_random|public_uniform_random" picoquic rs/fq/src; sed -n '860,900p' picoquic/tls_api.c; sed -n '230,315p' rs/fq/src/logger.rs
+2026-05-07 - Inspect packet protection and path challenge parse details: rg -n "get_quic_time|simulated_time|current_time" rs/fq/src/internal.rs rs/fq/src/lib.rs | head -80; sed -n '470,505p' rs/fq/src/lib.rs; sed -n '768,890p' picoquic/packet.c; sed -n '520,633p' picoquic/packet.c; sed -n '5890,6165p' rs/fq/src/internal.rs; rg -n "ack_ctx_from|sack_list_from|PacketContextSelection|packet_context_selection|context_selection" rs/fq/src/internal.rs; sed -n '7320,7375p' rs/fq/src/internal.rs; rg -n "trait PacketKey|fn decrypt|fn encrypt_mp|decrypt_mp" rs/fq/src/lib.rs rs/fq/src/tls.rs; sed -n '235,285p' rs/fq/src/tls.rs
+2026-05-07 - Inspect time arithmetic and target symbol absence: rg -n "crypto_rotation_time_guard" rs/fq/src; rg -n "current_time \\+|Instant::from_ticks\\([^)]*\\.ticks\\(\\) \\+" rs/fq/src/internal.rs rs/fq/src/lib.rs | head -60; rg -n "\\+ .*Duration|saturating_add\\(.*\\.ticks\\(\\)" rs/fq/src/internal.rs | head -80; sed -n '6805,6822p' rs/fq/src/internal.rs; rg -n "fn log_app_message" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/logger.rs; sed -n '6226,6244p' rs/fq/src/lib.rs; rg -n "prepare_version_negotiation|process_unexpected_cnxid|remove_packet_protection|check_path_control_needed|prepare_tuple_challenge_frames" rs/fq/src/tests rs/fq/src; sed -n '13640,13678p' rs/fq/src/internal.rs
+2026-05-07 - Required format and compile-only gates for this batch: cargo fmt; cargo test --no-run; cargo clippy --tests --all-features -- -D warnings
+2026-05-07 - Final review commands for this batch: git diff -- rs/fq/src/internal.rs; git diff --stat; rg -n "SUPPORTED_VERSIONS|prepare_version_negotiation|process_unexpected_cnxid|remove_packet_protection\\(|prepare_tuple_challenge_frames|check_path_control_needed|crypto_rotation_time_guard" rs/fq/src/internal.rs; git status --short; tail -40 COMMANDS.log
+
+2026-05-07 - Phase 4B OpenSSL/ECN batch instruction reads:
+  sed -n '1,240p' CLAUDE.md
+  sed -n '1,260p' TRANSLATE_PLAN.md
+  sed -n '1,260p' xlate/impl_translation_guide.md
+  sed -n '1,220p' TRANSLATE.md
+  sed -n '1,200p' COMMANDS.log
+
+2026-05-07 - Inspect requested OpenSSL and ECN C bodies plus current Rust destinations:
+  sed -n '120,175p' picoquic/picoquic_ptls_openssl.c
+  sed -n '260,470p' picoquic/picoquic_ptls_openssl.c
+  sed -n '80,235p' picoquic/picosocks.c
+  sed -n '1,260p' rs/fq/src/sys/openssl.rs
+  sed -n '1,280p' rs/fq/src/socks.rs
+  sed -n '1,220p' rs/fq/Cargo.toml
+
+2026-05-07 - Inspect OpenSSL/socket implementation surfaces and symbol matches:
+  sed -n '220,520p' rs/fq/src/sys/openssl.rs
+  sed -n '280,620p' rs/fq/src/socks.rs
+  sed -n '1,320p' rs/fq/src/socks_socket2.rs
+  rg -n "register_(cipher|key|verify|crypto|explain)|tls_key_provider|Certificate|Verify|sign_certificate|openssl" rs/fq/src -g '*.rs'
+  rg -n "EcnCodepoint|PICOQUIC_ECN|ECT|set_ecn_options|socket_set_ecn" rs/fq/src -g '*.rs'
+
+2026-05-07 - Inspect TLS registry, logging, tests, and OpenSSL crate version APIs:
+  sed -n '520,760p' rs/fq/src/sys/openssl.rs
+  sed -n '2190,2365p' rs/fq/src/tls_api.rs
+  sed -n '1,120p' rs/fq/src/tests/openssl.rs
+  rg -n "struct Connection|pub struct Connection|log_app|app_message|log_version|log_" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src -g '*.rs'
+  sed -n '1,220p' rs/fq/src/tls_api.rs
+  sed -n '220,520p' rs/fq/src/tls_api.rs
+  sed -n '146,175p' rs/fq/src/tests/socket.rs
+  rg -n "struct TlsApiState|enum CryptoProvider|AES_128|GROUP_|HPKE|cipher_suites|key_exchanges" rs/fq/src/tls_api.rs rs/fq/src -g '*.rs'
+  rg -n "IPV6_RECVTCLASS|IP_RECVTOS|IPV6_TCLASS|IP_TOS|set_recv_tos|set_tos|set_tclass" ~/.cargo/registry/src -g '*.rs'
+  rg -n "OPENSSL_VERSION_NUMBER|LIBRESSL_VERSION_NUMBER|pub const.*VERSION" ~/.cargo/registry/src/index.crates.io-*/openssl-sys-* ~/.cargo/registry/src/index.crates.io-*/openssl-* -g '*.rs'
+  rg -n "pub fn number|version::number|OPENSSL_VERSION" ~/.cargo/registry/src/index.crates.io-*/openssl-*/src -g '*.rs'
+  sed -n '1,180p' ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openssl-0.10.75/src/version.rs
+  sed -n '1,80p' ~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openssl-0.10.79/src/version.rs
+
+2026-05-07 - Inspect certificate/key helpers, Socket2Udp construction, HPKE constants, and log entry points:
+  rg -n "get_certs_from_file|openssl_keyex|CertificateVerifier|set_root_certificates|explain_crypto_error" rs/fq/src/tls_api.rs rs/fq/src -g '*.rs'
+  sed -n '860,915p' rs/fq/src/tls_api.rs && sed -n '1880,1915p' rs/fq/src/tls_api.rs
+  rg -n "set_private_key_from_file|private_key" rs/fq/src/lib.rs rs/fq/src/tls_api.rs rs/fq/src/internal.rs
+  sed -n '1860,1890p' rs/fq/src/tls_api.rs && sed -n '2420,2465p' rs/fq/src/tls_api.rs
+  rg -n "Socket2Udp\\(|\\.0" rs/fq/src -g '*.rs'
+  rg -n "socket2::Domain::IPV|AF_INET|IPPROTO_IPV|IPPROTO_IP" rs/fq/src -g '*.rs'
+  sed -n '1,170p' rs/fq/src/tests/socket.rs
+  sed -n '1,80p' rs/fq/src/ech.rs
+  sed -n '2120,2195p' rs/fq/src/tls_api.rs
+  sed -n '180,210p' rs/fq/src/lib.rs
+  sed -n '260,340p' rs/fq/src/logger.rs
+  sed -n '430,455p' rs/fq/src/logger.rs
+  sed -n '6220,6238p' rs/fq/src/lib.rs
+
+2026-05-07 - Post-patch verification reads and required gates:
+  sed -n '1,120p' rs/fq/src/lib.rs
+  rg -n "Socket2Udp\\(" rs/fq/src -g '*.rs'
+  rg -n "set_ecn_options_ex|picoquic_socket_set_ecn_options_ex|picoquic_ptls_openssl_load|set_openssl_private_key_from_key_file|picoquic_openssl_get_certificate_verifier|picoquic_ptls_openssl_log_version" rs/fq/src -g '*.rs'
+  cargo fmt
+  cargo test --no-run
+  cargo clippy --tests --all-features -- -D warnings
+  cargo fmt
+  cargo test --no-run
+  cargo clippy --tests --all-features -- -D warnings
+  tail -40 COMMANDS.log
+
+2026-05-07 - Final line-reference and diff inspection for OpenSSL/ECN batch:
+  rg -n "picoquic_openssl_get_certificate_verifier|set_openssl_private_key_from_key_file|picoquic_ptls_openssl_load|picoquic_ptls_openssl_log_version" rs/fq/src/sys/openssl.rs
+  rg -n "picoquic_socket_set_ecn_options_ex|setsockopt_uint|struct Socket2Udp|fn set_ecn_options_ex" rs/fq/src/socks.rs rs/fq/src/socks_socket2.rs
+  git diff --stat -- rs/fq/build.rs rs/fq/src/sys/openssl.rs rs/fq/src/tls_api.rs rs/fq/src/socks.rs rs/fq/src/socks_socket2.rs COMMANDS.log
+  git status --short -- rs/fq/build.rs rs/fq/src/sys/openssl.rs rs/fq/src/tls_api.rs rs/fq/src/socks.rs rs/fq/src/socks_socket2.rs COMMANDS.log
+  git diff --numstat -- rs/fq/src/sys/openssl.rs rs/fq/src/tls_api.rs rs/fq/src/socks.rs rs/fq/src/socks_socket2.rs rs/fq/build.rs
+  git diff -- rs/fq/src/tls_api.rs | sed -n '1,220p'
+  git diff -- rs/fq/src/socks.rs | sed -n '1,260p'
+  git diff -- rs/fq/src/socks_socket2.rs | sed -n '1,220p'
+
+2026-05-07 - Phase 4B missing implementation batch (picosplay_new_tree + Prague init/era/process_ack/notify) instruction reads:
+  rg -n "" CLAUDE.md
+  rg -n "" TRANSLATE_PLAN.md
+  rg -n "" xlate/impl_translation_guide.md
+
+2026-05-07 - Inspect requested C bodies, Rust destinations, and existing Prague/splay API shape:
+  rg -n -C 20 "picosplay_new_tree|typedef.*picosplay|picosplay_tree_t|picosplay_comparator|picosplay_create|picosplay_delete_node|picosplay_node_value" picoquic/picosplay.c picoquic/picosplay.h rs/fq/src/splay.rs
+  rg -n -C 45 "picoquic_prague_init|picoquic_prague_initialize_era|picoquic_prague_process_ack|picoquic_prague_notify|picoquic_prague_state_t|prague" picoquic/prague.c picoquic/picoquic_internal.h picoquic/picoquic.h rs/fq/src/prague.rs rs/fq/src/internal.rs rs/fq/src/lib.rs
+  rg -n "picoquic_prague|Prague|prague" rs/fq/src
+  rg -n "" rs/fq/src/splay.rs
+  rg -n "" rs/fq/src/prague.rs
+  rg -n -C 20 "Congestion|congestion_alg_state|struct Path|struct Connection|PacketContextState|PerAck|AckState|Notification|CWIN_|TARGET_RENO|SMOOTHED_LOSS|impl Path \{|fn update_pacing_data|update_target_cwin_estimation|update_cwin_for_long_rtt|sequence_number|report_pacing_update_for_path" rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/cc_common.rs rs/fq/src/newreno.rs rs/fq/src/cubic.rs
+  rg -n -C 25 "pub trait CongestionControl|pub struct CongestionAlgorithm|pub enum CongestionNotification|pub struct PerAckState|pub type Instant|pub type Duration|ECN_ECT|CC_ALGO_NUMBER|PRAGUE_ALGORITHM|BASELINE_CC|ALL_CC_ALGORITHMS" rs/fq/src/lib.rs
+  rg -n -C 20 "pub struct Path \{|pub struct Connection \{|pub struct PacketContextState \{|CWIN_INITIAL|CWIN_MINIMUM|TARGET_RENO_RTT|SMOOTHED_LOSS|impl Path \{|fn update_pacing_data|update_target_cwin_estimation|update_cwin_for_long_rtt|sequence_number|report_pacing_update_for_path" rs/fq/src/internal.rs rs/fq/src/cc_common.rs
+  rg -n -C 30 "struct MinMaxRtt|impl MinMaxRtt|hystart_test|hystart_loss_test|slow_start_increase_ex2|trait PathCc|trait ConnectionCc|SMOOTHED_LOSS_THRESHOLD" rs/fq/src/cc_common.rs
+  rg -n -C 90 "^pub struct Path \{" rs/fq/src/internal.rs
+  rg -n -C 70 "^pub struct PacketContextState \{" rs/fq/src/internal.rs
+  rg -n -C 70 "^pub struct Connection \{" rs/fq/src/internal.rs
+  rg -n -C 40 "fn update_pacing_data|pub fn update_pacing_data|fn report_pacing_update_for_path|pub fn report_pacing_update_for_path" rs/fq/src/internal.rs
+  rg -n -C 40 "report_pacing_update_for_path|pub\(crate\) fn report_pacing_update\(" rs/fq/src/internal.rs
+  rg -n -C 30 "picoquic_prague_reset\(|picoquic_prague_initialize_era\(|picoquic_prague_enter_recovery\(|picoquic_prague_update_alpha\(" picoquic/prague.c
+  rg -n -C 30 "fn picoquic_newreno_notify|impl CongestionControl for Newreno|struct NewrenoCongestionControl|alg_delete|alg_observe" rs/fq/src/newreno.rs rs/fq/src/fastcc.rs rs/fq/src/cubic.rs
+  rg -n -C 80 "pub fn picoquic_fastcc_notify|fn picoquic_fastcc_notify|picoquic_fastcc_init|fastcc_enter_recovery|process_ack" rs/fq/src/fastcc.rs
+  rg -n "PRAGUE_ALGORITHM|NEWRENO_ALGORITHM|CUBIC_ALGORITHM|FAST_ALGORITHM|algorithm: &" rs/fq/src/lib.rs
+  rg -n "CWIN_INITIAL|CWIN_MINIMUM|TARGET_RENO_RTT|pub const CWIN|pub const TARGET" rs/fq/src/internal.rs
+  rg -n "SplayTree|SplayToken|picosplay_new_tree|new_tree\(" rs/fq/src picoquic xlate/function_translation_map.json xlate/phase4a_plan.md
+  rg -n -C 5 "picosplay_new_tree|picoquic_prague_init|picoquic_prague_initialize_era|picoquic_prague_notify|picoquic_prague_process_ack" xlate/function_translation_map.json xlate/phase4a_plan.md
+  rg -n "todo!\(|unimplemented!\(|SKIP:|None.*stub|Err\(Error::Generic\)|Err\(Generic\)|Ok\(\)" rs/fq/src/splay.rs rs/fq/src/prague.rs
+
+2026-05-07 - Inspect logging/formatting, pacing behavior, and Prague accounting dependencies:
+  rg -n "log =|\[dependencies\]|features|std" rs/fq/Cargo.toml
+  rg -n "Log::app_message|app_message\(|log::|trace!|debug!|info!|warn!|error!|picoquic_log_app_message" rs/fq/src
+  rg -n "^pub fn congestion_control_algorithms|CC_ALGORITHM_REGISTRY|register_all_congestion" rs/fq/src/lib.rs
+  rg -n "extern crate alloc|use alloc::format|alloc::format|format!" rs/fq/src/lib.rs rs/fq/src/c4.rs rs/fq/src/prague.rs
+  rg -n -C 12 "pub fn log_app_message" rs/fq/src/lib.rs
+  rg -n -C 5 "#!\[no_std\]|extern crate alloc|use alloc" rs/fq/src/lib.rs
+  rg -n "use alloc::format|extern crate alloc|format!" rs/fq/src/*.rs
+  rg -n "" rs/fq/src/lib.rs
+  rg -n "l4s_packet_ect1|l4s_packet_ce|l4s_update_sent|l4s_epoch_send|residual_ack|alpha" picoquic/prague.c rs/fq/src/prague.rs
+  rg -n -C 20 "picoquic_update_pacing_data\(|picoquic_report_pacing_update\(" picoquic/pacing.c picoquic/newreno.c picoquic/fastcc.c picoquic/cubic.c picoquic/prague.c
+  rg -n -C 40 "picoquic_newreno_notify|picoquic_update_pacing_data|picoquic_report_pacing_update" picoquic/newreno.c
+
+2026-05-07 - Function map and final line-reference inspection:
+  rg -n -C 35 "picosplay_new_tree|picoquic_prague_init|picoquic_prague_initialize_era|picoquic_prague_process_ack|picoquic_prague_notify" xlate/function_translation_map.json
+  rg -n -C 25 "picoquic_prague_reset_l3s|picoquic_prague_reset|picoquic_prague_enter_recovery|picoquic_prague_update_alpha|picoquic_prague_process_start_ack|picoquic_prague_delete" xlate/function_translation_map.json
+  rg -n "new_tree\(|picoquic_prague_init\(|fn prague_reset_l3s|fn prague_reset\(|fn prague_initialize_era|fn prague_enter_recovery|fn prague_update_alpha|picoquic_prague_process_ack\(|picoquic_prague_process_start_ack\(|picoquic_prague_notify\(|struct PragueCongestionControl|PRAGUE_CONTROL" rs/fq/src/splay.rs rs/fq/src/prague.rs rs/fq/src/lib.rs
+  rg -n -C 2 "^pub fn picoquic_prague_notify|^pub fn picoquic_prague_process_ack|^pub fn picoquic_prague_process_start_ack|^pub fn picoquic_prague_init|^fn prague_update_alpha|^fn prague_enter_recovery|^fn prague_initialize_era|^fn prague_reset\(|^fn prague_reset_l3s|^}\s*$" rs/fq/src/prague.rs
+  rg -n -C 12 "picoquic_prague_process_ack|picoquic_prague_process_start_ack|picoquic_prague_notify" xlate/function_translation_map.json
+  python3 scripts/phase4a.py --help
+  python3 scripts/phase4a.py --status
+
+2026-05-07 - Required cargo gates for picosplay/Prague Phase 4B batch:
+  cargo fmt
+  cargo test --no-run
+  cargo clippy --tests --all-features -- -D warnings
+  cargo fmt
+  cargo test --no-run
+  cargo clippy --tests --all-features -- -D warnings
+  cargo fmt
+  cargo test --no-run
+  cargo clippy --tests --all-features -- -D warnings
+  rg --files -g 'COMMANDS.log'
+  rg -n "" COMMANDS.log

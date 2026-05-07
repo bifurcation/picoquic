@@ -5,6 +5,51 @@
 use crate::tests::util::{TestSimLink, TestSimPacket};
 use crate::{Instant, MAX_PACKET_SIZE};
 
+/// Consume one bit of the 64-bit rotating loss mask and return whether
+/// this packet should be lost.  Returns `false` when `loss_mask` is
+/// `None` (matching the C `NULL` case).
+///
+/// C: `picoquic/sim_link.c:picoquictest_sim_link_testloss`.
+#[allow(dead_code)]
+fn testloss(loss_mask: &mut Option<u64>) -> bool {
+    if let Some(mask) = loss_mask.as_mut() {
+        let loss_bit = *mask & 1;
+        *mask = (*mask >> 1) | (loss_bit << 63);
+        loss_bit != 0
+    } else {
+        false
+    }
+}
+
+/// Determine whether the current packet should be dropped according to
+/// the link's burst-loss model.
+///
+/// C: `picoquic/sim_link.c:picoquictest_sim_link_simloss`.
+#[allow(dead_code)]
+fn simloss(link: &mut TestSimLink, current_time: Instant) -> bool {
+    if link.nb_loss_in_burst == 0 {
+        return false;
+    }
+    let ct = current_time.ticks();
+    if link.packets_sent > link.packets_sent_next_burst {
+        let picosec_wait = link.nb_loss_in_burst * link.picosec_per_byte * 1536;
+        link.packets_sent_next_burst = link.packets_sent + link.packets_between_losses;
+        link.nb_losses_this_burst = link.nb_loss_in_burst - 1;
+        link.end_of_burst_time = Instant::from_ticks(ct + picosec_wait / 1_000_000);
+        true
+    } else if link.nb_losses_this_burst > 0 {
+        if ct > link.end_of_burst_time.ticks() {
+            link.nb_losses_this_burst = 0;
+            false
+        } else {
+            link.nb_losses_this_burst -= 1;
+            true
+        }
+    } else {
+        false
+    }
+}
+
 /// C: `sim_link_one_test` in `picoquic/sim_link.c`.
 fn sim_link_one_test(loss_mask: Option<u64>, queue_delay_max: u64, nb_losses: u64) {
     let mut departure_time = Instant::from_ticks(0);

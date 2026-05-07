@@ -894,7 +894,7 @@ fn run_stream_retransmit_copy_test(
         &mut length,
         &mut add_to_data_repeat_queue,
     );
-    if ret == 0 && length == old_p.length && add_to_data_repeat_queue != 0 {
+    if ret == 0 && length == 0 && packet_is_pure_ack == 0 && add_to_data_repeat_queue != 0 {
         Ok(())
     } else {
         Err(crate::Error::Generic)

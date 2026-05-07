@@ -104,6 +104,20 @@ pub trait Session: Send {
         context: &[u8],
         output: &mut [u8],
     ) -> Result<(), Error>;
+
+    /// Returns `true` when the TLS handshake used ECH.
+    ///
+    /// C: `ptls_is_ech_handshake(tls_ctx->tls, NULL, NULL, NULL)`
+    fn is_ech_handshake(&self) -> bool {
+        false
+    }
+
+    /// ECH retry-config bytes the server sent back.  Empty when none.
+    ///
+    /// C: `tls_ctx->retry_configs.{base,len}` (`picoquic_ech_get_retry_config`)
+    fn retry_configs(&self) -> &[u8] {
+        &[]
+    }
 }
 
 // ---------------------------------------------------------------------------
