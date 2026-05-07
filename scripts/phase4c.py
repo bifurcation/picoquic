@@ -44,6 +44,9 @@ REPORT = XLATE / "phase4c_report.html"
 PROMPTS_DIR = XLATE / "prompts" / "phase4c"
 
 STATUSES = {"ok", "suspect", "definitely_not_ok"}
+FALLBACK_RATIONALE_RE = re.compile(
+    r"agent response did not include this pair|could not parse agent JSON"
+)
 
 
 def mapped_entries(mapping: dict) -> list[dict]:
@@ -151,6 +154,12 @@ def normalize_reviews(raw: dict, batch: list[dict]) -> dict[str, dict]:
                 "rationale": "agent response did not include this pair",
             }
     return by_id
+
+
+def is_fallback_review(review: dict | None) -> bool:
+    if not review:
+        return False
+    return bool(FALLBACK_RATIONALE_RE.search(str(review.get("rationale", ""))))
 
 
 @contextlib.contextmanager
@@ -265,6 +274,8 @@ def main() -> int:
     parser.add_argument("--status", action="store_true", help="show current review summary")
     parser.add_argument("--dry-run", action="store_true", help="select work but do not invoke an agent")
     parser.add_argument("--force", action="store_true", help="re-review pairs with existing results")
+    parser.add_argument("--retry-fallbacks", action="store_true",
+                        help="re-review entries with parser/missing-item fallback rationales")
     parser.add_argument("--only", help="limit to one c_id or C function name")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=20)
@@ -300,12 +311,17 @@ def main() -> int:
             e for e in selected
             if e["c_id"] == args.only or e["c"]["name"] == args.only
         ]
+    if args.retry_fallbacks:
+        selected = [
+            e for e in selected
+            if is_fallback_review(review_map.get(e["c_id"]))
+        ]
     if args.shard_count > 1:
         selected = [
             e for i, e in enumerate(selected)
             if i % args.shard_count == args.shard_index
         ]
-    if not args.force:
+    if not args.force and not args.retry_fallbacks:
         selected = [e for e in selected if e["c_id"] not in review_map]
     if args.limit is not None:
         selected = selected[: args.limit]
@@ -344,7 +360,10 @@ def main() -> int:
             return res.returncode
         try:
             parsed = extract_json(res.stdout + "\n" + res.stderr)
-            update_reviews_locked(normalize_reviews(parsed, batch), force=args.force)
+            update_reviews_locked(
+                normalize_reviews(parsed, batch),
+                force=args.force or args.retry_fallbacks,
+            )
         except (ValueError, json.JSONDecodeError) as exc:
             update_reviews_locked({
                 e["c_id"]: {
@@ -353,7 +372,7 @@ def main() -> int:
                     "rationale": f"could not parse agent JSON: {exc}",
                 }
                 for e in batch
-            }, force=args.force)
+            }, force=args.force or args.retry_fallbacks)
 
     reviews = load_reviews_locked()
     review_map = reviews.setdefault("reviews", {})
