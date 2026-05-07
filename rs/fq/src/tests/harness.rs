@@ -2,7 +2,9 @@
 
 #![allow(non_snake_case)]
 
-use crate::tests::util::{TestSimLink, TestSimPacket};
+use crate::tests::util::{
+    TestSimLink, TestSimPacket, test_poisson_random, test_random, test_uniform_random,
+};
 use crate::{Instant, MAX_PACKET_SIZE};
 
 /// Consume one bit of the 64-bit rotating loss mask and return whether
@@ -48,6 +50,37 @@ fn simloss(link: &mut TestSimLink, current_time: Instant) -> bool {
     } else {
         false
     }
+}
+
+/// Compute one Wi-Fi-style jitter sample for a simulator link.
+///
+/// C: `picoquic/sim_link.c:picoquictest_sim_link_wifi_jitter`.
+#[allow(dead_code)]
+pub fn picoquictest_sim_link_wifi_jitter(link: &mut TestSimLink) -> u64 {
+    const EXP_MINUS_1_X40000000: u64 = 395_007_542;
+    const PRIMARY_JITTER: u64 = 1000;
+    let n1 = test_poisson_random(&mut link.jitter_seed, EXP_MINUS_1_X40000000);
+    let mut jitter = n1 * PRIMARY_JITTER;
+    if n1 > 0 {
+        jitter -= test_uniform_random(&mut link.jitter_seed, PRIMARY_JITTER);
+    }
+
+    if link.jitter > 1000 {
+        let mut r = test_random(&mut link.jitter_seed);
+        r ^= r >> 30;
+        r &= 0x3fff_ffff;
+        r = r.wrapping_mul(84_000);
+        if r < ((link.jitter - 1000) << 30) {
+            const EXP_MINUS_12_X40000000: u64 = 6597;
+            const SECONDARY_JITTER: u64 = 7500;
+            let n2 = test_poisson_random(&mut link.jitter_seed, EXP_MINUS_12_X40000000);
+            jitter += n2 * SECONDARY_JITTER;
+            if n2 > 1 {
+                jitter -= test_uniform_random(&mut link.jitter_seed, SECONDARY_JITTER);
+            }
+        }
+    }
+    jitter
 }
 
 /// C: `sim_link_one_test` in `picoquic/sim_link.c`.

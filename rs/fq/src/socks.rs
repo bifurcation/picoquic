@@ -91,6 +91,42 @@ pub trait Socket {
         gso_size: i32,
     ) -> Result<usize, OsError>;
 
+    /// Open an unbound UDP socket for address family `af`.
+    /// C: `socket(af, SOCK_DGRAM, IPPROTO_UDP)`.
+    fn open_udp(_af: i32) -> Result<Self, Error>
+    where
+        Self: Sized,
+    {
+        Err(Error::Generic)
+    }
+
+    /// Bind this socket to the unspecified address and `port`.
+    /// C: `picoquic_bind_to_port`.
+    fn bind_to_port(&mut self, _af: i32, _port: i32) -> Result<(), Error> {
+        Err(Error::Generic)
+    }
+
+    /// Enable or disable `SO_REUSEADDR` before binding.
+    fn set_reuse_addr(&mut self, _reuse: bool) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Enable or disable `SO_REUSEPORT` before binding when the platform
+    /// exposes it.
+    fn set_reuse_port(&mut self, _reuse: bool) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Set `SO_SNDBUF`.
+    fn set_send_buffer_size(&mut self, _size: usize) -> Result<(), Error> {
+        Ok(())
+    }
+
+    /// Set `SO_RCVBUF`.
+    fn set_recv_buffer_size(&mut self, _size: usize) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Enable per-packet destination-info delivery on this socket
     /// (`IP_PKTINFO` / `IPV6_RECVPKTINFO`).  Default: no-op for
     /// backends that don't surface pktinfo.

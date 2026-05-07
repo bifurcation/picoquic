@@ -618,26 +618,37 @@ fn monitor_system_call_duration(
     shall_notify
 }
 
-fn open_socket<S: Socket>(
+/// Open and configure one UDP socket for the packet loop.
+///
+/// C: `picoquic/sockloop.c:picoquic_packet_loop_open_socket`.
+pub fn packet_loop_open_socket<S: Socket>(
     socket_buffer_size: i32,
     _do_not_use_gso: bool,
     s_ctx: &mut SocketCtx<S>,
     ecn_value: u8,
 ) -> Result<(), Error> {
     let mut fd = match s_ctx.af {
-        AF_INET => S::open_server_v4(s_ctx.port as i32)?,
-        AF_INET6 => S::open_server_v6(s_ctx.port as i32)?,
+        AF_INET | AF_INET6 => S::open_udp(s_ctx.af)?,
         _ => return Err(Error::InvalidArgument),
     };
 
-    let _ = socket_buffer_size;
     fd.set_ecn_options_ex(ecn_codepoint(ecn_value))?;
     fd.set_pkt_info()?;
+    if s_ctx.is_port_shared {
+        fd.set_reuse_addr(true)?;
+        fd.set_reuse_port(true)?;
+    }
+    fd.bind_to_port(s_ctx.af, s_ctx.port as i32)?;
     fd.set_pmtud_options()?;
 
     let local_address = fd.local_address()?;
     s_ctx.port = local_address.port();
     s_ctx.n_port = s_ctx.port.to_be();
+    if socket_buffer_size > 0 {
+        let size = usize::try_from(socket_buffer_size).map_err(|_| Error::InvalidArgument)?;
+        fd.set_send_buffer_size(size)?;
+        fd.set_recv_buffer_size(size)?;
+    }
     s_ctx.fd = Some(fd);
     s_ctx.is_started = true;
     s_ctx.supports_udp_send_coalesced = false;
@@ -759,6 +770,130 @@ pub fn packet_loop_set_fds<S: crate::socks::Socket>(
         }
         i_poll += 1;
     }
+}
+
+/// Result of one poll-based packet-loop receive.
+///
+/// C used output parameters for the source address, destination address,
+/// receiving interface, ECN codepoint, socket rank, and wake-up flag.
+#[derive(Debug, Copy, Clone)]
+pub struct PacketLoopPollResult {
+    pub bytes_recv: usize,
+    pub addr_from: Option<SocketAddr>,
+    pub addr_dest: Option<SocketAddr>,
+    pub dest_if: i32,
+    pub received_ecn: u8,
+    pub socket_rank: usize,
+}
+
+#[cfg(unix)]
+fn set_socket_addr_port(addr: &mut SocketAddr, port: u16) {
+    match addr {
+        SocketAddr::V4(v4) => v4.set_port(port),
+        SocketAddr::V6(v6) => v6.set_port(port),
+    }
+}
+
+/// Poll packet-loop sockets and receive the first datagram available.
+///
+/// `Ok(None)` means timeout or a wake-up event with no packet; in the latter
+/// case `is_wake_up_event` is set to `true`.
+///
+/// C: `picoquic/sockloop.c:picoquic_packet_loop_poll`.
+#[cfg(unix)]
+pub fn packet_loop_poll<S: Socket>(
+    s_ctx: &mut [SocketCtx<S>],
+    nb_sockets: usize,
+    poll_list: &mut [libc::pollfd],
+    buffer: &mut [u8],
+    delta_t: i64,
+    is_wake_up_event: &mut bool,
+    thread_ctx: &mut NetworkThreadCtx,
+) -> Result<Option<PacketLoopPollResult>, Error> {
+    let i_poll = usize::from(thread_ctx.wake_up_defined);
+    let nfds = nb_sockets.saturating_add(i_poll);
+    if poll_list.len() < nfds || s_ctx.len() < nb_sockets {
+        return Err(Error::BufferTooSmall);
+    }
+
+    let delta_t_ms = ((delta_t + 500) / 1000).clamp(i32::MIN as i64, i32::MAX as i64) as i32;
+    // SAFETY: `poll_list.as_mut_ptr()` points to `nfds` initialized pollfd
+    // entries for the duration of the syscall.
+    let ret_poll = unsafe { libc::poll(poll_list.as_mut_ptr(), nfds as libc::nfds_t, delta_t_ms) };
+
+    *is_wake_up_event = false;
+    for entry in poll_list.iter_mut().take(nfds) {
+        if entry.revents == libc::POLLNVAL {
+            return Err(Error::Generic);
+        }
+    }
+
+    if ret_poll < 0 {
+        return Err(Error::Generic);
+    }
+    if ret_poll == 0 {
+        return Ok(None);
+    }
+
+    if thread_ctx.wake_up_defined && poll_list[0].revents != 0 {
+        let mut drained = false;
+        if thread_ctx.wake_up_pipe_fd[0] >= 0 {
+            let mut eventbuf = [0u8; 8];
+            // SAFETY: `eventbuf` is a valid writable buffer and the fd is the
+            // read end supplied by the caller's wake-up pipe.
+            let n = unsafe {
+                libc::read(
+                    thread_ctx.wake_up_pipe_fd[0],
+                    eventbuf.as_mut_ptr().cast(),
+                    eventbuf.len(),
+                )
+            };
+            if n <= 0 {
+                return Err(Error::Generic);
+            }
+            drained = true;
+        } else if let Some(receiver) = thread_ctx.wake_up_receiver.as_ref() {
+            while receiver.try_recv().is_ok() {
+                drained = true;
+            }
+        }
+        if !drained {
+            return Err(Error::Generic);
+        }
+        *is_wake_up_event = true;
+        return Ok(None);
+    }
+
+    for i in 0..nb_sockets {
+        if poll_list[i + i_poll].revents == 0 {
+            continue;
+        }
+        let Some(fd) = s_ctx[i].fd.as_mut() else {
+            continue;
+        };
+        let mut info = fd.recv(buffer)?;
+        if info.bytes_recv == 0 {
+            return Ok(None);
+        }
+        if let Some(addr_dest) = info.addr_dest.as_mut() {
+            set_socket_addr_port(addr_dest, u16::from_be(s_ctx[i].n_port));
+        }
+        s_ctx[i].addr_from = info.addr_from;
+        s_ctx[i].addr_dest = info.addr_dest;
+        s_ctx[i].dest_if = info.dest_if;
+        s_ctx[i].received_ecn = info.received_ecn;
+        s_ctx[i].bytes_recv = info.bytes_recv;
+        return Ok(Some(PacketLoopPollResult {
+            bytes_recv: info.bytes_recv,
+            addr_from: info.addr_from,
+            addr_dest: info.addr_dest,
+            dest_if: info.dest_if,
+            received_ecn: info.received_ecn,
+            socket_rank: i,
+        }));
+    }
+
+    Ok(None)
 }
 
 fn wait_for_wake_up(thread_ctx: &mut NetworkThreadCtx, delta_t: i64) -> bool {
@@ -1024,7 +1159,7 @@ fn run_packet_loop<S: Socket>(
                 new_ctx.af = af_for_addr(&addr_to);
                 new_ctx.port = addr_to.port();
                 new_ctx.n_port = new_ctx.port.to_be();
-                if open_socket(
+                if packet_loop_open_socket(
                     param.socket_buffer_size,
                     param.do_not_use_gso,
                     new_ctx,
@@ -1550,7 +1685,7 @@ pub fn open_sockets<S: crate::socks::Socket>(
             s_ctx[nb_sockets].n_port = current_port.to_be();
             s_ctx[nb_sockets].is_port_shared = false;
 
-            if let Err(error) = open_socket(
+            if let Err(error) = packet_loop_open_socket(
                 socket_buffer_size,
                 do_not_use_gso,
                 &mut s_ctx[nb_sockets],
@@ -1580,7 +1715,7 @@ pub fn open_sockets<S: crate::socks::Socket>(
                 s_ctx[nb_sockets].n_port = public_port.to_be();
                 s_ctx[nb_sockets].is_port_shared = is_shared;
 
-                if let Err(error) = open_socket(
+                if let Err(error) = packet_loop_open_socket(
                     socket_buffer_size,
                     do_not_use_gso,
                     &mut s_ctx[nb_sockets],

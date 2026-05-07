@@ -75,6 +75,13 @@ impl Socket2Udp {
             .map_err(|_| Error::Generic)?;
         Ok(udp)
     }
+
+    fn open_unbound(af: i32) -> Result<Self, Error> {
+        let domain = socket2::Domain::from(af);
+        let sock = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))
+            .map_err(|_| Error::Generic)?;
+        Ok(Socket2Udp(sock, af))
+    }
 }
 
 impl Socket for Socket2Udp {
@@ -104,6 +111,34 @@ impl Socket for Socket2Udp {
         self.0
             .send_to(bytes, &sa)
             .map_err(|e| OsError(e.raw_os_error().unwrap_or(-1)))
+    }
+
+    fn open_udp(af: i32) -> Result<Self, Error> {
+        Self::open_unbound(af)
+    }
+
+    fn bind_to_port(&mut self, af: i32, port: i32) -> Result<(), Error> {
+        Socket2Udp::bind_to_port(self, af, port)
+    }
+
+    fn set_reuse_addr(&mut self, reuse: bool) -> Result<(), Error> {
+        self.0.set_reuse_address(reuse).map_err(|_| Error::Generic)
+    }
+
+    fn set_reuse_port(&mut self, reuse: bool) -> Result<(), Error> {
+        self.0.set_reuse_port(reuse).map_err(|_| Error::Generic)
+    }
+
+    fn set_send_buffer_size(&mut self, size: usize) -> Result<(), Error> {
+        self.0
+            .set_send_buffer_size(size)
+            .map_err(|_| Error::Generic)
+    }
+
+    fn set_recv_buffer_size(&mut self, size: usize) -> Result<(), Error> {
+        self.0
+            .set_recv_buffer_size(size)
+            .map_err(|_| Error::Generic)
     }
 
     fn set_pkt_info(&mut self) -> Result<(), Error> {

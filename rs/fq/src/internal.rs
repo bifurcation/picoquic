@@ -8736,6 +8736,48 @@ impl Connection {
 }
 
 impl Connection {
+    /// Validate and apply the 0-RTT BDP seed after the first RTT sample.
+    ///
+    /// C: `picoquic/timing.c:picoquic_validate_bdp_seed`.
+    fn validate_bdp_seed(&mut self, path_x: &mut Path, rtt_sample: u64, current_time: Instant) {
+        if path_x.unique_path_id != 0 || self.seed_cwin == 0 || self.cwin_notified_from_seed {
+            return;
+        }
+
+        let rtt_margin = rtt_sample / 4;
+        if self.seed_rtt_min.ticks() < rtt_sample - rtt_margin
+            || self.seed_rtt_min.ticks() > rtt_sample + rtt_margin
+        {
+            return;
+        }
+
+        let Some(seed_ip) = self.seed_ip_addr else {
+            return;
+        };
+        let Some(peer_ip) = path_x.tuples.first().map(|tuple| tuple.peer_addr.ip()) else {
+            return;
+        };
+        if seed_ip != peer_ip {
+            return;
+        }
+
+        let ack_state = PerAckState {
+            pc: PacketContext::Application as i32,
+            nb_bytes_acknowledged: self.seed_cwin,
+            ..PerAckState::default()
+        };
+        self.cwin_notified_from_seed = true;
+        if let Some(cc_alg) = self.congestion_alg {
+            cc_alg.algorithm.alg_notify(
+                self,
+                path_x,
+                CongestionNotification::SeedCwin,
+                &ack_state,
+                current_time,
+            );
+        }
+    }
+
     pub fn update_path_rtt(
         &mut self,
         old_path: &mut Path,
@@ -8797,6 +8839,9 @@ impl Connection {
                 .saturating_add(self.max_ack_delay_remote.ticks())
                 .max(MIN_RETRANSMIT_TIMER.ticks()),
         );
+        if is_first {
+            self.validate_bdp_seed(old_path, rtt_estimate, current_time);
+        }
     }
 
     /// Update the one-way delay sample on `old_path` using a remote
@@ -13992,6 +14037,286 @@ impl Connection {
 
 // ---------------------------------------------------------------------------
 // Transport extensions and version upgrade.
+
+fn supported_version_from_index(version_index: i32) -> Option<Version> {
+    let index = usize::try_from(version_index).ok()?;
+    SUPPORTED_VERSIONS.get(index).copied()
+}
+
+fn encode_u32_at(bytes: &mut [u8], offset: &mut usize, value: u32) -> bool {
+    if bytes.len().saturating_sub(*offset) < 4 {
+        return false;
+    }
+    format_32(&mut bytes[*offset..*offset + 4], value);
+    *offset += 4;
+    true
+}
+
+fn picoquic_transport_param_varint_encode(bytes: &mut [u8], n64: u64) -> Option<&mut [u8]> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut tmp = [0u8; 8];
+    let encoded = varint_encode(&mut tmp, n64);
+    if encoded == 0 || bytes.len() < encoded + 1 {
+        return None;
+    }
+    bytes[0] = encoded as u8;
+    bytes[1..1 + encoded].copy_from_slice(&tmp[..encoded]);
+    Some(&mut bytes[1 + encoded..])
+}
+
+/// Decode a transport-parameter value that must contain exactly one varint.
+///
+/// C: `picoquic/transport.c:picoquic_transport_param_varint_decode`.
+pub fn picoquic_transport_param_varint_decode(
+    cnx: &mut Connection,
+    bytes: &[u8],
+    extension_length: u64,
+    ret: &mut i32,
+) -> u64 {
+    let mut n64 = 0;
+    let len = usize::try_from(extension_length).unwrap_or(usize::MAX);
+    let slice = bytes.get(..len).unwrap_or(bytes);
+    let l_v = varint_decode(slice, &mut n64) as u64;
+    if l_v == 0 || l_v != extension_length {
+        *ret = cnx.connection_error(crate::errors::TransportError::ParameterError as u64, 0);
+    }
+    n64
+}
+
+/// Encode a varint-valued transport parameter.
+///
+/// C: `picoquic/transport.c:picoquic_transport_param_type_varint_encode`.
+pub fn picoquic_transport_param_type_varint_encode(
+    bytes: &mut [u8],
+    tp_type: crate::tp::TransportParameter,
+    n64: u64,
+) -> Option<&mut [u8]> {
+    let mut offset = 0;
+    if !encode_varint_at(bytes, &mut offset, tp_type as u64) {
+        return None;
+    }
+    picoquic_transport_param_varint_encode(&mut bytes[offset..], n64)
+}
+
+/// Encode a flag transport parameter with a zero-length value.
+///
+/// C: `picoquic/transport.c:picoquic_transport_param_type_flag_encode`.
+pub fn picoquic_transport_param_type_flag_encode(
+    bytes: &mut [u8],
+    tp_type: crate::tp::TransportParameter,
+) -> Option<&mut [u8]> {
+    let mut offset = 0;
+    if !encode_varint_at(bytes, &mut offset, tp_type as u64)
+        || !encode_varint_at(bytes, &mut offset, 0)
+    {
+        return None;
+    }
+    Some(&mut bytes[offset..])
+}
+
+/// Encode a connection-ID-valued transport parameter.
+///
+/// C: `picoquic/transport.c:picoquic_transport_param_cid_encode`.
+pub fn picoquic_transport_param_cid_encode<'a>(
+    bytes: &'a mut [u8],
+    tp_type: crate::tp::TransportParameter,
+    cid: &ConnectionId,
+) -> Option<&'a mut [u8]> {
+    let mut offset = 0;
+    if !encode_varint_at(bytes, &mut offset, tp_type as u64)
+        || !encode_varint_at(bytes, &mut offset, cid.len() as u64)
+        || bytes.len().saturating_sub(offset) < cid.len()
+    {
+        return None;
+    }
+    bytes[offset..offset + cid.len()].copy_from_slice(cid.as_bytes());
+    offset += cid.len();
+    Some(&mut bytes[offset..])
+}
+
+/// Decode a connection-ID-valued transport parameter.
+///
+/// C: `picoquic/transport.c:picoquic_transport_param_cid_decode`.
+pub fn picoquic_transport_param_cid_decode(
+    cnx: &mut Connection,
+    bytes: &[u8],
+    extension_length: u64,
+    cid: &mut ConnectionId,
+) -> i32 {
+    let len = usize::try_from(extension_length).unwrap_or(usize::MAX);
+    let Some(value) = bytes.get(..len) else {
+        return cnx.connection_error(crate::errors::TransportError::ParameterError as u64, 0);
+    };
+    match ConnectionId::clone_from_slice(value) {
+        Some(parsed) if parsed.len() == len => {
+            *cid = parsed;
+            0
+        }
+        _ => cnx.connection_error(crate::errors::TransportError::ParameterError as u64, 0),
+    }
+}
+
+/// Encode the server preferred-address transport parameter.
+///
+/// C: `picoquic/transport.c:picoquic_encode_transport_preferred_address_address`.
+pub fn picoquic_encode_transport_preferred_address_address<'a>(
+    bytes: &'a mut [u8],
+    preferred_address: &crate::PreferredAddress,
+) -> Option<&'a mut [u8]> {
+    let cid_len = preferred_address.connection_id.len();
+    let coded_length = 4 + 2 + 16 + 2 + 1 + cid_len + 16;
+    let mut offset = 0;
+    if !encode_varint_at(
+        bytes,
+        &mut offset,
+        crate::tp::TransportParameter::ServerPreferredAddress as u64,
+    ) || !encode_varint_at(bytes, &mut offset, coded_length as u64)
+        || bytes.len().saturating_sub(offset) < coded_length
+    {
+        return None;
+    }
+
+    let (ipv4, ipv4_port) = match preferred_address.v4 {
+        Some(SocketAddr::V4(addr)) => (addr.ip().octets(), addr.port()),
+        _ => ([0u8; 4], 0),
+    };
+    let ipv6 = match preferred_address.v6 {
+        Some(SocketAddr::V6(addr)) => addr.ip().octets(),
+        _ => [0u8; 16],
+    };
+
+    bytes[offset..offset + 4].copy_from_slice(&ipv4);
+    offset += 4;
+    format_16(&mut bytes[offset..offset + 2], ipv4_port);
+    offset += 2;
+    bytes[offset..offset + 16].copy_from_slice(&ipv6);
+    offset += 16;
+    format_16(&mut bytes[offset..offset + 2], ipv4_port);
+    offset += 2;
+    bytes[offset] = cid_len as u8;
+    offset += 1;
+    bytes[offset..offset + cid_len].copy_from_slice(preferred_address.connection_id.as_bytes());
+    offset += cid_len;
+    bytes[offset..offset + 16].copy_from_slice(&preferred_address.stateless_reset_token);
+    offset += 16;
+
+    Some(&mut bytes[offset..])
+}
+
+/// Decode the server preferred-address transport-parameter value.
+///
+/// C: `picoquic/transport.c:picoquic_decode_transport_preferred_address_address`.
+pub fn picoquic_decode_transport_preferred_address_address(
+    bytes: &[u8],
+    bytes_max: usize,
+    preferred_address: &mut crate::PreferredAddress,
+) -> usize {
+    let bytes_max = bytes_max.min(bytes.len());
+    let minimal_length = 4 + 2 + 16 + 2 + 1 + 16;
+    if bytes_max < minimal_length {
+        return 0;
+    }
+
+    let mut byte_index = 0;
+    let ipv4 = core::net::Ipv4Addr::new(
+        bytes[byte_index],
+        bytes[byte_index + 1],
+        bytes[byte_index + 2],
+        bytes[byte_index + 3],
+    );
+    byte_index += 4;
+    let ipv4_port = parse_16(&bytes[byte_index..byte_index + 2]);
+    byte_index += 2;
+
+    let mut ipv6_octets = [0u8; 16];
+    ipv6_octets.copy_from_slice(&bytes[byte_index..byte_index + 16]);
+    byte_index += 16;
+    let ipv6_port = parse_16(&bytes[byte_index..byte_index + 2]);
+    byte_index += 2;
+
+    let cnx_id_length = bytes[byte_index] as usize;
+    byte_index += 1;
+    if cnx_id_length == 0
+        || cnx_id_length > crate::CONNECTION_ID_MAX_SIZE
+        || byte_index + cnx_id_length + 16 > bytes_max
+    {
+        return 0;
+    }
+    let Some(connection_id) =
+        ConnectionId::clone_from_slice(&bytes[byte_index..byte_index + cnx_id_length])
+    else {
+        return 0;
+    };
+    byte_index += cnx_id_length;
+
+    let mut stateless_reset_token = [0u8; 16];
+    stateless_reset_token.copy_from_slice(&bytes[byte_index..byte_index + 16]);
+    byte_index += 16;
+
+    preferred_address.v4 = Some(SocketAddr::from((ipv4, ipv4_port)));
+    preferred_address.v6 = Some(SocketAddr::from((
+        core::net::Ipv6Addr::from(ipv6_octets),
+        ipv6_port,
+    )));
+    preferred_address.connection_id = connection_id;
+    preferred_address.stateless_reset_token = stateless_reset_token;
+    byte_index
+}
+
+/// Encode the version-negotiation transport parameter.
+///
+/// C: `picoquic/transport.c:picoquic_encode_transport_param_version_negotiation`.
+pub fn picoquic_encode_transport_param_version_negotiation<'a>(
+    bytes: &'a mut [u8],
+    extension_mode: i32,
+    cnx: &Connection,
+) -> Option<&'a mut [u8]> {
+    let mut offset = 0;
+    if !encode_varint_at(
+        bytes,
+        &mut offset,
+        crate::tp::TransportParameter::VersionNegotiation as u64,
+    ) || bytes.len().saturating_sub(offset) < 2
+    {
+        return None;
+    }
+    let bytes_len = offset;
+    offset += 2;
+
+    let current_version = supported_version_from_index(cnx.version_index)
+        .map(|v| v as u32)
+        .unwrap_or(cnx.proposed_version);
+    if !encode_u32_at(bytes, &mut offset, current_version) {
+        return None;
+    }
+    if extension_mode == 0 {
+        if cnx.desired_version != 0
+            && cnx.desired_version != current_version
+            && !encode_u32_at(bytes, &mut offset, cnx.desired_version)
+        {
+            return None;
+        }
+        if !encode_u32_at(bytes, &mut offset, current_version) {
+            return None;
+        }
+    } else {
+        for version in SUPPORTED_VERSIONS {
+            if !encode_u32_at(bytes, &mut offset, version as u32) {
+                return None;
+            }
+        }
+    }
+
+    let len = offset - (bytes_len + 2);
+    if len > 0x3fff {
+        return None;
+    }
+    bytes[bytes_len] = ((len >> 8) as u8 & 0x3f) | 0x40;
+    bytes[bytes_len + 1] = len as u8;
+    Some(&mut bytes[offset..])
+}
 
 pub fn process_tp_version_negotiation<'a>(
     bytes: &'a [u8],

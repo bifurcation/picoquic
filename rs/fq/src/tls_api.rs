@@ -90,7 +90,7 @@ use digest::Digest;
 use crate::Instant;
 use crate::errors::InternalError;
 use crate::internal::{
-    CryptoContext, MAX_PACKET_SIZE, NB_TP_0RTT, NUMBER_OF_EPOCHS, RETRY_TOKEN_PAD_SIZE,
+    CryptoContext, MAX_PACKET_SIZE, NB_TP_0RTT, NUMBER_OF_EPOCHS, Path, RETRY_TOKEN_PAD_SIZE,
     StoredTicket, StoredToken, StreamQueueNode, TOKEN_DELAY_LONG, TOKEN_DELAY_SHORT, Version,
 };
 use crate::{
@@ -543,6 +543,32 @@ fn set_pn_enc_from_secret(
     Ok(())
 }
 
+/// Derive and install AEAD and, when not rotating keys, packet-number
+/// protection from one traffic secret.
+///
+/// C: `picoquic/tls_api.c:picoquic_set_key_from_secret`.
+fn picoquic_set_key_from_secret(
+    suite: AeadSuiteId,
+    is_enc: bool,
+    is_rotation: bool,
+    ctx: &mut CryptoContext,
+    secret: &[u8],
+    prefix_label: &str,
+) -> Result<(), Error> {
+    if is_enc {
+        set_aead_from_secret(&mut ctx.aead_encrypt, suite, is_enc, secret, prefix_label)?;
+        if !is_rotation {
+            set_pn_enc_from_secret(&mut ctx.pn_enc, suite, is_enc, secret, prefix_label)?;
+        }
+    } else {
+        set_aead_from_secret(&mut ctx.aead_decrypt, suite, is_enc, secret, prefix_label)?;
+        if !is_rotation {
+            set_pn_enc_from_secret(&mut ctx.pn_dec, suite, is_enc, secret, prefix_label)?;
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Hash context — wraps the per-algorithm hash state for the
 // `hash_update` / `hash_finalize` pair.
@@ -638,6 +664,7 @@ fn build_key_pair(
     })
 }
 
+#[allow(dead_code)]
 fn initial_secrets_for_version(
     version: Version,
     initial_connection_id: &ConnectionId,
@@ -649,6 +676,25 @@ fn initial_secrets_for_version(
     setup_initial_master_secret(params.version_aead_key, *initial_connection_id, &mut master)?;
     setup_initial_secrets(&master, &mut client, &mut server)?;
     Ok((client, server))
+}
+
+/// Compute QUIC Initial client/server secrets and return the selected
+/// initial cipher suite.
+///
+/// C: `picoquic/tls_api.c:picoquic_compute_initial_secrets`.
+fn picoquic_compute_initial_secrets(
+    _quic: &Quic,
+    version_index: i32,
+    initial_cnxid: &ConnectionId,
+) -> Result<(AeadSuiteId, [u8; SHA256_SIZE], [u8; SHA256_SIZE]), Error> {
+    let suite = AeadSuiteId::Aes128GcmSha256;
+    let salt = setup_cleartext_aead_salt(version_index);
+    let mut master = [0u8; SHA256_SIZE];
+    let mut client = [0u8; SHA256_SIZE];
+    let mut server = [0u8; SHA256_SIZE];
+    setup_initial_master_secret(salt, *initial_cnxid, &mut master)?;
+    setup_initial_secrets(&master, &mut client, &mut server)?;
+    Ok((suite, client, server))
 }
 
 /// C: `picoquic_add_to_tls_stream`
@@ -780,7 +826,9 @@ impl crate::tls::Session for LocalSession {
 
 fn install_ticket_aead_contexts(quic: &mut Quic, ticket_key: Option<&[u8]>) -> Result<(), Error> {
     let mut secret = [0u8; SHA256_SIZE];
-    if let Some(key) = ticket_key {
+    if let Some(key) = ticket_key
+        && !key.is_empty()
+    {
         let copy_len = key.len().min(secret.len());
         secret[..copy_len].copy_from_slice(&key[..copy_len]);
     } else {
@@ -901,6 +949,17 @@ impl Quic {
         }
 
         install_ticket_aead_contexts(self, ticket_key)
+    }
+
+    /// Set up server ticket AEAD contexts from `secret`, or from fresh
+    /// cryptographic random bytes when no non-empty secret is supplied.
+    ///
+    /// C: `picoquic/tls_api.c:picoquic_server_setup_ticket_aead_contexts`.
+    pub fn picoquic_server_setup_ticket_aead_contexts(
+        &mut self,
+        secret: Option<&[u8]>,
+    ) -> Result<(), Error> {
+        install_ticket_aead_contexts(self, secret)
     }
 
     /// Tear down the master TLS context installed by
@@ -1120,6 +1179,35 @@ impl Quic {
         use rand_core::RngCore;
         self.rng.fill_bytes(buf);
     }
+
+    /// Return a cryptographically random value in `0..rnd_max`, using the
+    /// same rejection-sampling threshold as the C implementation.
+    ///
+    /// C: `picoquic/tls_api.c:picoquic_crypto_uniform_random`.
+    pub fn picoquic_crypto_uniform_random(&mut self, rnd_max: u64) -> u64 {
+        assert!(rnd_max > 0, "rnd_max must be positive");
+        let rnd_min = u64::MAX % rnd_max;
+        loop {
+            let mut bytes = [0u8; 8];
+            self.crypto_random(&mut bytes);
+            let rnd = u64::from_ne_bytes(bytes);
+            if rnd >= rnd_min {
+                return rnd % rnd_max;
+            }
+        }
+    }
+
+    /// Seed the public non-cryptographic random generator from this context's
+    /// cryptographic RNG.
+    ///
+    /// C: `picoquic/tls_api.c:picoquic_public_random_seed`.
+    pub fn picoquic_public_random_seed(&mut self) {
+        let mut bytes = [0u8; 24];
+        self.crypto_random(&mut bytes);
+        let seed = u64::from_ne_bytes(bytes[0..8].try_into().unwrap());
+        let obfuscator = u64::from_ne_bytes(bytes[8..16].try_into().unwrap());
+        crate::public_random_seed_from_crypto(seed, obfuscator);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1310,23 +1398,34 @@ impl Connection {
     /// encryption contexts from the connection's initial CID.  C:
     /// `setup_initial_traffic_keys`.
     pub fn setup_initial_traffic_keys(&mut self) -> Result<(), Error> {
-        let version = connection_version(self);
-        let params = version.parameters();
-        let (client_secret, server_secret) =
-            initial_secrets_for_version(version, &self.initial_connection_id)?;
+        let (suite, client_secret, server_secret) = {
+            let quic = self.quic_ref().ok_or(Error::InvalidState)?;
+            picoquic_compute_initial_secrets(quic, self.version_index, &self.initial_connection_id)?
+        };
+        let params = version_from_index(self.version_index)
+            .unwrap_or_else(|| connection_version(self))
+            .parameters();
         let (local, remote) = if self.client_mode {
             (&client_secret[..], &server_secret[..])
         } else {
             (&server_secret[..], &client_secret[..])
         };
-        self.crypto_context[0].aead_encrypt =
-            Some(packet_key_from_secret(local, params.tls_prefix_label)?);
-        self.crypto_context[0].aead_decrypt =
-            Some(packet_key_from_secret(remote, params.tls_prefix_label)?);
-        self.crypto_context[0].pn_enc =
-            Some(header_key_from_secret(local, params.tls_prefix_label)?);
-        self.crypto_context[0].pn_dec =
-            Some(header_key_from_secret(remote, params.tls_prefix_label)?);
+        picoquic_set_key_from_secret(
+            suite,
+            true,
+            false,
+            &mut self.crypto_context[0],
+            local,
+            params.tls_prefix_label,
+        )?;
+        picoquic_set_key_from_secret(
+            suite,
+            false,
+            false,
+            &mut self.crypto_context[0],
+            remote,
+            params.tls_prefix_label,
+        )?;
         Ok(())
     }
 }
@@ -1357,8 +1456,8 @@ impl Quic {
     ) -> Result<InitialAeadContext, Error> {
         let version = version_from_index(version_index).ok_or(Error::InvalidArgument)?;
         let params = version.parameters();
-        let (client_secret, server_secret) =
-            initial_secrets_for_version(version, initial_connection_id)?;
+        let (_suite, client_secret, server_secret) =
+            picoquic_compute_initial_secrets(self, version_index, initial_connection_id)?;
         let selected_secret = if is_client == is_enc {
             &client_secret[..]
         } else {
@@ -1638,6 +1737,43 @@ pub struct DecryptedRetryToken {
 }
 
 impl Quic {
+    /// Encrypt retry/new-token plaintext for a peer address.
+    ///
+    /// C: `picoquic/tls_api.c:picoquic_server_encrypt_retry_token`.
+    fn picoquic_server_encrypt_retry_token(
+        &mut self,
+        addr_peer: &SocketAddr,
+        is_new_token: bool,
+        token: &mut [u8],
+        text: &[u8],
+    ) -> Result<usize, Error> {
+        ensure_ticket_aead_contexts(self)?;
+        let required = 8usize
+            .checked_add(text.len())
+            .and_then(|n| n.checked_add(QUIC_AEAD_TAG_LEN))
+            .ok_or(Error::BufferTooSmall)?;
+        if token.len() < required {
+            return Err(Error::BufferTooSmall);
+        }
+
+        self.crypto_random(&mut token[..8]);
+        if is_new_token {
+            token[0] |= 0x80;
+        } else {
+            token[0] &= 0x7f;
+        }
+        let sequence = u64::from_be_bytes(token[..8].try_into().unwrap());
+        let aad = ip_auth_data(addr_peer);
+        let mut payload = text.to_vec();
+        let aead = self
+            .aead_encrypt_ticket_ctx
+            .as_ref()
+            .ok_or(Error::InvalidState)?;
+        aead.encrypt(sequence, &aad, &mut payload);
+        token[8..8 + payload.len()].copy_from_slice(&payload);
+        Ok(8 + payload.len())
+    }
+
     /// Decrypt a retry token and verify its peer-address binding.
     /// The plaintext is written into `text`; the result describes
     /// how many bytes were written and whether the token was a "new
@@ -1715,26 +1851,12 @@ impl Quic {
             offset += 1;
         }
 
-        if token.len() < 8 + offset + QUIC_AEAD_TAG_LEN {
-            return Err(Error::BufferTooSmall);
-        }
-        use rand_core::RngCore;
-        self.rng.fill_bytes(&mut token[..8]);
-        if odcid.is_empty() {
-            token[0] |= 0x80;
-        } else {
-            token[0] &= 0x7f;
-        }
-        let sequence = u64::from_be_bytes(token[..8].try_into().unwrap());
-        let aad = ip_auth_data(addr_peer);
-        let mut payload = text[..offset].to_vec();
-        let aead = self
-            .aead_encrypt_ticket_ctx
-            .as_ref()
-            .ok_or(Error::InvalidState)?;
-        aead.encrypt(sequence, &aad, &mut payload);
-        token[8..8 + payload.len()].copy_from_slice(&payload);
-        Ok(8 + payload.len())
+        self.picoquic_server_encrypt_retry_token(
+            addr_peer,
+            odcid.is_empty(),
+            token,
+            &text[..offset],
+        )
     }
 }
 
@@ -2417,6 +2539,31 @@ pub fn is_minicrypto_aes128gcm_sha256(use_low_memory: bool) -> bool {
         == Some(CryptoProvider::Minicrypto)
 }
 
+/// Return the first registered cipher-suite ID matching `cipher_suite_id`.
+/// Passing `0` selects the first registered suite in provider order.
+///
+/// C: `picoquic/tls_api.c:picoquic_get_cipher_suite_by_id`.
+pub fn picoquic_get_cipher_suite_by_id(cipher_suite_id: i32, use_low_memory: bool) -> Option<u16> {
+    let state = tls_api_state();
+    for slot in state.cipher_suites {
+        if slot.high_memory_suite.is_none() {
+            break;
+        }
+        if cipher_suite_id != 0 && cipher_suite_id != i32::from(slot.id) {
+            continue;
+        }
+        let provider = if use_low_memory {
+            slot.low_memory_suite
+        } else {
+            slot.high_memory_suite
+        };
+        if provider.is_some() {
+            return Some(slot.id);
+        }
+    }
+    None
+}
+
 /// True when minicrypto is the active private-key loader.
 /// C: `picoquic_set_private_key_from_file_fn == picoquic_minicrypto_set_key_fn`.
 pub fn is_minicrypto_key_loader() -> bool {
@@ -2452,6 +2599,64 @@ pub fn clear_minicrypto() {}
 
 // ---------------------------------------------------------------------------
 // Ticket construction.
+
+fn ip_addr_from_stored_bytes(bytes: &[u8]) -> Option<core::net::IpAddr> {
+    match bytes.len() {
+        0 => Some(core::net::IpAddr::V4(core::net::Ipv4Addr::UNSPECIFIED)),
+        4 => Some(core::net::IpAddr::V4(core::net::Ipv4Addr::new(
+            bytes[0], bytes[1], bytes[2], bytes[3],
+        ))),
+        16 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(bytes);
+            Some(core::net::IpAddr::V6(core::net::Ipv6Addr::from(octets)))
+        }
+        _ => None,
+    }
+}
+
+impl Connection {
+    /// Update the stored session ticket matching this connection with the
+    /// peer/client IP and 0-RTT BDP seed values learned on `path_x`.
+    ///
+    /// C: `picoquic/ticket_store.c:picoquic_update_stored_ticket`.
+    pub fn picoquic_update_stored_ticket(&mut self, path_x: &Path) {
+        use crate::tp::TransportParameter0RttKind::*;
+
+        let Some(peer_ip) = path_x.tuples.first().map(|tuple| tuple.peer_addr.ip()) else {
+            return;
+        };
+        let client_ip_len = path_x.ip_client_remote_length as usize;
+        let client_ip = ip_addr_from_stored_bytes(
+            &path_x.ip_client_remote[..client_ip_len.min(path_x.ip_client_remote.len())],
+        );
+        let sni = self.sni.clone();
+        let alpn = self.alpn.clone();
+        let version = version_from_index(self.version_index)
+            .map(|v| v as u32)
+            .unwrap_or(self.proposed_version);
+        let ticket_id = self.issued_ticket_id;
+        if self.quic_ptr.is_null() {
+            return;
+        }
+
+        // SAFETY: `quic_ptr` is installed by `Quic::create_cnx_internal` and
+        // the owning `Quic` outlives every connection stored in its arena.
+        let quic = unsafe { &mut *self.quic_ptr };
+        if let Some(ticket) =
+            quic.get_stored_ticket(sni.as_deref(), alpn.as_deref(), version, false, ticket_id)
+        {
+            ticket.ip_addr = peer_ip;
+            ticket.tp_0rtt[RttLocal as usize] = path_x.rtt_min.ticks();
+            ticket.tp_0rtt[CwinLocal as usize] = path_x.cwin;
+            ticket.tp_0rtt[RttRemote as usize] = path_x.rtt_min_remote.ticks();
+            ticket.tp_0rtt[CwinRemote as usize] = path_x.cwin_remote;
+            if let Some(client_ip) = client_ip {
+                ticket.ip_addr_client = client_ip;
+            }
+        }
+    }
+}
 
 /// Construct a [`StoredTicket`] from its raw components.
 ///

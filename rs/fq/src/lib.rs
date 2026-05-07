@@ -4852,6 +4852,16 @@ pub fn public_random_seed_64(seed: u64, reset_context: i32) {
     }
 }
 
+/// Seed the public random state from `picoquic_public_random_seed`.
+/// C: `picoquic_public_random_seed`.
+pub(crate) fn public_random_seed_from_crypto(seed: u64, obfuscator: u64) {
+    public_random_seed_64(seed, 0);
+    let mut state = PUBLIC_RANDOM_STATE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    state.obfuscator = obfuscator;
+}
+
 /// Return one value from the public, non-cryptographic random stream.
 /// C: `picoquic_public_random_64`.
 pub(crate) fn public_random_64() -> u64 {
