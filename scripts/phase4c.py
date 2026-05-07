@@ -109,13 +109,26 @@ def compose_prompt(batch: list[dict]) -> str:
 
 
 def extract_json(text: str) -> dict:
-    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
-    if fenced:
-        return json.loads(fenced.group(1))
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        return json.loads(text[start:end + 1])
+    candidates: list[dict] = []
+    for fenced in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL):
+        try:
+            obj = json.loads(fenced.group(1))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "reviews" in obj:
+            candidates.append(obj)
+
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            obj, _ = decoder.raw_decode(text[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "reviews" in obj:
+            candidates.append(obj)
+
+    if candidates:
+        return candidates[-1]
     raise ValueError("no JSON object found")
 
 
