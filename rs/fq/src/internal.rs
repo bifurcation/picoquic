@@ -208,7 +208,7 @@ fn fill_system_random(bytes: &mut [u8]) -> crate::Result<()> {
         .map_err(|_| crate::Error::Generic)
 }
 
-fn public_random(bytes: &mut [u8]) {
+pub(crate) fn public_random(bytes: &mut [u8]) {
     let mut off = 0;
     while off < bytes.len() {
         let mut random = crate::public_random_64();
@@ -1993,9 +1993,9 @@ pub struct Quic {
     /// here (paths back-point to their connection).
     pub connection_by_net: HashTable<core::net::SocketAddr, ConnectionToken>,
     /// Lookup by initial connection ID (server only).
-    pub connection_by_icid: HashTable<ConnectionId, ConnectionToken>,
+    pub connection_by_icid: HashTable<(ConnectionId, SocketAddr), ConnectionToken>,
     /// Lookup by stateless-reset secret.
-    pub connection_by_secret: HashTable<[u8; RESET_SECRET_SIZE], ConnectionToken>,
+    pub connection_by_secret: HashTable<([u8; RESET_SECRET_SIZE], SocketAddr), ConnectionToken>,
 
     /// Server-side: index of issued session tickets by ticket id.
     /// Replaces the C `table_issued_tickets` hashtable plus the
@@ -2969,6 +2969,7 @@ pub struct PacketData {
 // Connection lifecycle / registration.
 
 impl Quic {
+    /// C: `picoquic_create_cnx_internal` (picoquic/quicctx.c:4039-4348).
     pub fn create_cnx_internal(
         &mut self,
         mut initial_cnx_id: ConnectionId,
@@ -2987,17 +2988,34 @@ impl Quic {
         let zero_instant = crate::Instant::from_ticks(0);
         let zero_dur = crate::Duration::from_ticks(0);
 
-        // C: if client_mode && initial_cnx_id is null, generate a random 8-byte CID.
-        // TLS: not wired; use fixed 8-byte CID if null.
         if client_mode && initial_cnx_id.is_empty() {
-            initial_cnx_id = ConnectionId::with_size(8).ok_or(crate::Error::Generic)?;
+            initial_cnx_id = crate::create_random_cnx_id(self, 8);
         }
 
-        // Determine proposed_version (C: version_index lookup).
-        let proposed_version = if preferred_version == 0 {
-            Version::V1 as u32
+        let supported_version_index = |version: u32| -> Option<i32> {
+            SUPPORTED_VERSIONS
+                .iter()
+                .position(|v| *v as u32 == version)
+                .map(|i| i as i32)
+        };
+        let interop_index = SUPPORTED_VERSIONS
+            .iter()
+            .position(|v| *v == INTEROP_VERSION_LATEST)
+            .unwrap_or(0) as i32;
+        let (version_index, proposed_version) = if client_mode {
+            if preferred_version == 0 {
+                (0, SUPPORTED_VERSIONS[0] as u32)
+            } else if let Some(idx) = supported_version_index(preferred_version) {
+                (idx, preferred_version)
+            } else if (preferred_version & 0x0A0A0A0A) == 0x0A0A0A0A {
+                (interop_index, preferred_version)
+            } else {
+                (interop_index, INTEROP_VERSION_LATEST as u32)
+            }
+        } else if let Some(idx) = supported_version_index(preferred_version) {
+            (idx, preferred_version)
         } else {
-            preferred_version
+            (0, SUPPORTED_VERSIONS[0] as u32)
         };
 
         // Determine connection state.
@@ -3373,7 +3391,17 @@ impl Quic {
                 pn_dec: None,
             });
 
-        let local_params = self.default_tp.clone();
+        let mut local_params = self.default_tp.clone();
+        if local_params.max_packet_size == 0 && self.mtu_max > 0 {
+            local_params.max_packet_size =
+                self.mtu_max.saturating_sub(crate::mtu_overhead(&peer_addr));
+        }
+        if !client_mode && self.local_connection_id_length == 0 {
+            local_params.migration_disabled = true;
+        }
+        if self.default_send_receive_bdp_frame {
+            local_params.enable_bdp_frame = true;
+        }
         let maxdata_local = local_params.initial_max_data;
         // C: STREAM_ID_FROM_RANK(rank, client_mode, unidir)
         //  = 4*rank + (client_mode ? 0 : 1) + (unidir ? 2 : 0)
@@ -3382,11 +3410,21 @@ impl Quic {
         let max_stream_id_unidir_local =
             4 * local_params.initial_max_stream_id_unidir + role_bit + 2;
 
+        let mut spin_policy = self.default_spin_policy;
+        if spin_policy == SpinbitVersion::Basic {
+            let rand256 = crate::public_random_64() as u8;
+            if rand256 < SPIN_RESERVE_MOD_256 {
+                spin_policy = SpinbitVersion::Null;
+            }
+        } else if spin_policy == SpinbitVersion::On {
+            spin_policy = SpinbitVersion::Basic;
+        }
+
         let mut cnx = Connection {
             proposed_version,
             rejected_version: 0,
             desired_version: 0,
-            version_index: 0,
+            version_index,
 
             is_0rtt_accepted: false,
             remote_parameters_received: false,
@@ -3447,7 +3485,7 @@ impl Quic {
             is_reset_stream_at_enabled: false,
 
             pmtud_policy: self.default_pmtud_policy,
-            spin_policy: self.default_spin_policy,
+            spin_policy,
             idle_timeout: crate::Duration::from_ticks(0),
             local_parameters: local_params,
             remote_parameters: crate::tp::TransportParameters::default(),
@@ -3496,7 +3534,7 @@ impl Quic {
             connection_wake_membership: None,
             app_wake_time: crate::Instant::from_ticks(u64::MAX),
 
-            tls_ctx: None, // TLS: not yet wired
+            tls_ctx: None,
             crypto_epoch_length_max: self.crypto_epoch_length_max,
             crypto_epoch_sequence: 0,
             crypto_rotation_time_guard: zero_instant,
@@ -3660,6 +3698,11 @@ impl Quic {
             cnx.own_token = Some(token);
             cnx.quic_ptr = quic_ptr;
             cnx.setup_initial_traffic_keys()?;
+            if let Some(alg) = cnx.congestion_alg {
+                let option = cnx.congestion_alg_option_string.as_deref();
+                alg.algorithm
+                    .alg_init(&mut cnx.paths[0], option, start_time);
+            }
         }
 
         // Update half-open count for server connections.
@@ -3671,10 +3714,6 @@ impl Quic {
         }
         self.insert_cnx_in_list(token);
 
-        // Always register by initial CID when it is non-empty.  This makes
-        // `connection_ref_by_id(initial_cnx_id)` work regardless of
-        // `local_connection_id_length`, which is important for test helpers that
-        // retain the original `i_cid` used at creation time.
         {
             let cid = self
                 .connections
@@ -3682,24 +3721,77 @@ impl Quic {
                 .map(|c| c.initial_connection_id)
                 .unwrap_or(initial_cnx_id);
             if !cid.is_empty() {
-                let _ = self.connection_by_id.insert(cid, token);
+                if self.connection_by_id.lookup(&cid).is_some() {
+                    self.delete_connection(token);
+                    return Err(crate::Error::Generic);
+                }
+                let (membership, _) = self.connection_by_id.insert(cid, token)?;
+                if let Some(cnx) = self.connections.get_mut(token)
+                    && let Some(l_cid) = cnx.local_connection_ids.get_mut(initial_lcid_token)
+                {
+                    l_cid.connection_by_id_membership = Some(membership);
+                }
             }
         }
 
-        // Additionally register in connection_by_net when no local CID is used
-        // (address-based routing — the only routing available in that mode).
-        if self.local_connection_id_length == 0
-            && let Some(cnx) = self.connections.get(token)
-        {
-            let peer_addr = cnx
-                .paths
-                .first()
-                .and_then(|p| p.tuples.first())
-                .map(|t| t.peer_addr);
-            if let Some(addr) = peer_addr {
-                // Register by network address.
-                let _ = self.connection_by_net.insert(addr, token);
+        let has_preferred_address = self
+            .connections
+            .get(token)
+            .map(|cnx| {
+                cnx.local_parameters.preferred_address.v4.is_some()
+                    || cnx.local_parameters.preferred_address.v6.is_some()
+            })
+            .unwrap_or(false);
+        if has_preferred_address {
+            let cid_token = self.create_local_cnxid(token, 0, None, start_time)?;
+            let preferred_cid = self
+                .connections
+                .get(token)
+                .and_then(|cnx| cnx.local_connection_ids.get(cid_token))
+                .map(|local_cid| local_cid.connection_id)
+                .ok_or(crate::Error::Generic)?;
+            let mut reset_token = [0u8; crate::RESET_SECRET_SIZE];
+            self.create_connection_id_reset_secret(&preferred_cid, &mut reset_token)?;
+            if let Some(cnx) = self.connections.get_mut(token) {
+                cnx.local_parameters.preferred_address.connection_id = preferred_cid;
+                cnx.local_parameters.preferred_address.stateless_reset_token = reset_token;
             }
+        }
+
+        if let Some(cnx) = self.connections.get_mut(token)
+            && let Some(path) = cnx.paths.first_mut()
+        {
+            path.path_is_published = true;
+        }
+
+        if self.local_connection_id_length == 0 {
+            let should_register = self
+                .connections
+                .get(token)
+                .and_then(|cnx| cnx.paths.first())
+                .and_then(|path| path.tuples.first())
+                .map(|tuple| !crate::socket_addr_is_unspecified(&tuple.peer_addr))
+                .unwrap_or(false);
+            if should_register && self.register_net_id(token, 0).is_err() {
+                self.delete_connection(token);
+                return Err(crate::Error::Generic);
+            }
+        }
+
+        if !client_mode
+            && self.local_connection_id_length > 0
+            && self.register_net_icid(token).is_err()
+        {
+            self.delete_connection(token);
+            return Err(crate::Error::Generic);
+        }
+
+        if self.use_unique_log_names
+            && let Some(cnx) = self.connections.get_mut(token)
+        {
+            let mut bytes = [0u8; 2];
+            rand_core::RngCore::fill_bytes(&mut *self.rng, &mut bytes);
+            cnx.log_unique = u16::from_le_bytes(bytes);
         }
 
         Ok(token)
@@ -3720,49 +3812,56 @@ impl Quic {
     /// Remove and release all resources for the connection at `token`,
     /// including its entries in every secondary index.  C: `picoquic_delete_cnx`.
     pub fn delete_connection(&mut self, token: ConnectionToken) {
-        // Remove from secondary indexes before freeing the arena slot.
-        // Use the stored membership tokens for O(1) removal where available;
-        // fall back to linear scan via lookup otherwise.
-        if let Some(cnx) = self.connections.get(token) {
-            let initial_cid = cnx.initial_connection_id;
-            let peer_addr = cnx
-                .paths
-                .first()
-                .and_then(|p| p.tuples.first())
-                .map(|t| t.peer_addr);
-            let icid = cnx.initial_connection_id;
+        let Some(cnx) = self.connections.get(token) else {
+            return;
+        };
+        let initial_cid = cnx.initial_connection_id;
+        let local_cid_memberships: Vec<_> = cnx
+            .local_connection_id_lists
+            .iter()
+            .flat_map(|list| list.connection_ids.iter().copied())
+            .filter_map(|tok| {
+                cnx.local_connection_ids
+                    .get(tok)
+                    .and_then(|l_cid| l_cid.connection_by_id_membership)
+            })
+            .collect();
+        let net_memberships: Vec<_> = cnx
+            .paths
+            .iter()
+            .map(|path| (path.connection_by_net_membership, path.registered_peer_addr))
+            .collect();
+        let icid_membership = cnx.connection_by_icid_membership;
+        let secret_membership = cnx.connection_by_secret_membership;
+        let was_half_open = cnx.is_half_open;
 
-            // Remove from connection_by_id (CID-based routing).
-            if !initial_cid.is_empty()
-                && let Some(ht) = self.connection_by_id.lookup(&initial_cid)
-            {
-                self.connection_by_id.remove(ht);
-            }
-
-            // Remove from connection_by_net (address-based routing).
-            if let Some(addr) = peer_addr
+        for membership in local_cid_memberships {
+            self.connection_by_id.remove(membership);
+        }
+        if !initial_cid.is_empty()
+            && let Some(ht) = self.connection_by_id.lookup(&initial_cid)
+            && self.connection_by_id.get(ht).copied() == Some(token)
+        {
+            self.connection_by_id.remove(ht);
+        }
+        for (membership, addr) in net_memberships {
+            if let Some(membership) = membership {
+                self.connection_by_net.remove(membership);
+            } else if !crate::socket_addr_is_unspecified(&addr)
                 && let Some(ht) = self.connection_by_net.lookup(&addr)
+                && self.connection_by_net.get(ht).copied() == Some(token)
             {
-                // Only remove if the entry still points to this token.
-                if self.connection_by_net.get(ht).copied() == Some(token) {
-                    self.connection_by_net.remove(ht);
-                }
+                self.connection_by_net.remove(ht);
             }
-
-            // Remove from connection_by_icid.
-            if !icid.is_empty()
-                && let Some(ht) = self.connection_by_icid.lookup(&icid)
-            {
-                self.connection_by_icid.remove(ht);
-            }
+        }
+        if let Some(membership) = icid_membership {
+            self.connection_by_icid.remove(membership);
+        }
+        if let Some(membership) = secret_membership {
+            self.connection_by_secret.remove(membership);
         }
 
         // Update accounting.
-        let was_half_open = self
-            .connections
-            .get(token)
-            .map(|c| c.is_half_open)
-            .unwrap_or(false);
         if was_half_open {
             self.current_number_half_open = self.current_number_half_open.saturating_sub(1);
         }
@@ -3831,13 +3930,54 @@ impl Quic {
 impl Connection {
     /// Insert this connection's reset-secret hash entry into the
     /// QUIC context's lookup table.
+    /// C: `picoquic_register_net_secret` (picoquic/quicctx.c:1374-1392).
     pub fn register_net_secret(&mut self) -> Result<(), crate::Error> {
+        if !crate::socket_addr_is_unspecified(&self.registered_secret_addr) {
+            return Err(crate::Error::Generic);
+        }
+        let Some(path) = self.paths.first() else {
+            return Err(crate::Error::InvalidArgument);
+        };
+        let Some(tuple) = path.tuples.first() else {
+            return Err(crate::Error::InvalidArgument);
+        };
+        if crate::socket_addr_is_unspecified(&tuple.peer_addr) {
+            return Ok(());
+        }
+        let unique_path_id = if self.is_multipath_enabled {
+            path.unique_path_id
+        } else {
+            0
+        };
+        let cid_index = tuple.remote_connection_id_index.unwrap_or(0);
+        let reset_secret = self
+            .remote_connection_id_stashes
+            .iter()
+            .find(|stash| stash.unique_path_id == unique_path_id)
+            .and_then(|stash| stash.connection_ids.get(cid_index))
+            .map(|remote_cid| remote_cid.reset_secret)
+            .unwrap_or([0u8; RESET_SECRET_SIZE]);
+        self.registered_secret_addr = tuple.peer_addr;
+        self.registered_reset_secret = reset_secret;
         Ok(())
     }
 
     /// Insert this connection's initial-CID hash entry into the
     /// QUIC context's lookup table.
+    /// C: `picoquic_register_net_icid` (picoquic/quicctx.c:1340-1354).
     pub fn register_net_icid(&mut self) -> Result<(), crate::Error> {
+        if self.connection_by_icid_membership.is_some()
+            || !crate::socket_addr_is_unspecified(&self.registered_icid_addr)
+        {
+            return Err(crate::Error::Generic);
+        }
+        let peer_addr = self
+            .paths
+            .first()
+            .and_then(|path| path.tuples.first())
+            .map(|tuple| tuple.peer_addr)
+            .ok_or(crate::Error::InvalidArgument)?;
+        self.registered_icid_addr = peer_addr;
         Ok(())
     }
 }
@@ -5405,39 +5545,7 @@ impl Connection {
     /// Tear down all in-flight state and prepare the connection for
     /// a fresh handshake.
     pub fn reset(&mut self, current_time: Instant) -> Result<(), crate::Error> {
-        for pkt_ctx in &mut self.pkt_ctx {
-            pkt_ctx.pending.clear();
-            pkt_ctx.retransmitted.clear();
-            pkt_ctx.send_sequence = 0;
-            pkt_ctx.retransmit_sequence = 0;
-            pkt_ctx.next_sequence_hole = 0;
-            pkt_ctx.retransmitted_queue_size = 0;
-            pkt_ctx.highest_acknowledged = u64::MAX;
-            pkt_ctx.latest_time_acknowledged = current_time;
-            pkt_ctx.highest_acknowledged_time = current_time;
-        }
-        for ack_ctx in &mut self.ack_ctx {
-            ack_ctx.reset_ack_context();
-        }
-        self.queued_packets = Arena::new();
-        self.queue_data_repeat_tree.clear();
-        self.misc_frames.clear();
-        self.datagrams.clear();
-        self.sooner_stateless.clear();
-        self.local_error = 0;
-        self.application_error = 0;
-        self.remote_error = 0;
-        self.remote_application_error = 0;
-        self.local_error_reason = None;
-        self.remote_error_reason = None;
-        self.offending_frame_type = 0;
-        self.is_handshake_finished = false;
-        self.connection_state = if self.client_mode {
-            State::ClientInit
-        } else {
-            State::ServerInit
-        };
-        Ok(())
+        self.reset_cnx(current_time)
     }
 
     /// Drain the per-epoch packet-number-space context state without
@@ -5522,8 +5630,8 @@ impl Connection {
 impl Quic {
     /// Look up a connection by destination CID, returning both the
     /// connection token and the matching local CID token (the C
-    /// out-parameter `l_cid_sequence` collapses into the second
-    /// tuple slot).  C: `connection_by_id`.
+    /// out-parameter `l_cid` collapses into the second tuple slot).
+    /// C: `picoquic_cnx_by_id` (picoquic/quicctx.c:5216-5240).
     pub fn connection_by_id(
         &mut self,
         cnx_id: ConnectionId,
@@ -5546,7 +5654,8 @@ impl Quic {
         Some((conn_tok, lcid_tok))
     }
 
-    /// Look up a connection by peer address.  C: `connection_by_net`.
+    /// Look up a connection by peer address.
+    /// C: `picoquic_cnx_by_net` (picoquic/quicctx.c:5242-5256).
     pub fn connection_by_net(&mut self, addr: Option<&SocketAddr>) -> Option<ConnectionToken> {
         let addr = addr?;
         let ht = self.connection_by_net.lookup(addr)?;
@@ -5554,31 +5663,40 @@ impl Quic {
         Some(tok)
     }
 
-    /// Look up a connection by initial CID and peer address.  C:
-    /// `connection_by_icid`.
+    /// Look up a connection by initial CID and peer address.
+    /// C: `picoquic_cnx_by_icid` (picoquic/quicctx.c:5258-5275).
     pub fn connection_by_icid(
         &mut self,
         icid: &ConnectionId,
-        _addr: Option<&SocketAddr>,
+        addr: Option<&SocketAddr>,
     ) -> Option<ConnectionToken> {
-        let ht = self.connection_by_icid.lookup(icid)?;
+        let key = (
+            *icid,
+            addr.copied().unwrap_or_else(crate::unspecified_socket_addr),
+        );
+        let ht = self.connection_by_icid.lookup(&key)?;
         let &tok = self.connection_by_icid.get(ht)?;
         Some(tok)
     }
 
     /// Look up a connection by stateless-reset secret and peer
-    /// address.  C: `connection_by_secret`.
+    /// address.
+    /// C: `picoquic_cnx_by_secret` (picoquic/quicctx.c:5277-5292).
     pub fn connection_by_secret(
         &mut self,
         reset_secret: &[u8],
-        _addr: Option<&SocketAddr>,
+        addr: Option<&SocketAddr>,
     ) -> Option<ConnectionToken> {
         if reset_secret.len() < RESET_SECRET_SIZE {
             return None;
         }
         let mut key = [0u8; RESET_SECRET_SIZE];
         key.copy_from_slice(&reset_secret[..RESET_SECRET_SIZE]);
-        let ht = self.connection_by_secret.lookup(&key)?;
+        let table_key = (
+            key,
+            addr.copied().unwrap_or_else(crate::unspecified_socket_addr),
+        );
+        let ht = self.connection_by_secret.lookup(&table_key)?;
         let &tok = self.connection_by_secret.get(ht)?;
         Some(tok)
     }
@@ -7663,7 +7781,15 @@ impl SackList {
         }
     }
 
-    fn find_range_below_number(&self, pn64: u64) -> Option<SackItemToken> {
+    /// Find the closest SACK range whose start is less than or equal
+    /// to `pn64`. The C `previous` argument is unused by the source.
+    ///
+    /// C: `picoquic/sacks.c:picoquic_sack_find_range_below_number`.
+    pub fn find_range_below_number(
+        &self,
+        _previous: Option<SackItemToken>,
+        pn64: u64,
+    ) -> Option<SackItemToken> {
         self.ack_tree
             .find_previous(&pn64)
             .and_then(|st| self.resolve_splay(st))
@@ -7736,7 +7862,23 @@ impl SackList {
             return Ok(());
         }
 
-        let mut previous = self.find_range_below_number(pn64_min);
+        self.update_sack_list(pn64_min, pn64_max, current_time)
+            .map(|_| ())
+    }
+
+    /// Merge the inclusive range `[pn64_min, pn64_max]` into the
+    /// SACK list. Returns `1` when the range was already covered,
+    /// `0` when the list was modified.
+    ///
+    /// C: `picoquic/sacks.c:picoquic_update_sack_list`.
+    pub fn update_sack_list(
+        &mut self,
+        pn64_min: u64,
+        pn64_max: u64,
+        current_time: Instant,
+    ) -> Result<i32, crate::Error> {
+        let mut ret = 1;
+        let mut previous = self.find_range_below_number(None, pn64_min);
         let no_overlap_below = previous
             .and_then(|token| self.sack_items.get(token))
             .map(|item| item.end_of_sack_range.saturating_add(1) < pn64_min)
@@ -7755,6 +7897,7 @@ impl SackList {
 
             if no_overlap_above {
                 self.insert_item(pn64_min, pn64_max, current_time)?;
+                ret = 0;
                 previous = None;
             } else if let Some(next) = next {
                 self.rekey_item_start(next, pn64_min)?;
@@ -7762,6 +7905,7 @@ impl SackList {
                 if let Some(item) = self.sack_items.get_mut(next) {
                     item.time_created = current_time;
                 }
+                ret = 0;
                 previous = Some(next);
             }
         }
@@ -7787,6 +7931,7 @@ impl SackList {
                     item.time_created = current_time;
                 }
                 self.item_record_reset(previous_token);
+                ret = 0;
             } else if let Some(next) = next {
                 let (next_end, next_time) = self
                     .sack_items
@@ -7801,6 +7946,7 @@ impl SackList {
                 }
                 self.item_record_reset(previous_token);
                 self.delete_item(next)?;
+                ret = 0;
             } else {
                 break;
             }
@@ -7810,7 +7956,7 @@ impl SackList {
             self.update_ack_horizon(current_time);
         }
 
-        Ok(())
+        Ok(ret)
     }
 
     /// True when every packet number in `[pn64_min, pn64_max]` is
@@ -13793,8 +13939,7 @@ impl Connection {
     pub fn test_and_signal_new_path_allowed(&mut self) {
         if self.is_subscribed_to_path_allowed
             && !self.is_notified_that_path_is_allowed
-            && self.paths.len() < NB_PATH_TARGET
-            && self.remote_parameters.initial_max_path_id > self.max_path_id_local
+            && self.check_new_path_allowed(false).is_ok()
         {
             self.is_notified_that_path_is_allowed = true;
         }
@@ -15242,6 +15387,2197 @@ impl Connection {
             1400
         } else {
             (path.send_mtu + path.send_mtu_max_tried) / 2
+        }
+    }
+}
+
+pub(crate) fn sender_status_to_error(ret: i32) -> crate::Error {
+    if ret == crate::errors::InternalError::Disconnected as i32 {
+        crate::Error::Disconnected
+    } else if ret == crate::errors::InternalError::Memory as i32 {
+        crate::Error::Memory
+    } else if ret == crate::errors::InternalError::FrameBufferTooSmall as i32
+        || ret == crate::errors::InternalError::SendBufferTooSmall as i32
+    {
+        crate::Error::BufferTooSmall
+    } else if ret == crate::errors::InternalError::UnexpectedState as i32 {
+        crate::Error::InvalidState
+    } else if ret == -1 {
+        crate::Error::Generic
+    } else {
+        crate::Error::Protocol(ret as u64)
+    }
+}
+
+fn packet_context_for_epoch(epoch: Epoch) -> PacketContext {
+    match epoch {
+        Epoch::Initial => PacketContext::Initial,
+        Epoch::Handshake => PacketContext::Handshake,
+        Epoch::ZeroRtt | Epoch::OneRtt => PacketContext::Application,
+    }
+}
+
+impl Connection {
+    pub(crate) fn quic_ref(&self) -> Option<&Quic> {
+        if self.quic_ptr.is_null() {
+            None
+        } else {
+            // SAFETY: `quic_ptr` is installed by `Quic::create_cnx_internal`
+            // and connections are removed before their owning `Quic`.
+            Some(unsafe { &*self.quic_ptr })
+        }
+    }
+
+    fn quic_mut(&mut self) -> Option<&mut Quic> {
+        if self.quic_ptr.is_null() {
+            None
+        } else {
+            // SAFETY: `quic_ptr` is installed by `Quic::create_cnx_internal`
+            // and points to the owning context for this connection. Callers
+            // only touch context-level scheduling/accounting fields here.
+            Some(unsafe { &mut *self.quic_ptr })
+        }
+    }
+
+    fn quic_cwin_max(&self) -> u64 {
+        self.quic_ref().map(|q| q.cwin_max).unwrap_or(u64::MAX)
+    }
+
+    fn quic_mtu_max(&self) -> u32 {
+        self.quic_ref().map(|q| q.mtu_max).unwrap_or(0)
+    }
+
+    fn sequence_hole_pseudo_period(&self) -> u32 {
+        self.quic_ref()
+            .map(|q| q.sequence_hole_pseudo_period)
+            .unwrap_or(0)
+    }
+
+    fn packet_train_mode(&self) -> bool {
+        self.quic_ref()
+            .map(|q| q.packet_train_mode)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn empty_sender_packet(current_time: Instant) -> Packet {
+        Packet {
+            queue_data_repeat_membership: None,
+            send_path: None,
+            sequence_number: 0,
+            send_time: current_time,
+            delivered_prior: 0,
+            delivered_time_prior: current_time,
+            delivered_sent_prior: 0,
+            lost_prior: 0,
+            inflight_prior: 0,
+            data_repeat_frame: 0,
+            data_repeat_index: 0,
+            data_repeat_priority: 0,
+            data_repeat_stream_id: 0,
+            data_repeat_stream_offset: 0,
+            data_repeat_stream_data_length: 0,
+            length: 0,
+            checksum_overhead: 0,
+            offset: 0,
+            packet_type: PacketType::Error,
+            packet_context: PacketContext::Application,
+            is_evaluated: false,
+            is_ack_eliciting: false,
+            is_mtu_probe: false,
+            is_multipath_probe: false,
+            is_ack_trap: false,
+            delivered_app_limited: false,
+            sent_cwin_limited: false,
+            is_preemptive_repeat: false,
+            was_preemptively_repeated: false,
+            is_queued_to_path: false,
+            is_queued_for_retransmit: false,
+            is_queued_for_spurious_detection: false,
+            is_queued_for_data_repeat: false,
+            bytes: [0u8; MAX_PACKET_SIZE],
+        }
+    }
+
+    fn set_sender_wake_now(&mut self, next_wake_time: &mut Instant, current_time: Instant) {
+        *next_wake_time = current_time;
+        self.next_wake_time = current_time;
+        if let Some(quic) = self.quic_mut() {
+            quic.wake_file = 0;
+            quic.wake_line = 0;
+        }
+    }
+
+    /// Disconnect this connection on idle-timeout expiration and otherwise
+    /// program the next idle deadline.
+    ///
+    /// C: `picoquic/sender.c:picoquic_check_idle_timer`.
+    pub fn check_idle_timer(&mut self, next_wake_time: &mut Instant, current_time: Instant) -> i32 {
+        let idle_timer = if self.connection_state >= State::Ready {
+            let rto = self
+                .paths
+                .first()
+                .map(|path| self.current_retransmit_timer_ticks_for_path(path))
+                .unwrap_or(INITIAL_RETRANSMIT_TIMER.ticks());
+            let mut idle = self.idle_timeout.ticks();
+            if idle < 3u64.saturating_mul(rto) {
+                idle = 3u64.saturating_mul(rto);
+            }
+            let candidate = self.latest_receive_time.ticks().saturating_add(idle);
+            if candidate < self.idle_timeout.ticks() {
+                u64::MAX
+            } else {
+                candidate
+            }
+        } else if self
+            .quic_ref()
+            .map(|q| q.default_handshake_timeout.ticks() > 0)
+            .unwrap_or(false)
+        {
+            self.start_time.ticks().saturating_add(
+                self.quic_ref()
+                    .map(|q| q.default_handshake_timeout.ticks())
+                    .unwrap_or(0),
+            )
+        } else if self.local_parameters.max_idle_timeout.ticks() > 0 {
+            self.start_time.ticks().saturating_add(
+                self.local_parameters
+                    .max_idle_timeout
+                    .ticks()
+                    .saturating_mul(1000),
+            )
+        } else {
+            self.start_time
+                .ticks()
+                .saturating_add(MICROSEC_HANDSHAKE_MAX.ticks())
+        };
+
+        if current_time.ticks() >= idle_timer {
+            if self.connection_state != State::Draining {
+                self.local_error = crate::errors::InternalError::IdleTimeout as u64;
+            }
+            self.connection_disconnect();
+            crate::errors::InternalError::Disconnected as i32
+        } else {
+            let idle = Instant::from_ticks(idle_timer);
+            if idle < *next_wake_time {
+                *next_wake_time = idle;
+            }
+            0
+        }
+    }
+
+    /// Process send-side timers before packet formatting.
+    ///
+    /// C: `picoquic/sender.c:picoquic_handle_send_timers`.
+    pub fn handle_send_timers(
+        &mut self,
+        current_time: Instant,
+        next_wake_time: &mut Instant,
+    ) -> i32 {
+        *next_wake_time = Instant::from_ticks(
+            self.latest_receive_time
+                .ticks()
+                .saturating_add(2u64.saturating_mul(MICROSEC_SILENCE_MAX.ticks())),
+        );
+
+        if self.local_parameters.max_idle_timeout.ticks() > (MICROSEC_SILENCE_MAX.ticks() / 500) {
+            *next_wake_time = Instant::from_ticks(
+                self.latest_receive_time.ticks().saturating_add(
+                    self.local_parameters
+                        .max_idle_timeout
+                        .ticks()
+                        .saturating_mul(1000),
+                ),
+            );
+        }
+        self.next_wake_time = *next_wake_time;
+
+        if self.recycle_sooner_needed {
+            self.process_sooner_packets(current_time);
+        }
+
+        let mut ret = self.handle_app_wake_time(current_time);
+        if ret == 0 {
+            ret = self.check_idle_timer(next_wake_time, current_time);
+        }
+        if ret == 0 {
+            ret = self.check_cc_feedback_timer(next_wake_time, current_time);
+        }
+        self.next_wake_time = *next_wake_time;
+        ret
+    }
+
+    /// Insert an optimistic-ACK trap hole when the configured pseudo-period
+    /// says this packet-number space should skip a number.
+    ///
+    /// C: `picoquic/sender.c:picoquic_insert_hole_in_send_sequence_if_needed`.
+    pub fn insert_hole_in_send_sequence_if_needed(
+        &mut self,
+        path_x: &mut Path,
+        pkt_ctx: &mut PacketContextState,
+        current_time: Instant,
+        next_wake_time: &mut Instant,
+    ) {
+        let period = self.sequence_hole_pseudo_period();
+        if period == 0 {
+            pkt_ctx.next_sequence_hole = u64::MAX;
+            return;
+        }
+        if self.connection_state == State::Ready
+            && pkt_ctx.pending.values().next_back().is_some()
+            && pkt_ctx.send_sequence >= pkt_ctx.next_sequence_hole
+        {
+            let pending_last_is_trap = pkt_ctx
+                .pending
+                .values()
+                .next_back()
+                .and_then(|tok| self.queued_packets.get(*tok))
+                .map(|packet| packet.is_ack_trap)
+                .unwrap_or(false);
+            if pkt_ctx.next_sequence_hole != 0 && !pending_last_is_trap {
+                let mut packet = Self::empty_sender_packet(current_time);
+                packet.is_ack_trap = true;
+                packet.packet_context = PacketContext::Application;
+                packet.packet_type = PacketType::OneRttProtected;
+                packet.send_time = current_time;
+                packet.send_path = None;
+                packet.sequence_number = pkt_ctx.send_sequence;
+                pkt_ctx.send_sequence = pkt_ctx.send_sequence.saturating_add(1);
+                self.queue_for_retransmit(path_x, &mut packet, 0, current_time);
+                self.set_sender_wake_now(next_wake_time, current_time);
+                path_x.q_square = path_x.q_square.saturating_add(1);
+                self.nb_packet_holes_inserted = self.nb_packet_holes_inserted.saturating_add(1);
+            }
+            let random_bound = (period as u64)
+                .checked_shl(self.nb_packet_holes_inserted.min(63) as u32)
+                .unwrap_or(u64::MAX);
+            pkt_ctx.next_sequence_hole = pkt_ctx
+                .send_sequence
+                .saturating_add(3)
+                .saturating_add(public_uniform_random(random_bound.max(1)));
+        }
+    }
+
+    /// Decide whether a path should send an MTU probe now.
+    ///
+    /// C: `picoquic/sender.c:picoquic_is_mtu_probe_needed`.
+    pub fn is_mtu_probe_needed(&self, path_x: &Path) -> PmtuDiscoveryStatus {
+        let mut ret = PmtuDiscoveryStatus::NotNeeded;
+        if matches!(
+            self.connection_state,
+            State::Ready | State::ClientReadyStart | State::ServerFalseStart
+        ) && !path_x.mtu_probe_sent
+            && self.pmtud_policy != PmtudPolicy::Blocked
+            && (path_x.send_mtu_max_tried == 0 || path_x.send_mtu_max_tried > 1400)
+        {
+            let next_probe = self.next_mtu_probe_length(path_x, self.quic_mtu_max());
+            if next_probe > path_x.send_mtu {
+                if self.pmtud_policy == PmtudPolicy::Required {
+                    ret = PmtuDiscoveryStatus::Required;
+                } else {
+                    let before = self.nb_bytes_queued / path_x.send_mtu.max(1) as u64;
+                    let after = self.nb_bytes_queued / next_probe.max(1) as u64;
+                    let delta = before.saturating_sub(after).saturating_mul(60);
+                    if delta > next_probe as u64 {
+                        ret = PmtuDiscoveryStatus::Required;
+                    } else if self.pmtud_policy == PmtudPolicy::Basic {
+                        ret = PmtuDiscoveryStatus::Optional;
+                    }
+                }
+            }
+        }
+        ret
+    }
+
+    /// Format an MTU probe body after the caller has reserved a packet header.
+    ///
+    /// C: `picoquic/sender.c:picoquic_prepare_mtu_probe`.
+    pub fn prepare_mtu_probe(
+        &self,
+        path_x: &Path,
+        header_length: usize,
+        checksum_length: usize,
+        bytes: &mut [u8],
+        bytes_max: usize,
+    ) -> usize {
+        let mut probe_length = self.next_mtu_probe_length(path_x, self.quic_mtu_max());
+        probe_length = probe_length.min(bytes_max).min(bytes.len());
+        if probe_length <= checksum_length
+            || header_length >= probe_length.saturating_sub(checksum_length)
+        {
+            return header_length.min(probe_length.saturating_sub(checksum_length));
+        }
+        let payload_end = probe_length - checksum_length;
+        bytes[header_length] = crate::frames::FrameType::Ping as u8;
+        if header_length + 1 < payload_end {
+            bytes[header_length + 1..payload_end].fill(crate::frames::FrameType::Padding as u8);
+        }
+        payload_end
+    }
+
+    /// Copy repeat-worthy frames from `old_p` into a new packet for
+    /// preemptive retransmission.
+    ///
+    /// C: `picoquic/sender.c:picoquic_preemptive_retransmit_packet`.
+    pub fn preemptive_retransmit_packet(
+        &mut self,
+        old_p: &mut Packet,
+        new_bytes: &mut [u8],
+        send_buffer_max_minus_checksum: usize,
+        length: &mut usize,
+        has_data: &mut i32,
+    ) -> i32 {
+        let mut ret = 0;
+        let mut write_index = 0usize;
+        let mut is_repeated = 1;
+        let mut do_not_detect_spurious = 0;
+        let mut is_preemptive_needed = 0;
+        let initial_length = *length;
+        *has_data = 0;
+
+        if !old_p.is_mtu_probe && !old_p.is_ack_trap && !old_p.is_multipath_probe {
+            let mut byte_index = old_p.offset;
+            while ret == 0 && byte_index < old_p.length {
+                let mut frame_length = 0usize;
+                let mut frame_is_pure_ack = 0;
+                ret = skip_frame(
+                    &old_p.bytes[byte_index..old_p.length],
+                    old_p.length - byte_index,
+                    &mut frame_length,
+                    &mut frame_is_pure_ack,
+                );
+                if ret == 0 && frame_is_pure_ack == 0 {
+                    ret = self.check_frame_needs_repeat(
+                        &old_p.bytes[byte_index..old_p.length],
+                        frame_length,
+                        old_p.packet_type,
+                        &mut frame_is_pure_ack,
+                        &mut do_not_detect_spurious,
+                        &mut is_preemptive_needed,
+                    );
+                }
+                if ret == 0 && frame_is_pure_ack == 0 {
+                    if old_p.bytes[byte_index] >= crate::frames::FrameType::StreamRangeMin as u8
+                        && old_p.bytes[byte_index] <= crate::frames::FrameType::StreamRangeMax as u8
+                        && is_stream_frame_unlimited(&old_p.bytes[byte_index..old_p.length])
+                        && write_index + frame_length < send_buffer_max_minus_checksum
+                    {
+                        let pad_needed =
+                            send_buffer_max_minus_checksum - write_index - frame_length;
+                        new_bytes[write_index..write_index + pad_needed]
+                            .fill(crate::frames::FrameType::Padding as u8);
+                        *length = (*length).saturating_add(pad_needed);
+                        write_index += pad_needed;
+                    }
+                    if write_index + frame_length <= send_buffer_max_minus_checksum
+                        && write_index + frame_length <= new_bytes.len()
+                    {
+                        new_bytes[write_index..write_index + frame_length]
+                            .copy_from_slice(&old_p.bytes[byte_index..byte_index + frame_length]);
+                        write_index += frame_length;
+                        *length = (*length).saturating_add(frame_length);
+                        *has_data = 1;
+                    } else {
+                        is_repeated = 0;
+                    }
+                }
+                byte_index = byte_index.saturating_add(frame_length.max(1));
+            }
+        }
+
+        if *has_data != 0 {
+            if is_preemptive_needed == 0 {
+                *length = initial_length;
+                *has_data = 0;
+            } else if is_repeated != 0 {
+                old_p.was_preemptively_repeated = true;
+            }
+        }
+
+        ret
+    }
+
+    fn prepare_stream_and_datagrams<'a>(
+        &mut self,
+        path_x: &mut Path,
+        mut bytes: &'a mut [u8],
+        is_first_in_packet: bool,
+        current_priority: u64,
+        more_data: &mut i32,
+        is_pure_ack: &mut i32,
+        no_data_to_send: &mut i32,
+        ret: &mut i32,
+    ) -> Option<&'a mut [u8]> {
+        *no_data_to_send = 1;
+        if self
+            .find_ready_stream_path(path_x, is_first_in_packet)
+            .is_some()
+        {
+            let before = bytes.len();
+            bytes = format_available_stream_frames(
+                self,
+                path_x,
+                bytes,
+                current_priority,
+                more_data,
+                is_pure_ack,
+                no_data_to_send,
+                ret,
+            )?;
+            if bytes.len() != before {
+                *no_data_to_send = 0;
+            }
+        }
+        let before = bytes.len();
+        bytes = format_ready_datagram_frame(self, path_x, bytes, more_data, is_pure_ack, ret)?;
+        if bytes.len() != before {
+            *no_data_to_send = 0;
+        }
+        Some(bytes)
+    }
+
+    fn note_more_data(
+        &mut self,
+        more_data: i32,
+        next_wake_time: &mut Instant,
+        current_time: Instant,
+    ) {
+        if more_data != 0 {
+            self.set_sender_wake_now(next_wake_time, current_time);
+        }
+    }
+
+    fn prepare_packet_old_context_like(
+        &mut self,
+        pc: PacketContext,
+        path_x: &mut Path,
+        packet: &mut Packet,
+        send_buffer_max: usize,
+        current_time: Instant,
+        next_wake_time: &mut Instant,
+        header_length: &mut usize,
+    ) -> usize {
+        let mut local_header_length = 0usize;
+        let length = self.retransmit_needed(
+            pc,
+            path_x,
+            current_time,
+            next_wake_time,
+            packet,
+            send_buffer_max,
+            &mut local_header_length,
+        );
+        if length > 0 {
+            *header_length = local_header_length;
+            length as usize
+        } else {
+            0
+        }
+    }
+
+    /// Prepare the next packet to 0-RTT packet to send in the client
+    /// initial state, when 0-RTT is available.
+    ///
+    /// C: `picoquic/sender.c:picoquic_prepare_packet_0rtt`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_packet_0rtt(
+        &mut self,
+        path_x: &mut Path,
+        packet: &mut Packet,
+        current_time: Instant,
+        send_buffer: &mut [u8],
+        mut send_buffer_max: usize,
+        send_length: &mut usize,
+        padding_required: i32,
+        next_wake_time: &mut Instant,
+    ) -> i32 {
+        let mut ret = 0;
+        let packet_type = PacketType::ZeroRttProtected;
+        let checksum_overhead = self.get_checksum_length(Epoch::ZeroRtt);
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+        let mut stream_tried_and_failed = 0;
+
+        send_buffer_max = send_buffer_max.min(path_x.send_mtu);
+        if path_x
+            .bytes_in_transit
+            .saturating_add(send_buffer_max as u64)
+            > DEFAULT_0RTT_WINDOW as u64
+        {
+            send_buffer_max = if path_x.bytes_in_transit > DEFAULT_0RTT_WINDOW as u64 {
+                0
+            } else {
+                DEFAULT_0RTT_WINDOW.saturating_sub(path_x.bytes_in_transit as usize)
+            };
+        }
+        let header_length =
+            self.predict_packet_header_length_for_pc(packet_type, PacketContext::Application);
+        let mut length = header_length;
+        packet.packet_type = packet_type;
+        packet.offset = header_length;
+        packet.packet_context = PacketContext::Application;
+        packet.sequence_number = self.pkt_ctx[PacketContext::Application as usize].send_sequence;
+        packet.send_time = current_time;
+        packet.send_path = Some(Self::path_token_for_path(path_x));
+        packet.checksum_overhead = checksum_overhead;
+
+        if (self.find_ready_stream().is_none()
+            && self.misc_frames.is_empty()
+            && padding_required == 0)
+            || send_buffer_max < MIN_SEGMENT_SIZE
+            || send_buffer_max <= checksum_overhead
+        {
+            length = 0;
+        } else {
+            let bytes_limit = send_buffer_max
+                .saturating_sub(checksum_overhead)
+                .min(packet.bytes.len());
+            if length <= bytes_limit {
+                let mut offset = length;
+                let tail_len = {
+                    let tail = &mut packet.bytes[offset..bytes_limit];
+                    match format_misc_frames_in_context(
+                        self,
+                        tail,
+                        &mut more_data,
+                        &mut is_pure_ack,
+                        PacketContext::Application,
+                    ) {
+                        Some(next) => next.len(),
+                        None => {
+                            ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
+                            tail.len()
+                        }
+                    }
+                };
+                offset = bytes_limit.saturating_sub(tail_len);
+                if ret == 0 && self.local_parameters.enable_bdp_frame {
+                    let tail_len = {
+                        let tail = &mut packet.bytes[offset..bytes_limit];
+                        match format_bdp_frame(self, tail, path_x, &mut more_data, &mut is_pure_ack)
+                        {
+                            Some(next) => next.len(),
+                            None => {
+                                ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
+                                tail.len()
+                            }
+                        }
+                    };
+                    offset = bytes_limit.saturating_sub(tail_len);
+                }
+                if ret == 0 {
+                    let tail_len = {
+                        let tail = &mut packet.bytes[offset..bytes_limit];
+                        match format_available_stream_frames(
+                            self,
+                            path_x,
+                            tail,
+                            u64::MAX,
+                            &mut more_data,
+                            &mut is_pure_ack,
+                            &mut stream_tried_and_failed,
+                            &mut ret,
+                        ) {
+                            Some(next) => next.len(),
+                            None => {
+                                ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
+                                tail.len()
+                            }
+                        }
+                    };
+                    offset = bytes_limit.saturating_sub(tail_len);
+                }
+                length = offset;
+            }
+            self.note_more_data(more_data, next_wake_time, current_time);
+            if stream_tried_and_failed != 0 {
+                path_x.last_sender_limited_time = current_time;
+            }
+            if padding_required != 0 && length > 0 {
+                length = pad_to_target_length(
+                    &mut packet.bytes,
+                    length,
+                    send_buffer_max.saturating_sub(checksum_overhead),
+                );
+            }
+        }
+
+        self.finalize_and_protect_packet(
+            packet,
+            ret,
+            length,
+            header_length,
+            checksum_overhead,
+            send_length,
+            send_buffer,
+            send_buffer_max,
+            path_x,
+            current_time,
+        );
+        if length > 0 {
+            self.nb_zero_rtt_sent = self.nb_zero_rtt_sent.saturating_add(1);
+        }
+        ret
+    }
+
+    fn prepare_handshake_packet_for_epoch(
+        &mut self,
+        path_x: &mut Path,
+        packet: &mut Packet,
+        current_time: Instant,
+        send_buffer: &mut [u8],
+        send_buffer_max: usize,
+        send_length: &mut usize,
+        next_wake_time: &mut Instant,
+        epoch: Epoch,
+        force_ping: bool,
+        is_initial_sent: &mut i32,
+    ) -> i32 {
+        let pc = packet_context_for_epoch(epoch);
+        let packet_type = packet_type_from_epoch(epoch as i32);
+        let checksum_overhead = self.get_checksum_length(epoch);
+        let send_buffer_max = send_buffer_max.min(path_x.send_mtu);
+        if send_buffer_max <= checksum_overhead {
+            *send_length = 0;
+            return 0;
+        }
+        let bytes_limit = send_buffer_max
+            .saturating_sub(checksum_overhead)
+            .min(packet.bytes.len());
+        let header_length = self.predict_packet_header_length_for_pc(packet_type, pc);
+        let mut length = header_length;
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+        let mut ret = 0;
+
+        packet.packet_type = packet_type;
+        packet.offset = header_length;
+        packet.sequence_number = self.pkt_ctx[pc as usize].send_sequence;
+        packet.send_time = current_time;
+        packet.send_path = Some(Self::path_token_for_path(path_x));
+        packet.packet_context = pc;
+        packet.checksum_overhead = checksum_overhead;
+
+        if length <= bytes_limit {
+            let mut offset = length;
+            if force_ping && offset < bytes_limit {
+                packet.bytes[offset] = crate::frames::FrameType::Ping as u8;
+                offset += 1;
+                is_pure_ack = 0;
+            }
+            if self.ack_ctx[pc as usize].act[0].ack_needed || force_ping {
+                let tail_len = {
+                    let tail = &mut packet.bytes[offset..bytes_limit];
+                    match format_ack_frame(self, tail, &mut more_data, current_time, pc, 0) {
+                        Some(next) => next.len(),
+                        None => {
+                            ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
+                            tail.len()
+                        }
+                    }
+                };
+                offset = bytes_limit.saturating_sub(tail_len);
+            }
+            if ret == 0 {
+                let tail_len = {
+                    let tail = &mut packet.bytes[offset..bytes_limit];
+                    match format_misc_frames_in_context(
+                        self,
+                        tail,
+                        &mut more_data,
+                        &mut is_pure_ack,
+                        pc,
+                    ) {
+                        Some(next) => next.len(),
+                        None => {
+                            ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
+                            tail.len()
+                        }
+                    }
+                };
+                offset = bytes_limit.saturating_sub(tail_len);
+            }
+            if ret == 0 && !self.tls_stream[epoch as usize].send_queue.is_empty() {
+                let tail_len = {
+                    let tail = &mut packet.bytes[offset..bytes_limit];
+                    match format_crypto_hs_frame(
+                        &mut self.tls_stream[epoch as usize],
+                        tail,
+                        &mut more_data,
+                        &mut is_pure_ack,
+                    ) {
+                        Some(next) => next.len(),
+                        None => {
+                            ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
+                            tail.len()
+                        }
+                    }
+                };
+                offset = bytes_limit.saturating_sub(tail_len);
+            }
+            length = offset;
+        }
+
+        if more_data != 0 {
+            self.set_sender_wake_now(next_wake_time, current_time);
+        }
+        if length <= header_length {
+            length = 0;
+        }
+        if length > header_length && packet_type == PacketType::Initial {
+            *is_initial_sent = 1;
+        }
+        if length > 0 && packet_type == PacketType::Initial && self.client_mode {
+            length = pad_to_target_length(
+                &mut packet.bytes,
+                length,
+                send_buffer_max.saturating_sub(checksum_overhead),
+            );
+        }
+        self.finalize_and_protect_packet(
+            packet,
+            ret,
+            length,
+            header_length,
+            checksum_overhead,
+            send_length,
+            send_buffer,
+            send_buffer_max,
+            path_x,
+            current_time,
+        );
+        ret
+    }
+
+    /// Prepare the next packet to send when in one of the client
+    /// initial states.
+    ///
+    /// C: `picoquic/sender.c:picoquic_prepare_packet_client_init`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_packet_client_init(
+        &mut self,
+        path_x: &mut Path,
+        packet: &mut Packet,
+        current_time: Instant,
+        send_buffer: &mut [u8],
+        send_buffer_max: usize,
+        send_length: &mut usize,
+        next_wake_time: &mut Instant,
+        is_initial_sent: &mut i32,
+    ) -> i32 {
+        self.initial_validated = true;
+        let mut epoch = Epoch::Initial;
+        if self.tls_stream[Epoch::Initial as usize]
+            .send_queue
+            .is_empty()
+        {
+            if self.crypto_context[Epoch::ZeroRtt as usize]
+                .aead_encrypt
+                .is_some()
+                && !self.tls_stream[Epoch::ZeroRtt as usize]
+                    .send_queue
+                    .is_empty()
+            {
+                epoch = Epoch::ZeroRtt;
+            } else if self.crypto_context[Epoch::Handshake as usize]
+                .aead_encrypt
+                .is_some()
+                && self.tls_stream[Epoch::ZeroRtt as usize]
+                    .send_queue
+                    .is_empty()
+            {
+                epoch = Epoch::Handshake;
+            }
+        }
+
+        let retransmit_possible = matches!(
+            self.connection_state,
+            State::ClientInitSent | State::ClientInitResent | State::ClientHandshakeStart
+        );
+        if !matches!(
+            self.connection_state,
+            State::ClientInit
+                | State::ClientInitSent
+                | State::ClientInitResent
+                | State::ClientRenegotiate
+                | State::ClientHandshakeStart
+                | State::ClientAlmostReady
+        ) {
+            return crate::errors::InternalError::UnexpectedState as i32;
+        }
+
+        let pc = packet_context_for_epoch(epoch);
+        let mut header_length = 0;
+        if retransmit_possible {
+            let length = self.prepare_packet_old_context_like(
+                pc,
+                path_x,
+                packet,
+                send_buffer_max.min(path_x.send_mtu),
+                current_time,
+                next_wake_time,
+                &mut header_length,
+            );
+            if length > 0 {
+                let checksum_overhead = self.get_checksum_length(epoch);
+                self.finalize_and_protect_packet(
+                    packet,
+                    0,
+                    length,
+                    header_length,
+                    checksum_overhead,
+                    send_length,
+                    send_buffer,
+                    send_buffer_max.min(path_x.send_mtu),
+                    path_x,
+                    current_time,
+                );
+                return 0;
+            }
+        }
+
+        if epoch == Epoch::ZeroRtt {
+            return self.prepare_packet_0rtt(
+                path_x,
+                packet,
+                current_time,
+                send_buffer,
+                send_buffer_max,
+                send_length,
+                *is_initial_sent,
+                next_wake_time,
+            );
+        }
+
+        let ret = self.prepare_handshake_packet_for_epoch(
+            path_x,
+            packet,
+            current_time,
+            send_buffer,
+            send_buffer_max,
+            send_length,
+            next_wake_time,
+            epoch,
+            false,
+            is_initial_sent,
+        );
+
+        if ret == 0 && *send_length > 0 && self.tls_stream[epoch as usize].send_queue.is_empty() {
+            match self.connection_state {
+                State::ClientInit => self.connection_state = State::ClientInitSent,
+                State::ClientRenegotiate => self.connection_state = State::ClientInitResent,
+                State::ClientAlmostReady
+                    if self
+                        .tls_stream
+                        .iter()
+                        .all(|stream| stream.send_queue.is_empty()) =>
+                {
+                    self.connection_state = State::ClientReadyStart;
+                    if let Some(mut cb) = self.callback_fn.take() {
+                        let _ = cb.callback(self, 0, &[], CallbackEvent::AlmostReady, None);
+                        self.callback_fn = Some(cb);
+                    }
+                }
+                _ => {}
+            }
+        }
+        ret
+    }
+
+    /// Prepare the next packet to send when in one of the server
+    /// initial states.
+    ///
+    /// C: `picoquic/sender.c:picoquic_prepare_packet_server_init`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_packet_server_init(
+        &mut self,
+        path_x: &mut Path,
+        packet: &mut Packet,
+        current_time: Instant,
+        send_buffer: &mut [u8],
+        send_buffer_max: usize,
+        send_length: &mut usize,
+        next_wake_time: &mut Instant,
+        is_initial_sent: &mut i32,
+    ) -> i32 {
+        let handshake_deadline = Instant::from_ticks(
+            self.start_time
+                .ticks()
+                .saturating_add(MICROSEC_HANDSHAKE_MAX.ticks()),
+        );
+        if handshake_deadline < *next_wake_time {
+            *next_wake_time = handshake_deadline;
+        }
+        if !self.initial_validated
+            && self
+                .initial_data_sent
+                .saturating_add(send_buffer_max.min(path_x.send_mtu) as u64)
+                > 3u64.saturating_mul(self.initial_data_received)
+        {
+            *send_length = 0;
+            return 0;
+        }
+        let epoch = if self.crypto_context[Epoch::Handshake as usize]
+            .aead_encrypt
+            .is_some()
+            && self.tls_stream[Epoch::Initial as usize]
+                .send_queue
+                .is_empty()
+        {
+            Epoch::Handshake
+        } else {
+            Epoch::Initial
+        };
+        let ret = self.prepare_handshake_packet_for_epoch(
+            path_x,
+            packet,
+            current_time,
+            send_buffer,
+            send_buffer_max,
+            send_length,
+            next_wake_time,
+            epoch,
+            false,
+            is_initial_sent,
+        );
+        if ret == 0 && *send_length > 0 && !self.initial_validated {
+            self.initial_data_sent = self.initial_data_sent.saturating_add(*send_length as u64);
+        }
+        if ret == 0 && *send_length > 0 && self.tls_stream[epoch as usize].send_queue.is_empty() {
+            if epoch == Epoch::Handshake
+                && !self
+                    .quic_ref()
+                    .map(|q| q.client_authentication)
+                    .unwrap_or(false)
+            {
+                self.false_start_transition(current_time);
+                if let Some(mut cb) = self.callback_fn.take() {
+                    let _ = cb.callback(self, 0, &[], CallbackEvent::AlmostReady, None);
+                    self.callback_fn = Some(cb);
+                }
+            } else {
+                self.connection_state = State::ServerHandshake;
+            }
+        }
+        ret
+    }
+
+    /// Create required local connection IDs and format the corresponding
+    /// NEW_CONNECTION_ID frames.
+    ///
+    /// C: `picoquic/sender.c:picoquic_format_new_local_id_as_needed`.
+    pub fn format_new_local_id_as_needed<'a>(
+        &mut self,
+        mut bytes: &'a mut [u8],
+        current_time: Instant,
+        next_wake_time: &mut Instant,
+        more_data: &mut i32,
+        is_pure_ack: &mut i32,
+    ) -> Option<&'a mut [u8]> {
+        let mut no_space_left = false;
+
+        if self.is_multipath_enabled {
+            let new_max_path_id = self
+                .next_path_id_in_lists
+                .saturating_add(self.local_parameters.initial_max_path_id)
+                .saturating_sub(self.local_connection_id_lists.len() as u64);
+            if self.max_path_id_local < new_max_path_id {
+                let before = bytes.len();
+                bytes = format_max_path_id_frame(bytes, new_max_path_id, more_data)?;
+                if bytes.len() == before {
+                    no_space_left = true;
+                } else {
+                    self.max_path_id_local = new_max_path_id;
+                }
+            }
+            while !no_space_left
+                && (self.local_connection_id_lists.len() as u64)
+                    <= self.local_parameters.initial_max_path_id
+                && self.next_path_id_in_lists <= self.max_path_id_remote
+            {
+                let unique_path_id = self.next_path_id_in_lists;
+                if self
+                    .local_connection_id_lists
+                    .iter()
+                    .all(|list| list.unique_path_id != unique_path_id)
+                {
+                    self.local_connection_id_lists.push(LocalConnectionIdList {
+                        unique_path_id,
+                        local_connection_id_sequence_next: 0,
+                        local_connection_id_retire_before: 0,
+                        local_connection_id_oldest_created: current_time.ticks(),
+                        nb_local_connection_id_expired: 0,
+                        is_demoted: false,
+                        demotion_time: Instant::from_ticks(u64::MAX),
+                        connection_ids: Vec::new(),
+                    });
+                }
+                self.next_path_id_in_lists = self.next_path_id_in_lists.saturating_add(1);
+            }
+        }
+
+        let mut list_index = 0usize;
+        while list_index < self.local_connection_id_lists.len() && !no_space_left {
+            let mut list = self.local_connection_id_lists.remove(list_index);
+            self.check_local_connection_id_ttl(&mut list, current_time, next_wake_time);
+
+            while (list.connection_ids.len() as i32)
+                < self.remote_parameters.active_connection_id_limit as i32
+                    + list.nb_local_connection_id_expired
+                && (list.connection_ids.len() as i32)
+                    <= NB_PATH_TARGET as i32 + list.nb_local_connection_id_expired
+            {
+                let token = match self.create_local_connection_id_in_list(&mut list, current_time) {
+                    Ok(token) => token,
+                    Err(_) => {
+                        no_space_left = true;
+                        break;
+                    }
+                };
+                let before = bytes.len();
+                bytes = format_new_connection_id_frame(
+                    self,
+                    &mut list,
+                    bytes,
+                    more_data,
+                    is_pure_ack,
+                    Some(token),
+                )?;
+                if bytes.len() == before {
+                    no_space_left = true;
+                    self.delete_local_connection_id(token);
+                    list.local_connection_id_sequence_next =
+                        list.local_connection_id_sequence_next.saturating_sub(1);
+                    break;
+                }
+            }
+            self.local_connection_id_lists.insert(list_index, list);
+            list_index += 1;
+        }
+        Some(bytes)
+    }
+
+    fn create_local_connection_id_in_list(
+        &mut self,
+        list: &mut LocalConnectionIdList,
+        current_time: Instant,
+    ) -> Result<LocalConnectionIdToken, crate::Error> {
+        let connection_id = if self.local_cid_length == 0 {
+            ConnectionId::default()
+        } else {
+            self.random_local_connection_id()?
+        };
+        let sequence = list.local_connection_id_sequence_next;
+        let l_cid = LocalConnectionId {
+            connection_by_id_membership: None,
+            path_id: list.unique_path_id,
+            sequence,
+            create_time: current_time,
+            connection_id,
+            is_acked: false,
+        };
+        let token = self.local_connection_ids.insert(l_cid)?;
+        list.local_connection_id_sequence_next =
+            list.local_connection_id_sequence_next.saturating_add(1);
+        if sequence == 0 {
+            list.local_connection_id_oldest_created = current_time.ticks();
+            if list.unique_path_id > self.max_path_id_in_connection_id_lists {
+                self.max_path_id_in_connection_id_lists = list.unique_path_id;
+            }
+        }
+        list.connection_ids.push(token);
+        Ok(token)
+    }
+
+    /// Prepare the next packet to send when in one of the closing states.
+    ///
+    /// C: `picoquic/sender.c:picoquic_prepare_packet_closing`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_packet_closing(
+        &mut self,
+        path_x: &mut Path,
+        packet: &mut Packet,
+        current_time: Instant,
+        send_buffer: &mut [u8],
+        send_buffer_max: usize,
+        send_length: &mut usize,
+        next_wake_time: &mut Instant,
+    ) -> i32 {
+        let mut ret = 0;
+        let mut pc = PacketContext::Application;
+        let mut packet_type = PacketType::OneRttProtected;
+        let mut epoch = Epoch::OneRtt;
+        match self.connection_state {
+            State::HandshakeFailure => {
+                if self.crypto_context[Epoch::Handshake as usize]
+                    .aead_encrypt
+                    .is_some()
+                    && !self.ack_ctx[PacketContext::Handshake as usize]
+                        .sack_list
+                        .is_empty()
+                {
+                    pc = PacketContext::Handshake;
+                    packet_type = PacketType::Handshake;
+                    epoch = Epoch::Handshake;
+                } else {
+                    pc = PacketContext::Initial;
+                    packet_type = PacketType::Initial;
+                    epoch = Epoch::Initial;
+                }
+            }
+            State::HandshakeFailureResend => {
+                pc = PacketContext::Handshake;
+                packet_type = PacketType::Handshake;
+                epoch = Epoch::Handshake;
+            }
+            State::Disconnecting | State::ClosingReceived | State::Closing | State::Draining => {}
+            State::Disconnected => ret = crate::errors::InternalError::Disconnected as i32,
+            _ => ret = crate::errors::InternalError::UnexpectedState as i32,
+        }
+
+        let checksum_overhead = self.get_checksum_length(epoch);
+        let send_buffer_max = send_buffer_max.min(path_x.send_mtu);
+        let bytes_limit = send_buffer_max
+            .saturating_sub(checksum_overhead)
+            .min(packet.bytes.len());
+        let mut header_length = self.predict_packet_header_length_for_pc(packet_type, pc);
+        let mut length = 0usize;
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+
+        if ret == 0
+            && matches!(
+                self.connection_state,
+                State::ClosingReceived
+                    | State::Closing
+                    | State::Disconnecting
+                    | State::HandshakeFailure
+                    | State::HandshakeFailureResend
+            )
+        {
+            if self.connection_state == State::Closing {
+                let exit_time = self
+                    .latest_progress_time
+                    .ticks()
+                    .saturating_add(3u64.saturating_mul(path_x.retransmit_timer.ticks()));
+                let next_close_time = self
+                    .last_close_sent
+                    .ticks()
+                    .saturating_add(path_x.smoothed_rtt.ticks());
+                if current_time.ticks() >= exit_time {
+                    self.connection_disconnect();
+                    self.set_sender_wake_now(next_wake_time, current_time);
+                } else if current_time.ticks() < next_close_time {
+                    *next_wake_time = Instant::from_ticks(next_close_time.min(exit_time));
+                }
+            }
+            if self.connection_state != State::Disconnected
+                && self.connection_state != State::Draining
+            {
+                length = header_length;
+                packet.packet_type = packet_type;
+                packet.offset = header_length;
+                packet.sequence_number =
+                    if packet_type == PacketType::OneRttProtected && self.is_multipath_enabled {
+                        path_x.pkt_ctx.send_sequence
+                    } else {
+                        self.pkt_ctx[pc as usize].send_sequence
+                    };
+                packet.send_time = current_time;
+                packet.send_path = Some(Self::path_token_for_path(path_x));
+                packet.packet_context = pc;
+                if length <= bytes_limit {
+                    let mut offset = length;
+                    if matches!(
+                        self.connection_state,
+                        State::Disconnecting
+                            | State::HandshakeFailure
+                            | State::HandshakeFailureResend
+                    ) {
+                        let tail_len = {
+                            let tail = &mut packet.bytes[offset..bytes_limit];
+                            match format_ack_frame(self, tail, &mut more_data, current_time, pc, 0)
+                            {
+                                Some(next) => next.len(),
+                                None => tail.len(),
+                            }
+                        };
+                        offset = bytes_limit.saturating_sub(tail_len);
+                    }
+                    let tail_len = {
+                        let tail = &mut packet.bytes[offset..bytes_limit];
+                        let next = if self.local_error == 0 {
+                            format_application_close_frame(
+                                self,
+                                tail,
+                                &mut more_data,
+                                &mut is_pure_ack,
+                            )
+                        } else {
+                            format_connection_close_frame(
+                                self,
+                                tail,
+                                &mut more_data,
+                                &mut is_pure_ack,
+                            )
+                        };
+                        match next {
+                            Some(next) => next.len(),
+                            None => {
+                                ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
+                                tail.len()
+                            }
+                        }
+                    };
+                    length = bytes_limit.saturating_sub(tail_len);
+                }
+                self.last_close_sent = current_time;
+                match self.connection_state {
+                    State::ClosingReceived => self.connection_state = State::Draining,
+                    State::HandshakeFailure => {
+                        if pc == PacketContext::Initial
+                            && self.crypto_context[Epoch::Handshake as usize]
+                                .aead_encrypt
+                                .is_some()
+                        {
+                            self.connection_state = State::HandshakeFailureResend;
+                        } else {
+                            self.connection_disconnect();
+                        }
+                    }
+                    State::HandshakeFailureResend => self.connection_disconnect(),
+                    State::Disconnecting => self.connection_state = State::Closing,
+                    _ => {}
+                }
+                self.latest_progress_time = current_time;
+                let mut delta_t = path_x.rtt_min.ticks();
+                if delta_t.saturating_mul(2) < path_x.retransmit_timer.ticks() {
+                    delta_t = path_x.retransmit_timer.ticks() / 2;
+                }
+                *next_wake_time = Instant::from_ticks(current_time.ticks().saturating_add(delta_t));
+                self.ack_ctx[pc as usize].act[0].ack_needed = false;
+            }
+        } else if ret == 0 && self.connection_state == State::Draining {
+            let exit_time = self
+                .latest_progress_time
+                .ticks()
+                .saturating_add(3u64.saturating_mul(path_x.retransmit_timer.ticks()));
+            if current_time.ticks() >= exit_time {
+                self.connection_disconnect();
+                self.set_sender_wake_now(next_wake_time, current_time);
+            } else {
+                *next_wake_time = Instant::from_ticks(exit_time);
+            }
+            header_length = 0;
+            length = 0;
+        }
+
+        if length > 0 && packet.packet_type == PacketType::Initial && self.client_mode {
+            length = pad_to_target_length(
+                &mut packet.bytes,
+                length,
+                send_buffer_max.saturating_sub(checksum_overhead),
+            );
+        }
+        self.finalize_and_protect_packet(
+            packet,
+            ret,
+            length,
+            header_length,
+            checksum_overhead,
+            send_length,
+            send_buffer,
+            send_buffer_max,
+            path_x,
+            current_time,
+        );
+        ret
+    }
+
+    /// Prepare the next packet to send when in the ready state.
+    ///
+    /// C: `picoquic/sender.c:picoquic_prepare_packet_ready`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_packet_ready(
+        &mut self,
+        path_x: &mut Path,
+        packet: &mut Packet,
+        current_time: Instant,
+        send_buffer: &mut [u8],
+        send_buffer_max: usize,
+        send_length: &mut usize,
+        next_wake_time: &mut Instant,
+    ) -> i32 {
+        let packet_type = PacketType::OneRttProtected;
+        let pc = PacketContext::Application;
+        let checksum_overhead = self.get_checksum_length(Epoch::OneRtt);
+        let send_buffer_min_max = send_buffer_max.min(path_x.send_mtu);
+        if send_buffer_min_max <= checksum_overhead {
+            *send_length = 0;
+            return 0;
+        }
+
+        if self.is_multipath_enabled {
+            if path_x.pkt_ctx.send_sequence >= path_x.pkt_ctx.next_sequence_hole {
+                let mut pkt_ctx = core::mem::replace(
+                    &mut path_x.pkt_ctx,
+                    PacketContextState {
+                        send_sequence: 0,
+                        next_sequence_hole: u64::MAX,
+                        retransmit_sequence: 0,
+                        highest_acknowledged: u64::MAX,
+                        latest_time_acknowledged: Instant::from_ticks(0),
+                        highest_acknowledged_time: Instant::from_ticks(0),
+                        pending: BTreeMap::new(),
+                        retransmitted: BTreeMap::new(),
+                        preemptive_repeat_seq: None,
+                        retransmitted_queue_size: 0,
+                        ecn_ect0_total_remote: 0,
+                        ecn_ect1_total_remote: 0,
+                        ecn_ce_total_remote: 0,
+                        ack_of_ack_requested: false,
+                    },
+                );
+                self.insert_hole_in_send_sequence_if_needed(
+                    path_x,
+                    &mut pkt_ctx,
+                    current_time,
+                    next_wake_time,
+                );
+                path_x.pkt_ctx = pkt_ctx;
+            }
+        } else {
+            let app = PacketContext::Application as usize;
+            if self.pkt_ctx[app].send_sequence >= self.pkt_ctx[app].next_sequence_hole {
+                let mut pkt_ctx = core::mem::replace(
+                    &mut self.pkt_ctx[app],
+                    PacketContextState {
+                        send_sequence: 0,
+                        next_sequence_hole: u64::MAX,
+                        retransmit_sequence: 0,
+                        highest_acknowledged: u64::MAX,
+                        latest_time_acknowledged: Instant::from_ticks(0),
+                        highest_acknowledged_time: Instant::from_ticks(0),
+                        pending: BTreeMap::new(),
+                        retransmitted: BTreeMap::new(),
+                        preemptive_repeat_seq: None,
+                        retransmitted_queue_size: 0,
+                        ecn_ect0_total_remote: 0,
+                        ecn_ect1_total_remote: 0,
+                        ecn_ce_total_remote: 0,
+                        ack_of_ack_requested: false,
+                    },
+                );
+                self.insert_hole_in_send_sequence_if_needed(
+                    path_x,
+                    &mut pkt_ctx,
+                    current_time,
+                    next_wake_time,
+                );
+                self.pkt_ctx[app] = pkt_ctx;
+            }
+        }
+
+        let is_nominal_ack_path = if self.is_multipath_enabled {
+            path_x.is_nominal_ack_path || self.paths.len() == 1
+        } else {
+            path_x.unique_path_id == self.paths.first().map(|p| p.unique_path_id).unwrap_or(0)
+        };
+        let mut header_length = 0usize;
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+        let mut ret = 0;
+        let mut ack_sent = false;
+        let mut is_challenge_padding_needed = 0;
+        let mut length = 0usize;
+        let bytes_limit = send_buffer_min_max
+            .saturating_sub(checksum_overhead)
+            .min(packet.bytes.len());
+
+        if self.misc_frames.is_empty() {
+            let retransmit_len = self.retransmit_needed(
+                pc,
+                path_x,
+                current_time,
+                next_wake_time,
+                packet,
+                send_buffer_min_max,
+                &mut header_length,
+            );
+            if retransmit_len > 0 {
+                length = retransmit_len as usize;
+                if length > header_length && length + 256 < bytes_limit {
+                    let tail_len = {
+                        let tail = &mut packet.bytes[length..bytes_limit];
+                        if let Some(next) = format_ack_frame(
+                            self,
+                            tail,
+                            &mut more_data,
+                            current_time,
+                            pc,
+                            i32::from(!is_nominal_ack_path),
+                        ) {
+                            next.len()
+                        } else {
+                            ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
+                            tail.len()
+                        }
+                    };
+                    length = bytes_limit.saturating_sub(tail_len);
+                }
+                is_pure_ack = 0;
+                packet.send_time = current_time;
+                packet.checksum_overhead = checksum_overhead;
+            }
+        }
+
+        if length == 0 && self.connection_state != State::Disconnected {
+            let pkt_send_sequence = if self.is_multipath_enabled {
+                path_x.pkt_ctx.send_sequence
+            } else {
+                self.pkt_ctx[pc as usize].send_sequence
+            };
+            length = self.predict_packet_header_length_for_pc(packet_type, pc);
+            header_length = length;
+            packet.packet_type = packet_type;
+            packet.offset = length;
+            packet.sequence_number = pkt_send_sequence;
+            packet.send_time = current_time;
+            packet.send_path = Some(Self::path_token_for_path(path_x));
+            packet.packet_context = pc;
+
+            if length <= bytes_limit {
+                let mut offset = length;
+                let tail_len = {
+                    let tail = &mut packet.bytes[offset..bytes_limit];
+                    match self.prepare_path_challenge_frames(
+                        path_x,
+                        tail,
+                        &mut more_data,
+                        &mut is_pure_ack,
+                        &mut is_challenge_padding_needed,
+                        current_time,
+                        next_wake_time,
+                    ) {
+                        Some(next) => next.len(),
+                        None => {
+                            ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
+                            tail.len()
+                        }
+                    }
+                };
+                offset = bytes_limit.saturating_sub(tail_len);
+
+                if ret == 0 {
+                    if path_x.is_multipath_probe_needed && ret == 0 {
+                        packet.is_multipath_probe = true;
+                        path_x.is_multipath_probe_needed = false;
+                        is_pure_ack = 0;
+                        if offset < bytes_limit {
+                            packet.bytes[offset] = crate::frames::FrameType::Ping as u8;
+                            offset += 1;
+                        }
+                        offset = pad_to_target_length(
+                            &mut packet.bytes,
+                            offset,
+                            send_buffer_min_max.saturating_sub(checksum_overhead),
+                        );
+                    } else if ret == 0
+                        && path_x
+                            .tuples
+                            .first()
+                            .map(|tuple| tuple.challenge_verified)
+                            .unwrap_or(false)
+                        && path_x.pacing.is_authorized(
+                            current_time,
+                            next_wake_time,
+                            self.packet_train_mode(),
+                            None,
+                        )
+                    {
+                        if self.is_ack_needed(
+                            current_time,
+                            next_wake_time,
+                            pc,
+                            i32::from(!is_nominal_ack_path),
+                        ) {
+                            let before = offset;
+                            let tail_len = {
+                                let tail = &mut packet.bytes[offset..bytes_limit];
+                                match format_ack_frame(
+                                    self,
+                                    tail,
+                                    &mut more_data,
+                                    current_time,
+                                    pc,
+                                    i32::from(!is_nominal_ack_path),
+                                ) {
+                                    Some(next) => next.len(),
+                                    None => {
+                                        ret = crate::errors::InternalError::FrameBufferTooSmall
+                                            as i32;
+                                        tail.len()
+                                    }
+                                }
+                            };
+                            offset = bytes_limit.saturating_sub(tail_len);
+                            ack_sent = offset > before;
+                        }
+                        if ret == 0 {
+                            let tail_len = {
+                                let tail = &mut packet.bytes[offset..bytes_limit];
+                                match format_max_streams_frame_if_needed(
+                                    self,
+                                    tail,
+                                    &mut more_data,
+                                    &mut is_pure_ack,
+                                ) {
+                                    Some(next) => next.len(),
+                                    None => {
+                                        ret = crate::errors::InternalError::FrameBufferTooSmall
+                                            as i32;
+                                        tail.len()
+                                    }
+                                }
+                            };
+                            offset = bytes_limit.saturating_sub(tail_len);
+                        }
+                        if ret == 0 {
+                            if self.quic_ref().map(|q| q.max_data_limit).unwrap_or(0) != 0 {
+                                let limit = self.quic_ref().map(|q| q.max_data_limit).unwrap_or(0);
+                                if self.data_received.saturating_add((3 * limit) / 4)
+                                    > self.maxdata_local
+                                {
+                                    let inc = self
+                                        .data_received
+                                        .saturating_add(limit)
+                                        .saturating_sub(self.maxdata_local);
+                                    let tail_len = {
+                                        let tail = &mut packet.bytes[offset..bytes_limit];
+                                        format_max_data_frame(
+                                            self,
+                                            tail,
+                                            &mut more_data,
+                                            &mut is_pure_ack,
+                                            inc,
+                                        )
+                                        .map(|next| next.len())
+                                        .unwrap_or_else(|| tail.len())
+                                    };
+                                    offset = bytes_limit.saturating_sub(tail_len);
+                                }
+                            } else if 2u64.saturating_mul(self.offset_received) > self.maxdata_local
+                            {
+                                let inc = self.cc_increased_window(self.maxdata_local);
+                                let tail_len = {
+                                    let tail = &mut packet.bytes[offset..bytes_limit];
+                                    format_max_data_frame(
+                                        self,
+                                        tail,
+                                        &mut more_data,
+                                        &mut is_pure_ack,
+                                        inc,
+                                    )
+                                    .map(|next| next.len())
+                                    .unwrap_or_else(|| tail.len())
+                                };
+                                offset = bytes_limit.saturating_sub(tail_len);
+                            }
+                        }
+                        if ret == 0 && self.max_stream_data_needed {
+                            let tail_len = {
+                                let tail = &mut packet.bytes[offset..bytes_limit];
+                                format_required_max_stream_data_frames(
+                                    self,
+                                    tail,
+                                    &mut more_data,
+                                    &mut is_pure_ack,
+                                )
+                                .map(|next| next.len())
+                                .unwrap_or_else(|| tail.len())
+                            };
+                            offset = bytes_limit.saturating_sub(tail_len);
+                        }
+                        if ret == 0 && !self.misc_frames.is_empty() {
+                            more_data = 1;
+                        }
+                        if ret == 0 {
+                            let tail_len = {
+                                let tail = &mut packet.bytes[offset..bytes_limit];
+                                format_misc_frames_in_context(
+                                    self,
+                                    tail,
+                                    &mut more_data,
+                                    &mut is_pure_ack,
+                                    pc,
+                                )
+                                .map(|next| next.len())
+                                .unwrap_or_else(|| tail.len())
+                            };
+                            offset = bytes_limit.saturating_sub(tail_len);
+                        }
+
+                        if path_x.cwin <= path_x.bytes_in_transit
+                            || self.quic_cwin_max() <= path_x.bytes_in_transit
+                        {
+                            self.cwin_blocked = true;
+                            path_x.last_cwin_blocked_time = current_time;
+                            if let Some(cc_alg) = self.congestion_alg {
+                                let ack_state = PerAckState {
+                                    pc: pc as i32,
+                                    ..PerAckState::default()
+                                };
+                                cc_alg.algorithm.alg_notify(
+                                    self,
+                                    path_x,
+                                    CongestionNotification::CwinBlocked,
+                                    &ack_state,
+                                    current_time,
+                                );
+                            }
+                        } else if ret == 0 {
+                            let pmtu_discovery_needed = self.is_mtu_probe_needed(path_x);
+                            if self.is_tls_stream_ready() {
+                                let tail_len = {
+                                    let tail = &mut packet.bytes[offset..bytes_limit];
+                                    format_crypto_hs_frame(
+                                        &mut self.tls_stream[Epoch::OneRtt as usize],
+                                        tail,
+                                        &mut more_data,
+                                        &mut is_pure_ack,
+                                    )
+                                    .map(|next| next.len())
+                                    .unwrap_or_else(|| tail.len())
+                                };
+                                offset = bytes_limit.saturating_sub(tail_len);
+                            }
+                            if ret == 0
+                                && self.is_address_discovery_provider
+                                && !path_x.tuples.is_empty()
+                            {
+                                let mut tuple = path_x.tuples.remove(0);
+                                let tail_len = {
+                                    let tail = &mut packet.bytes[offset..bytes_limit];
+                                    prepare_observed_address_frame(
+                                        tail,
+                                        path_x,
+                                        &mut tuple,
+                                        current_time,
+                                        next_wake_time,
+                                        &mut more_data,
+                                        &mut is_pure_ack,
+                                    )
+                                    .map(|next| next.len())
+                                    .unwrap_or_else(|| tail.len())
+                                };
+                                offset = bytes_limit.saturating_sub(tail_len);
+                                path_x.tuples.insert(0, tuple);
+                            }
+                            let used_before_payload = offset;
+                            if used_before_payload > header_length
+                                || pmtu_discovery_needed != PmtuDiscoveryStatus::Required
+                                || send_buffer_max <= path_x.send_mtu
+                            {
+                                if ret == 0 {
+                                    let tail_len = {
+                                        let tail = &mut packet.bytes[offset..bytes_limit];
+                                        self.format_new_local_id_as_needed(
+                                            tail,
+                                            current_time,
+                                            next_wake_time,
+                                            &mut more_data,
+                                            &mut is_pure_ack,
+                                        )
+                                        .map(|next| next.len())
+                                        .unwrap_or_else(|| tail.len())
+                                    };
+                                    offset = bytes_limit.saturating_sub(tail_len);
+                                }
+                                if ret == 0
+                                    && self.is_ack_frequency_updated
+                                    && self.is_ack_frequency_negotiated
+                                {
+                                    let tail_len = {
+                                        let tail = &mut packet.bytes[offset..bytes_limit];
+                                        format_ack_frequency_frame(self, tail, &mut more_data)
+                                            .map(|next| next.len())
+                                            .unwrap_or_else(|| tail.len())
+                                    };
+                                    offset = bytes_limit.saturating_sub(tail_len);
+                                }
+                                let mut no_data_to_send = 1;
+                                if ret == 0 {
+                                    let is_first = offset <= packet.offset;
+                                    let tail_len = {
+                                        let tail = &mut packet.bytes[offset..bytes_limit];
+                                        self.prepare_stream_and_datagrams(
+                                            path_x,
+                                            tail,
+                                            is_first,
+                                            u64::MAX,
+                                            &mut more_data,
+                                            &mut is_pure_ack,
+                                            &mut no_data_to_send,
+                                            &mut ret,
+                                        )
+                                        .map(|next| next.len())
+                                        .unwrap_or_else(|| tail.len())
+                                    };
+                                    offset = bytes_limit.saturating_sub(tail_len);
+                                }
+                                if !self.client_mode && self.send_receive_bdp_frame {
+                                    let tail_len = {
+                                        let tail = &mut packet.bytes[offset..bytes_limit];
+                                        format_bdp_frame(
+                                            self,
+                                            tail,
+                                            path_x,
+                                            &mut more_data,
+                                            &mut is_pure_ack,
+                                        )
+                                        .map(|next| next.len())
+                                        .unwrap_or_else(|| tail.len())
+                                    };
+                                    offset = bytes_limit.saturating_sub(tail_len);
+                                }
+                                if offset <= header_length || is_pure_ack != 0 {
+                                    path_x.delivered_limited_index = path_x.delivered;
+                                    let tail_len = {
+                                        let tail = &mut packet.bytes[offset..bytes_limit];
+                                        format_blocked_frames(
+                                            self,
+                                            tail,
+                                            &mut more_data,
+                                            &mut is_pure_ack,
+                                        )
+                                        .map(|next| next.len())
+                                        .unwrap_or_else(|| tail.len())
+                                    };
+                                    offset = bytes_limit.saturating_sub(tail_len);
+                                }
+                                if no_data_to_send != 0 {
+                                    path_x.last_sender_limited_time = current_time;
+                                }
+                            }
+                            if ret == 0
+                                && path_x.is_pto_required
+                                && (offset <= header_length || is_pure_ack != 0)
+                                && offset < bytes_limit
+                            {
+                                packet.bytes[offset] = crate::frames::FrameType::Ping as u8;
+                                offset += 1;
+                                is_pure_ack = 0;
+                            }
+                            if ret == 0
+                                && offset <= header_length
+                                && send_buffer_max > path_x.send_mtu
+                                && path_x.cwin > path_x.bytes_in_transit
+                                && self.quic_cwin_max() > path_x.bytes_in_transit
+                                && pmtu_discovery_needed != PmtuDiscoveryStatus::NotNeeded
+                            {
+                                let probe_len = self.prepare_mtu_probe(
+                                    path_x,
+                                    header_length,
+                                    checksum_overhead,
+                                    &mut packet.bytes,
+                                    send_buffer_max,
+                                );
+                                packet.length = probe_len;
+                                packet.send_path = Some(Self::path_token_for_path(path_x));
+                                packet.is_mtu_probe = true;
+                                path_x.mtu_probe_sent = true;
+                                is_pure_ack = 0;
+                                offset = probe_len;
+                            }
+                        }
+                    } else if self.priority_limit_for_bypass > 0 && self.paths.len() == 1 {
+                        let mut no_data_to_send = 0;
+                        let is_first = offset <= packet.offset;
+                        let tail_len = {
+                            let tail = &mut packet.bytes[offset..bytes_limit];
+                            self.prepare_stream_and_datagrams(
+                                path_x,
+                                tail,
+                                is_first,
+                                self.priority_limit_for_bypass,
+                                &mut more_data,
+                                &mut is_pure_ack,
+                                &mut no_data_to_send,
+                                &mut ret,
+                            )
+                            .map(|next| next.len())
+                            .unwrap_or_else(|| tail.len())
+                        };
+                        offset = bytes_limit.saturating_sub(tail_len);
+                    }
+                }
+                length = offset;
+            }
+        }
+
+        if length <= header_length {
+            length = 0;
+        }
+        if self.connection_state != State::Disconnected {
+            if length > 0 {
+                path_x.is_pto_required &= is_pure_ack != 0;
+                let pkt_ctx = if self.is_multipath_enabled {
+                    &mut path_x.pkt_ctx
+                } else {
+                    &mut self.pkt_ctx[pc as usize]
+                };
+                pkt_ctx.ack_of_ack_requested |= is_pure_ack == 0;
+                if !pkt_ctx.ack_of_ack_requested
+                    && ack_sent
+                    && pkt_ctx.highest_acknowledged.saturating_add(24) < pkt_ctx.send_sequence
+                    && pkt_ctx
+                        .highest_acknowledged_time
+                        .ticks()
+                        .saturating_add(path_x.smoothed_rtt.ticks())
+                        < current_time.ticks()
+                    && length < bytes_limit
+                {
+                    packet.bytes[length] = crate::frames::FrameType::Ping as u8;
+                    length += 1;
+                    pkt_ctx.ack_of_ack_requested = true;
+                    is_pure_ack = 0;
+                }
+                if is_pure_ack != 0
+                    && self.is_multipath_enabled
+                    && path_x.is_ack_lost
+                    && !path_x.is_ack_expected
+                    && length < bytes_limit
+                {
+                    packet.bytes[length] = crate::frames::FrameType::Ping as u8;
+                    length += 1;
+                    is_pure_ack = 0;
+                }
+                if is_pure_ack == 0 {
+                    path_x.is_ack_expected = true;
+                }
+            }
+            if is_pure_ack == 0 {
+                self.latest_progress_time = current_time;
+            } else if self.keep_alive_interval.ticks() != 0 {
+                let keep_alive_time = self
+                    .latest_progress_time
+                    .ticks()
+                    .saturating_add(self.keep_alive_interval.ticks());
+                if keep_alive_time <= current_time.ticks() && length == 0 {
+                    length = self.predict_packet_header_length_for_pc(packet_type, pc);
+                    header_length = length;
+                    packet.packet_type = packet_type;
+                    packet.packet_context = pc;
+                    packet.offset = length;
+                    packet.sequence_number = if self.is_multipath_enabled {
+                        path_x.pkt_ctx.send_sequence
+                    } else {
+                        self.pkt_ctx[pc as usize].send_sequence
+                    };
+                    packet.send_path = Some(Self::path_token_for_path(path_x));
+                    packet.send_time = current_time;
+                    if length + 1 < packet.bytes.len() {
+                        packet.bytes[length] = crate::frames::FrameType::Ping as u8;
+                        packet.bytes[length + 1] = crate::frames::FrameType::Padding as u8;
+                        length += 2;
+                    }
+                    self.latest_progress_time = current_time;
+                } else if keep_alive_time < next_wake_time.ticks() {
+                    *next_wake_time = Instant::from_ticks(keep_alive_time);
+                }
+            }
+            self.note_more_data(more_data, next_wake_time, current_time);
+        }
+
+        if ret == 0 && length > header_length {
+            if is_challenge_padding_needed != 0 && length < ENFORCED_INITIAL_MTU {
+                length = pad_to_target_length(
+                    &mut packet.bytes,
+                    length,
+                    send_buffer_min_max.saturating_sub(checksum_overhead),
+                );
+            } else {
+                length = self.pad_to_policy(
+                    &mut packet.bytes,
+                    length,
+                    send_buffer_min_max.saturating_sub(checksum_overhead) as u32,
+                );
+            }
+        }
+
+        self.finalize_and_protect_packet(
+            packet,
+            ret,
+            length,
+            header_length,
+            checksum_overhead,
+            send_length,
+            send_buffer,
+            send_buffer_min_max,
+            path_x,
+            current_time,
+        );
+        if *send_length > 0 {
+            self.set_sender_wake_now(next_wake_time, current_time);
+            if ret == 0 && self.is_still_logging() {
+                crate::logger::Log::cc_dump(self, current_time);
+            }
+        }
+        ret
+    }
+
+    /// Prepare the next packet to send when in the almost-ready states.
+    ///
+    /// C: `picoquic/sender.c:picoquic_prepare_packet_almost_ready`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_packet_almost_ready(
+        &mut self,
+        path_x: &mut Path,
+        packet: &mut Packet,
+        current_time: Instant,
+        send_buffer: &mut [u8],
+        send_buffer_max: usize,
+        send_length: &mut usize,
+        next_wake_time: &mut Instant,
+        is_initial_sent: &mut i32,
+    ) -> i32 {
+        if !self.initial_validated
+            && self
+                .initial_data_sent
+                .saturating_add(send_buffer_max.min(path_x.send_mtu) as u64)
+                > 3u64.saturating_mul(self.initial_data_received)
+        {
+            *send_length = 0;
+            return 0;
+        }
+
+        let mut header_length = 0usize;
+        if path_x
+            .tuples
+            .first()
+            .and_then(|t| t.local_connection_id)
+            .is_some()
+        {
+            if self.crypto_context[Epoch::Initial as usize]
+                .aead_encrypt
+                .is_some()
+            {
+                let length = self.prepare_packet_old_context_like(
+                    PacketContext::Initial,
+                    path_x,
+                    packet,
+                    send_buffer_max.min(path_x.send_mtu),
+                    current_time,
+                    next_wake_time,
+                    &mut header_length,
+                );
+                if length > 0 {
+                    let checksum_overhead = self.get_checksum_length(Epoch::Initial);
+                    self.finalize_and_protect_packet(
+                        packet,
+                        0,
+                        length,
+                        header_length,
+                        checksum_overhead,
+                        send_length,
+                        send_buffer,
+                        send_buffer_max.min(path_x.send_mtu),
+                        path_x,
+                        current_time,
+                    );
+                    *is_initial_sent = 1;
+                    return 0;
+                }
+            }
+            let length = self.prepare_packet_old_context_like(
+                PacketContext::Handshake,
+                path_x,
+                packet,
+                send_buffer_max.min(path_x.send_mtu),
+                current_time,
+                next_wake_time,
+                &mut header_length,
+            );
+            if length > 0 {
+                let checksum_overhead = self.get_checksum_length(Epoch::Handshake);
+                self.finalize_and_protect_packet(
+                    packet,
+                    0,
+                    length,
+                    header_length,
+                    checksum_overhead,
+                    send_length,
+                    send_buffer,
+                    send_buffer_max.min(path_x.send_mtu),
+                    path_x,
+                    current_time,
+                );
+                return 0;
+            } else if *is_initial_sent == 1 && self.connection_state == State::ServerFalseStart {
+                return self.prepare_handshake_packet_for_epoch(
+                    path_x,
+                    packet,
+                    current_time,
+                    send_buffer,
+                    send_buffer_max,
+                    send_length,
+                    next_wake_time,
+                    Epoch::Handshake,
+                    true,
+                    is_initial_sent,
+                );
+            }
+        }
+
+        let ret = self.prepare_packet_ready(
+            path_x,
+            packet,
+            current_time,
+            send_buffer,
+            send_buffer_max,
+            send_length,
+            next_wake_time,
+        );
+        if *send_length > 0 && !self.initial_validated {
+            self.initial_data_sent = self.initial_data_sent.saturating_add(*send_length as u64);
+        }
+        ret
+    }
+
+    /// Prepare one segment according to the connection state.
+    ///
+    /// C: `picoquic/sender.c:picoquic_prepare_segment`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_segment(
+        &mut self,
+        path_x: &mut Path,
+        packet: &mut Packet,
+        current_time: Instant,
+        send_buffer: &mut [u8],
+        send_buffer_max: usize,
+        send_length: &mut usize,
+        next_wake_time: &mut Instant,
+        is_initial_sent: &mut i32,
+    ) -> i32 {
+        self.cwin_blocked = false;
+        self.flow_blocked = false;
+        self.stream_blocked = false;
+        match self.connection_state {
+            State::ClientInit
+            | State::ClientInitSent
+            | State::ClientInitResent
+            | State::ClientRenegotiate
+            | State::ClientHandshakeStart
+            | State::ClientAlmostReady => self.prepare_packet_client_init(
+                path_x,
+                packet,
+                current_time,
+                send_buffer,
+                send_buffer_max,
+                send_length,
+                next_wake_time,
+                is_initial_sent,
+            ),
+            State::ServerAlmostReady | State::ServerInit | State::ServerHandshake => self
+                .prepare_packet_server_init(
+                    path_x,
+                    packet,
+                    current_time,
+                    send_buffer,
+                    send_buffer_max,
+                    send_length,
+                    next_wake_time,
+                    is_initial_sent,
+                ),
+            State::ServerFalseStart => {
+                if self.crypto_context[Epoch::OneRtt as usize]
+                    .aead_decrypt
+                    .is_some()
+                {
+                    self.ready_state_transition(current_time);
+                    self.prepare_packet_ready(
+                        path_x,
+                        packet,
+                        current_time,
+                        send_buffer,
+                        send_buffer_max,
+                        send_length,
+                        next_wake_time,
+                    )
+                } else {
+                    self.prepare_packet_almost_ready(
+                        path_x,
+                        packet,
+                        current_time,
+                        send_buffer,
+                        send_buffer_max,
+                        send_length,
+                        next_wake_time,
+                        is_initial_sent,
+                    )
+                }
+            }
+            State::ClientReadyStart => self.prepare_packet_almost_ready(
+                path_x,
+                packet,
+                current_time,
+                send_buffer,
+                send_buffer_max,
+                send_length,
+                next_wake_time,
+                is_initial_sent,
+            ),
+            State::Ready => self.prepare_packet_ready(
+                path_x,
+                packet,
+                current_time,
+                send_buffer,
+                send_buffer_max,
+                send_length,
+                next_wake_time,
+            ),
+            State::HandshakeFailure
+            | State::HandshakeFailureResend
+            | State::Disconnecting
+            | State::ClosingReceived
+            | State::Closing
+            | State::Draining => self.prepare_packet_closing(
+                path_x,
+                packet,
+                current_time,
+                send_buffer,
+                send_buffer_max,
+                send_length,
+                next_wake_time,
+            ),
+            State::Disconnected => crate::errors::InternalError::Disconnected as i32,
+            _ => crate::errors::InternalError::UnexpectedState as i32,
+        }
+    }
+
+    /// Account for the reason a packet train stopped.
+    ///
+    /// C: `picoquic/sender.c:picoquic_handle_send_train_statistics`.
+    pub fn handle_send_train_statistics(
+        &mut self,
+        path_x: &Path,
+        coalesced_packet_size: usize,
+        send_length: usize,
+        send_msg_size: Option<usize>,
+    ) {
+        self.nb_trains_sent = self.nb_trains_sent.saturating_add(1);
+        if let Some(msg_size) = send_msg_size {
+            if coalesced_packet_size == 0 && send_length < 8usize.saturating_mul(msg_size) {
+                if path_x.cwin <= path_x.bytes_in_transit {
+                    self.nb_trains_blocked_cwin = self.nb_trains_blocked_cwin.saturating_add(1);
+                } else if path_x.pacing.is_blocked() {
+                    self.nb_trains_blocked_pacing = self.nb_trains_blocked_pacing.saturating_add(1);
+                } else {
+                    self.nb_trains_blocked_others = self.nb_trains_blocked_others.saturating_add(1);
+                }
+            } else {
+                self.nb_trains_short = self.nb_trains_short.saturating_add(1);
+            }
         }
     }
 }

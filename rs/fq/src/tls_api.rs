@@ -888,13 +888,9 @@ impl Quic {
         cert_root_file_name: Option<&str>,
         ticket_key: Option<&[u8]>,
     ) -> Result<(), Error> {
-        match (cert_file_name, key_file_name) {
-            (Some(cert), Some(key)) => {
-                get_certs_from_file(cert).ok_or(Error::InvalidFile)?;
-                self.set_private_key_from_file(key)?;
-            }
-            (None, None) => {}
-            _ => return Err(Error::InvalidArgument),
+        if let (Some(cert), Some(key)) = (cert_file_name, key_file_name) {
+            get_certs_from_file(cert).ok_or(Error::InvalidFile)?;
+            self.set_private_key_from_file(key)?;
         }
 
         if let Some(root) = cert_root_file_name {
