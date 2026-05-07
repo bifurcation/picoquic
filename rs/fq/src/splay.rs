@@ -343,6 +343,23 @@ impl<K: Ord, V> SplayTree<K, V> {
         }
     }
 
+    /// C: `zig` (picoquic/picosplay.c:59-62).
+    fn zig(&mut self, x: u32) {
+        self.rotate(x);
+    }
+
+    /// C: `zigzig` (picoquic/picosplay.c:64-70).
+    fn zigzig(&mut self, x: u32, p: u32) {
+        self.rotate(p);
+        self.rotate(x);
+    }
+
+    /// C: `zigzag` (picoquic/picosplay.c:72-78).
+    fn zigzag(&mut self, x: u32) {
+        self.rotate(x);
+        self.rotate(x);
+    }
+
     fn splay(&mut self, idx: u32) {
         loop {
             let p = match self.parent_of(idx) {
@@ -353,16 +370,14 @@ impl<K: Ord, V> SplayTree<K, V> {
                 Some(p) => p,
             };
             match self.parent_of(p) {
-                None => self.rotate(idx),
+                None => self.zig(idx),
                 Some(g) => {
                     let idx_left = self.left_of(p) == Some(idx);
                     let p_left = self.left_of(g) == Some(p);
                     if idx_left == p_left {
-                        self.rotate(p);
-                        self.rotate(idx);
+                        self.zigzig(idx, p);
                     } else {
-                        self.rotate(idx);
-                        self.rotate(idx);
+                        self.zigzag(idx);
                     }
                 }
             }

@@ -3,7 +3,8 @@
 #![allow(non_snake_case)]
 
 use crate::tests::util::{
-    TestSimLink, TestSimPacket, test_poisson_random, test_random, test_uniform_random,
+    JitterMode, TestSimLink, TestSimPacket, test_gauss_random, test_poisson_random, test_random,
+    test_uniform_random,
 };
 use crate::{Instant, MAX_PACKET_SIZE};
 
@@ -83,6 +84,23 @@ pub fn picoquictest_sim_link_wifi_jitter(link: &mut TestSimLink) -> u64 {
     jitter
 }
 
+/// Compute one jitter sample for a simulator link.
+///
+/// C: `picoquic/sim_link.c:picoquictest_sim_link_jitter`.
+pub fn picoquictest_sim_link_jitter(link: &mut TestSimLink) -> u64 {
+    if link.jitter_mode == JitterMode::Wifi {
+        picoquictest_sim_link_wifi_jitter(link)
+    } else {
+        let mut x = test_gauss_random(&mut link.jitter_seed);
+        if x < -3.0 {
+            x = -3.0;
+        }
+        x /= 3.0;
+        let jitter = link.jitter as i64 + (x * link.jitter as f64) as i64;
+        jitter.max(0) as u64
+    }
+}
+
 /// C: `sim_link_one_test` in `picoquic/sim_link.c`.
 fn sim_link_one_test(loss_mask: Option<u64>, queue_delay_max: u64, nb_losses: u64) {
     let mut departure_time = Instant::from_ticks(0);
@@ -131,4 +149,14 @@ fn sim_link() {
     sim_link_one_test(Some(0), 0, 0);
     sim_link_one_test(Some(8), 0, 1);
     sim_link_one_test(Some(0x18), 0, 2);
+}
+
+#[test]
+fn sim_link_jitter_sample() {
+    let mut link = TestSimLink::create(0.01, 10_000, None, 0, Instant::from_ticks(0))
+        .expect("sim link allocation");
+    link.jitter = 1000;
+    let _ = picoquictest_sim_link_jitter(&mut link);
+    link.jitter_mode = JitterMode::Wifi;
+    let _ = picoquictest_sim_link_jitter(&mut link);
 }

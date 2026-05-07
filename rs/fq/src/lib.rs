@@ -2064,6 +2064,35 @@ impl Quic {
         Ok(())
     }
 
+    /// Clear and remove one path's owned data.
+    ///
+    /// C: `picoquic_clear_path_data` (picoquic/quicctx.c:1885-1899).
+    pub(crate) fn clear_path_data(&mut self, connection: ConnectionToken, path_index: usize) {
+        self.unregister_net_id(connection, path_index);
+
+        let congestion_alg = self
+            .connections
+            .get(connection)
+            .and_then(|cnx| cnx.congestion_alg);
+
+        if let Some(cnx) = self.connections.get_mut(connection)
+            && let Some(path) = cnx.paths.get_mut(path_index)
+        {
+            if let Some(alg) = congestion_alg {
+                alg.algorithm.alg_delete(path);
+            }
+            while !path.tuples.is_empty() {
+                path.delete_tuple(0, true);
+            }
+        }
+
+        if let Some(cnx) = self.connections.get_mut(connection)
+            && path_index < cnx.paths.len()
+        {
+            cnx.paths.remove(path_index);
+        }
+    }
+
     /// Register the connection's initial CID and default-path peer address.
     /// C: `picoquic_register_net_icid` (picoquic/quicctx.c:1340-1354).
     pub fn register_net_icid(&mut self, connection: ConnectionToken) -> Result<(), Error> {
@@ -2124,6 +2153,22 @@ impl Quic {
             cnx.registered_secret_addr = unspecified_socket_addr();
             cnx.registered_reset_secret = [0; RESET_SECRET_SIZE];
             cnx.connection_by_secret_membership = None;
+        }
+    }
+
+    /// Remove a connection from the context's live-connection list.
+    ///
+    /// The C intrusive `cnx_list`/`cnx_last` links are represented by
+    /// the Rust arena, so this helper performs the C-visible side
+    /// effects: unregister ICID/reset-secret indexes and decrement the
+    /// live-connection count.
+    ///
+    /// C: `picoquic_remove_cnx_from_list` (picoquic/quicctx.c:1450-1469).
+    pub(crate) fn remove_cnx_from_list(&mut self, connection: ConnectionToken) {
+        self.unregister_net_icid(connection);
+        self.unregister_net_secret(connection);
+        if self.current_number_connections > 0 {
+            self.current_number_connections -= 1;
         }
     }
 
@@ -2294,9 +2339,7 @@ impl Connection {
 
     /// Begin an ordered close.
     pub fn close(&mut self, application_reason_code: u64) -> Result<(), Error> {
-        self.application_error = application_reason_code;
-        self.connection_state = State::Disconnecting;
-        Ok(())
+        self.picoquic_close_ex(application_reason_code, None)
     }
 
     /// Same as [`Self::close`] but carries a textual `error_reason`.
@@ -2306,10 +2349,7 @@ impl Connection {
         application_reason_code: u64,
         error_reason: Option<&str>,
     ) -> Result<(), Error> {
-        self.application_error = application_reason_code;
-        self.local_error_reason = error_reason.map(|s| s.to_owned());
-        self.connection_state = State::Disconnecting;
-        Ok(())
+        self.picoquic_close_ex(application_reason_code, error_reason)
     }
 
     /// Force-close the connection without waiting for the protocol
@@ -2947,6 +2987,54 @@ impl Connection {
         self.remove_stashed_connection_id(unique_path_id, removed_index)
     }
 
+    /// Dereference all remote CIDs used by tuples on `path_index`.
+    ///
+    /// C: `picoquic_dereference_stashed_cnxid` (picoquic/quicctx.c:3149-3152).
+    pub fn dereference_stashed_cnxid(&mut self, path_index: usize, is_deleting_connection: i32) {
+        let Some(unique_path_id) = self.paths.get(path_index).map(|path| path.unique_path_id)
+        else {
+            return;
+        };
+
+        let mut retire_sequences = Vec::new();
+        if let Some(path) = self.paths.get_mut(path_index) {
+            for tuple in &mut path.tuples {
+                let Some(cid_idx) = tuple.remote_connection_id_index.take() else {
+                    continue;
+                };
+                if let Some(stash_idx) = self
+                    .remote_connection_id_stashes
+                    .iter()
+                    .position(|s| s.unique_path_id == unique_path_id)
+                    && let Some(cid) = self.remote_connection_id_stashes[stash_idx]
+                        .connection_ids
+                        .get_mut(cid_idx)
+                {
+                    cid.nb_path_references = cid.nb_path_references.saturating_sub(1);
+                    if cid.needs_removal
+                        && cid.nb_path_references == 0
+                        && is_deleting_connection == 0
+                    {
+                        retire_sequences.push(cid.sequence);
+                    }
+                }
+            }
+        }
+
+        for sequence in retire_sequences {
+            let _ = self.queue_retire_connection_id_frame(unique_path_id, sequence);
+        }
+    }
+
+    /// C: `picoquic_dereference_stashed_cnxid` (picoquic/quicctx.c:3149-3152).
+    pub fn picoquic_dereference_stashed_cnxid(
+        &mut self,
+        path_index: usize,
+        is_deleting_connection: i32,
+    ) {
+        self.dereference_stashed_cnxid(path_index, is_deleting_connection);
+    }
+
     /// Remote connection ID currently in use.
     pub fn remote_connection_id(&self) -> ConnectionId {
         // Return the initial connection ID as a proxy; full CID rotation is Phase 3.
@@ -3281,6 +3369,19 @@ impl Quic {
         self.connection_wake_tree = crate::splay::SplayTree::new();
         for cnx in self.connections.iter_mut() {
             cnx.connection_wake_membership = None;
+        }
+    }
+
+    /// Remove `connection` from the wake-time scheduler.
+    ///
+    /// C: `picoquic_remove_cnx_from_wake_list` (picoquic/quicctx.c:1505-1508).
+    pub(crate) fn remove_cnx_from_wake_list(&mut self, connection: ConnectionToken) {
+        let old_membership = self
+            .connections
+            .get_mut(connection)
+            .and_then(|cnx| cnx.connection_wake_membership.take());
+        if let Some(old_membership) = old_membership {
+            self.connection_wake_tree.remove(old_membership);
         }
     }
 
@@ -5449,13 +5550,7 @@ struct ParsedSegment {
 
 impl Quic {
     fn reinsert_by_wake_time_token(&mut self, token: ConnectionToken, next_time: Instant) {
-        let old_membership = self
-            .connections
-            .get_mut(token)
-            .and_then(|cnx| cnx.connection_wake_membership.take());
-        if let Some(old_membership) = old_membership {
-            self.connection_wake_tree.remove(old_membership);
-        }
+        self.remove_cnx_from_wake_list(token);
         if let Some(cnx) = self.connections.get_mut(token) {
             cnx.next_wake_time = next_time;
         }
