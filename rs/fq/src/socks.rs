@@ -187,6 +187,30 @@ pub trait Socket {
     }
 }
 
+/// C: `picoquic_send_through_socket` (picoquic/picosocks.c:1262)
+///
+/// Send one datagram through a single socket, with no GSO segmentation hint.
+/// The OS error out-parameter is represented by `sock_err`.
+pub fn picoquic_send_through_socket<S: Socket>(
+    socket: &mut S,
+    addr_dest: &SocketAddr,
+    addr_from: Option<&SocketAddr>,
+    from_if: i32,
+    bytes: &[u8],
+    sock_err: &mut Option<OsError>,
+) -> Result<usize, OsError> {
+    match socket.send(addr_dest, addr_from, from_if, bytes, 0) {
+        Ok(sent) => {
+            *sock_err = None;
+            Ok(sent)
+        }
+        Err(err) => {
+            *sock_err = Some(err);
+            Err(err)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // `ServerSockets` -- generic over the socket implementation.
 

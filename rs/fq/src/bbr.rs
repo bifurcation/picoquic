@@ -1555,6 +1555,15 @@ impl BbrState {
         self.quantization_budget(path_x, inflight)
     }
 
+    /// C: `BBRInflight` (picoquic/bbr.c:909)
+    ///
+    /// Compute `gain × BDP` at the current BBR bandwidth estimate, then apply
+    /// BBR's quantization floor.
+    #[allow(dead_code)]
+    fn inflight(&mut self, path_x: &Path, gain: f64) -> u64 {
+        self.inflight_with_bw(path_x, gain, self.bw)
+    }
+
     /// C: `BBRStartProbeBW_REFILL` (picoquic/bbr.c:1823)
     ///
     /// Enter ProbeBW-Refill: pace at rate, reset lower bounds, and start a
@@ -2507,6 +2516,43 @@ pub fn update_windowed_min_filter(
         }
     }
     result
+}
+
+/// C: `picoquic_bbr_reset` (picoquic/bbr.c:598)
+///
+/// Reset an existing BBR state object while preserving the configured option
+/// string, matching the C helper that re-enters `BBROnInit`.
+#[allow(dead_code)]
+fn picoquic_bbr_reset(
+    bbr_state: &mut BbrState,
+    connection: &Connection,
+    path_x: &mut Path,
+    current_time: u64,
+) {
+    let option_string = bbr_state.option_string.clone();
+    bbr_state.on_init(connection, path_x, current_time, option_string);
+}
+
+/// C: `picoquic_bbr_init` (picoquic/bbr.c:603)
+///
+/// Allocate and initialise the per-path BBR state.  The C field
+/// `congestion_alg_state` is a `void*`; the Rust translation stores the typed
+/// state behind `Box<dyn Any>`.
+#[allow(dead_code)]
+fn picoquic_bbr_init(
+    connection: &Connection,
+    path_x: &mut Path,
+    option_string: Option<&str>,
+    current_time: u64,
+) {
+    let mut bbr_state = BbrState::default();
+    bbr_state.on_init(
+        connection,
+        path_x,
+        current_time,
+        option_string.map(str::to_owned),
+    );
+    path_x.congestion_alg_state = Some(Box::new(bbr_state));
 }
 
 #[cfg(test)]

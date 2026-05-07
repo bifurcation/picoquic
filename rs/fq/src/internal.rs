@@ -1097,6 +1097,79 @@ impl Quic {
     }
 }
 
+/// C: `picoquic_estimate_path_bandwidth` (picoquic/frames.c:2865)
+///
+/// Free-function wrapper matching the C helper's call shape.
+#[allow(clippy::too_many_arguments)]
+pub fn picoquic_estimate_path_bandwidth(
+    connection: &mut Connection,
+    path_x: &mut Path,
+    send_time: u64,
+    delivered_prior: u64,
+    delivered_time_prior: u64,
+    delivered_sent_prior: u64,
+    delivery_time: u64,
+    rs_is_path_limited: bool,
+) {
+    if send_time < path_x.delivered_sent_last {
+        return;
+    }
+
+    if path_x.delivered_time_last.ticks() == 0 {
+        path_x.delivered_last = path_x.delivered;
+        path_x.delivered_time_last = Instant::from_ticks(delivery_time);
+        path_x.delivered_sent_last = send_time;
+        return;
+    }
+
+    let mut receive_interval = delivery_time.saturating_sub(delivered_time_prior);
+    if receive_interval <= BANDWIDTH_TIME_INTERVAL_MIN {
+        return;
+    }
+
+    let delivered = path_x.delivered.saturating_sub(delivered_prior);
+    let send_interval = send_time.saturating_sub(delivered_sent_prior);
+    if send_interval > receive_interval {
+        receive_interval = send_interval;
+    }
+    let bw_estimate = crate::utils::rate_from_bytes(delivered, receive_interval);
+
+    path_x.bandwidth_estimate = bw_estimate;
+    if !rs_is_path_limited || bw_estimate > path_x.bandwidth_estimate {
+        let is_first_path = connection
+            .paths
+            .first()
+            .map(|p| p.unique_path_id == path_x.unique_path_id)
+            .unwrap_or(false);
+        if is_first_path && connection.is_ack_frequency_negotiated {
+            let mut ack_gap = 0;
+            let mut ack_delay_max = 0;
+            connection.compute_ack_gap_and_delay(
+                path_x.rtt_min,
+                connection.remote_parameters.min_ack_delay.ticks(),
+                bw_estimate,
+                &mut ack_gap,
+                &mut ack_delay_max,
+            );
+            if ack_gap != connection.ack_gap_local {
+                connection.is_ack_frequency_updated = true;
+            }
+        }
+    }
+
+    path_x.delivered_last = path_x.delivered;
+    path_x.delivered_time_last = Instant::from_ticks(delivery_time);
+    path_x.delivered_sent_last = send_time;
+    path_x.delivered_last_packet = delivered_prior;
+    path_x.last_bw_estimate_path_limited = rs_is_path_limited;
+    if path_x.delivered_last_packet > path_x.delivered_limited_index {
+        path_x.delivered_limited_index = 0;
+    }
+    if bw_estimate > path_x.bandwidth_estimate_max {
+        path_x.bandwidth_estimate_max = bw_estimate;
+    }
+}
+
 impl Connection {
     /// Pad `bytes[length..]` up to whatever the connection's padding
     /// policy mandates (or up to `max_length`, whichever is smaller).
@@ -1952,6 +2025,13 @@ pub struct Quic {
     /// Whether this context enables the TLS exporter API.  C:
     /// `tls_master_ctx->use_exporter`.
     pub use_exporter: bool,
+    /// Server-side ECH opener callback state and retry config bytes.
+    /// C stores these through `tls_master_ctx->ech.server`.
+    pub ech_opener: Option<crate::ech::EchOpenerState>,
+    pub ech_server_retry_config: Option<Vec<u8>>,
+    /// Whether client-side ECH ciphers/KEMs are enabled on this context.
+    /// C sets `tls_master_ctx->ech.client.{ciphers,kems}` unconditionally.
+    pub ech_client_enabled: bool,
 
     /// Stateless packets queued for send.  Replaces the C
     /// `pending_stateless_packet` head + per-packet `next_packet`
@@ -6940,6 +7020,40 @@ pub fn remove_header_protection_inner(
     0
 }
 
+/// C: `picoquic_remove_header_protection` (picoquic/packet.c:617)
+///
+/// Select the inbound header-protection key for `ph.epoch`, derive the SACK
+/// reference packet number from the connection ACK context, and remove QUIC
+/// header protection in place.
+pub fn picoquic_remove_header_protection(
+    connection: &mut Connection,
+    bytes: &mut [u8],
+    decrypted_bytes: &mut [u8],
+    ph: &mut PacketHeader,
+) -> i32 {
+    let length = ph.offset.saturating_add(ph.payload_length);
+    let epoch = ph.epoch as usize;
+    let Some(pn_dec) = connection.crypto_context[epoch].pn_dec.as_deref() else {
+        ph.packet_number_truncated = 0xffff_ffff;
+        ph.packet_number_mask = 0xffff_ffff_0000_0000;
+        ph.offset = ph.packet_number_offset;
+        ph.packet_number_full = u64::MAX;
+        return crate::errors::InternalError::AeadNotReady as i32;
+    };
+    let sack_list_last = connection.ack_ctx[ph.packet_context as usize]
+        .sack_list
+        .first();
+    remove_header_protection_inner(
+        bytes,
+        length,
+        decrypted_bytes,
+        ph,
+        pn_dec,
+        connection.is_loss_bit_enabled_incoming,
+        sack_list_last,
+    )
+}
+
 fn packet_protection_bounds(
     bytes_len: usize,
     decoded_len: usize,
@@ -9678,6 +9792,248 @@ impl Connection {
     }
 }
 
+fn update_max_stream_id_local_token(connection: &mut Connection, stream_token: StreamToken) {
+    use crate::stream::{Role, StreamId};
+
+    let Some(stream) = connection.streams.get(stream_token) else {
+        return;
+    };
+    let stream_id = stream.stream_id;
+    let sid = StreamId(stream_id);
+    let local_role = if connection.client_mode {
+        Role::Client
+    } else {
+        Role::Server
+    };
+    if sid.is_local(local_role) {
+        return;
+    }
+
+    let mut updated = false;
+    if sid.is_bidir() && stream_id >= connection.max_stream_id_bidir_local {
+        let old = connection.max_stream_id_bidir_local;
+        connection.max_stream_id_bidir_local_computed = connection
+            .max_stream_id_bidir_local_computed
+            .max(stream_id.saturating_add(4));
+        updated = connection.max_stream_id_bidir_local_computed > old;
+    } else if !sid.is_bidir() && stream_id >= connection.max_stream_id_unidir_local {
+        let old = connection.max_stream_id_unidir_local;
+        connection.max_stream_id_unidir_local_computed = connection
+            .max_stream_id_unidir_local_computed
+            .max(stream_id.saturating_add(4));
+        updated = connection.max_stream_id_unidir_local_computed > old;
+    }
+
+    if updated && let Some(stream) = connection.streams.get_mut(stream_token) {
+        stream.max_stream_updated = true;
+    }
+}
+
+fn delete_stream_if_closed_token(connection: &mut Connection, stream_token: StreamToken) -> i32 {
+    use crate::stream::{Role, StreamId};
+
+    let client_mode = connection.client_mode;
+    let mut ret = 0;
+    let mut remove_tree_entry = None;
+    let mut remove_stream = false;
+    let mut stream_id = 0;
+
+    if let Some(stream) = connection.streams.get_mut(stream_token) {
+        stream_id = stream.stream_id;
+        if !stream.is_closed && stream.is_stream_closed(client_mode) {
+            stream.is_closed = true;
+            ret = 1;
+        }
+
+        let sid = StreamId(stream.stream_id);
+        let local_role = if client_mode {
+            Role::Client
+        } else {
+            Role::Server
+        };
+        if stream.is_closed && !sid.is_bidir() && !sid.is_local(local_role) {
+            remove_tree_entry = stream.stream_tree_membership.take();
+            remove_stream = true;
+        }
+    }
+
+    if remove_stream && remove_tree_entry.is_none() {
+        remove_tree_entry = connection.stream_tree.find(&stream_id);
+    }
+    if let Some(st) = remove_tree_entry {
+        connection.stream_tree.remove(st);
+    }
+    if remove_stream {
+        connection.streams.remove(stream_token);
+    }
+
+    ret
+}
+
+fn signal_stream_reset_token(connection: &mut Connection, stream_token: StreamToken) {
+    update_max_stream_id_local_token(connection, stream_token);
+
+    let (stream_id, should_signal, should_callback, mut app_ctx) = {
+        let Some(stream) = connection.streams.get_mut(stream_token) else {
+            return;
+        };
+        let should_signal = !stream.reset_signalled;
+        if should_signal && !stream.is_discarded && stream.consumed_offset < stream.fin_offset {
+            let delta = stream.fin_offset - stream.consumed_offset;
+            if connection.offset_received > delta {
+                connection.offset_received -= delta;
+            }
+        }
+        (
+            stream.stream_id,
+            should_signal,
+            should_signal && !stream.is_discarded && connection.callback_fn.is_some(),
+            stream.app_stream_ctx.take(),
+        )
+    };
+
+    if should_callback && let Some(mut callback) = connection.callback_fn.take() {
+        let ret = callback.callback(
+            connection,
+            stream_id,
+            &[],
+            CallbackEvent::StreamReset,
+            app_ctx.as_deref_mut(),
+        );
+        connection.callback_fn = Some(callback);
+
+        if ret != 0 {
+            connection.connection_error(
+                crate::errors::TransportError::InternalError as u64,
+                crate::frames::FrameType::ResetStream as u64,
+            );
+        }
+    }
+
+    if let Some(stream) = connection.streams.get_mut(stream_token) {
+        stream.app_stream_ctx = app_ctx;
+        if should_signal {
+            stream.reset_signalled = true;
+        }
+    }
+    let _ = delete_stream_if_closed_token(connection, stream_token);
+}
+
+fn flow_control_check_stream_offset_token(
+    connection: &mut Connection,
+    stream_token: StreamToken,
+    new_fin_offset: u64,
+) -> i32 {
+    let Some((maxdata_local, fin_offset)) = connection
+        .streams
+        .get(stream_token)
+        .map(|stream| (stream.maxdata_local, stream.fin_offset))
+    else {
+        return -1;
+    };
+
+    if new_fin_offset > maxdata_local {
+        return connection
+            .connection_error(crate::errors::TransportError::FlowControlError as u64, 0);
+    }
+
+    if new_fin_offset > fin_offset {
+        let new_bytes = new_fin_offset - fin_offset;
+        if new_bytes > connection.maxdata_local
+            || connection.maxdata_local - new_bytes < connection.offset_received
+        {
+            return connection
+                .connection_error(crate::errors::TransportError::FlowControlError as u64, 0);
+        }
+        connection.offset_received += new_bytes;
+        if let Some(stream) = connection.streams.get_mut(stream_token) {
+            stream.fin_offset = new_fin_offset;
+        }
+    }
+
+    0
+}
+
+/// C: `picoquic_apply_reset_stream_frame` (picoquic/frames.c:330)
+///
+/// Apply a decoded RESET_STREAM frame to connection state, returning the
+/// original byte tail on success and `None` on transport error.
+pub fn picoquic_apply_reset_stream_frame<'a>(
+    connection: &mut Connection,
+    bytes: &'a [u8],
+    error_code_64: u64,
+    stream_id: u64,
+    final_offset: u64,
+    reliable_size: u64,
+) -> Option<&'a [u8]> {
+    use crate::stream::{Role, StreamId};
+
+    let local_role = if connection.client_mode {
+        Role::Client
+    } else {
+        Role::Server
+    };
+    let sid = StreamId(stream_id);
+    if !sid.is_bidir() && sid.is_local(local_role) {
+        connection.connection_error(
+            crate::errors::TransportError::StreamStateError as u64,
+            crate::frames::FrameType::ResetStream as u64,
+        );
+        return None;
+    }
+
+    let stream_token = match connection.find_stream(stream_id) {
+        Some(token) => token,
+        None => match connection.create_missing_streams(stream_id, true) {
+            Ok(token) => token,
+            Err(_) => {
+                if connection.connection_state > State::Ready {
+                    return None;
+                }
+                return Some(bytes);
+            }
+        },
+    };
+
+    let final_offset_mismatch = connection
+        .streams
+        .get(stream_token)
+        .map(|stream| {
+            (stream.fin_received || stream.reset_received) && final_offset != stream.fin_offset
+        })
+        .unwrap_or(false);
+    if final_offset_mismatch {
+        connection.connection_error(
+            crate::errors::TransportError::FinalOffsetError as u64,
+            crate::frames::FrameType::ResetStream as u64,
+        );
+        return None;
+    }
+
+    if flow_control_check_stream_offset_token(connection, stream_token, final_offset) != 0 {
+        return None;
+    }
+
+    let should_signal = if let Some(stream) = connection.streams.get_mut(stream_token) {
+        if !stream.reset_received {
+            stream.reset_received = true;
+            stream.reset_offset = reliable_size;
+            stream.remote_error = error_code_64;
+            stream.consumed_offset >= stream.reset_offset
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if should_signal {
+        signal_stream_reset_token(connection, stream_token);
+    }
+
+    Some(bytes)
+}
+
 // ---------------------------------------------------------------------------
 // Frame retransmission.
 
@@ -9776,18 +10132,16 @@ impl Connection {
         // Reset the data-repeat splay tree (already empty on new connection).
         self.queue_data_repeat_tree.clear();
     }
-}
 
-impl Connection {
-    pub fn queue_data_repeat_packet(&mut self, packet: &mut Packet) {
-        if packet.is_queued_for_data_repeat {
-            return;
-        }
-        if let Some(token) = self
-            .queued_packets
+    fn queued_packet_token_by_sequence(&self, sequence_number: u64) -> Option<PacketToken> {
+        self.queued_packets
             .iter()
-            .position(|p| p.sequence_number == packet.sequence_number)
+            .position(|p| p.sequence_number == sequence_number)
             .map(|idx| PacketToken::synthetic(idx as u32, idx as u32))
+    }
+
+    fn queue_data_repeat_packet_current(&mut self, packet: &mut Packet) {
+        if let Some(token) = self.queued_packet_token_by_sequence(packet.sequence_number)
             && let Ok((st, _)) = self
                 .queue_data_repeat_tree
                 .insert(QueueDataRepeatKey::from_packet(packet), token)
@@ -9796,9 +10150,20 @@ impl Connection {
             packet.is_queued_for_data_repeat = true;
         }
     }
-}
 
-impl Connection {
+    pub fn queue_data_repeat_packet(&mut self, packet: &mut Packet) {
+        if packet.is_queued_for_data_repeat {
+            return;
+        }
+        packet.data_repeat_frame = packet.offset;
+        packet.data_repeat_index = packet.offset;
+        if picoquic_queue_data_repeat_adjust(self, packet) == 0
+            && packet.data_repeat_frame < packet.length
+        {
+            self.queue_data_repeat_packet_current(packet);
+        }
+    }
+
     pub fn dequeue_data_repeat_packet(&mut self, packet: &mut Packet) {
         if let Some(st) = packet.queue_data_repeat_membership.take() {
             self.queue_data_repeat_tree.remove(st);
@@ -9810,9 +10175,7 @@ impl Connection {
         }
         packet.is_queued_for_data_repeat = false;
     }
-}
 
-impl Connection {
     pub fn first_data_repeat_packet(&self) -> Option<PacketToken> {
         // Return the token stored at the minimum key in the repeat tree.
         let st = self.queue_data_repeat_tree.first()?;
@@ -9820,19 +10183,233 @@ impl Connection {
     }
 }
 
+/// C: `picoquic_queue_data_repeat_adjust` (picoquic/frames.c:2203)
+///
+/// Advance a packet's data-repeat cursor to the next STREAM frame and cache
+/// that stream's repeat-ordering key.
+pub fn picoquic_queue_data_repeat_adjust(connection: &mut Connection, packet: &mut Packet) -> i32 {
+    let mut ret = 0;
+    while packet.data_repeat_frame < packet.length {
+        let data_offset = packet.data_repeat_frame;
+        let data_byte = packet.bytes[data_offset];
+        if data_byte >= crate::frames::FrameType::StreamRangeMin as u8
+            && data_byte <= crate::frames::FrameType::StreamRangeMax as u8
+        {
+            let mut fin = 0;
+            let mut consumed = 0;
+            packet.data_repeat_priority = 0;
+            packet.data_repeat_stream_id = 0;
+            packet.data_repeat_stream_offset = 0;
+            packet.data_repeat_stream_data_length = 0;
+
+            if parse_stream_header(
+                &packet.bytes[data_offset..packet.length],
+                packet.length - data_offset,
+                &mut packet.data_repeat_stream_id,
+                &mut packet.data_repeat_stream_offset,
+                &mut packet.data_repeat_stream_data_length,
+                &mut fin,
+                &mut consumed,
+            ) == 0
+            {
+                if let Some(stream_token) = connection.find_stream(packet.data_repeat_stream_id)
+                    && let Some(stream) = connection.streams.get(stream_token)
+                {
+                    packet.data_repeat_priority = stream.stream_priority as u64;
+                }
+            } else {
+                ret = -1;
+            }
+            break;
+        }
+
+        let mut forget_about_ack = 0;
+        let mut consumed = 0;
+        if skip_frame(
+            &packet.bytes[data_offset..packet.length],
+            packet.length - data_offset,
+            &mut consumed,
+            &mut forget_about_ack,
+        ) != 0
+            || consumed == 0
+        {
+            ret = -1;
+            break;
+        }
+        packet.data_repeat_frame += consumed;
+        packet.data_repeat_index = packet.data_repeat_frame;
+    }
+    ret
+}
+
 pub fn copy_stream_frame_for_retransmit<'a>(
-    _connection: &mut Connection,
+    connection: &mut Connection,
     packet: &mut Packet,
     bytes: &'a mut [u8],
 ) -> Option<&'a mut [u8]> {
-    let start = packet.data_repeat_frame;
-    let end = packet.length.min(packet.bytes.len());
-    if start >= end || bytes.len() < end - start {
+    let frame_offset = packet.data_repeat_frame;
+    let frame_length_max = packet.length.checked_sub(frame_offset)?;
+    let frame = &packet.bytes[frame_offset..packet.length];
+    let mut stream_id = 0;
+    let mut offset = 0;
+    let mut data_length = 0;
+    let mut consumed = 0;
+    let mut fin = 0;
+
+    if parse_stream_header(
+        frame,
+        frame_length_max,
+        &mut stream_id,
+        &mut offset,
+        &mut data_length,
+        &mut fin,
+        &mut consumed,
+    ) != 0
+    {
         return None;
     }
-    let len = end - start;
-    bytes[..len].copy_from_slice(&packet.bytes[start..end]);
-    Some(&mut bytes[len..])
+
+    let mut data_available = data_length;
+    let mut frame_bytes_index = frame_offset + consumed;
+    if packet.data_repeat_index > frame_offset + consumed {
+        let already_sent = packet.data_repeat_index - frame_offset - consumed;
+        if already_sent <= data_length {
+            offset += already_sent as u64;
+            frame_bytes_index += already_sent;
+            data_available -= already_sent;
+        } else {
+            offset += data_length as u64;
+            frame_bytes_index += data_length;
+            data_available = 0;
+        }
+    }
+
+    let mut is_needed = true;
+    if let Some(stream_token) = connection.find_stream(stream_id) {
+        if let Some(stream) = connection.streams.get_mut(stream_token) {
+            let ack_end = offset
+                .saturating_add(data_available as u64)
+                .saturating_sub(if fin != 0 { 0 } else { 1 });
+            if stream.reset_sent || stream.sack_list.check(offset, ack_end) {
+                is_needed = false;
+            }
+        }
+    } else {
+        is_needed = false;
+    }
+
+    let mut bytes_not_sent = 0usize;
+    let mut written = 0usize;
+    if is_needed {
+        let mut header = [0u8; 32];
+        let before_len = header.len();
+        let header_tail = format_stream_frame_header(&mut header, stream_id, offset)?;
+        let header_len = before_len - header_tail.len();
+        if header_len >= bytes.len() {
+            bytes_not_sent = data_available;
+        } else {
+            bytes[..header_len].copy_from_slice(&header[..header_len]);
+            let length_len = encode_varint_length(data_available as u64);
+            if header_len + length_len + data_available <= bytes.len() {
+                bytes[0] |= 0x02;
+                bytes[0] |= fin as u8;
+                let encoded = varint_encode(&mut bytes[header_len..], data_available as u64);
+                if encoded == 0 {
+                    return None;
+                }
+                let data_start = header_len + encoded;
+                bytes[data_start..data_start + data_available].copy_from_slice(
+                    &packet.bytes[frame_bytes_index..frame_bytes_index + data_available],
+                );
+                written = data_start + data_available;
+            } else if header_len + data_available <= bytes.len() {
+                let space_available = bytes.len() - header_len;
+                let pad_required = space_available - data_available;
+                bytes[0] |= fin as u8;
+                if pad_required > 0 {
+                    bytes.copy_within(0..header_len, pad_required);
+                    bytes[..pad_required].fill(0);
+                }
+                let data_start = header_len + pad_required;
+                bytes[data_start..data_start + data_available].copy_from_slice(
+                    &packet.bytes[frame_bytes_index..frame_bytes_index + data_available],
+                );
+                written = data_start + data_available;
+            } else {
+                let available = bytes.len() - header_len;
+                if available < MIN_STREAM_DATA_FRAGMENT {
+                    bytes_not_sent = data_available;
+                } else {
+                    bytes[header_len..header_len + available].copy_from_slice(
+                        &packet.bytes[frame_bytes_index..frame_bytes_index + available],
+                    );
+                    written = header_len + available;
+                    bytes_not_sent = data_available - available;
+                }
+            }
+        }
+    }
+
+    if bytes_not_sent == 0 {
+        packet.data_repeat_index = packet.data_repeat_frame + consumed + data_length;
+        packet.data_repeat_frame = packet.data_repeat_index;
+    } else if bytes_not_sent < data_length {
+        packet.data_repeat_index =
+            packet.data_repeat_frame + consumed + data_length - bytes_not_sent;
+    }
+
+    Some(&mut bytes[written..])
+}
+
+/// C: `picoquic_copy_single_stream_frame_for_retransmit` (picoquic/frames.c:2399)
+///
+/// Copy one repeat-queued STREAM frame into `bytes`, then update or remove the
+/// packet's data-repeat queue entry.
+pub fn picoquic_copy_single_stream_frame_for_retransmit<'a>(
+    connection: &mut Connection,
+    packet: &mut Packet,
+    bytes: &'a mut [u8],
+    more_data: &mut i32,
+    packet_dequeued: &mut i32,
+    is_pure_ack: &mut i32,
+) -> Option<&'a mut [u8]> {
+    let last_frame = packet.data_repeat_frame;
+    let mut tail = bytes;
+
+    if packet.data_repeat_frame < packet.length {
+        let data_byte = packet.bytes[packet.data_repeat_frame];
+        if data_byte >= crate::frames::FrameType::StreamRangeMin as u8
+            && data_byte <= crate::frames::FrameType::StreamRangeMax as u8
+        {
+            let before = tail.len();
+            tail = copy_stream_frame_for_retransmit(connection, packet, tail)?;
+            if tail.len() < before {
+                *is_pure_ack = 0;
+            }
+        }
+    }
+
+    if packet.data_repeat_frame < packet.length
+        && picoquic_queue_data_repeat_adjust(connection, packet) != 0
+    {
+        return None;
+    }
+
+    if packet.data_repeat_frame >= packet.length {
+        connection.dequeue_data_repeat_packet(packet);
+        *packet_dequeued = 1;
+    } else if packet.data_repeat_frame > last_frame {
+        let was_queued = packet.is_queued_for_spurious_detection;
+        packet.is_queued_for_spurious_detection = true;
+        connection.dequeue_data_repeat_packet(packet);
+        packet.is_queued_for_spurious_detection = was_queued;
+        connection.queue_data_repeat_packet_current(packet);
+        *more_data |= 1;
+    } else {
+        *more_data |= 1;
+    }
+
+    Some(tail)
 }
 
 pub fn copy_stream_frames_for_retransmit<'a>(
@@ -12574,6 +13151,29 @@ pub fn format_max_path_id_frame<'a>(
     Some(&mut bytes[off..])
 }
 
+/// C: `picoquic_queue_max_path_id_frame` (picoquic/frames.c:6012)
+///
+/// Queue a MAX_PATH_ID frame carrying the current local path-id limit.
+pub fn picoquic_queue_max_path_id_frame(connection: &mut Connection) -> Result<(), crate::Error> {
+    let mut frame_buffer = [0u8; 256];
+    let mut more_data = 0;
+    let frame_len = frame_buffer.len();
+    let bytes_next = format_max_path_id_frame(
+        &mut frame_buffer,
+        connection.max_path_id_local,
+        &mut more_data,
+    )
+    .ok_or(crate::Error::BufferTooSmall)?;
+    let consumed = frame_len - bytes_next.len();
+    encode_misc_frame(
+        connection,
+        frame_buffer[..consumed].to_vec(),
+        false,
+        PacketContext::Application,
+    );
+    Ok(())
+}
+
 /// C: `picoquic_format_data_blocked_frame` (`frames.c:1674-1690`)
 pub fn format_data_blocked_frame<'a>(
     connection: &mut Connection,
@@ -13323,6 +13923,29 @@ pub fn format_paths_blocked_frame<'a>(
     Some(&mut bytes[off..])
 }
 
+/// C: `picoquic_queue_paths_blocked_frame` (picoquic/frames.c:6128)
+///
+/// Queue a PATHS_BLOCKED frame carrying the current remote path-id limit.
+pub fn picoquic_queue_paths_blocked_frame(connection: &mut Connection) -> Result<(), crate::Error> {
+    let mut frame_buffer = [0u8; 256];
+    let mut more_data = 0;
+    let frame_len = frame_buffer.len();
+    let bytes_next = format_paths_blocked_frame(
+        &mut frame_buffer,
+        connection.max_path_id_remote,
+        &mut more_data,
+    )
+    .ok_or(crate::Error::BufferTooSmall)?;
+    let consumed = frame_len - bytes_next.len();
+    encode_misc_frame(
+        connection,
+        frame_buffer[..consumed].to_vec(),
+        false,
+        PacketContext::Application,
+    );
+    Ok(())
+}
+
 /// C: `picoquic_format_path_cid_blocked_frame` (`frames.c:6224-6237`)
 pub fn format_path_cid_blocked_frame<'a>(
     bytes: &'a mut [u8],
@@ -13342,6 +13965,36 @@ pub fn format_path_cid_blocked_frame<'a>(
         return Some(bytes);
     }
     Some(&mut bytes[off..])
+}
+
+/// C: `picoquic_queue_path_cid_blocked_frame` (picoquic/frames.c:6257)
+///
+/// Queue a PATH_CID_BLOCKED frame for `path_x` and mark that path as having
+/// such a frame in flight.
+pub fn picoquic_queue_path_cid_blocked_frame(
+    connection: &mut Connection,
+    path_x: &mut Path,
+) -> Result<(), crate::Error> {
+    let mut frame_buffer = [0u8; 256];
+    let mut more_data = 0;
+    let next_sequence_number = connection.path_cid_next_sequence_number(path_x);
+    let frame_len = frame_buffer.len();
+    let bytes_next = format_path_cid_blocked_frame(
+        &mut frame_buffer,
+        path_x.unique_path_id,
+        next_sequence_number,
+        &mut more_data,
+    )
+    .ok_or(crate::Error::BufferTooSmall)?;
+    let consumed = frame_len - bytes_next.len();
+    encode_misc_frame(
+        connection,
+        frame_buffer[..consumed].to_vec(),
+        false,
+        PacketContext::Application,
+    );
+    path_x.sending_path_cid_blocked_frame = true;
+    Ok(())
 }
 
 impl Connection {

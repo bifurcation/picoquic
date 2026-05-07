@@ -1529,6 +1529,17 @@ impl Binlog for Connection {
     }
 }
 
+/// C: `binlog_app_message` (picoquic/logwriter.c:1300)
+///
+/// Per-connection unified-log adapter: emit the app message only when this
+/// connection currently owns an open binlog file.
+#[allow(dead_code)]
+fn binlog_app_message(connection: &mut Connection, args: core::fmt::Arguments<'_>) {
+    if connection.f_binlog.is_some() {
+        Binlog::message_v(connection, args);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Top-level wiring on the QUIC context.
 

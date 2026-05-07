@@ -397,6 +397,48 @@ impl ConnectionIdContext {
         s_id64
     }
 
+    /// Decode the server ID from a stream-cipher LB-compatible CID.
+    /// C: `picoquic_lb_compat_cid_verify_stream_cipher` (picoquic/picoquic_lb.c:163)
+    fn verify_stream_cipher(&self, cnx_id: &ConnectionId) -> u64 {
+        let id_offset = 1 + self.nonce_length;
+        let mut target = [0u8; CONNECTION_ID_MAX_SIZE];
+        let len = cnx_id.len();
+        target[..len].copy_from_slice(cnx_id.as_bytes());
+        let enc = self.cid_encryption_context.as_ref().unwrap();
+
+        Self::one_pass_stream(
+            enc,
+            &mut target[..len],
+            1,
+            self.nonce_length,
+            id_offset,
+            self.server_id_length,
+        );
+        Self::one_pass_stream(
+            enc,
+            &mut target[..len],
+            id_offset,
+            self.server_id_length,
+            1,
+            self.nonce_length,
+        );
+        Self::one_pass_stream(
+            enc,
+            &mut target[..len],
+            1,
+            self.nonce_length,
+            id_offset,
+            self.server_id_length,
+        );
+
+        let mut s_id64: u64 = 0;
+        for i in 0..self.server_id_length {
+            s_id64 <<= 8;
+            s_id64 += target[id_offset + i] as u64;
+        }
+        s_id64
+    }
+
     /// Decode the server ID from a block-cipher LB-compatible CID.
     /// C: `picoquic_lb_compat_cid_verify_block_cipher`.
     fn verify_block_cipher(&self, cnx_id: &ConnectionId) -> u64 {
@@ -474,43 +516,7 @@ impl ConnectionIdContext {
         }
         let s_id64 = match self.method {
             ConnectionIdMethod::Clear => self.verify_clear(cnx_id),
-            ConnectionIdMethod::StreamCipher => {
-                let id_offset = 1 + self.nonce_length;
-                let mut target = [0u8; CONNECTION_ID_MAX_SIZE];
-                let len = cnx_id.len();
-                target[..len].copy_from_slice(cnx_id.as_bytes());
-                let enc = self.cid_encryption_context.as_ref().unwrap();
-                Self::one_pass_stream(
-                    enc,
-                    &mut target[..len],
-                    1,
-                    self.nonce_length,
-                    id_offset,
-                    self.server_id_length,
-                );
-                Self::one_pass_stream(
-                    enc,
-                    &mut target[..len],
-                    id_offset,
-                    self.server_id_length,
-                    1,
-                    self.nonce_length,
-                );
-                Self::one_pass_stream(
-                    enc,
-                    &mut target[..len],
-                    1,
-                    self.nonce_length,
-                    id_offset,
-                    self.server_id_length,
-                );
-                let mut s_id64: u64 = 0;
-                for i in 0..self.server_id_length {
-                    s_id64 <<= 8;
-                    s_id64 += target[id_offset + i] as u64;
-                }
-                s_id64
-            }
+            ConnectionIdMethod::StreamCipher => self.verify_stream_cipher(cnx_id),
             ConnectionIdMethod::BlockCipher => self.verify_block_cipher(cnx_id),
         };
         Some(s_id64)

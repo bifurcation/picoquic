@@ -1469,6 +1469,9 @@ impl Quic {
             use_predictable_random: false,
             client_authentication: false,
             use_exporter: false,
+            ech_opener: None,
+            ech_server_retry_config: None,
+            ech_client_enabled: false,
             pending_stateless_packets: std::collections::VecDeque::new(),
             default_congestion_alg: Some(&NEWRENO_ALGORITHM),
             default_congestion_alg_option_string: None,
@@ -3751,11 +3754,95 @@ impl Connection {
     /// queueing it for the application's regular callback.
     pub fn mark_direct_receive_stream(
         &mut self,
-        _stream_id: u64,
-        _direct_receive: Box<dyn StreamDirectReceive>,
+        stream_id: u64,
+        mut direct_receive: Box<dyn StreamDirectReceive>,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup and callback installation — Phase 4 body.
-        Err(Error::Generic)
+        use crate::stream::{Role, StreamId};
+
+        let stream_token = self
+            .find_stream(stream_id)
+            .ok_or(Error::Protocol(InternalError::InvalidStreamId as u64))?;
+        let sid = StreamId(stream_id);
+        let local_role = if self.client_mode {
+            Role::Client
+        } else {
+            Role::Server
+        };
+        if !sid.is_bidir() && sid.is_local(local_role) {
+            return Err(Error::Protocol(InternalError::InvalidStreamId as u64));
+        }
+
+        loop {
+            let next = {
+                let stream = self.streams.get(stream_token).ok_or(Error::Memory)?;
+                let Some(tree_token) = stream.stream_data_tree.first() else {
+                    break;
+                };
+                let Some(data_token) = stream.stream_data_tree.get(tree_token).copied() else {
+                    break;
+                };
+                let Some(data) = stream.stream_data_nodes.get(data_token) else {
+                    break;
+                };
+                let mut offset = data.offset;
+                let mut length = data.length;
+                let mut start = 0usize;
+                if offset < stream.consumed_offset {
+                    let end = offset.saturating_add(length as u64);
+                    if end < stream.consumed_offset {
+                        length = 0;
+                    } else {
+                        start = (stream.consumed_offset - offset) as usize;
+                        length -= start;
+                        offset = stream.consumed_offset;
+                    }
+                }
+                let bytes = data.data[start..start + length].to_vec();
+                (tree_token, data_token, offset, bytes)
+            };
+
+            let (tree_token, data_token, offset, bytes) = next;
+            if !bytes.is_empty() {
+                let ret = direct_receive.receive(self, stream_id, false, &bytes, offset);
+                if ret != 0 {
+                    if let Some(stream) = self.streams.get_mut(stream_token) {
+                        stream.direct_receive_fn = Some(direct_receive);
+                    }
+                    return Err(Error::Protocol(ret as u64));
+                }
+            }
+            if let Some(stream) = self.streams.get_mut(stream_token) {
+                stream.stream_data_tree.remove(tree_token);
+                stream.stream_data_nodes.remove(data_token);
+            }
+        }
+
+        let fin_to_signal = self
+            .streams
+            .get(stream_token)
+            .map(|stream| stream.fin_received && !stream.fin_signalled)
+            .unwrap_or(false);
+        if fin_to_signal {
+            let fin_offset = self
+                .streams
+                .get(stream_token)
+                .map(|stream| stream.fin_offset)
+                .unwrap_or(0);
+            let ret = direct_receive.receive(self, stream_id, true, &[], fin_offset);
+            if ret != 0 {
+                if let Some(stream) = self.streams.get_mut(stream_token) {
+                    stream.direct_receive_fn = Some(direct_receive);
+                }
+                return Err(Error::Protocol(ret as u64));
+            }
+            if let Some(stream) = self.streams.get_mut(stream_token) {
+                stream.fin_signalled = true;
+            }
+        }
+
+        let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
+        stream.direct_receive_fn = Some(direct_receive);
+        Ok(())
     }
 
     /// Attach opaque application data to a stream.
@@ -3822,32 +3909,57 @@ impl Connection {
     /// trains.
     pub fn set_stream_not_coalesced(
         &mut self,
-        _stream_id: u64,
-        _is_not_coalesced: bool,
+        stream_id: u64,
+        is_not_coalesced: bool,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup — Phase 4 body.
-        Err(Error::Generic)
+        let stream = self.find_stream_for_writing(stream_id)?;
+        let stream = self.streams.get_mut(stream).ok_or(Error::Memory)?;
+        stream.is_not_coalesced = is_not_coalesced;
+        Ok(())
     }
 
     /// Set per-stream priority (smaller is higher).
     pub fn set_stream_priority(
         &mut self,
-        _stream_id: u64,
-        _stream_priority: u8,
+        stream_id: u64,
+        stream_priority: u8,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup — Phase 4 body.
-        Err(Error::Generic)
+        let stream_token = self.find_stream_for_writing(stream_id)?;
+        let was_output = self
+            .streams
+            .get(stream_token)
+            .map(|stream| stream.is_output_stream)
+            .unwrap_or(false);
+        self.output_streams.retain(|&token| token != stream_token);
+        if let Some(stream) = self.streams.get_mut(stream_token) {
+            stream.stream_priority = stream_priority;
+        }
+        if was_output {
+            enqueue_output_stream_token(self, stream_token);
+        }
+        Ok(())
     }
 
     /// Mark a stream as high-priority (skip ahead of normal
     /// streams).
     pub fn mark_high_priority_stream(
         &mut self,
-        _stream_id: u64,
-        _is_high_priority: bool,
+        stream_id: u64,
+        is_high_priority: bool,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup — Phase 4 body.
-        Err(Error::Generic)
+        if is_high_priority {
+            self.high_priority_stream_id = stream_id;
+        } else if self.high_priority_stream_id == stream_id {
+            self.high_priority_stream_id = u64::MAX;
+        }
+        self.set_stream_priority(
+            stream_id,
+            if is_high_priority {
+                0
+            } else {
+                DEFAULT_STREAM_PRIORITY
+            },
+        )
     }
 
     /// Override the priority used for outbound datagrams on this
@@ -4008,21 +4120,47 @@ impl Connection {
     }
 
     /// Send a STREAM_RESET frame for this stream.
-    pub fn reset_stream(&mut self, _stream_id: u64, _local_stream_error: u64) -> Result<(), Error> {
-        // Complex: requires stream lookup and RST frame queuing — Phase 4 body.
-        Err(Error::Generic)
+    pub fn reset_stream(&mut self, stream_id: u64, local_stream_error: u64) -> Result<(), Error> {
+        self.reset_stream_at(stream_id, local_stream_error, 0)
     }
 
     /// Send a STREAM_RESET_AT frame (per the reliable-stream-reset
     /// draft) for this stream.
     pub fn reset_stream_at(
         &mut self,
-        _stream_id: u64,
-        _local_stream_error: u64,
-        _reliable_size: u64,
+        stream_id: u64,
+        local_stream_error: u64,
+        reliable_size: u64,
     ) -> Result<(), Error> {
-        // Complex: requires stream lookup and RST_AT frame queuing — Phase 4 body.
-        Err(Error::Generic)
+        if reliable_size > 0 && !self.is_reset_stream_at_enabled {
+            return Err(Error::Protocol(
+                InternalError::IllegalTransportExtension as u64,
+            ));
+        }
+        let stream_token = self
+            .find_stream(stream_id)
+            .ok_or(Error::Protocol(InternalError::InvalidStreamId as u64))?;
+        let mut should_enqueue = false;
+        {
+            let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
+            stream.app_stream_ctx = None;
+            if stream.fin_sent && !stream.sack_list.check(0, stream.fin_offset) {
+                return Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
+            }
+            if !stream.reset_requested {
+                stream.local_error = local_stream_error;
+                stream.reset_requested = true;
+                stream.reliable_size = reliable_size;
+                if !stream.is_output_stream {
+                    stream.is_output_stream = true;
+                    should_enqueue = true;
+                }
+            }
+        }
+        if should_enqueue {
+            enqueue_output_stream_token(self, stream_token);
+        }
+        Ok(())
     }
 
     /// Open the flow-control window for an inbound stream up to the
@@ -4086,20 +4224,60 @@ impl Connection {
     }
 
     /// Send a STOP_SENDING frame for this stream.
-    pub fn stop_sending(&mut self, _stream_id: u64, _local_stream_error: u64) -> Result<(), Error> {
-        // Complex: requires stream lookup and STOP_SENDING frame queuing — Phase 4 body.
-        Err(Error::Generic)
+    pub fn stop_sending(&mut self, stream_id: u64, local_stream_error: u64) -> Result<(), Error> {
+        let stream_token = self
+            .find_stream(stream_id)
+            .ok_or(Error::Protocol(InternalError::InvalidStreamId as u64))?;
+        let mut should_enqueue = false;
+        {
+            let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
+            stream.app_stream_ctx = None;
+            if stream.reset_received {
+                return Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
+            }
+            if !stream.stop_sending_requested {
+                stream.local_stop_error = local_stream_error;
+                stream.stop_sending_requested = true;
+                if !stream.is_output_stream {
+                    stream.is_output_stream = true;
+                    should_enqueue = true;
+                }
+            }
+        }
+        if should_enqueue {
+            enqueue_output_stream_token(self, stream_token);
+        }
+        Ok(())
     }
 
     /// Drop a stream from local bookkeeping (rejecting further peer
     /// frames).
-    pub fn discard_stream(
-        &mut self,
-        _stream_id: u64,
-        _local_stream_error: u16,
-    ) -> Result<(), Error> {
-        // Complex: requires stream lookup and discard marking — Phase 4 body.
-        Err(Error::Generic)
+    pub fn discard_stream(&mut self, stream_id: u64, local_stream_error: u16) -> Result<(), Error> {
+        use crate::stream::StreamId;
+
+        let stream_token = self
+            .find_stream(stream_id)
+            .ok_or(Error::Protocol(InternalError::InvalidStreamId as u64))?;
+        let sid = StreamId(stream_id);
+        if sid.is_bidir() || !sid.is_client() {
+            match self.stop_sending(stream_id, local_stream_error as u64) {
+                Err(Error::Protocol(code)) if code == InternalError::StreamAlreadyClosed as u64 => {
+                }
+                result => result?,
+            }
+        }
+        if sid.is_bidir() || sid.is_client() {
+            match self.reset_stream(stream_id, local_stream_error as u64) {
+                Err(Error::Protocol(code)) if code == InternalError::StreamAlreadyClosed as u64 => {
+                }
+                result => result?,
+            }
+        }
+        if let Some(stream) = self.streams.get_mut(stream_token) {
+            stream.app_stream_ctx = None;
+            stream.is_discarded = true;
+        }
+        Ok(())
     }
 
     /// Toggle datagram readiness for this connection.
@@ -4224,15 +4402,22 @@ impl Connection {
     }
 
     /// Per-stream error reported by the peer.
-    pub fn remote_stream_error(&self, _stream_id: u64) -> u64 {
-        // Complex: requires stream lookup — Phase 4 body.
-        0
+    pub fn remote_stream_error(&self, stream_id: u64) -> u64 {
+        self.streams
+            .iter()
+            .find(|stream| stream.stream_id == stream_id)
+            .map(|stream| stream.remote_error)
+            .unwrap_or(0)
     }
 
     /// Inject a remote-reported error on a stream (test / simulation use).
     /// C: `stream->remote_error = error_code` (direct field write).
-    pub fn set_stream_remote_error(&mut self, _stream_id: u64, _error_code: u64) {
-        // Complex: requires stream lookup — Phase 4 body.
+    pub fn set_stream_remote_error(&mut self, stream_id: u64, error_code: u64) {
+        if let Some(stream) = self.find_stream(stream_id)
+            && let Some(stream) = self.streams.get_mut(stream)
+        {
+            stream.remote_error = error_code;
+        }
     }
 
     /// Total bytes of stream data sent on this connection.
@@ -4399,16 +4584,19 @@ impl Quic {
     /// the private key and config from disk.
     pub fn ech_configure(
         &mut self,
-        _ech_private_key_file_name: Option<&str>,
-        _ech_config_file_name: Option<&str>,
+        ech_private_key_file_name: Option<&str>,
+        ech_config_file_name: Option<&str>,
     ) -> Result<(), Error> {
-        // TLS: not yet wired — ECH requires TLS backend (picotls/openssl)
-        Err(Error::Tls)
+        crate::ech::picoquic_ech_configure_quic_ctx(
+            self,
+            ech_private_key_file_name,
+            ech_config_file_name,
+        )
     }
 
     /// Release any installed ECH context.
     pub fn release_ech_ctx(&mut self) {
-        // TLS: not yet wired — ECH context lives in TLS backend
+        crate::ech::picoquic_release_quic_ech_ctx(self);
     }
 }
 

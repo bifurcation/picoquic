@@ -9,7 +9,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use crate::Error;
+use crate::{Error, Quic};
 
 // ---------------------------------------------------------------------------
 // HPKE constants (IANA registries, RFC 9180).
@@ -920,6 +920,40 @@ pub fn ech_init_opener(
         private_key,
         config,
     })
+}
+
+/// C: `picoquic_release_quic_ech_ctx` (picoquic/ech.c:374)
+///
+/// Release the server-side ECH opener and retry-config allocation owned by a
+/// QUIC context.
+pub fn picoquic_release_quic_ech_ctx(quic: &mut Quic) {
+    quic.ech_opener = None;
+    quic.ech_server_retry_config = None;
+    quic.ech_client_enabled = false;
+}
+
+/// C: `picoquic_ech_configure_quic_ctx` (picoquic/ech.c:333)
+///
+/// Configure a QUIC context for ECH.  Client-side ECH capabilities are
+/// enabled for every call.  When `private_key_file` is present, initialise the
+/// server opener callback state from the private-key and ECHConfigList files
+/// and store the retry config bytes on the context.
+pub fn picoquic_ech_configure_quic_ctx(
+    quic: &mut Quic,
+    private_key_file: Option<&str>,
+    config_file_name: Option<&str>,
+) -> Result<(), Error> {
+    picoquic_release_quic_ech_ctx(quic);
+    quic.ech_client_enabled = true;
+
+    if let Some(private_key_file) = private_key_file {
+        let config_file_name = config_file_name.ok_or(Error::InvalidArgument)?;
+        let opener = ech_init_opener(private_key_file, config_file_name)?;
+        quic.ech_server_retry_config = Some(opener.config.clone());
+        quic.ech_opener = Some(opener);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

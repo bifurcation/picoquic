@@ -118,6 +118,60 @@ pub struct Bbr1State {
     pub is_suspension_nearly_over: bool,
 }
 
+impl Default for Bbr1State {
+    fn default() -> Self {
+        Self {
+            state: Bbr1AlgState::Startup,
+            btl_bw: 0,
+            next_round_delivered: 0,
+            btl_bw_filter: [0; BBR1_BTL_BW_FILTER_LENGTH],
+            full_bw: 0,
+            rt_prop: 0,
+            rt_prop_stamp: 0,
+            cycle_stamp: 0,
+            probe_rtt_done_stamp: 0,
+            prior_cwnd: 0,
+            prior_in_flight: 0,
+            bytes_delivered: 0,
+            send_quantum: 0,
+            rtt_filter: MinMaxRtt::default(),
+            target_cwnd: 0,
+            pacing_gain: 0.0,
+            cwnd_gain: 0.0,
+            pacing_rate: 0.0,
+            cycle_index: 0,
+            cycle_start: 0,
+            round_count: 0,
+            full_bw_count: 0,
+            lt_rtt_cnt: 0,
+            lt_bw: 0,
+            lt_last_stamp: 0,
+            previous_round_lost: 0,
+            previous_sampling_delivered: 0,
+            previous_sampling_lost: 0,
+            loss_interval_start: 0,
+            congestion_sequence: 0,
+            cwin_before_suspension: 0,
+            option_string: None,
+            wifi_shadow_rtt: 0,
+            quantum_ratio: 0.0,
+            filled_pipe: false,
+            round_start: false,
+            rt_prop_expired: false,
+            probe_rtt_round_done: false,
+            idle_restart: false,
+            packet_conservation: false,
+            btl_bw_increased: false,
+            lt_use_bw: false,
+            lt_is_sampling: false,
+            last_loss_was_timeout: false,
+            cycle_on_loss: false,
+            is_suspended: false,
+            is_suspension_nearly_over: false,
+        }
+    }
+}
+
 impl Bbr1State {
     /// C: `BBR1EnterStartup` (picoquic/bbr1.c:327)
     ///
@@ -164,6 +218,46 @@ impl Bbr1State {
     /// conservation so the congestion window can grow normally again.
     pub fn after_one_roundtrip_in_fast_recovery(&mut self) {
         self.packet_conservation = false;
+    }
+
+    /// C: `BBR1HandleRestartFromIdle` (picoquic/bbr1.c:1057)
+    ///
+    /// When the path restarts from an idle, app-limited state, remember the
+    /// idle restart and neutralize pacing gain while in ProbeBW.
+    pub fn handle_restart_from_idle(&mut self, bytes_in_transit: u64, is_app_limited: bool) {
+        if bytes_in_transit == 0 && is_app_limited {
+            self.idle_restart = true;
+            if self.state == Bbr1AlgState::ProbeBw {
+                self.set_pacing_rate_with_gain(1.0);
+            }
+        }
+    }
+
+    /// C: `BBR1OnAllPacketsLost` (picoquic/bbr1.c:1091)
+    ///
+    /// Save the current congestion window, then reduce the path cwnd to one
+    /// MTU after all packets in flight are declared lost.
+    pub fn on_all_packets_lost(&mut self, path_x: &mut Path) {
+        self.prior_cwnd = self.save_cwnd(path_x);
+        path_x.cwin = path_x.send_mtu as u64;
+    }
+
+    /// C: `BBR1OnEnterFastRecovery` (picoquic/bbr1.c:1097)
+    ///
+    /// Enter packet-conservation recovery with cwnd equal to bytes already in
+    /// transit plus at least one MTU of newly delivered data.
+    pub fn on_enter_fast_recovery(
+        &mut self,
+        path_x: &mut Path,
+        bytes_in_transit: u64,
+        mut bytes_delivered: u64,
+    ) {
+        if bytes_delivered < path_x.send_mtu as u64 {
+            bytes_delivered = path_x.send_mtu as u64;
+        }
+        self.prior_cwnd = self.save_cwnd(path_x);
+        path_x.cwin = bytes_in_transit + bytes_delivered;
+        self.packet_conservation = true;
     }
 
     /// C: `BBR1GetBtlBW` (picoquic/bbr1.c:304)
@@ -1232,6 +1326,21 @@ impl Bbr1State {
             _ => {}
         }
     }
+}
+
+/// C: `picoquic_bbr1_init` (picoquic/bbr1.c:469)
+///
+/// Allocate and initialise the per-path BBRv1 state.  The C implementation
+/// stores a malloc'd `picoquic_bbr1_state_t` in `path_x->congestion_alg_state`;
+/// Rust stores the typed state in `Box<dyn Any>`.
+#[allow(dead_code)]
+fn picoquic_bbr1_init(path_x: &mut Path, option_string: Option<&str>, current_time: u64) {
+    let mut bbr1_state = Bbr1State {
+        option_string: option_string.map(str::to_owned),
+        ..Bbr1State::default()
+    };
+    bbr1_state.reset(path_x, current_time);
+    path_x.congestion_alg_state = Some(Box::new(bbr1_state));
 }
 
 #[cfg(test)]

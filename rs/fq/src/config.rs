@@ -706,6 +706,41 @@ pub fn picoquic_config_get_command_line_option_index(opt_string: &str) -> i32 {
     parse_option_string(opt_string).map_or(-1, |(i, _)| i as i32)
 }
 
+/// C: `picoquic_get_command_line_option_value` (picoquic/config.c:683)
+///
+/// Collect the value(s) required by `OPTION_TABLE[option_index]`, advancing
+/// `p_optind` for extra argv entries exactly like the C helper, then apply the
+/// option to `config`.
+pub fn picoquic_get_command_line_option_value(
+    option_index: i32,
+    _opt_string: &str,
+    p_optind: &mut usize,
+    argv: &[&str],
+    argc: usize,
+    optarg: Option<&str>,
+    config: &mut Config,
+) -> Result<(), Error> {
+    let option_index = usize::try_from(option_index).map_err(|_| Error::InvalidArgument)?;
+    let entry = OPTION_TABLE
+        .get(option_index)
+        .ok_or(Error::InvalidArgument)?;
+    let argc = argc.min(argv.len());
+    let mut params = Vec::new();
+
+    if entry.nb_params > 0 {
+        params.push(optarg.ok_or(Error::InvalidArgument)?);
+        while params.len() < entry.nb_params {
+            if *p_optind >= argc {
+                return Err(Error::InvalidArgument);
+            }
+            params.push(argv[*p_optind]);
+            *p_optind += 1;
+        }
+    }
+
+    apply_option(config, entry, &params)
+}
+
 /// C: `config_set_option` (picoquic/config.c:274)
 ///
 /// Applies a single option — identified by `entry.id` — to `config`.  Each
