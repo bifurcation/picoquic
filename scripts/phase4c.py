@@ -14,7 +14,9 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -28,11 +30,16 @@ from phase4_common import (
     html_page,
     load_function_map,
     load_json,
-    save_json,
     source_body,
 )
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Phase 4 tooling runs on POSIX.
+    fcntl = None
+
 REVIEWS = XLATE / "phase4c_reviews.json"
+REVIEWS_LOCK = XLATE / "phase4c_reviews.lock"
 REPORT = XLATE / "phase4c_report.html"
 PROMPTS_DIR = XLATE / "prompts" / "phase4c"
 
@@ -133,6 +140,40 @@ def normalize_reviews(raw: dict, batch: list[dict]) -> dict[str, dict]:
     return by_id
 
 
+@contextlib.contextmanager
+def reviews_file_lock():
+    REVIEWS_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with REVIEWS_LOCK.open("a") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def load_reviews_locked() -> dict:
+    with reviews_file_lock():
+        reviews = load_json(REVIEWS, {"schema_version": 1, "reviews": {}})
+        reviews.setdefault("reviews", {})
+        return reviews
+
+
+def update_reviews_locked(updates: dict[str, dict], *, force: bool) -> dict:
+    with reviews_file_lock():
+        reviews = load_json(REVIEWS, {"schema_version": 1, "reviews": {}})
+        review_map = reviews.setdefault("reviews", {})
+        for c_id, review in updates.items():
+            if force or c_id not in review_map:
+                review_map[c_id] = review
+        REVIEWS.parent.mkdir(parents=True, exist_ok=True)
+        tmp = REVIEWS.with_name(f"{REVIEWS.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(reviews, indent=2, sort_keys=True) + "\n")
+        tmp.replace(REVIEWS)
+        return reviews
+
+
 def write_report(mapping: dict, reviews: dict) -> None:
     entries = mapped_entries(mapping)
     counts = Counter(
@@ -214,11 +255,19 @@ def main() -> int:
     parser.add_argument("--only", help="limit to one c_id or C function name")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=20)
+    parser.add_argument("--shard-count", type=int, default=1,
+                        help="split mapped pairs across this many parallel workers")
+    parser.add_argument("--shard-index", type=int, default=0,
+                        help="zero-based worker index when --shard-count is greater than one")
     parser.add_argument("--max-turns", type=int, default=80)
     args = parser.parse_args()
+    if args.shard_count < 1:
+        parser.error("--shard-count must be at least 1")
+    if args.shard_index < 0 or args.shard_index >= args.shard_count:
+        parser.error("--shard-index must satisfy 0 <= index < shard-count")
 
     mapping = load_function_map()
-    reviews = load_json(REVIEWS, {"schema_version": 1, "reviews": {}})
+    reviews = load_reviews_locked()
     review_map = reviews.setdefault("reviews", {})
 
     if args.status:
@@ -238,11 +287,19 @@ def main() -> int:
             e for e in selected
             if e["c_id"] == args.only or e["c"]["name"] == args.only
         ]
+    if args.shard_count > 1:
+        selected = [
+            e for i, e in enumerate(selected)
+            if i % args.shard_count == args.shard_index
+        ]
     if not args.force:
         selected = [e for e in selected if e["c_id"] not in review_map]
     if args.limit is not None:
         selected = selected[: args.limit]
-    print(f"selected mapped pairs: {len(selected)}")
+    shard = ""
+    if args.shard_count > 1:
+        shard = f" for shard {args.shard_index}/{args.shard_count}"
+    print(f"selected mapped pairs{shard}: {len(selected)}")
     if args.dry_run:
         for e in selected[:50]:
             print(f"  {e['c_id']} -> {e['rust']['file']}:{e['rust']['start_line']}")
@@ -274,16 +331,19 @@ def main() -> int:
             return res.returncode
         try:
             parsed = extract_json(res.stdout + "\n" + res.stderr)
-            review_map.update(normalize_reviews(parsed, batch))
+            update_reviews_locked(normalize_reviews(parsed, batch), force=args.force)
         except (ValueError, json.JSONDecodeError) as exc:
-            for e in batch:
-                review_map[e["c_id"]] = {
+            update_reviews_locked({
+                e["c_id"]: {
                     "c_id": e["c_id"],
                     "status": "suspect",
                     "rationale": f"could not parse agent JSON: {exc}",
                 }
-        save_json(REVIEWS, reviews)
+                for e in batch
+            }, force=args.force)
 
+    reviews = load_reviews_locked()
+    review_map = reviews.setdefault("reviews", {})
     write_report(mapping, review_map)
     print_status(mapping, review_map)
     print(f"wrote: {REVIEWS.relative_to(REPO_ROOT)}")
