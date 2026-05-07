@@ -2564,6 +2564,37 @@ pub fn picoquic_get_cipher_suite_by_id(cipher_suite_id: i32, use_low_memory: boo
     None
 }
 
+/// Get the AES-128-GCM-SHA-256 TLS cipher suite required for Initial packets.
+///
+/// The C helper returned a `ptls_cipher_suite_t *`.  The Rust provider
+/// registry stores the negotiated TLS suite identifier and keeps concrete AEAD
+/// implementations behind [`crate::tls::PacketKey`].
+///
+/// C: `picoquic/tls_api.c:picoquic_get_aes128gcm_sha256` (line 709-713).
+fn picoquic_get_aes128gcm_sha256(use_low_memory: bool) -> Option<u16> {
+    picoquic_get_cipher_suite_by_id(i32::from(AES_128_GCM_SHA256), use_low_memory)
+}
+
+/// Opaque-style wrapper for the cipher-suite lookup.
+///
+/// C: `picoquic/tls_api.c:picoquic_get_cipher_suite_by_id_v` (line 731-734).
+pub fn picoquic_get_cipher_suite_by_id_v(
+    cipher_suite_id: i32,
+    use_low_memory: bool,
+) -> Option<u16> {
+    picoquic_get_cipher_suite_by_id(cipher_suite_id, use_low_memory)
+}
+
+/// Return the AEAD suite used by AES-128-GCM-SHA-256 when it is registered.
+///
+/// C returned `cipher->aead` as `void *`; the Rust equivalent is the typed
+/// suite selector used to create [`crate::tls::PacketKey`] instances.
+///
+/// C: `picoquic/tls_api.c:picoquic_get_aes128gcm_v` (line 720-729).
+pub fn picoquic_get_aes128gcm_v(use_low_memory: bool) -> Option<AeadSuiteId> {
+    picoquic_get_aes128gcm_sha256(use_low_memory).map(|_| AeadSuiteId::Aes128GcmSha256)
+}
+
 /// True when minicrypto is the active private-key loader.
 /// C: `picoquic_set_private_key_from_file_fn == picoquic_minicrypto_set_key_fn`.
 pub fn is_minicrypto_key_loader() -> bool {

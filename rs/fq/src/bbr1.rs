@@ -233,6 +233,14 @@ impl Bbr1State {
         }
     }
 
+    /// C: `BBR1OnTransmit` (picoquic/bbr1.c:1083-1086)
+    ///
+    /// Transmission-side hook; delegates to the idle-restart check exactly as
+    /// the C body does.
+    pub fn on_transmit(&mut self, bytes_in_transit: u64, is_app_limited: bool) {
+        self.handle_restart_from_idle(bytes_in_transit, is_app_limited);
+    }
+
     /// C: `BBR1OnAllPacketsLost` (picoquic/bbr1.c:1091)
     ///
     /// Save the current congestion window, then reduce the path cwnd to one

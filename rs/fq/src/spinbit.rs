@@ -67,9 +67,17 @@ impl SpinBitPolicy for RandomSpinBit {
     /// C: `picoquic/spinbit.c:picoquic_spinbit_random_incoming` (line 65–69).
     fn incoming(&self, _connection: &mut Connection, _path_x: &mut Path, _ph: &PacketHeader) {}
 
+    /// C: `picoquic/spinbit.c:picoquic_spinbit_random_outgoing` (line 72-76).
     fn outgoing(&self, _connection: &mut Connection) -> u8 {
         // C: `(uint8_t)(picoquic_public_random_64() & 0x20)` — bit 5 is the
         // spin-bit position in the QUIC short header first byte.
         crate::public_random_64() as u8 & 0x20
     }
+}
+
+/// Return a random outgoing spin bit in the QUIC short-header spin position.
+///
+/// C: `picoquic/spinbit.c:picoquic_spinbit_random_outgoing` (line 72-76).
+pub fn picoquic_spinbit_random_outgoing(connection: &mut Connection) -> u8 {
+    RandomSpinBit.outgoing(connection)
 }

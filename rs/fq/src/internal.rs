@@ -8375,6 +8375,8 @@ impl SackList {
     }
 
     /// Insert a new range `[range_min, range_max]`.
+    ///
+    /// C: `picoquic/sacks.c:picoquic_sack_insert_item` (line 89-108).
     pub fn insert_item(
         &mut self,
         range_min: u64,
@@ -8491,6 +8493,18 @@ pub fn picoquic_sack_last_item(sack_list: &SackList) -> Option<SackItemToken> {
         .and_then(|st| sack_list.resolve_splay(st))
 }
 
+/// Insert a new SACK range and update repeat counters.
+///
+/// C: `picoquic/sacks.c:picoquic_sack_insert_item` (line 89-108).
+pub fn picoquic_sack_insert_item(
+    sack_list: &mut SackList,
+    range_min: u64,
+    range_max: u64,
+    current_time: Instant,
+) -> Result<(), crate::Error> {
+    sack_list.insert_item(range_min, range_max, current_time)
+}
+
 /// Check whether `[pn64_min, pn64_max]` is already covered by the
 /// closest range below `pn64_min`.
 ///
@@ -8516,6 +8530,38 @@ pub fn picoquic_sack_list_first_range(sack_list: &SackList) -> Option<SackItemTo
     let first_membership = sack_list.sack_items.get(first)?.ack_tree_membership?;
     let next = sack_list.ack_tree.next(first_membership)?;
     sack_list.resolve_splay(next)
+}
+
+/// Return the first element of a SACK list, or `u64::MAX` when empty.
+///
+/// C: `picoquic/sacks.c:picoquic_sack_list_first` (line 407-412).
+pub fn picoquic_sack_list_first(sack_list: &SackList) -> u64 {
+    picoquic_sack_first_item(sack_list)
+        .and_then(|tok| sack_list.sack_items.get(tok))
+        .map(|item| item.start_of_sack_range)
+        .unwrap_or(u64::MAX)
+}
+
+/// Return the last element of a SACK list, or `0` when empty.
+///
+/// C: `picoquic/sacks.c:picoquic_sack_list_last` (line 414-420).
+pub fn picoquic_sack_list_last(sack_list: &SackList) -> u64 {
+    picoquic_sack_last_item(sack_list)
+        .and_then(|tok| sack_list.sack_items.get(tok))
+        .map(|item| item.end_of_sack_range)
+        .unwrap_or(0)
+}
+
+/// Reset a SACK list to a single range.
+///
+/// C: `picoquic/sacks.c:picoquic_sack_list_reset` (line 439-447).
+pub fn picoquic_sack_list_reset(
+    sack_list: &mut SackList,
+    range_min: u64,
+    range_max: u64,
+    current_time: Instant,
+) -> Result<(), crate::Error> {
+    sack_list.reset(range_min, range_max, current_time)
 }
 
 impl SackList {
@@ -8585,6 +8631,8 @@ impl SackList {
     }
 
     /// As [`Self::init`] but seeds the list with one range.
+    ///
+    /// C: `picoquic/sacks.c:picoquic_sack_list_reset` (line 439-447).
     pub fn reset(
         &mut self,
         range_min: u64,
@@ -15417,6 +15465,40 @@ impl Connection {
 }
 
 impl Connection {
+    /// Reset received transport parameters to their protocol defaults.
+    ///
+    /// C: `picoquic/transport.c:picoquic_clear_transport_extensions`
+    /// (line 503-532).
+    pub fn picoquic_clear_transport_extensions(&mut self) {
+        self.remote_parameters.initial_max_stream_data_bidi_local = 0;
+        self.update_stream_initial_remote();
+        self.remote_parameters.initial_max_stream_data_bidi_remote = 0;
+        self.update_stream_initial_remote();
+        self.remote_parameters.initial_max_stream_data_uni = 0;
+        self.update_stream_initial_remote();
+        self.remote_parameters.initial_max_data = 0;
+        self.maxdata_remote = self.remote_parameters.initial_max_data;
+        self.remote_parameters.initial_max_stream_id_bidir = 0;
+        self.max_stream_id_bidir_remote = 0;
+        self.remote_parameters.max_idle_timeout = Duration::from_ticks(0);
+        self.remote_parameters.max_packet_size = 1500;
+        self.remote_parameters.ack_delay_exponent = 3;
+        self.remote_parameters.initial_max_stream_id_unidir = 0;
+        self.max_stream_id_unidir_remote = 0;
+        self.remote_parameters.migration_disabled = false;
+        self.remote_parameters.max_ack_delay = ACK_DELAY_MAX_DEFAULT.ticks() as u32;
+        self.remote_parameters.max_datagram_frame_size = 0;
+        self.remote_parameters.active_connection_id_limit = 0;
+        self.remote_parameters.enable_loss_bit = 0;
+        self.remote_parameters.enable_time_stamp = 0;
+        self.remote_parameters.min_ack_delay = Duration::from_ticks(0);
+        self.remote_parameters.do_grease_quic_bit = false;
+        self.remote_parameters.enable_bdp_frame = false;
+        self.remote_parameters.initial_max_path_id = 0;
+        self.remote_parameters.address_discovery_mode = 0;
+        self.remote_parameters.is_reset_stream_at_enabled = false;
+    }
+
     pub fn receive_transport_extensions(
         &mut self,
         extension_mode: i32,
@@ -15425,6 +15507,8 @@ impl Connection {
         consumed: &mut usize,
     ) -> i32 {
         *consumed = 0;
+        self.remote_parameters_received = true;
+        self.picoquic_clear_transport_extensions();
         let mut tail = &bytes[..bytes_max.min(bytes.len())];
         let mut tp = self.remote_parameters.clone();
         while !tail.is_empty() {
@@ -16458,6 +16542,132 @@ impl Connection {
         (nb_available, next_path_idx, min_retransmit)
     }
 
+    /// Select the best currently available path when several paths can send.
+    ///
+    /// Returns the selected path token and first tuple index.  The Rust return
+    /// value replaces C's `next_path` and `next_tuple` out-parameters.
+    ///
+    /// C: `picoquic/paths.c:picoquic_sort_available_paths` (line 379-486).
+    pub fn picoquic_sort_available_paths(
+        &mut self,
+        current_time: Instant,
+        next_wake_time: &mut Instant,
+        min_retransmit: u64,
+    ) -> Option<(PathToken, usize)> {
+        if self.paths.is_empty() {
+            return None;
+        }
+
+        let mut data_path_cwin: Option<usize> = None;
+        let mut data_path_pacing: Option<usize> = None;
+        let mut pacing_time_next = Instant::from_ticks(u64::MAX);
+        let mut last_sent_pacing = Instant::from_ticks(u64::MAX);
+        let mut last_sent_cwin = Instant::from_ticks(u64::MAX);
+        let mut i_min_rtt: Option<usize> = None;
+        let mut is_min_rtt_pacing_ok = false;
+        let next_stream = self.find_ready_stream();
+        let mut affinity_path_id: Option<usize> = None;
+        let cwin_max = self.quic_cwin_max();
+
+        for path_index in 0..self.paths.len() {
+            {
+                let path_x = &mut self.paths[path_index];
+                path_x.is_nominal_ack_path = false;
+                let challenge_verified = path_x
+                    .tuples
+                    .first()
+                    .is_some_and(|tuple| tuple.challenge_verified);
+                if path_x.path_is_backup
+                    || !challenge_verified
+                    || path_x.path_is_demoted
+                    || path_x.nb_retransmit > min_retransmit
+                {
+                    continue;
+                }
+            }
+
+            let replace_min_rtt = match i_min_rtt {
+                None => true,
+                Some(min_idx) => {
+                    self.paths[path_index].nb_retransmit < self.paths[min_idx].nb_retransmit
+                        || (self.paths[path_index].nb_retransmit
+                            == self.paths[min_idx].nb_retransmit
+                            && self.paths[path_index].rtt_min < self.paths[min_idx].rtt_min)
+                }
+            };
+            if replace_min_rtt {
+                i_min_rtt = Some(path_index);
+                is_min_rtt_pacing_ok = false;
+            }
+
+            self.paths[path_index].polled = self.paths[path_index].polled.saturating_add(1);
+
+            if self.is_sending_authorized_by_pacing(path_index, current_time, &mut pacing_time_next)
+            {
+                if self.paths[path_index].last_sent_time < last_sent_pacing {
+                    last_sent_pacing = self.paths[path_index].last_sent_time;
+                    data_path_pacing = Some(path_index);
+                    if Some(path_index) == i_min_rtt {
+                        is_min_rtt_pacing_ok = true;
+                    }
+                }
+                if self.paths[path_index].bytes_in_transit < self.paths[path_index].cwin
+                    && self.paths[path_index].bytes_in_transit < cwin_max
+                {
+                    if self.paths[path_index].last_sent_time < last_sent_cwin {
+                        last_sent_cwin = self.paths[path_index].last_sent_time;
+                        data_path_cwin = Some(path_index);
+                    }
+                    if affinity_path_id.is_none() {
+                        let path_token = PathToken::synthetic(path_index as u32, path_index as u32);
+                        let stream_affinity_matches = next_stream
+                            .and_then(|stream| self.streams.get(stream))
+                            .and_then(|stream| stream.affinity_path)
+                            .is_some_and(|affinity| affinity == path_token);
+                        if stream_affinity_matches
+                            || self.paths[path_index].is_datagram_ready
+                            || self.is_datagram_ready
+                        {
+                            affinity_path_id = Some(path_index);
+                        }
+                    }
+                } else {
+                    self.paths[path_index].congested =
+                        self.paths[path_index].congested.saturating_add(1);
+                }
+            } else {
+                self.paths[path_index].paced = self.paths[path_index].paced.saturating_add(1);
+            }
+        }
+
+        let mut is_ack_needed = false;
+        if let Some(min_idx) = i_min_rtt {
+            is_ack_needed =
+                self.is_ack_needed(current_time, next_wake_time, PacketContext::Application, 0);
+            self.paths[min_idx].is_nominal_ack_path = true;
+        }
+
+        let selected = if is_ack_needed && is_min_rtt_pacing_ok {
+            i_min_rtt
+        } else if let Some(cwin_idx) = data_path_cwin {
+            Some(affinity_path_id.unwrap_or(cwin_idx))
+        } else if let Some(pacing_idx) = data_path_pacing {
+            Some(pacing_idx)
+        } else {
+            if pacing_time_next < *next_wake_time {
+                *next_wake_time = pacing_time_next;
+            }
+            Some(0)
+        }?;
+
+        self.paths[selected].selected = self.paths[selected].selected.saturating_add(1);
+        if self.paths[selected].tuples.is_empty() {
+            None
+        } else {
+            Some((PathToken::synthetic(selected as u32, selected as u32), 0))
+        }
+    }
+
     /// Check the lost-feedback CC timer for every path and fire
     /// `alg_notify(LostFeedback)` for each path whose deadline has passed.
     /// Updates `*next_wake_time` for any future deadline found.
@@ -17148,12 +17358,30 @@ impl Connection {
         (ret, mark_repeated)
     }
 
-    /// C: `picoquic_preemptive_retransmit_in_context`
-    /// (picoquic/sender.c:1421-1492).
+    fn pending_retransmit_at_or_after(
+        &self,
+        selection: PacketContextSelection,
+        seq: u64,
+    ) -> Option<(u64, PacketToken)> {
+        self.packet_context_state(selection)
+            .pending
+            .range(seq..)
+            .next()
+            .map(|(seq, tok)| (*seq, *tok))
+    }
+
+    fn pending_retransmit_after(&self, selection: PacketContextSelection, seq: u64) -> Option<u64> {
+        self.packet_context_state(selection)
+            .pending
+            .range((core::ops::Bound::Excluded(seq), core::ops::Bound::Unbounded))
+            .next()
+            .map(|(seq, _)| *seq)
+    }
+
     #[allow(clippy::too_many_arguments)]
-    pub fn picoquic_preemptive_retransmit_in_context(
+    fn preemptive_retransmit_in_selection(
         &mut self,
-        pc: PacketContext,
+        selection: PacketContextSelection,
         rtt: Duration,
         current_time: Instant,
         next_wake_time: &mut Instant,
@@ -17175,26 +17403,33 @@ impl Connection {
             return 0;
         }
 
-        let pc_idx = pc as usize;
-        if self.pkt_ctx[pc_idx].preemptive_repeat_seq.is_none() {
-            self.pkt_ctx[pc_idx].preemptive_repeat_seq =
-                self.pkt_ctx[pc_idx].pending.keys().next().copied();
+        if self
+            .packet_context_state(selection)
+            .preemptive_repeat_seq
+            .is_none()
+        {
+            let first_seq = self
+                .packet_context_state(selection)
+                .pending
+                .keys()
+                .next()
+                .copied();
+            self.packet_context_state_mut(selection)
+                .preemptive_repeat_seq = first_seq;
         }
 
         loop {
-            let Some(seq) = self.pkt_ctx[pc_idx].preemptive_repeat_seq else {
+            let Some(seq) = self.packet_context_state(selection).preemptive_repeat_seq else {
                 return 0;
             };
-            let Some((actual_seq, token)) = self.pkt_ctx[pc_idx]
-                .pending
-                .range(seq..)
-                .next()
-                .map(|(seq, tok)| (*seq, *tok))
+            let Some((actual_seq, token)) = self.pending_retransmit_at_or_after(selection, seq)
             else {
-                self.pkt_ctx[pc_idx].preemptive_repeat_seq = None;
+                self.packet_context_state_mut(selection)
+                    .preemptive_repeat_seq = None;
                 return 0;
             };
-            self.pkt_ctx[pc_idx].preemptive_repeat_seq = Some(actual_seq);
+            self.packet_context_state_mut(selection)
+                .preemptive_repeat_seq = Some(actual_seq);
             let send_time = self
                 .queued_packets
                 .get(token)
@@ -17203,34 +17438,27 @@ impl Connection {
             if send_time.ticks().saturating_add(rtt_ticks / 2) >= current_time.ticks() {
                 break;
             }
-            self.pkt_ctx[pc_idx].preemptive_repeat_seq = self.pkt_ctx[pc_idx]
-                .pending
-                .range((
-                    core::ops::Bound::Excluded(actual_seq),
-                    core::ops::Bound::Unbounded,
-                ))
-                .next()
-                .map(|(seq, _)| *seq);
+            self.packet_context_state_mut(selection)
+                .preemptive_repeat_seq = self.pending_retransmit_after(selection, actual_seq);
         }
 
         let mut ret = 0;
-        while let Some(seq) = self.pkt_ctx[pc_idx].preemptive_repeat_seq {
-            let Some((actual_seq, token)) = self.pkt_ctx[pc_idx]
-                .pending
-                .range(seq..)
-                .next()
-                .map(|(seq, tok)| (*seq, *tok))
+        while let Some(seq) = self.packet_context_state(selection).preemptive_repeat_seq {
+            let Some((actual_seq, token)) = self.pending_retransmit_at_or_after(selection, seq)
             else {
-                self.pkt_ctx[pc_idx].preemptive_repeat_seq = None;
+                self.packet_context_state_mut(selection)
+                    .preemptive_repeat_seq = None;
                 break;
             };
-            self.pkt_ctx[pc_idx].preemptive_repeat_seq = Some(actual_seq);
+            self.packet_context_state_mut(selection)
+                .preemptive_repeat_seq = Some(actual_seq);
             let Some(snapshot) = self
                 .queued_packets
                 .get(token)
                 .map(PacketRetransmitSnapshot::from)
             else {
-                self.pkt_ctx[pc_idx].preemptive_repeat_seq = None;
+                self.packet_context_state_mut(selection)
+                    .preemptive_repeat_seq = None;
                 break;
             };
 
@@ -17269,15 +17497,9 @@ impl Connection {
                 }
             }
 
-            let next_seq = self.pkt_ctx[pc_idx]
-                .pending
-                .range((
-                    core::ops::Bound::Excluded(actual_seq),
-                    core::ops::Bound::Unbounded,
-                ))
-                .next()
-                .map(|(seq, _)| *seq);
-            self.pkt_ctx[pc_idx].preemptive_repeat_seq = next_seq;
+            let next_seq = self.pending_retransmit_after(selection, actual_seq);
+            self.packet_context_state_mut(selection)
+                .preemptive_repeat_seq = next_seq;
             if *has_data != 0 {
                 self.nb_preemptive_repeat = self.nb_preemptive_repeat.saturating_add(1);
                 if next_seq.is_some() {
@@ -17285,6 +17507,105 @@ impl Connection {
                 }
                 break;
             }
+        }
+
+        ret
+    }
+
+    /// C: `picoquic_preemptive_retransmit_in_context`
+    /// (picoquic/sender.c:1421-1492).
+    #[allow(clippy::too_many_arguments)]
+    pub fn picoquic_preemptive_retransmit_in_context(
+        &mut self,
+        pc: PacketContext,
+        rtt: Duration,
+        current_time: Instant,
+        next_wake_time: &mut Instant,
+        new_bytes: &mut [u8],
+        send_buffer_max_minus_checksum: usize,
+        length: &mut usize,
+        has_data: &mut i32,
+        more_data: &mut i32,
+        test_only: bool,
+    ) -> i32 {
+        self.preemptive_retransmit_in_selection(
+            PacketContextSelection::Connection(pc),
+            rtt,
+            current_time,
+            next_wake_time,
+            new_bytes,
+            send_buffer_max_minus_checksum,
+            length,
+            has_data,
+            more_data,
+            test_only,
+        )
+    }
+
+    /// Try preemptive retransmission for the selected packet-number context.
+    ///
+    /// When multipath is enabled for application packets, scan every path's
+    /// packet context; otherwise scan the connection-level context.  `None`
+    /// for `is_pure_ack` matches the C `NULL` case and performs the
+    /// test-only pass.
+    ///
+    /// C: `picoquic/sender.c:picoquic_preemptive_retransmit_as_needed`
+    /// (line 1494-1543).
+    #[allow(clippy::too_many_arguments)]
+    pub fn picoquic_preemptive_retransmit_as_needed(
+        &mut self,
+        path_x: &Path,
+        pc: PacketContext,
+        current_time: Instant,
+        next_wake_time: &mut Instant,
+        new_bytes: &mut [u8],
+        send_buffer_max_minus_checksum: usize,
+        length: &mut usize,
+        more_data: &mut i32,
+        is_pure_ack: Option<&mut i32>,
+    ) -> i32 {
+        let mut ret = 0;
+        let mut has_data = 0;
+        let rtt = path_x.smoothed_rtt;
+        let test_only = is_pure_ack.is_none();
+
+        if pc == PacketContext::Application && self.is_multipath_enabled {
+            for path_index in 0..self.paths.len() {
+                ret = self.preemptive_retransmit_in_selection(
+                    PacketContextSelection::Path(path_index),
+                    rtt,
+                    current_time,
+                    next_wake_time,
+                    new_bytes,
+                    send_buffer_max_minus_checksum,
+                    length,
+                    &mut has_data,
+                    more_data,
+                    test_only,
+                );
+                if ret != 0 || has_data != 0 {
+                    break;
+                }
+            }
+        } else {
+            ret = self.preemptive_retransmit_in_selection(
+                PacketContextSelection::Connection(pc),
+                rtt,
+                current_time,
+                next_wake_time,
+                new_bytes,
+                send_buffer_max_minus_checksum,
+                length,
+                &mut has_data,
+                more_data,
+                test_only,
+            );
+        }
+
+        if ret == 0
+            && let Some(is_pure_ack) = is_pure_ack
+        {
+            *is_pure_ack &= i32::from(has_data == 0);
         }
 
         ret

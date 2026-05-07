@@ -5162,6 +5162,22 @@ pub(crate) fn public_random_64() -> u64 {
     state.step().wrapping_mul(PUBLIC_RANDOM_MULTIPLIER) ^ state.obfuscator
 }
 
+/// Return a public non-cryptographic random value in `0..rnd_max`.
+///
+/// C: `picoquic/quicctx.c:picoquic_uniform_random` (line 5600-5604).
+pub fn picoquic_uniform_random(rnd_max: u64) -> u64 {
+    if rnd_max == 0 {
+        return 0;
+    }
+    let rnd_min = u64::MAX % rnd_max;
+    loop {
+        let rnd = public_random_64();
+        if rnd >= rnd_min {
+            return rnd % rnd_max;
+        }
+    }
+}
+
 /// Multipath-aware AEAD encryption.  Encodes `path_id` into the nonce before
 /// encrypting.  Returns the number of ciphertext bytes written to `out`.
 /// C: `picoquic_aead_encrypt_mp`.
@@ -5549,11 +5565,16 @@ struct ParsedSegment {
 }
 
 impl Quic {
-    fn reinsert_by_wake_time_token(&mut self, token: ConnectionToken, next_time: Instant) {
-        self.remove_cnx_from_wake_list(token);
-        if let Some(cnx) = self.connections.get_mut(token) {
-            cnx.next_wake_time = next_time;
-        }
+    /// Insert a connection in the wake-time scheduler using its current
+    /// `next_wake_time`.
+    ///
+    /// C: `picoquic/quicctx.c:picoquic_insert_cnx_by_wake_time`
+    /// (line 1510-1513).
+    fn picoquic_insert_cnx_by_wake_time(&mut self, token: ConnectionToken) {
+        let Some(next_time) = self.connections.get(token).map(|cnx| cnx.next_wake_time) else {
+            return;
+        };
+
         if let Ok((tree_token, old)) = self.connection_wake_tree.insert(next_time.ticks(), token) {
             if let Some(cnx) = self.connections.get_mut(token) {
                 cnx.connection_wake_membership = Some(tree_token);
@@ -5565,6 +5586,14 @@ impl Quic {
                 old_connection.connection_wake_membership = None;
             }
         }
+    }
+
+    fn reinsert_by_wake_time_token(&mut self, token: ConnectionToken, next_time: Instant) {
+        self.remove_cnx_from_wake_list(token);
+        if let Some(cnx) = self.connections.get_mut(token) {
+            cnx.next_wake_time = next_time;
+        }
+        self.picoquic_insert_cnx_by_wake_time(token);
     }
 
     fn parse_error_status(error: Error) -> i32 {
