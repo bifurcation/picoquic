@@ -1,0 +1,60 @@
+{
+  "results": {
+    "picoquic/bbr.c:BBRAdvanceEcnFrac": {
+      "analysis": "Current Rust already has the same round_start guard as C, then matches the ECN context lookup, counter-regression alpha reset, EWMA update, and last-round counter latching. The Phase 4C excerpt was stale or body-only input was out of date.",
+      "c_id": "picoquic/bbr.c:BBRAdvanceEcnFrac",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "definitely_not_ok",
+      "verification": [
+        "git diff -- rs/fq/src/bbr.rs (no diff; no cargo run because no source edit)"
+      ]
+    },
+    "picoquic/bbr.c:BBRAdvanceLatestDeliverySignals": {
+      "analysis": "False positive: the Phase 4C span captured the following Rust function. The actual Rust advance_latest_delivery_signals method mirrors C: when loss_round_start is true, it copies rs.delivery_rate to bw_latest and rs.delivered to inflight_latest; otherwise it leaves both unchanged. Call ordering in update_model_and_state also matches C.",
+      "c_id": "picoquic/bbr.c:BBRAdvanceLatestDeliverySignals",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "definitely_not_ok",
+      "verification": [
+        "cargo test advance_latest_delivery_signals --lib"
+      ]
+    },
+    "picoquic/bbr.c:BBRBDPMultiple": {
+      "analysis": "False positive: actual Rust bdp_multiple delegates to bdp_multiple_with_bw with self.bw, matching the C wrapper. Phase 4C used a stale span/body from bound_cwnd_for_model.",
+      "c_id": "picoquic/bbr.c:BBRBDPMultiple",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "definitely_not_ok",
+      "verification": []
+    },
+    "picoquic/bbr.c:BBRBoundBWForModel": {
+      "analysis": "Current Rust already matches C: it sets bw from max_bw, clamps to bw_lo, then clamps to nonzero bw_hi. The Phase 4C snippet is stale/false positive.",
+      "c_id": "picoquic/bbr.c:BBRBoundBWForModel",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "definitely_not_ok",
+      "verification": [
+        "cargo test bound_bw_for_model"
+      ]
+    },
+    "picoquic/bbr.c:BBRBoundCwndForModel": {
+      "analysis": "False positive: the current Rust body is not truncated. It matches the C cap selection, applies inflight_lo, enforces the 4-MTU floor, and clamps path_x.cwin.",
+      "c_id": "picoquic/bbr.c:BBRBoundCwndForModel",
+      "files_changed": [
+        "COMMANDS.log"
+      ],
+      "fix_summary": "No Rust source change; appended command log entry only.",
+      "outcome": "ok",
+      "phase4c_status": "definitely_not_ok",
+      "verification": [
+        "not run; no Rust source change"
+      ]
+    }
+  },
+  "schema_version": 1
+}
