@@ -197,6 +197,9 @@ def update_reviews_locked(updates: dict[str, dict], *, force: bool) -> dict:
 
 
 def write_report(mapping: dict, reviews: dict) -> None:
+    def report_body(span: dict) -> str:
+        return esc("\n".join(line.rstrip() for line in source_body(span).splitlines()))
+
     entries = mapped_entries(mapping)
     counts = Counter(
         reviews.get(e["c_id"], {}).get("status", "unreviewed")
@@ -248,8 +251,8 @@ def write_report(mapping: dict, reviews: dict) -> None:
             f"<h3>{esc(status)}: <code>{esc(e['c_id'])}</code></h3>",
             f"<p>{esc(review.get('rationale', ''))}</p>",
             "<div class=\"grid\">",
-            f"<div><h4>C {esc(c['file'])}:{esc(c['start_line'])}-{esc(c['end_line'])}</h4><pre>{esc(source_body(c))}</pre></div>",
-            f"<div><h4>Rust {esc(rust['file'])}:{esc(rust['start_line'])}-{esc(rust['end_line'])}</h4><pre>{esc(source_body(rust))}</pre></div>",
+            f"<div><h4>C {esc(c['file'])}:{esc(c['start_line'])}-{esc(c['end_line'])}</h4><pre>{report_body(c)}</pre></div>",
+            f"<div><h4>Rust {esc(rust['file'])}:{esc(rust['start_line'])}-{esc(rust['end_line'])}</h4><pre>{report_body(rust)}</pre></div>",
             "</div></section>",
         ])
     if not any_non_ok:
