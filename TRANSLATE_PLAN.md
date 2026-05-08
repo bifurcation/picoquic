@@ -1185,6 +1185,74 @@ The HTML report includes:
 * Any `definitely_not_ok` item is routed back to Phase 4B or marked
   `blocked` with a concrete human-actionable reason.
 
+## Phase 4D — Deep review and repair
+
+Phase 4D resolves the Phase 4C triage output.  It consumes every
+`suspect` and `definitely_not_ok` review result and performs a deeper
+context-aware analysis.  Unlike Phase 4C, this phase may inspect
+directly relevant definitions, constants, helper callees, callers,
+tests, and surrounding module context.  It may also edit Rust source
+when the deeper analysis confirms a real translation mismatch.
+
+Phase 4D does not re-review Phase 4C `ok` entries unless a later fix
+changes the relevant Rust function enough to invalidate the old review.
+
+### Deep analysis
+
+For each Phase 4C non-`ok` entry:
+
+1. Reconstruct the C function's intended observable behavior from the
+   C body plus directly relevant C context.
+2. Compare the mapped Rust function in its module context, including
+   translated helper functions, local types, and tests when useful.
+3. Classify the Phase 4C finding as either:
+   * `ok` — the body-only concern was a false positive after deeper
+     inspection; no source edit is needed.
+   * `fixed` — the concern was real and the Rust implementation has
+     been corrected.
+   * `blocked` — a real mismatch remains, but the fix requires a
+     concrete design decision or dependency outside the current batch.
+     The blocker must be specific and human-actionable.
+
+Every confirmed mismatch should be fixed in this phase whenever
+possible.  `blocked` is reserved for concrete cases where a correct fix
+cannot be made safely without changing an approved design boundary.
+
+### Repair procedure
+
+For each entry that is actually not OK:
+
+1. Edit the Rust implementation, preserving safe/idiomatic Rust and the
+   existing API shape unless that shape cannot express the C behavior.
+2. Keep or add `/// C: ...` mapping references where needed so the
+   function map can refresh correctly.
+3. Run the relevant narrow test when one is obvious.
+4. Run the Phase 4 gates after any Rust edit:
+   `cargo fmt`, `cargo test --no-run`, and
+   `cargo clippy --tests --all-features -- -D warnings`.
+5. Refresh `xlate/function_translation_map.json` if Rust line spans
+   changed.
+
+### Artifacts
+
+`scripts/phase4d.py` writes:
+
+* `xlate/phase4d_results.json` — deep-review outcomes for Phase 4C
+  non-`ok` entries.
+* `xlate/phase4d_report.html` — human-readable summary of confirmed OK
+  entries, fixed entries, blocked entries, and remaining pending work.
+
+### Acceptance gate
+
+* Every Phase 4C `suspect` and `definitely_not_ok` entry has a Phase 4D
+  result.
+* Every result is either `ok`, `fixed`, or `blocked` with a concrete
+  reason.
+* Every `fixed` entry passes the Phase 4 build and lint gates after the
+  relevant Rust edits.
+* `xlate/function_translation_map.json` is refreshed after any fix that
+  changes Rust function spans.
+
 ## Tooling stack
 
 * `cmake` — produces `compile_commands.json`.
@@ -1193,8 +1261,8 @@ The HTML report includes:
 * libclang + Python — Phase 0 AST analysis, call graph, dashboard.
 * `bindgen` — per-file allowlisted reference output (never shipped).
 * Python scripts — driver for Phase 1 module skeletons; `phase3a.py`,
-  `phase4.py`, and the Phase 4A/4B/4C map, completion, and audit
-  drivers.
+  `phase4.py`, and the Phase 4A/4B/4C/4D map, completion, audit, and
+  repair drivers.
 * `cargo check` and `cargo test` — inner loop, manually invoked.
 * `cargo fmt` and `cargo clippy` — style and lint gates.
 

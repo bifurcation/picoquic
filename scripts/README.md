@@ -118,7 +118,7 @@ python3 scripts/phase1c.py               # process all
 1B and 1C can interleave: human reads the report, adds REVIEW
 markers, runs 1C, regenerates report, repeats.
 
-## Phase 4A/4B/4C: function map, completion, and audit
+## Phase 4A/4B/4C/4D: function map, completion, audit, and repair
 
 After `phase4.py` has filled existing Rust incomplete markers, the
 follow-up drivers close gaps that a marker-driven pass can miss:
@@ -129,6 +129,8 @@ python3 scripts/phase4b.py --status     # list approved missing work
 python3 scripts/phase4b.py --approved   # run implementation agent
 python3 scripts/phase4c.py --status     # summarize body-only reviews
 python3 scripts/phase4c.py              # run comparison agent + HTML report
+python3 scripts/phase4d.py --status     # summarize deep-review repairs
+python3 scripts/phase4d.py              # run repair agent + HTML report
 ```
 
 Artifacts:
@@ -138,6 +140,7 @@ Artifacts:
 | `phase4a.py` | `xlate/function_translation_map.json`, `xlate/phase4a_plan.md`, `xlate/phase4a_plan.html` |
 | `phase4b.py` | updates `xlate/function_translation_map.json` as required functions are implemented |
 | `phase4c.py` | `xlate/phase4c_reviews.json`, `xlate/phase4c_report.html` |
+| `phase4d.py` | `xlate/phase4d_results.json`, `xlate/phase4d_report.html`; updates Rust and refreshes `xlate/function_translation_map.json` when repairs change spans |
 
 `phase4b.py` refuses to run unless `xlate/phase4a_plan.md` is marked
 `Status: approved`, unless `--approved` is passed explicitly.
