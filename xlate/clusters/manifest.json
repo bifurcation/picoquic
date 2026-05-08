@@ -1,0 +1,195 @@
+{
+  "phases": {
+    "phase4e": {
+      "agent": "codex",
+      "batch_size": 1,
+      "cluster_count": 9,
+      "clusters": [
+        {
+          "branch": "c2rust-4e-cluster-00",
+          "cluster_file": "xlate/clusters/phase4e/cluster-00.txt",
+          "command": "cd /private/tmp/picoquic-4e-00 && CARGO_TARGET_DIR=/private/tmp/fq-target-4e-00 python3 scripts/phase4e.py --agent codex --batch-size 1 --max-turns 250 --id-list xlate/clusters/phase4e/cluster-00.txt",
+          "entries": 33,
+          "files": [
+            {
+              "entries": 33,
+              "file": "rs/fq/src/internal.rs"
+            }
+          ],
+          "index": 0,
+          "target_dir": "/private/tmp/fq-target-4e-00",
+          "worktree": "/private/tmp/picoquic-4e-00"
+        },
+        {
+          "branch": "c2rust-4e-cluster-01",
+          "cluster_file": "xlate/clusters/phase4e/cluster-01.txt",
+          "command": "cd /private/tmp/picoquic-4e-01 && CARGO_TARGET_DIR=/private/tmp/fq-target-4e-01 python3 scripts/phase4e.py --agent codex --batch-size 1 --max-turns 250 --id-list xlate/clusters/phase4e/cluster-01.txt",
+          "entries": 33,
+          "files": [
+            {
+              "entries": 33,
+              "file": "rs/fq/src/internal.rs"
+            }
+          ],
+          "index": 1,
+          "target_dir": "/private/tmp/fq-target-4e-01",
+          "worktree": "/private/tmp/picoquic-4e-01"
+        },
+        {
+          "branch": "c2rust-4e-cluster-02",
+          "cluster_file": "xlate/clusters/phase4e/cluster-02.txt",
+          "command": "cd /private/tmp/picoquic-4e-02 && CARGO_TARGET_DIR=/private/tmp/fq-target-4e-02 python3 scripts/phase4e.py --agent codex --batch-size 1 --max-turns 250 --id-list xlate/clusters/phase4e/cluster-02.txt",
+          "entries": 33,
+          "files": [
+            {
+              "entries": 33,
+              "file": "rs/fq/src/internal.rs"
+            }
+          ],
+          "index": 2,
+          "target_dir": "/private/tmp/fq-target-4e-02",
+          "worktree": "/private/tmp/picoquic-4e-02"
+        },
+        {
+          "branch": "c2rust-4e-cluster-03",
+          "cluster_file": "xlate/clusters/phase4e/cluster-03.txt",
+          "command": "cd /private/tmp/picoquic-4e-03 && CARGO_TARGET_DIR=/private/tmp/fq-target-4e-03 python3 scripts/phase4e.py --agent codex --batch-size 1 --max-turns 250 --id-list xlate/clusters/phase4e/cluster-03.txt",
+          "entries": 33,
+          "files": [
+            {
+              "entries": 33,
+              "file": "rs/fq/src/internal.rs"
+            }
+          ],
+          "index": 3,
+          "target_dir": "/private/tmp/fq-target-4e-03",
+          "worktree": "/private/tmp/picoquic-4e-03"
+        },
+        {
+          "branch": "c2rust-4e-cluster-04",
+          "cluster_file": "xlate/clusters/phase4e/cluster-04.txt",
+          "command": "cd /private/tmp/picoquic-4e-04 && CARGO_TARGET_DIR=/private/tmp/fq-target-4e-04 python3 scripts/phase4e.py --agent codex --batch-size 1 --max-turns 250 --id-list xlate/clusters/phase4e/cluster-04.txt",
+          "entries": 33,
+          "files": [
+            {
+              "entries": 33,
+              "file": "rs/fq/src/lib.rs"
+            }
+          ],
+          "index": 4,
+          "target_dir": "/private/tmp/fq-target-4e-04",
+          "worktree": "/private/tmp/picoquic-4e-04"
+        },
+        {
+          "branch": "c2rust-4e-cluster-05",
+          "cluster_file": "xlate/clusters/phase4e/cluster-05.txt",
+          "command": "cd /private/tmp/picoquic-4e-05 && CARGO_TARGET_DIR=/private/tmp/fq-target-4e-05 python3 scripts/phase4e.py --agent codex --batch-size 1 --max-turns 250 --id-list xlate/clusters/phase4e/cluster-05.txt",
+          "entries": 33,
+          "files": [
+            {
+              "entries": 33,
+              "file": "rs/fq/src/lib.rs"
+            }
+          ],
+          "index": 5,
+          "target_dir": "/private/tmp/fq-target-4e-05",
+          "worktree": "/private/tmp/picoquic-4e-05"
+        },
+        {
+          "branch": "c2rust-4e-cluster-06",
+          "cluster_file": "xlate/clusters/phase4e/cluster-06.txt",
+          "command": "cd /private/tmp/picoquic-4e-06 && CARGO_TARGET_DIR=/private/tmp/fq-target-4e-06 python3 scripts/phase4e.py --agent codex --batch-size 1 --max-turns 250 --id-list xlate/clusters/phase4e/cluster-06.txt",
+          "entries": 31,
+          "files": [
+            {
+              "entries": 24,
+              "file": "rs/fq/src/lib.rs"
+            },
+            {
+              "entries": 5,
+              "file": "rs/fq/src/packet_loop.rs"
+            },
+            {
+              "entries": 1,
+              "file": "rs/fq/src/splay.rs"
+            },
+            {
+              "entries": 1,
+              "file": "rs/fq/src/tests/tls_api.rs"
+            }
+          ],
+          "index": 6,
+          "target_dir": "/private/tmp/fq-target-4e-06",
+          "worktree": "/private/tmp/picoquic-4e-06"
+        },
+        {
+          "branch": "c2rust-4e-cluster-07",
+          "cluster_file": "xlate/clusters/phase4e/cluster-07.txt",
+          "command": "cd /private/tmp/picoquic-4e-07 && CARGO_TARGET_DIR=/private/tmp/fq-target-4e-07 python3 scripts/phase4e.py --agent codex --batch-size 1 --max-turns 250 --id-list xlate/clusters/phase4e/cluster-07.txt",
+          "entries": 31,
+          "files": [
+            {
+              "entries": 19,
+              "file": "rs/fq/src/tls_api.rs"
+            },
+            {
+              "entries": 8,
+              "file": "rs/fq/src/socks.rs"
+            },
+            {
+              "entries": 3,
+              "file": "rs/fq/src/utils.rs"
+            },
+            {
+              "entries": 1,
+              "file": "rs/fq/src/tests/util.rs"
+            }
+          ],
+          "index": 7,
+          "target_dir": "/private/tmp/fq-target-4e-07",
+          "worktree": "/private/tmp/picoquic-4e-07"
+        },
+        {
+          "branch": "c2rust-4e-cluster-08",
+          "cluster_file": "xlate/clusters/phase4e/cluster-08.txt",
+          "command": "cd /private/tmp/picoquic-4e-08 && CARGO_TARGET_DIR=/private/tmp/fq-target-4e-08 python3 scripts/phase4e.py --agent codex --batch-size 1 --max-turns 250 --id-list xlate/clusters/phase4e/cluster-08.txt",
+          "entries": 31,
+          "files": [
+            {
+              "entries": 12,
+              "file": "rs/fq/src/internal.rs"
+            },
+            {
+              "entries": 12,
+              "file": "rs/fq/src/logger.rs"
+            },
+            {
+              "entries": 3,
+              "file": "rs/fq/src/sys/openssl.rs"
+            },
+            {
+              "entries": 2,
+              "file": "rs/fq/src/lb.rs"
+            },
+            {
+              "entries": 1,
+              "file": "rs/fq/src/tests/skip_frame.rs"
+            },
+            {
+              "entries": 1,
+              "file": "rs/fq/src/textlog.rs"
+            }
+          ],
+          "index": 8,
+          "target_dir": "/private/tmp/fq-target-4e-08",
+          "worktree": "/private/tmp/picoquic-4e-08"
+        }
+      ],
+      "max_turns": 250,
+      "phase": "phase4e",
+      "schema_version": 1,
+      "total_entries": 291
+    }
+  },
+  "schema_version": 1
+}

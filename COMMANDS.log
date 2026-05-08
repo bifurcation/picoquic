@@ -3012,6 +3012,34 @@
   git add scripts/phase4e.py scripts/phase5b.py scripts/phase_cluster_plan.py
   git diff --cached --stat
   git commit -m "Add repair cluster planning support"
+  git status --short
+  git diff --stat -- rs/fq/src xlate/function_translation_map.json xlate/phase4d_report.html xlate/phase4d_results.json xlate/phase4e_repairs.json xlate/phase4e_report.html COMMANDS.log
+  git add COMMANDS.log rs/fq/src/bbr.rs rs/fq/src/bbr1.rs rs/fq/src/binlog.rs rs/fq/src/c4.rs rs/fq/src/cc_common.rs rs/fq/src/config.rs rs/fq/src/cubic.rs rs/fq/src/fastcc.rs rs/fq/src/internal.rs rs/fq/src/lib.rs rs/fq/src/newreno.rs rs/fq/src/prague.rs xlate/function_translation_map.json xlate/phase4d_report.html xlate/phase4d_results.json xlate/phase4e_repairs.json xlate/phase4e_report.html
+  git diff --cached --stat
+  git status --short
+  git commit -m "Checkpoint Phase 4E repairs"
+  git -C /private/tmp/picoquic-5b status --short
+  git -C /private/tmp/picoquic-5b diff --stat
+  git log --oneline -3
+  git -C /private/tmp/picoquic-5b log --oneline -3
+  git -C /private/tmp/picoquic-5b add rs/fq/src/tests/ack_frequency.rs rs/fq/src/tests/bytestream.rs rs/fq/src/tests/cert_verify.rs rs/fq/src/tests/cleartext_aead.rs rs/fq/src/tests/cnx_creation.rs rs/fq/src/tests/cnxstress.rs rs/fq/src/tests/congestion.rs rs/fq/src/tests/util.rs xlate/phase5a_reviews.json xlate/test_translation_map.json xlate/phase5b_repairs.json xlate/phase5b_report.html
+  git -C /private/tmp/picoquic-5b diff --cached --stat
+  git -C /private/tmp/picoquic-5b status --short
+  git -C /private/tmp/picoquic-5b commit -m "Checkpoint Phase 5B repairs"
+  git -C /private/tmp/picoquic-5b cherry-pick edf51e87
+  python3 scripts/phase_cluster_plan.py --phase phase4e --phase-count phase4e=9 --branch-prefix c2rust
+  python3 scripts/phase_cluster_plan.py --phase phase5b --phase-count phase5b=11 --branch-prefix c2rust
+  git status --short xlate/clusters
+  git -C /private/tmp/picoquic-5b status --short xlate/clusters
+  python3 scripts/phase4e.py --dry-run --id-list xlate/clusters/phase4e/cluster-00.txt
+  python3 scripts/phase5b.py --dry-run --id-list xlate/clusters/phase5b/cluster-00.txt
+  git status --short xlate/test_translation_map.json
+  git -C /private/tmp/picoquic-5b status --short xlate/test_translation_map.json
+  git -C /private/tmp/picoquic-5b diff -- xlate/test_translation_map.json
+  git status --short
+  git -C /private/tmp/picoquic-5b status --short
+  find xlate/clusters -maxdepth 3 -type f | sort
+  find /private/tmp/picoquic-5b/xlate/clusters -maxdepth 3 -type f | sort
   python3 scripts/phase5b.py --status
   python3 scripts/phase4e.py --status
   rg -n -C 6 '"outcome": "blocked"|"outcome": "fixed"' xlate/phase5b_repairs.json
