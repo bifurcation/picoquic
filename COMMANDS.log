@@ -3088,6 +3088,14 @@
   sleep 8
   screen -ls
   ps -axo pid,ppid,stat,etime,command | rg "phase4e.py|phase5b.py|codex exec|cargo"
+  screen -ls | rg "fq(4e|5b)" | wc -l
+  ps -axo command | rg "python3 scripts/phase4e.py" | wc -l
+  ps -axo command | rg "python3 scripts/phase5b.py" | wc -l
+  ps -axo command | rg "codex exec --cd /private/tmp/picoquic-(4e|5b)-" | wc -l
+  ps -axo pid,comm,args | awk '$2 == "python3" && index($0, "scripts/phase4e.py") { c++ } END { print c + 0 }'
+  ps -axo pid,comm,args | awk '$2 == "python3" && index($0, "scripts/phase5b.py") { c++ } END { print c + 0 }'
+  ps -axo pid,comm,args | awk '$2 == "codex" && index($0, "/private/tmp/picoquic-4e-") { c++ } END { print c + 0 }'
+  ps -axo pid,comm,args | awk '$2 == "codex" && index($0, "/private/tmp/picoquic-5b-") { c++ } END { print c + 0 }'
   python3 scripts/phase5b.py --status
   python3 scripts/phase4e.py --status
   rg -n -C 6 '"outcome": "blocked"|"outcome": "fixed"' xlate/phase5b_repairs.json
