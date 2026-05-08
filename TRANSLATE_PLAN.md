@@ -1253,6 +1253,58 @@ For each entry that is actually not OK:
 * `xlate/function_translation_map.json` is refreshed after any fix that
   changes Rust function spans.
 
+## Phase 4E — Repair confirmed mismatches
+
+Phase 4E is the repair pass for Phase 4D entries classified as
+`needs_fix`.  Phase 4D may be run widely in parallel in
+classification-only mode; Phase 4E then performs the actual Rust edits
+for the smaller set of confirmed mismatches.
+
+Phase 4E uses file-owned work buckets.  All `needs_fix` entries mapped
+to the same Rust file are assigned to the same bucket, so multiple
+repair agents can run in parallel without editing the same primary file.
+If a repair requires touching a helper in another Rust file, the agent
+must keep the change directly related and report the cross-file edit in
+the repair result.
+
+### Procedure
+
+For each `needs_fix` entry:
+
+1. Read the Phase 4C rationale and Phase 4D deeper analysis.
+2. Read the C and Rust implementation context needed for a faithful
+   repair.
+3. Fix the Rust implementation, or mark the item:
+   * `fixed` — Rust was corrected.
+   * `ok` — Phase 4D's `needs_fix` classification was too conservative
+     after repair-level inspection.
+   * `blocked` — a real mismatch remains but needs a concrete external
+     design decision or dependency.
+4. Run the relevant narrow test when one is obvious.
+5. Run the Phase 4 gates after any Rust edit:
+   `cargo fmt`, `cargo test --no-run`, and
+   `cargo clippy --tests --all-features -- -D warnings`.
+6. Refresh `xlate/function_translation_map.json` if Rust line spans
+   changed.
+
+### Artifacts
+
+`scripts/phase4e.py` writes:
+
+* `xlate/phase4e_repairs.json` — repair outcomes for Phase 4D
+  `needs_fix` entries.
+* `xlate/phase4e_report.html` — human-readable repair summary.
+
+It also updates `xlate/phase4d_results.json` so repaired entries move
+from `needs_fix` to `fixed`, `ok`, or `blocked`.
+
+### Acceptance gate
+
+* No Phase 4D entries remain in `needs_fix`.
+* Every confirmed mismatch is either fixed or blocked with a concrete
+  human-actionable reason.
+* The Phase 4 build and lint gates pass after every Rust repair batch.
+
 ## Tooling stack
 
 * `cmake` — produces `compile_commands.json`.
@@ -1261,8 +1313,8 @@ For each entry that is actually not OK:
 * libclang + Python — Phase 0 AST analysis, call graph, dashboard.
 * `bindgen` — per-file allowlisted reference output (never shipped).
 * Python scripts — driver for Phase 1 module skeletons; `phase3a.py`,
-  `phase4.py`, and the Phase 4A/4B/4C/4D map, completion, audit, and
-  repair drivers.
+  `phase4.py`, and the Phase 4A/4B/4C/4D/4E map, completion, audit,
+  classification, and repair drivers.
 * `cargo check` and `cargo test` — inner loop, manually invoked.
 * `cargo fmt` and `cargo clippy` — style and lint gates.
 
