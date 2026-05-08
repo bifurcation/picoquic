@@ -131,6 +131,37 @@ def needs_fix_entries(
     return out
 
 
+def load_id_list(path: str) -> list[str]:
+    ids: list[str] = []
+    for raw_line in Path(path).read_text().splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if line:
+            ids.append(line)
+    return ids
+
+
+def apply_id_list(entries: list[dict], ids: list[str]) -> list[dict]:
+    rank = {item: index for index, item in enumerate(ids)}
+
+    def entry_rank(entry: dict) -> int | None:
+        candidates = (
+            entry.get("test_id"),
+            entry.get("test_name"),
+            entry.get("entry_fn"),
+            entry.get("rust_test_name"),
+        )
+        matches = [rank[candidate] for candidate in candidates if candidate in rank]
+        return min(matches) if matches else None
+
+    selected: list[tuple[int, dict]] = []
+    for entry in entries:
+        index = entry_rank(entry)
+        if index is not None:
+            selected.append((index, entry))
+    selected.sort(key=lambda item: item[0])
+    return [entry for _, entry in selected]
+
+
 def apply_file_bucket(entries: list[dict], *, bucket_count: int, bucket_index: int) -> list[dict]:
     if bucket_count == 1:
         return entries
@@ -414,6 +445,7 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="re-run tests with existing Phase 5B results")
     parser.add_argument("--only", help="limit to one test_id, C entry function, C test name, or Rust test name")
     parser.add_argument("--rust-file", help="limit to one expected Rust test file")
+    parser.add_argument("--id-list", help="limit to newline-delimited test ids/names")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--bucket-count", type=int, default=1)
@@ -442,6 +474,8 @@ def main() -> int:
         rust_file=args.rust_file,
         force=args.force,
     )
+    if args.id_list:
+        selected = apply_id_list(selected, load_id_list(args.id_list))
     selected = apply_file_bucket(
         selected,
         bucket_count=args.bucket_count,

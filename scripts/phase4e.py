@@ -48,8 +48,10 @@ REPAIRS = XLATE / "phase4e_repairs.json"
 REPAIRS_LOCK = XLATE / "phase4e_repairs.lock"
 REPORT = XLATE / "phase4e_report.html"
 PROMPTS_DIR = XLATE / "prompts" / "phase4e"
+CONFIRM_PROMPTS_DIR = XLATE / "prompts" / "phase4e_confirm"
 
-OUTCOMES = {"fixed", "ok", "blocked"}
+OUTCOMES = {"fixed", "ok", "blocked", "needs_fix"}
+CONFIRM_OUTCOMES = {"ok", "needs_fix", "blocked"}
 
 ALLOWED_TOOLS = (
     "Read Edit Write Glob Grep "
@@ -62,6 +64,7 @@ ALLOWED_TOOLS = (
     "Bash(cargo clippy:*) "
     "Bash(python3 scripts/phase4_check.py:*)"
 )
+CONFIRM_ALLOWED_TOOLS = phase4d.CLASSIFY_ALLOWED_TOOLS
 
 
 @contextlib.contextmanager
@@ -84,12 +87,22 @@ def load_repairs() -> dict:
         return repairs
 
 
+def repair_is_terminal(repair: dict) -> bool:
+    outcome = repair.get("outcome")
+    if outcome == "blocked":
+        return True
+    if outcome in {"fixed", "ok"}:
+        return repair.get("confirmation_outcome") in {"ok", "not_required"}
+    return False
+
+
 def update_repairs(updates: dict[str, dict], *, force: bool) -> dict:
     with repairs_file_lock():
         repairs = load_json(REPAIRS, {"schema_version": 1, "repairs": {}})
         repair_map = repairs.setdefault("repairs", {})
         for c_id, repair in updates.items():
-            if force or c_id not in repair_map:
+            existing = repair_map.get(c_id)
+            if force or existing is None or not repair_is_terminal(existing):
                 repair_map[c_id] = repair
         tmp = REPAIRS.with_name(f"{REPAIRS.name}.{os.getpid()}.tmp")
         tmp.write_text(json.dumps(repairs, indent=2, sort_keys=True) + "\n")
@@ -124,7 +137,7 @@ def needs_fix_entries(
             continue
         if rust_file and e.get("rust", {}).get("file") != rust_file:
             continue
-        if not force and c_id in repair_map:
+        if not force and c_id in repair_map and repair_is_terminal(repair_map[c_id]):
             continue
         item = dict(e)
         item["phase4c_review"] = phase4c_reviews.get(c_id, {})
@@ -132,6 +145,35 @@ def needs_fix_entries(
         out.append(item)
     out.sort(key=lambda e: (e.get("rust", {}).get("file", ""), e.get("c_id", "")))
     return out
+
+
+def load_id_list(path: str) -> list[str]:
+    ids: list[str] = []
+    for raw_line in Path(path).read_text().splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if line:
+            ids.append(line)
+    return ids
+
+
+def apply_id_list(entries: list[dict], ids: list[str]) -> list[dict]:
+    rank = {item: index for index, item in enumerate(ids)}
+
+    def entry_rank(entry: dict) -> int | None:
+        candidates = (
+            entry.get("c_id"),
+            entry.get("c", {}).get("name"),
+        )
+        matches = [rank[candidate] for candidate in candidates if candidate in rank]
+        return min(matches) if matches else None
+
+    selected: list[tuple[int, dict]] = []
+    for entry in entries:
+        index = entry_rank(entry)
+        if index is not None:
+            selected.append((index, entry))
+    selected.sort(key=lambda item: item[0])
+    return [entry for _, entry in selected]
 
 
 def apply_file_bucket(
@@ -167,6 +209,20 @@ def prompt_path(batch: list[dict]) -> Path:
 def log_path(agent: agent_runner.AgentConfig, batch: list[dict]) -> Path:
     return agent_runner.log_dir(REPO_ROOT, agent, "phase4e") / (
         f"{prompt_path(batch).stem}.log"
+    )
+
+
+def confirm_prompt_path(batch: list[dict]) -> Path:
+    label = "__".join(e["c"]["name"] for e in batch[:3])
+    if len(batch) > 3:
+        label += f"__plus_{len(batch) - 3}"
+    safe = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in label)
+    return CONFIRM_PROMPTS_DIR / f"{safe}.md"
+
+
+def confirm_log_path(agent: agent_runner.AgentConfig, batch: list[dict]) -> Path:
+    return agent_runner.log_dir(REPO_ROOT, agent, "phase4e_confirm") / (
+        f"{confirm_prompt_path(batch).stem}.log"
     )
 
 
@@ -224,6 +280,8 @@ def compose_prompt(batch: list[dict]) -> str:
             "  defaults, or weaker behavior.",
             "* If deeper repair inspection proves Phase 4D was mistaken,",
             "  report outcome `ok` and do not edit source.",
+            "* The driver will run a separate read-only re-triage before",
+            "  recording any `fixed` or `ok` result as resolved.",
             "* Report `blocked` only with a concrete human-actionable",
             "  reason.",
             "",
@@ -237,6 +295,77 @@ def compose_prompt(batch: list[dict]) -> str:
             "\"fix_summary\":\"what changed, or empty\","
             "\"files_changed\":[\"rs/fq/src/...\"],"
             "\"verification\":[\"cargo ...\"]}]}",
+            "```",
+            "",
+            "Entries:",
+            "",
+            "\n".join(sections),
+        ]
+    )
+
+
+def compose_confirmation_prompt(batch: list[dict], repairs: dict[str, dict]) -> str:
+    sections: list[str] = []
+    for e in batch:
+        c = e["c"]
+        rust = e["rust"]
+        review = e["phase4c_review"]
+        result = e["phase4d_result"]
+        repair = repairs.get(e["c_id"], {})
+        sections.append(
+            "\n".join(
+                [
+                    f"## `{e['c_id']}`",
+                    f"* Phase 4C status: `{review.get('status', '')}`",
+                    f"* Phase 4C rationale: {review.get('rationale', '')}",
+                    f"* Prior Phase 4D analysis: {result.get('analysis', '')}",
+                    f"* Phase 4E claimed outcome: `{repair.get('outcome', '')}`",
+                    f"* Phase 4E repair analysis: {repair.get('analysis', '')}",
+                    f"* Phase 4E fix summary: {repair.get('fix_summary', '')}",
+                    f"* C source: `{c['file']}:{c['start_line']}-{c['end_line']}`",
+                    f"* C signature: `{c.get('signature', '')}`",
+                    f"* Current Rust source: `{rust['file']}:{rust['start_line']}-{rust['end_line']}`",
+                    f"* Current Rust item: `{rust.get('name', '')}`",
+                    "",
+                    "### C body",
+                    "```c",
+                    source_body(c),
+                    "```",
+                    "",
+                    "### Current Rust body",
+                    "```rust",
+                    source_body(rust),
+                    "```",
+                    "",
+                ]
+            )
+        )
+
+    return "\n".join(
+        [
+            "# Phase 4E repair confirmation",
+            "",
+            "This is a read-only re-triage after a Phase 4E repair or",
+            "repair-level `ok` claim.  Do not edit files.",
+            "",
+            "For each entry, inspect directly relevant C and Rust context",
+            "and decide whether the current Rust translation is now",
+            "acceptable.",
+            "",
+            "Report:",
+            "",
+            "* `ok` when the current Rust behavior is acceptable.",
+            "* `needs_fix` when a real mismatch remains.",
+            "* `blocked` only when a concrete external decision or missing",
+            "  dependency prevents classification.",
+            "",
+            "Return final JSON with this shape:",
+            "",
+            "```json",
+            "{\"results\":[{\"c_id\":\"...\",\"outcome\":\"ok|needs_fix|blocked\","
+            "\"analysis\":\"short confirmation conclusion\","
+            "\"fix_summary\":\"remaining mismatch if any, or empty\","
+            "\"files_changed\":[],\"verification\":[\"read-only context inspected\"]}]}",
             "```",
             "",
             "Entries:",
@@ -307,10 +436,165 @@ def normalize_repairs(raw: dict, batch: list[dict]) -> dict[str, dict]:
     return by_id
 
 
+def normalize_confirmations(raw: dict, batch: list[dict]) -> dict[str, dict]:
+    def string_list(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item)[:300] for item in value[:20]]
+
+    batch_ids = {e["c_id"] for e in batch}
+    by_id: dict[str, dict] = {}
+    for item in raw.get("results", []):
+        c_id = item.get("c_id")
+        outcome = item.get("outcome")
+        if c_id not in batch_ids or outcome not in CONFIRM_OUTCOMES:
+            continue
+        by_id[c_id] = {
+            "c_id": c_id,
+            "outcome": outcome,
+            "analysis": str(item.get("analysis", ""))[:2000],
+            "fix_summary": str(item.get("fix_summary", ""))[:2000],
+            "files_changed": string_list(item.get("files_changed")),
+            "verification": string_list(item.get("verification")),
+        }
+    for e in batch:
+        if e["c_id"] not in by_id:
+            by_id[e["c_id"]] = {
+                "c_id": e["c_id"],
+                "outcome": "blocked",
+                "analysis": "confirmation agent response did not include this entry",
+                "fix_summary": "",
+                "files_changed": [],
+                "verification": [],
+            }
+    return by_id
+
+
+def entries_for_ids(
+    c_ids: list[str],
+    mapping: dict,
+    phase4c_reviews: dict,
+    phase4d_results: dict,
+) -> tuple[list[dict], dict[str, dict]]:
+    by_id = mapped_by_id(mapping)
+    entries: list[dict] = []
+    missing: dict[str, dict] = {}
+    for c_id in c_ids:
+        e = by_id.get(c_id)
+        if not e:
+            missing[c_id] = {
+                "c_id": c_id,
+                "outcome": "blocked",
+                "analysis": "could not refresh function map entry for confirmation",
+                "fix_summary": "",
+                "files_changed": [],
+                "verification": [],
+            }
+            continue
+        item = dict(e)
+        item["phase4c_review"] = phase4c_reviews.get(c_id, {})
+        item["phase4d_result"] = phase4d_results.get("results", {}).get(c_id, {})
+        entries.append(item)
+    return entries, missing
+
+
+def confirm_resolutions(
+    agent: agent_runner.AgentConfig,
+    batch: list[dict],
+    repairs: dict[str, dict],
+    *,
+    max_turns: int,
+) -> dict[str, dict]:
+    if not batch:
+        return {}
+
+    CONFIRM_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+    prompt = compose_confirmation_prompt(batch, repairs)
+    pfile = confirm_prompt_path(batch)
+    pfile.write_text(prompt)
+    before_rs = rs_diff_names()
+    print(f"confirming {len(batch)} Phase 4E resolution(s)")
+    res = agent_runner.run_capture(
+        agent,
+        prompt,
+        repo_root=REPO_ROOT,
+        log_path=confirm_log_path(agent, batch),
+        phase="phase4e_confirm",
+        label=pfile.stem,
+        prompt_file=pfile,
+        allowed_tools=CONFIRM_ALLOWED_TOOLS,
+        max_turns=max_turns,
+    )
+    if res.returncode != 0:
+        return {
+            e["c_id"]: {
+                "c_id": e["c_id"],
+                "outcome": "blocked",
+                "analysis": f"confirmation agent failed with exit {res.returncode}",
+                "fix_summary": "",
+                "files_changed": [],
+                "verification": [],
+            }
+            for e in batch
+        }
+    if rs_diff_names() != before_rs:
+        return {
+            e["c_id"]: {
+                "c_id": e["c_id"],
+                "outcome": "blocked",
+                "analysis": "confirmation pass changed Rust files",
+                "fix_summary": "",
+                "files_changed": [],
+                "verification": [],
+            }
+            for e in batch
+        }
+
+    try:
+        parsed = phase4d.extract_json(res.stdout + "\n" + res.stderr)
+        return normalize_confirmations(parsed, batch)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return {
+            e["c_id"]: {
+                "c_id": e["c_id"],
+                "outcome": "blocked",
+                "analysis": f"could not parse confirmation JSON: {exc}",
+                "fix_summary": "",
+                "files_changed": [],
+                "verification": [],
+            }
+            for e in batch
+        }
+
+
+def apply_confirmations(
+    repairs: dict[str, dict],
+    confirmations: dict[str, dict],
+) -> dict[str, dict]:
+    final: dict[str, dict] = {}
+    for c_id, repair in repairs.items():
+        updated = dict(repair)
+        confirmation = confirmations.get(c_id)
+        if confirmation is None:
+            final[c_id] = updated
+            continue
+        updated["confirmation_outcome"] = confirmation.get("outcome", "")
+        updated["confirmation_analysis"] = confirmation.get("analysis", "")
+        updated["confirmation_fix_summary"] = confirmation.get("fix_summary", "")
+        updated["confirmation_verification"] = confirmation.get("verification", [])
+        updated["confirmed"] = confirmation.get("outcome") == "ok"
+        if confirmation.get("outcome") != "ok":
+            updated["outcome"] = "needs_fix"
+        final[c_id] = updated
+    return final
+
+
 def phase4d_updates(repairs: dict[str, dict], batch: list[dict]) -> dict[str, dict]:
     by_id = {e["c_id"]: e for e in batch}
     updates: dict[str, dict] = {}
     for c_id, repair in repairs.items():
+        if repair.get("outcome") == "needs_fix":
+            continue
         e = by_id[c_id]
         updates[c_id] = {
             "c_id": c_id,
@@ -320,6 +604,8 @@ def phase4d_updates(repairs: dict[str, dict], batch: list[dict]) -> dict[str, di
             "fix_summary": repair.get("fix_summary", ""),
             "files_changed": repair.get("files_changed", []),
             "verification": repair.get("verification", []),
+            "confirmation_outcome": repair.get("confirmation_outcome", ""),
+            "confirmation_analysis": repair.get("confirmation_analysis", ""),
         }
     return updates
 
@@ -346,6 +632,7 @@ def run_gate(skip_gate: bool) -> int:
     ]
     env = os.environ.copy()
     env["CARGO_INCREMENTAL"] = "0"
+    env.setdefault("CARGO_TARGET_DIR", "/private/tmp/fq-target")
     for cmd in commands:
         res = subprocess.run(cmd, cwd=RS_CRATE, env=env)
         if res.returncode != 0:
@@ -375,7 +662,7 @@ def write_report(mapping: dict, phase4d_results: dict, repairs: dict) -> None:
         "<h2>Summary</h2>",
         "<table><tr><th>Outcome</th><th>Count</th></tr>",
     ]
-    for outcome in ("fixed", "ok", "blocked"):
+    for outcome in ("fixed", "ok", "needs_fix", "blocked"):
         body.append(f"<tr><td>{esc(outcome)}</td><td>{counts.get(outcome, 0)}</td></tr>")
     body.append(f"<tr><td>remaining needs_fix</td><td>{needs_fix_total}</td></tr>")
     body.append("</table>")
@@ -383,6 +670,7 @@ def write_report(mapping: dict, phase4d_results: dict, repairs: dict) -> None:
     by_id = mapped_by_id(mapping)
     for section, title in (
         ("blocked", "Blocked"),
+        ("needs_fix", "Confirmation Failed"),
         ("fixed", "Fixed"),
         ("ok", "Confirmed OK"),
     ):
@@ -424,7 +712,7 @@ def print_status(phase4d_results: dict, repairs: dict) -> None:
     )
     print(f"phase4d needs_fix remaining: {d_counts.get('needs_fix', 0)}")
     print("phase4e repairs:")
-    for outcome in ("fixed", "ok", "blocked"):
+    for outcome in ("fixed", "ok", "needs_fix", "blocked"):
         print(f"  {outcome:8s} {r_counts.get(outcome, 0)}")
 
 
@@ -436,6 +724,7 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="re-run entries with existing Phase 4E repair results")
     parser.add_argument("--only", help="limit to one c_id or C function name")
     parser.add_argument("--rust-file", help="limit to one mapped Rust file")
+    parser.add_argument("--id-list", help="limit to newline-delimited c_id/function names")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--bucket-count", type=int, default=1,
@@ -444,6 +733,11 @@ def main() -> int:
                         help="zero-based file-owned repair bucket index")
     parser.add_argument("--max-turns", type=int, default=250)
     parser.add_argument("--skip-gate", action="store_true", help="skip cargo gates after a batch")
+    parser.add_argument(
+        "--no-confirm-resolutions",
+        action="store_true",
+        help="do not run the read-only 4D-style confirmation pass",
+    )
     args = parser.parse_args()
     if args.bucket_count < 1:
         parser.error("--bucket-count must be at least 1")
@@ -468,6 +762,8 @@ def main() -> int:
         rust_file=args.rust_file,
         force=args.force,
     )
+    if args.id_list:
+        selected = apply_id_list(selected, load_id_list(args.id_list))
     selected = apply_file_bucket(
         selected,
         bucket_count=args.bucket_count,
@@ -533,11 +829,19 @@ def main() -> int:
                 for e in batch
             }
 
-        repairs = update_repairs(updates, force=args.force)
-        phase4d.update_results(phase4d_updates(updates, batch), force=True)
-        processed += len(batch)
-
         after_rs = rs_diff_names()
+        if not args.no_confirm_resolutions:
+            for repair in updates.values():
+                if repair.get("outcome") in {"fixed", "ok"}:
+                    repair["confirmation_outcome"] = "pending"
+                    repair["confirmed"] = False
+        else:
+            for repair in updates.values():
+                if repair.get("outcome") in {"fixed", "ok"}:
+                    repair["confirmation_outcome"] = "not_required"
+                    repair["confirmed"] = True
+
+        repairs = update_repairs(updates, force=args.force)
         if after_rs != before_rs or any(
             item.get("outcome") == "fixed" for item in updates.values()
         ):
@@ -550,6 +854,38 @@ def main() -> int:
                 print(f"map refresh failed with exit {refresh}")
                 return refresh
             mapping = load_function_map()
+
+        final_updates = updates
+        if not args.no_confirm_resolutions:
+            confirm_ids = [
+                c_id for c_id, repair in updates.items()
+                if repair.get("outcome") in {"fixed", "ok"}
+            ]
+            if confirm_ids:
+                mapping = load_function_map()
+                phase4d_results = phase4d.load_results()
+                confirm_batch, missing_confirmations = entries_for_ids(
+                    confirm_ids,
+                    mapping,
+                    phase4c_reviews,
+                    phase4d_results,
+                )
+                confirmations = {
+                    **missing_confirmations,
+                    **confirm_resolutions(
+                        agent,
+                        confirm_batch,
+                        updates,
+                        max_turns=args.max_turns,
+                    ),
+                }
+                final_updates = apply_confirmations(updates, confirmations)
+                repairs = update_repairs(final_updates, force=True)
+
+        phase4d_update_map = phase4d_updates(final_updates, batch)
+        if phase4d_update_map:
+            phase4d.update_results(phase4d_update_map, force=True)
+        processed += len(batch)
 
     phase4d_results = phase4d.load_results()
     repairs = load_repairs()
