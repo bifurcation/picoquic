@@ -1286,6 +1286,12 @@ For each `needs_fix` entry:
    `cargo clippy --tests --all-features -- -D warnings`.
 6. Refresh `xlate/function_translation_map.json` if Rust line spans
    changed.
+7. Before updating Phase 4D state from `needs_fix` to `fixed` or `ok`,
+   run a read-only 4D-style re-triage on the current C/Rust pair.  Only
+   confirmed `ok` re-triage results are allowed to resolve the entry.
+   If confirmation still reports `needs_fix` or cannot classify the
+   entry, leave the Phase 4D entry in `needs_fix` for another repair
+   attempt.
 
 ### Artifacts
 
@@ -1296,14 +1302,142 @@ For each `needs_fix` entry:
 * `xlate/phase4e_report.html` — human-readable repair summary.
 
 It also updates `xlate/phase4d_results.json` so repaired entries move
-from `needs_fix` to `fixed`, `ok`, or `blocked`.
+from `needs_fix` to `fixed`, `ok`, or `blocked` only after the repair
+confirmation pass allows that transition.
 
 ### Acceptance gate
 
 * No Phase 4D entries remain in `needs_fix`.
 * Every confirmed mismatch is either fixed or blocked with a concrete
   human-actionable reason.
+* Every `fixed` or repair-level `ok` result has a passing read-only
+  confirmation result.
 * The Phase 4 build and lint gates pass after every Rust repair batch.
+
+## Phase 5 — Get the Rust test suite passing
+
+Phase 5 starts after the implementation-mapping work has converged far
+enough that test failures are meaningful.  Its goal is simple: every C
+test that is in v1 scope has a faithful Rust counterpart, and
+`cargo test` is green.
+
+Phase 5 deliberately separates test-correspondence work from ordinary
+failure debugging.  A failing Rust test is not useful evidence until we
+know the Rust test is actually checking the same behavior as the C
+test.
+
+## Phase 5A — Test correspondence audit
+
+Phase 5A builds a test map and performs the same kind of correspondence
+review used for functions in Phase 4A through 4D, but at the test-entry
+level.  It maps each `picoquic_t/picoquic_t.c` `test_table[]` entry to
+the C entry function in `picoquictest/` and the matching Rust
+`#[test]` under `rs/fq/src/tests/`.
+
+Because tests often depend on shared fixtures and helper routines,
+Phase 5A is context-aware rather than body-only.  The reviewer may
+inspect directly relevant C helpers, Rust test helpers, fixtures,
+constants, nearby tests, and translated implementation when needed to
+understand the test intent.  It does not edit source.
+
+For each test entry, Phase 5A records:
+
+* `ok` — the Rust test is an acceptable translation of the C test
+  intent, inputs, assertions, and important edge cases.
+* `needs_fix` — the Rust test is missing, weaker than the C test,
+  checks materially different behavior, skips important cases, or
+  contains placeholder-like logic.
+* `blocked` — classification needs a concrete external decision or
+  missing dependency.
+
+`scripts/phase5a.py` writes:
+
+* `xlate/test_translation_map.json` — C test-entry to Rust `#[test]`
+  map and coverage status.
+* `xlate/phase5a_reviews.json` — correspondence-review outcomes.
+* `xlate/phase5a_report.html` — human-readable summary and non-OK
+  review details.
+
+The driver supports parallel read-only shards with `--shard-count` and
+`--shard-index`.
+
+### Acceptance gate
+
+* Every in-scope C test-table entry appears in
+  `xlate/test_translation_map.json`.
+* Every mapped test has a Phase 5A review outcome.
+* Every missing or mismatched Rust test is classified as `needs_fix` or
+  `blocked` with a concrete reason.
+
+## Phase 5B — Repair test mismatches
+
+Phase 5B repairs Phase 5A entries classified as `needs_fix`.  This is
+the test-side analogue of Phase 4E: confirmed mismatches are assigned
+to file-owned buckets so parallel repair agents do not edit the same
+primary Rust test file.
+
+For each `needs_fix` entry:
+
+1. Read the C test body, any C helpers needed to understand expected
+   behavior, the Phase 5A rationale, and the current Rust test.
+2. Edit Rust tests, Rust test helpers, or Rust fixtures so the Rust
+   test faithfully checks the C behavior.
+3. Do not weaken assertions, skip important C cases, or replace tests
+   with placeholders.
+4. If repair-level inspection proves Phase 5A was too conservative,
+   mark the entry `ok`.
+5. If the test cannot be made faithful because implementation support
+   is still missing, mark it `blocked` with the concrete dependency.
+6. Run the relevant narrow test when obvious, then the standard cargo
+   gates: `cargo fmt`, `cargo test --no-run`, and
+   `cargo clippy --tests --all-features -- -D warnings`.
+
+`scripts/phase5b.py` writes:
+
+* `xlate/phase5b_repairs.json` — repair outcomes for Phase 5A
+  `needs_fix` entries.
+* `xlate/phase5b_report.html` — repair summary.
+
+It also updates `xlate/phase5a_reviews.json` so repaired entries move
+from `needs_fix` to `fixed`, `ok`, or `blocked`, and refreshes
+`xlate/test_translation_map.json` after Rust test edits.
+
+### Acceptance gate
+
+* No Phase 5A entries remain in `needs_fix`.
+* Every confirmed test mismatch is fixed or blocked with a concrete
+  human-actionable reason.
+* The cargo build/lint gates pass after every Rust test repair batch.
+
+## Phase 5C — Debug remaining failing tests
+
+Phase 5C runs the Rust test suite and debugs any failures that remain
+after the test correspondence audit and repair passes.  At this point a
+failure is assumed to be an implementation bug, a test bug that slipped
+through Phase 5A/5B, a fixture issue, or a harness issue.
+
+For each failing Rust test:
+
+1. Capture the cargo-test failure output and related test source.
+2. Determine whether the failure is caused by the Rust test, Rust
+   implementation, fixture setup, or harness behavior.
+3. Fix the smallest faithful Rust surface.  Do not edit C sources and
+   do not weaken tests to make them pass.
+4. Run the failing test by name, then the cargo build/lint gates.
+5. Re-run the full suite periodically and at the end.
+
+`scripts/phase5c.py` writes:
+
+* `xlate/phase5c_failures.json` — latest cargo-test summary and per-test
+  debug status.
+* `xlate/phase5c_report.html` — human-readable failure/debug report.
+* `xlate/phase5c_runs/<timestamp>.log` — raw cargo-test output.
+
+### Acceptance gate
+
+* `cargo test` is green.
+* `cargo fmt --check` is clean.
+* `cargo clippy --tests --all-features -- -D warnings` is clean.
 
 ## Tooling stack
 
@@ -1313,8 +1447,8 @@ from `needs_fix` to `fixed`, `ok`, or `blocked`.
 * libclang + Python — Phase 0 AST analysis, call graph, dashboard.
 * `bindgen` — per-file allowlisted reference output (never shipped).
 * Python scripts — driver for Phase 1 module skeletons; `phase3a.py`,
-  `phase4.py`, and the Phase 4A/4B/4C/4D/4E map, completion, audit,
-  classification, and repair drivers.
+  `phase4.py`, and the Phase 4A/4B/4C/4D/4E and Phase 5A/5B/5C map,
+  audit, repair, and debug drivers.
 * `cargo check` and `cargo test` — inner loop, manually invoked.
 * `cargo fmt` and `cargo clippy` — style and lint gates.
 

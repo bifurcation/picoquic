@@ -148,6 +148,39 @@ Artifacts:
 
 `phase4b.py` refuses to run unless `xlate/phase4a_plan.md` is marked
 `Status: approved`, unless `--approved` is passed explicitly.
+`phase4e.py` runs a read-only confirmation pass after each `fixed` or
+repair-level `ok` result before moving the underlying Phase 4D entry out
+of `needs_fix`; use `--no-confirm-resolutions` only for diagnostics.
+
+## Phase 5A/5B/5C: test audit, test repair, and failure debugging
+
+After Phase 4 implementation repair has converged, Phase 5 verifies
+that the Rust tests line up with the C tests and then drives the suite
+green:
+
+```sh
+python3 scripts/phase5a.py --status     # summarize test map/audit progress
+python3 scripts/phase5a.py --replay-logs --no-refresh-map
+python3 scripts/phase5a.py              # audit C/Rust test correspondence
+python3 scripts/phase5b.py --status     # summarize test-repair progress
+python3 scripts/phase5b.py              # repair Phase 5A needs_fix entries
+python3 scripts/phase5c.py --refresh-failures --status
+python3 scripts/phase5c.py --refresh-failures
+```
+
+Artifacts:
+
+| Script       | Produces |
+|--------------|----------|
+| `phase5a.py` | `xlate/test_translation_map.json`, `xlate/phase5a_reviews.json`, `xlate/phase5a_report.html` |
+| `phase5b.py` | `xlate/phase5b_repairs.json`, `xlate/phase5b_report.html`; repairs test mismatches and updates `xlate/phase5a_reviews.json` |
+| `phase5c.py` | `xlate/phase5c_failures.json`, `xlate/phase5c_report.html`, `xlate/phase5c_runs/<timestamp>.log` |
+
+`phase5a.py` supports read-only parallel shards with `--shard-count`
+and `--shard-index`; `--replay-logs` reprocesses previous Phase 5A
+transcripts through the current parser before spending agent time on
+remaining pending tests.  `phase5b.py` supports file-owned repair
+buckets with `--bucket-count` and `--bucket-index`.
 
 ## Helpers / diagnostics
 
