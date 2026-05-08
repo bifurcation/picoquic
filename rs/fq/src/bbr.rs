@@ -651,6 +651,7 @@ impl BbrState {
     /// a clean slate.  Called at the start of each new round.
     pub fn reset_congestion_signals(&mut self) {
         self.loss_in_round = false;
+        self.rtt_too_high_in_round = false;
         self.bw_latest = 0;
         self.inflight_latest = 0;
     }
@@ -1061,7 +1062,9 @@ impl BbrState {
         self.cwnd_gain = BBR_PROBE_BW_DOWN_CWND_GAIN;
         self.reset_congestion_signals();
         self.bw_probe_up_cnt = u32::MAX; // not growing inflight_hi
-        if self.probe_probe_bw_quickly && self.exp_flags.do_rapid_start {
+        // C's `BBRExpTest` macro is defined before the local `BBRExperiment`,
+        // so this condition is only gated by `probe_probe_bw_quickly`.
+        if self.probe_probe_bw_quickly {
             self.pick_probe_wait_early();
         } else {
             self.pick_probe_wait();
@@ -2135,8 +2138,9 @@ impl BbrState {
     /// Core ProbeBW state machine.  Only active once the pipe is declared
     /// full (`filled_pipe`).  Delegates upper-bound tracking to
     /// `adapt_upper_bounds`, then drives transitions: DOWN→CRUISE, CRUISE
-    /// or DOWN→REFILL, REFILL→UP, UP→DOWN on elapsed/delay.  After any
-    /// ProbeBW transition, if `bw > bw_probe_ceiling` re-enters Startup.
+    /// or DOWN→REFILL, saturation→DRAIN, REFILL→UP, UP→DOWN on
+    /// elapsed/delay.  After any ProbeBW transition, if `bw > bw_probe_ceiling`
+    /// re-enters Startup.
     fn update_probe_bw_cycle_phase(
         &mut self,
         connection: &Connection,
@@ -2154,7 +2158,9 @@ impl BbrState {
                 if self.check_time_to_probe_bw(connection, path_x, rs, current_time) {
                     return;
                 }
-                // RTTJitterBufferProbe not defined — skip check_path_saturated.
+                if self.check_path_saturated(connection, path_x, rs) {
+                    return;
+                }
                 if self.check_time_to_cruise(path_x) {
                     let max_bw = self.max_bw;
                     let full_bw = self.full_bw;
@@ -2174,7 +2180,9 @@ impl BbrState {
                 }
             }
             BbrAlgState::ProbeBwCruise => {
-                // RTTJitterBufferProbe not defined — skip check_path_saturated.
+                if self.check_path_saturated(connection, path_x, rs) {
+                    return;
+                }
                 if self.check_time_to_probe_bw(connection, path_x, rs, current_time) {
                     return;
                 }
@@ -2248,7 +2256,7 @@ impl BbrState {
     ) {
         self.update_model_and_state(connection, path_x, rs, current_time);
         if self.state == BbrAlgState::StartupLongRtt {
-            self.update_startup_long_rtt(path_x, rs);
+            self.update_startup_long_rtt(connection, path_x, rs);
         } else {
             self.update_control_parameters(path_x, rs);
         }
@@ -2259,9 +2267,14 @@ impl BbrState {
     /// During StartupLongRTT: grow the congestion window via slow-start
     /// when not sender-limited, then floor `cwin` at half the peak-BDP
     /// estimate (or the BDP seed when it is larger).
-    pub fn update_startup_long_rtt(&mut self, path_x: &mut Path, rs: &BbrPerAckState) {
+    pub fn update_startup_long_rtt(
+        &mut self,
+        connection: &Connection,
+        path_x: &mut Path,
+        rs: &BbrPerAckState,
+    ) {
         if path_x.last_time_acked_data_frame_sent > path_x.last_sender_limited_time {
-            path_x.cwin += path_x.slow_start_increase(rs.newly_acked);
+            path_x.cwin += path_x.slow_start_increase(connection, rs.newly_acked);
         }
         // PICOQUIC_BYTES_FROM_RATE(rtt_us, bps) = rtt * bps / 1_000_000
         let mut max_win = self.min_rtt * path_x.peak_bandwidth_estimate / 1_000_000;

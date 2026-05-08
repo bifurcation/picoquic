@@ -278,6 +278,7 @@ pub fn picoquic_prague_process_start_ack(
         prague_enter_recovery(cnx, path_x, pr_state, current_time);
     } else {
         path_x.cwin = path_x.cwin.saturating_add(path_x.slow_start_increase_ex2(
+            cnx,
             ack_state.nb_bytes_acknowledged,
             false,
             pr_state.alpha,
@@ -407,7 +408,13 @@ impl PragueState {
 pub struct PragueCongestionControl;
 
 impl CongestionControl for PragueCongestionControl {
-    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant) {
+    fn alg_init(
+        &self,
+        _connection: &mut Connection,
+        path_x: &mut Path,
+        option_string: Option<&str>,
+        current_time: Instant,
+    ) {
         picoquic_prague_init(path_x, option_string, current_time);
     }
 

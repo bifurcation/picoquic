@@ -337,7 +337,13 @@ pub fn fastcc_observe(path: &Path, cc_state: &mut u64, cc_param: &mut u64) {
 pub struct FastccCongestionControl;
 
 impl CongestionControl for FastccCongestionControl {
-    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant) {
+    fn alg_init(
+        &self,
+        _connection: &mut Connection,
+        path_x: &mut Path,
+        option_string: Option<&str>,
+        current_time: Instant,
+    ) {
         picoquic_fastcc_init(path_x, option_string, current_time);
     }
 

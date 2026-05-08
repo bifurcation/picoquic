@@ -1,0 +1,589 @@
+{
+  "repairs": {
+    "picoquic/bbr.c:BBRCheckPathSaturated": {
+      "analysis": "Confirmed Phase 4D mismatch: Rust had the saturation predicate translated but skipped the enabled RTTJitterBufferProbe caller path in ProbeBW DOWN and CRUISE.",
+      "c_id": "picoquic/bbr.c:BBRCheckPathSaturated",
+      "confirmation_analysis": "Rust predicate and state updates match the C function, and the repaired ProbeBW DOWN/CRUISE caller ordering now matches the enabled C RTTJitterBufferProbe paths with early returns on saturation.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/bbr.rs"
+      ],
+      "fix_summary": "Called check_path_saturated from ProbeBwDown after check_time_to_probe_bw and from ProbeBwCruise before check_time_to_probe_bw, returning immediately on saturation to match C.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cd rs/fq && cargo fmt",
+        "cd rs/fq && cargo test --no-run",
+        "cd rs/fq && cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/bbr.c:BBRResetCongestionSignals": {
+      "analysis": "Confirmed Rust omitted the RTTJitterBuffer congestion signal reset present in C.",
+      "c_id": "picoquic/bbr.c:BBRResetCongestionSignals",
+      "confirmation_analysis": "Rust reset_congestion_signals now matches C by clearing loss_in_round, rtt_too_high_in_round, bw_latest, and inflight_latest; reset_lower_bounds remains a separate adjacent helper as in C.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/bbr.rs"
+      ],
+      "fix_summary": "Added `self.rtt_too_high_in_round = false;` to `reset_congestion_signals`.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt --check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings",
+        "cargo fmt"
+      ]
+    },
+    "picoquic/bbr.c:BBRStartProbeBW_DOWN": {
+      "analysis": "Confirmed C `BBRExpTest(..., do_rapid_start)` expands to true in this build, so the early probe wait must not depend on `exp_flags.do_rapid_start`.",
+      "c_id": "picoquic/bbr.c:BBRStartProbeBW_DOWN",
+      "confirmation_analysis": "C `BBRExpTest(..., do_rapid_start)` expands to true because the macro is selected before the local `BBRExperiment` define, and current Rust now gates the early wait only on `probe_probe_bw_quickly` while preserving the remaining state updates.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/bbr.rs"
+      ],
+      "fix_summary": "Removed the `exp_flags.do_rapid_start` gate from `start_probe_bw_down`; early probe wait now depends only on `probe_probe_bw_quickly`.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/bbr.c:BBRUpdateProbeBWCyclePhase": {
+      "analysis": "Current Rust already has the active RTTJitterBufferProbe saturation early returns in the C order for ProbeBwDown and ProbeBwCruise.",
+      "c_id": "picoquic/bbr.c:BBRUpdateProbeBWCyclePhase",
+      "confirmation_analysis": "Current Rust now matches the active C RTTJitterBufferProbe path: ProbeBwDown calls check_time_to_probe_bw before check_path_saturated, ProbeBwCruise calls check_path_saturated before check_time_to_probe_bw, and both saturation hits return early after the helper enters Drain. The helper body mirrors BBRCheckPathSaturated and RTTJitterBufferProbe is defined in C.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo check"
+      ]
+    },
+    "picoquic/bbr1.c:picoquic_bbr1_notify": {
+      "analysis": "Confirmed mismatch: Rust used the notified path pacing packet time, while C uses cnx->path[0] for the long-RTT HyStart test.",
+      "c_id": "picoquic/bbr1.c:picoquic_bbr1_notify",
+      "confirmation_analysis": "Rust now uses the connection first path pacing packet time for the long-RTT HyStart test, matching C's cnx->path[0] source; the path_x fallback only covers an absent first path in Rust.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/bbr1.rs"
+      ],
+      "fix_summary": "Changed BBR1 notify to use cnx.paths.first().pacing.packet_time_microsec, falling back to path_x pacing when no first path exists.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings",
+        "git diff --check -- rs/fq/src/bbr1.rs"
+      ]
+    },
+    "picoquic/c4.c:c4_era_check": {
+      "analysis": "Confirmed mismatch: Rust era_check used the path-only lowest_not_ack helper, which cannot select the connection application packet context when multipath is disabled.",
+      "c_id": "picoquic/c4.c:c4_era_check",
+      "confirmation_analysis": "Rust now matches the C ready-state gate and lowest_not_ack context selection: path packet context under multipath, connection Application context otherwise, then compares against era_sequence.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/c4.rs"
+      ],
+      "fix_summary": "Added a c4-local lowest_not_ack selector matching picoquic_cc_get_lowest_not_ack: path packet context for multipath, connection Application packet context otherwise; era_check now uses it.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/c4.c:c4_init": {
+      "analysis": "C4 is now wired through a real congestion-control init path matching C allocation/reuse, option propagation, reset, and lost-feedback subscription behavior.",
+      "c_id": "picoquic/c4.c:c4_init",
+      "confirmation_analysis": "Rust now allocates or reuses C4State, sets connection.is_lost_feedback_notification_required, resets with the supplied option string, stores the state back on path.congestion_alg_state, and the c4 registry entry dispatches through C4_CONTROL with owning-connection access.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/c4.rs",
+        "rs/fq/src/lib.rs",
+        "rs/fq/src/internal.rs",
+        "rs/fq/src/newreno.rs",
+        "rs/fq/src/fastcc.rs",
+        "rs/fq/src/prague.rs"
+      ],
+      "fix_summary": "Added c4_init and C4CongestionControl, wired the c4 registry entry to it, extended alg_init to receive the owning connection, preserved default/init option strings, and stored/reused C4State in path.congestion_alg_state.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/cc_common.c:picoquic_cc_get_lowest_not_ack": {
+      "analysis": "The Rust path-only method could not match C single-path behavior because C selects through path_x->cnx. The method now uses the provided Connection to choose the same packet context as C.",
+      "c_id": "picoquic/cc_common.c:picoquic_cc_get_lowest_not_ack",
+      "confirmation_analysis": "Current Rust selects the same packet context as C for multipath vs single-path, returns the lowest pending sequence when present, and otherwise uses wrapping highest_acknowledged + 1.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/cc_common.rs"
+      ],
+      "fix_summary": "Changed PathCc::lowest_not_ack to accept &Connection, select path.pkt_ctx only for multipath and connection.pkt_ctx[Application] for single-path, and use wrapping_add(1) for C unsigned increment behavior.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt -- --check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings",
+        "cargo check"
+      ]
+    },
+    "picoquic/cc_common.c:picoquic_cc_increased_window": {
+      "analysis": "Confirmed mismatch repaired: Rust now computes the window increase from previous_window and primary-path rtt_min using the Reno threshold and satellite RTT cap, matching the C formula.",
+      "c_id": "picoquic/cc_common.c:picoquic_cc_increased_window",
+      "confirmation_analysis": "Rust now uses the primary path rtt_min and matches the C Reno-threshold/satellite-cap scaling formula; Duration ticks are microseconds matching the C constants. Saturating overflow and empty-path fallback are acceptable safe-pathology differences under the translation rules.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/internal.rs"
+      ],
+      "fix_summary": "Replaced the path cwin placeholder with the translated C formula in Connection::cc_increased_window.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings",
+        "git diff --check -- rs/fq/src/internal.rs"
+      ]
+    },
+    "picoquic/cc_common.c:picoquic_cc_slow_start_increase": {
+      "analysis": "Phase 4D was correct: the Rust helper used path-local bytes_in_transit/cwin instead of the connection-level cwin_blocked latch used by C.",
+      "c_id": "picoquic/cc_common.c:picoquic_cc_slow_start_increase",
+      "confirmation_analysis": "Rust now gates slow-start growth on connection.cwin_blocked, and the helper variants plus BBR, BBR1, Cubic, and Prague callers pass the connection context, matching C's path_x->cnx->cwin_blocked latch use.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/cc_common.rs",
+        "rs/fq/src/bbr.rs",
+        "rs/fq/src/bbr1.rs",
+        "rs/fq/src/cubic.rs",
+        "rs/fq/src/prague.rs"
+      ],
+      "fix_summary": "Changed slow_start_increase, slow_start_increase_ex, and slow_start_increase_ex2 to take Connection and gate growth on connection.cwin_blocked; updated BBR, BBR1, Cubic, and Prague callers to pass the connection context.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo check",
+        "cargo test compiled but did not complete as a pass gate: broad existing integration failures were printed and cnxstress tests exceeded 60s"
+      ]
+    },
+    "picoquic/config.c:config_parse_target_version": {
+      "analysis": "Rust now matches the C uint32_t digit loop, including wrapping overflow and zero on invalid hex characters.",
+      "c_id": "picoquic/config.c:config_parse_target_version",
+      "confirmation_analysis": "Current Rust matches the C hex digit loop: ASCII hex digits accumulate into u32, invalid bytes return 0, empty or wrapped-to-zero inputs return 0, and overflow wraps modulo 2^32.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/config.rs"
+      ],
+      "fix_summary": "Replaced u32::from_str_radix with byte-by-byte hex parsing using wrapping u32 accumulation; added focused tests for valid digits, invalid input, and overlong wraparound.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo test parse_hex_version",
+        "cargo check"
+      ]
+    },
+    "picoquic/config.c:config_set_option": {
+      "analysis": "Confirmed mismatch: ECH server handling accepted a single value and left ech_config_file unchanged, unlike C's second config_set_string_param call.",
+      "c_id": "picoquic/config.c:config_set_option",
+      "confirmation_analysis": "Current Rust EchServer handling now calls config_set_string_param for both parameter 0 and parameter 1. The one-value set_option path sets ech_key_file, clears ech_config_file, and returns InvalidArgument, matching the C helper-call sequence.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/config.rs"
+      ],
+      "fix_summary": "Updated EchServer to use config_set_string_param semantics for key and config file, requiring parameter 1 and clearing ech_config_file on missing or empty parameter; added focused ECH option tests.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo test ech_server",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/config.c:picoquic_config_command_line_ex": {
+      "analysis": "Rust now preserves the C behavior for unrecognized extended option strings: report the unknown option but return success without consuming argv.",
+      "c_id": "picoquic/config.c:picoquic_config_command_line_ex",
+      "confirmation_analysis": "Current Rust matches C for unknown extended options: it reports to stderr, returns success, and leaves argv/p_optind/config untouched; long-name lookup also uses C-style table-order prefix matching.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/config.rs"
+      ],
+      "fix_summary": "Updated command_line_ex to return Ok(()) on unknown options after stderr reporting; aligned long-name lookup with C-style prefix matching; added focused unit coverage.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo test command_line_ex_unknown_option_succeeds_without_consuming_args",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/config.c:picoquic_config_get_command_line_option_index": {
+      "analysis": "Rust command-line parsing now matches C long-option prefix lookup semantics: abbreviated names such as --long resolve through the same table-order prefix helper used by command_line_ex, while overlong names remain unknown.",
+      "c_id": "picoquic/config.c:picoquic_config_get_command_line_option_index",
+      "confirmation_analysis": "Actual current Rust item delegates to parse_option_string; short options use table-order letter lookup and long options use table-order prefix lookup, matching the C helper semantics. The prompt body is the adjacent value helper span, not the current item.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/config.rs"
+      ],
+      "fix_summary": "Added focused unit coverage for C-style abbreviated long-option lookup through picoquic_config_get_command_line_option_index and Config::command_line_ex.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo test command_line",
+        "cargo fmt --check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/config.c:picoquic_config_usage_file": {
+      "analysis": "Confirmed Rust write_usage omitted the C CC_ALGO supported-values line; it now emits registered congestion-control algorithm IDs with the C indentation/comma/period formatting when the registry is non-empty.",
+      "c_id": "picoquic/config.c:picoquic_config_usage_file",
+      "confirmation_analysis": "Rust write_usage now mirrors the C option-table output and CC_ALGO supported-values continuation line, including non-empty registry gating, 18-space indent, comma separators, and final period.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/config.rs"
+      ],
+      "fix_summary": "Aligned the CC_ALGO help text with C and added the registry-driven supported-values output in Config::write_usage.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt (pass)",
+        "cargo test --no-run (pass)",
+        "cargo clippy --tests --all-features -- -D warnings (pass)",
+        "git diff --check -- rs/fq/src/config.rs (pass)",
+        "cargo test config_usage (failed: current Rust test registers all algorithms while the golden fixture expects only newreno, cubic, bbr; fixture also has an existing qlog help-text mismatch)"
+      ]
+    },
+    "picoquic/config.c:picoquic_create_and_configure": {
+      "analysis": "Confirmed repair needed. Rust now uses BBR fallback with the option string, applies preferred addresses to default transport parameters, and keeps the literal C ECH branch behavior.",
+      "c_id": "picoquic/config.c:picoquic_create_and_configure",
+      "confirmation_analysis": "Current Rust now matches the relevant C behavior for BBR fallback with option string, preferred-address setup, and ECH branch/failure handling.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/config.rs"
+      ],
+      "fix_summary": "Changed congestion fallback to use the linked BBR algorithm directly instead of leaving any path that could retain Quic::new's NewReno default.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt --check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/frames.c:picoquic_apply_reset_stream_frame": {
+      "analysis": "Current Rust already preserves the C fall-through behavior: invalid local unidirectional RESET_STREAM records a connection error and sets the eventual return to None, but still runs stream lookup/create, final-offset validation, flow-control check, and reset handling.",
+      "c_id": "picoquic/frames.c:picoquic_apply_reset_stream_frame",
+      "confirmation_outcome": "pending",
+      "confirmed": false,
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo check"
+      ]
+    },
+    "picoquic/frames.c:picoquic_check_frame_needs_repeat": {
+      "analysis": "Rust retransmission decision logic now mirrors the C stateful cases instead of only handling a shallow subset.",
+      "c_id": "picoquic/frames.c:picoquic_check_frame_needs_repeat",
+      "confirmation_analysis": "Top-level Rust now covers the previously missing frame classes, but PATH_RESPONSE repeat classification still differs from C.",
+      "confirmation_fix_summary": "C picoquic_should_repeat_path_response_frame only checks each path's first_tuple, while Rust should_repeat_path_response_frame searches all tuples; a PATH_RESPONSE tied to a non-first tuple can produce a different no_need_to_repeat result.",
+      "confirmation_outcome": "needs_fix",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": false,
+      "files_changed": [
+        "rs/fq/src/internal.rs"
+      ],
+      "fix_summary": "Expanded check_frame_needs_repeat with stream SACK/reset handling, flow-control and blocked-frame checks, datagram/token/crypto/CID/reset/stop decisions, ack-frequency and multipath path-frame repeat handling, and preserved C-style output flag semantics.",
+      "outcome": "needs_fix",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/frames.c:picoquic_compute_ack_gap_and_delay": {
+      "analysis": "Rust now follows the translated helper sequence and includes the C conservative high-smoothed-RTT correction and final 32-packet cap.",
+      "c_id": "picoquic/frames.c:picoquic_compute_ack_gap_and_delay",
+      "confirmation_analysis": "Rust now mirrors the C helper sequence, high-smoothed-RTT conservative correction, ACK transmission-time cap, RTT-target gap correction, and final 32-packet cap. Safe saturation/division guards do not indicate a real translation mismatch for valid state.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/internal.rs"
+      ],
+      "fix_summary": "Reworked compute_ack_gap_and_delay to call packet-window, ACK-delay, and ACK-gap helpers, then added return-rate ACK transmission correction, RTT-target gap correction, and final cap.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/frames.c:picoquic_copy_stream_frame_for_retransmit": {
+      "analysis": "Rust now represents C's nullable connection path; no-connection retransmit copying skips stream lookup instead of suppressing missing-stream data.",
+      "c_id": "picoquic/frames.c:picoquic_copy_stream_frame_for_retransmit",
+      "confirmation_analysis": "Rust now represents the nullable C connection path: None maps to NoConnection, which skips stream lookup and keeps the frame needed, while production callers still pass a real Connection and preserve missing/reset/acked suppression.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/internal.rs"
+      ],
+      "fix_summary": "Added StreamFrameRetransmitContext with Connection and NoConnection modes, kept production caller using a real connection, and added owned-file unit coverage for pure no-connection copy behavior.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo test copy_stream_frame_for_retransmit_without_connection_copies_frame",
+        "cargo test dataqueue_copy",
+        "cargo check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/frames.c:picoquic_copy_stream_frames_for_retransmit": {
+      "analysis": "Current Rust implementation already matches the C wrapper behavior: priority queue loop, single-frame retransmit delegation, dequeue/requeue handling, more_data propagation, and corrupted-frame fallback are present.",
+      "c_id": "picoquic/frames.c:picoquic_copy_stream_frames_for_retransmit",
+      "confirmation_analysis": "Current Rust wrapper matches the C control flow: it walks the priority-ordered repeat queue, stops above current_priority with more_data set, delegates to the single-frame retransmit helper, repeats only after dequeue while space remains, handles dequeue/requeue through the helper, and resets to the original buffer position with an internal error on corrupted-frame failure.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings"
+      ]
+    },
+    "picoquic/logwriter.c:binlog_close_connection": {
+      "analysis": "Rust close path now includes the C-observable autoqlog callback and open-log accounting after closing an active binlog handle.",
+      "c_id": "picoquic/logwriter.c:binlog_close_connection",
+      "confirmation_analysis": "Rust close_connection now matches the C close-side effects for an active binlog handle: close record, flush, close/drop handle, conditional autoqlog callback before clearing the binlog file name, and guarded open-log decrement.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/binlog.rs"
+      ],
+      "fix_summary": "Closed/flushed the binlog handle before autoqlog, ran autoqlog when qlog_dir and autoqlog_fn are set, cleared binlog_file_name, and decremented current_number_of_open_logs when positive.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt --check -- src/binlog.rs",
+        "cargo check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings",
+        "git diff --check -- rs/fq/src/binlog.rs"
+      ]
+    },
+    "picoquic/logwriter.c:binlog_new_connection": {
+      "analysis": "Rust now matches the C behavior: binlog new_connection opens and names the per-connection file, enforces the open-log cap, updates bookkeeping, and writes the start event through installed binlog dispatch.",
+      "c_id": "picoquic/logwriter.c:binlog_new_connection",
+      "confirmation_analysis": "Rust now opens and names the per-connection binlog, enforces the open-log cap, updates bookkeeping, writes the new-connection event, and binlog enablement installs the dispatch backend.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/binlog.rs"
+      ],
+      "fix_summary": "Implemented binlog file creation/bookkeeping in Connection::new_connection and wired Quic::enable_binlog to install the binlog Logger backend.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings",
+        "cargo fmt --check"
+      ]
+    },
+    "picoquic/logwriter.c:binlog_outgoing_packet": {
+      "analysis": "Confirmed outgoing binlog parsing now matches the C path for nonzero short-header remote CID offsets and version-specific long-header packet type decoding.",
+      "c_id": "picoquic/logwriter.c:binlog_outgoing_packet",
+      "confirmation_analysis": "Rust outgoing_packet now mirrors the C outgoing parse path: short headers use the connection path-0 remote CID length, long headers use supported-version packet-type decoding, and the PN/checksum adjustments match before packet logging.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/binlog.rs"
+      ],
+      "fix_summary": "Added focused regression tests for outgoing short headers with a connection remote CID and QUIC v2 long-header type parsing in rs/fq/src/binlog.rs.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo check",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings",
+        "cargo test outgoing_"
+      ]
+    },
+    "picoquic/logwriter.c:picoquic_enable_binlog": {
+      "analysis": "Current Rust source already installs a real BinlogLogger in Quic.bin_log_fns and propagates it to existing connections; new connections also clone the context logger, matching the C vtable enable behavior.",
+      "c_id": "picoquic/logwriter.c:picoquic_enable_binlog",
+      "confirmation_analysis": "Rust now installs a real BinlogLogger in Quic.bin_log_fns, propagates it to existing connections, and new connections clone the context logger; BinlogLogger dispatches new_connection to the binlog implementation, matching the C vtable enable behavior in this Rust architecture.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo check"
+      ]
+    },
+    "picoquic/logwriter.c:picoquic_log_stream_frame": {
+      "analysis": "Confirmed mismatch: length-bearing STREAM logging used the pre-length header length, omitting or undercounting the encoded length varint. Rust now logs through the parsed length varint plus the payload preview and preserves C-style short-frame error logging.",
+      "c_id": "picoquic/logwriter.c:picoquic_log_stream_frame",
+      "confirmation_analysis": "Rust now computes the logged header length after read_length, so length-bearing STREAM frames include the encoded length varint plus the payload preview; zero-length and short parse-error logging are acceptable.",
+      "confirmation_fix_summary": "",
+      "confirmation_outcome": "ok",
+      "confirmation_verification": [
+        "read-only context inspected"
+      ],
+      "confirmed": true,
+      "files_changed": [
+        "rs/fq/src/binlog.rs"
+      ],
+      "fix_summary": "Updated log_stream_frame header-length accounting after read_length, added cautious STREAM parse-error logging, and added focused unit tests for length-bearing, zero-length, and short STREAM frames.",
+      "outcome": "fixed",
+      "previous_phase4d_outcome": "needs_fix",
+      "verification": [
+        "cargo fmt",
+        "cargo test stream_frame",
+        "cargo test --no-run",
+        "cargo clippy --tests --all-features -- -D warnings",
+        "cargo check"
+      ]
+    }
+  },
+  "schema_version": 1
+}

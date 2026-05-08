@@ -1248,11 +1248,14 @@ impl Bbr1State {
                     } else {
                         ack_state.rtt_measurement
                     };
-                    let packet_time =
-                        Instant::from_ticks(path_x.pacing.packet_time_microsec.ticks());
+                    let packet_time = cnx
+                        .paths
+                        .first()
+                        .map(|path| path.pacing.packet_time_microsec)
+                        .unwrap_or_else(|| path_x.pacing.packet_time_microsec);
                     if self.rtt_filter.hystart_test(
                         rtt_meas,
-                        packet_time,
+                        Instant::from_ticks(packet_time.ticks()),
                         Instant::from_ticks(current_time),
                         cnx.is_time_stamp_enabled,
                     ) {
@@ -1267,7 +1270,7 @@ impl Bbr1State {
                         self.rt_prop_stamp = current_time;
                     }
                     if path_x.last_time_acked_data_frame_sent > path_x.last_sender_limited_time {
-                        let increase = path_x.slow_start_increase(self.bytes_delivered);
+                        let increase = path_x.slow_start_increase(cnx, self.bytes_delivered);
                         path_x.cwin += increase;
                     }
                     self.bytes_delivered = 0;

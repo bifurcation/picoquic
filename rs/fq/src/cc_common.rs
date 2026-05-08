@@ -305,29 +305,41 @@ impl ConnectionCc for Connection {
 /// `picoquic_cc_*` family that takes a path (and reaches the
 /// connection through the path's back-pointer when needed).
 pub trait PathCc {
-    /// Lowest sequence number not yet acknowledged on this path: the
+    /// Lowest sequence number not yet acknowledged for the packet
+    /// context selected by the connection's multipath mode: the
     /// pending-list head if any, else `highest_acknowledged + 1`.
     /// C: `picoquic_cc_get_lowest_not_ack`.
-    fn lowest_not_ack(&self) -> u64;
+    fn lowest_not_ack(&self, connection: &Connection) -> u64;
 
     /// Bytes to add to CWIN while in classic slow start.  Returns
-    /// `nb_delivered` if the path is currently CWIN-blocked, else
+    /// `nb_delivered` if the connection is currently CWIN-blocked, else
     /// zero (no growth without back-pressure).
     /// C: `picoquic_cc_slow_start_increase`.
-    fn slow_start_increase(&self, nb_delivered: u64) -> u64;
+    fn slow_start_increase(&self, connection: &Connection, nb_delivered: u64) -> u64;
 
     /// Bytes to add to CWIN, with HyStart++ Conservative Slow Start
     /// support: when `in_css` is true, growth is divided by
     /// [`HYSTART_PP_CSS_GROWTH_DIVISOR`].
     /// C: `picoquic_cc_slow_start_increase_ex`.
-    fn slow_start_increase_ex(&self, nb_delivered: u64, in_css: bool) -> u64;
+    fn slow_start_increase_ex(
+        &self,
+        connection: &Connection,
+        nb_delivered: u64,
+        in_css: bool,
+    ) -> u64;
 
     /// Bytes to add to CWIN, with Prague-style ECN damping.
     /// `prague_alpha` is an integer fraction over 1024 (so `0` means
     /// no ECN signal and the call falls back to
     /// [`Self::slow_start_increase_ex`]).
     /// C: `picoquic_cc_slow_start_increase_ex2`.
-    fn slow_start_increase_ex2(&self, nb_delivered: u64, in_css: bool, prague_alpha: u64) -> u64;
+    fn slow_start_increase_ex2(
+        &self,
+        connection: &Connection,
+        nb_delivered: u64,
+        in_css: bool,
+        prague_alpha: u64,
+    ) -> u64;
 
     /// Bandwidth-derived target CWIN: returns the half-BDP estimate
     /// if it exceeds the current CWIN, otherwise the current CWIN.
@@ -342,38 +354,49 @@ pub trait PathCc {
 }
 
 impl PathCc for Path {
-    fn lowest_not_ack(&self) -> u64 {
-        // C reads cnx->pkt_ctx[app] for single-path, path->pkt_ctx for multipath.
-        // Path has no back-pointer to Connection, so we always use path->pkt_ctx
-        // (exact for multipath; conservative approximation for single-path).
-        self.pkt_ctx
+    fn lowest_not_ack(&self, connection: &Connection) -> u64 {
+        let pkt_ctx = if connection.is_multipath_enabled {
+            &self.pkt_ctx
+        } else {
+            &connection.pkt_ctx[crate::PacketContext::Application as usize]
+        };
+
+        pkt_ctx
             .pending
             .keys()
             .next()
             .copied()
-            .unwrap_or(self.pkt_ctx.highest_acknowledged + 1)
+            .unwrap_or(pkt_ctx.highest_acknowledged.wrapping_add(1))
     }
 
-    fn slow_start_increase(&self, nb_delivered: u64) -> u64 {
-        // C body checks cnx->cwin_blocked.  Path has no back-pointer to
-        // Connection, so approximate with bytes_in_transit >= cwin, which is
-        // the condition that sets cwin_blocked in the C library.
-        if self.bytes_in_transit < self.cwin {
-            0
-        } else {
+    fn slow_start_increase(&self, connection: &Connection, nb_delivered: u64) -> u64 {
+        if connection.cwin_blocked {
             nb_delivered
-        }
-    }
-
-    fn slow_start_increase_ex(&self, nb_delivered: u64, in_css: bool) -> u64 {
-        if in_css {
-            self.slow_start_increase(nb_delivered / HYSTART_PP_CSS_GROWTH_DIVISOR)
         } else {
-            self.slow_start_increase(nb_delivered)
+            0
         }
     }
 
-    fn slow_start_increase_ex2(&self, nb_delivered: u64, in_css: bool, prague_alpha: u64) -> u64 {
+    fn slow_start_increase_ex(
+        &self,
+        connection: &Connection,
+        nb_delivered: u64,
+        in_css: bool,
+    ) -> u64 {
+        if in_css {
+            self.slow_start_increase(connection, nb_delivered / HYSTART_PP_CSS_GROWTH_DIVISOR)
+        } else {
+            self.slow_start_increase(connection, nb_delivered)
+        }
+    }
+
+    fn slow_start_increase_ex2(
+        &self,
+        connection: &Connection,
+        nb_delivered: u64,
+        in_css: bool,
+        prague_alpha: u64,
+    ) -> u64 {
         if prague_alpha != 0 {
             let delta = if self.smoothed_rtt <= TARGET_RENO_RTT {
                 nb_delivered * (1024 - prague_alpha) / 1024
@@ -382,9 +405,9 @@ impl PathCc for Path {
                     / TARGET_RENO_RTT.ticks()
                     / 1024
             };
-            self.slow_start_increase_ex(delta, in_css)
+            self.slow_start_increase_ex(connection, delta, in_css)
         } else {
-            self.slow_start_increase_ex(nb_delivered, in_css)
+            self.slow_start_increase_ex(connection, nb_delivered, in_css)
         }
     }
 

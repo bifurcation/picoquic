@@ -91,9 +91,11 @@
 //! (always `0` today, but reserved for future failure modes) as
 //! `Result<(), Error>` per the project's error-handling convention.
 
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path as FsPath, PathBuf};
+use std::rc::Rc;
 
 use core::net::SocketAddr;
 
@@ -102,10 +104,11 @@ use crate::Instant;
 use crate::bytestream::{BYTESTREAM_MAX_BUFFER_SIZE, ByteStream, ByteStreamBuf};
 use crate::frames::FrameType;
 use crate::internal::{
-    Connection, PacketHeader, PacketType, Path, frames_varint_decode, frames_varint_skip,
-    varint_decode, varint_encode,
+    Connection, Epoch, PacketHeader, PacketType, Path, SUPPORTED_VERSIONS, frames_varint_decode,
+    frames_varint_skip, varint_decode, varint_encode,
 };
-use crate::{ConnectionId, Quic};
+use crate::logger::{Logger, LoggerRef};
+use crate::{ConnectionId, PacketContext, Quic};
 
 // ---------------------------------------------------------------------------
 // Event-tag enum.
@@ -161,6 +164,16 @@ fn write_record(f: &mut File, payload: &[u8]) {
     let head = (payload.len() as u32).to_be_bytes();
     let _ = f.write_all(&head);
     let _ = f.write_all(payload);
+}
+
+fn connection_id_hexa(cid: &ConnectionId) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(cid.len() * 2);
+    for &b in cid.as_bytes() {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    s
 }
 
 /// Open a binlog file and write its fixed 16-byte stream header.
@@ -220,6 +233,34 @@ fn get_path_id(connection: &Connection, path_x: &Path) -> u64 {
     }
 }
 
+fn initial_remote_connection_id(connection: &Connection) -> ConnectionId {
+    let path_unique_id = connection
+        .paths
+        .first()
+        .map(|p| p.unique_path_id)
+        .unwrap_or(0);
+    let remote_index = connection
+        .paths
+        .first()
+        .and_then(|p| p.tuples.first())
+        .and_then(|t| t.remote_connection_id_index)
+        .unwrap_or(0);
+
+    connection
+        .remote_connection_id_stashes
+        .iter()
+        .find(|stash| stash.unique_path_id == path_unique_id)
+        .and_then(|stash| stash.connection_ids.get(remote_index))
+        .or_else(|| {
+            connection
+                .remote_connection_id_stashes
+                .first()
+                .and_then(|stash| stash.connection_ids.first())
+        })
+        .map(|remote| remote.connection_id)
+        .unwrap_or_default()
+}
+
 /// Append a varint-encoded `value` to `out`.
 fn append_varint(out: &mut Vec<u8>, value: u64) {
     let mut buf = [0u8; 8];
@@ -234,13 +275,26 @@ fn append_frame(out: &mut Vec<u8>, frame_bytes: &[u8]) {
     out.extend_from_slice(frame_bytes);
 }
 
-/// Minimal packet-header parser sufficient for binlog's outgoing-packet
-/// record.  C: `picoquic_parse_packet_header` populates a richer
-/// `PacketHeader`, but reaches into `Quic` for the version table; the
-/// trait method [`Binlog::outgoing_packet`] runs without a Quic
-/// back-pointer, so we only extract what the binlog wire format
-/// actually serializes (type, version, CIDs, header offsets).
-fn parse_outgoing_header(send_buffer: &[u8]) -> PacketHeader {
+fn supported_version_index(version: u32) -> Option<i32> {
+    SUPPORTED_VERSIONS
+        .iter()
+        .position(|v| *v as u32 == version)
+        .map(|index| index as i32)
+}
+
+/// Parse the encrypted wire header for [`Binlog::outgoing_packet`].
+///
+/// C calls `picoquic_parse_packet_header(..., pcnx = cnx, receiving = 0)`.
+/// In that mode short headers use the peer CID length from the connection
+/// before the packet-number field; long-header packet type decoding is driven
+/// by the negotiated version table.
+fn parse_outgoing_header(
+    send_buffer: &[u8],
+    outgoing_short_dcid_len: usize,
+    connection_version_index: i32,
+    do_grease_quic_bit: bool,
+    has_loss_bit: bool,
+) -> PacketHeader {
     let mut ph = PacketHeader::default();
     if send_buffer.is_empty() {
         ph.packet_type = PacketType::Error;
@@ -249,14 +303,49 @@ fn parse_outgoing_header(send_buffer: &[u8]) -> PacketHeader {
     let flags = send_buffer[0];
     if flags & 0x80 == 0 {
         // Short header — only 1-RTT in flight.
-        ph.packet_type = PacketType::OneRttProtected;
+        ph.packet_context = PacketContext::Application;
+        ph.epoch = Epoch::OneRtt;
+        ph.payload_length_value = 0;
+        if send_buffer.len() < 1 + outgoing_short_dcid_len {
+            ph.packet_type = PacketType::Error;
+            ph.offset = send_buffer.len();
+            ph.payload_length = 0;
+            return ph;
+        }
+        if let Some(cid) =
+            ConnectionId::clone_from_slice(&send_buffer[1..1 + outgoing_short_dcid_len])
+        {
+            ph.dest_connection_id = cid;
+        } else {
+            ph.packet_type = PacketType::Error;
+            ph.offset = send_buffer.len();
+            ph.payload_length = 0;
+            return ph;
+        }
+        ph.offset = 1 + outgoing_short_dcid_len;
+        ph.packet_number_offset = ph.offset;
+        ph.version_index = connection_version_index;
+        ph.quic_bit_is_zero = (flags & 0x40) == 0;
+        ph.packet_type = if !ph.quic_bit_is_zero || do_grease_quic_bit {
+            PacketType::OneRttProtected
+        } else {
+            PacketType::Error
+        };
+        ph.has_spin_bit = true;
         ph.spin = (flags & 0x20) != 0;
         ph.key_phase = (flags & 0x04) != 0;
-        ph.quic_bit_is_zero = (flags & 0x40) == 0;
-        ph.offset = 1; // CIDs are not on the short-header wire.
-        ph.payload_length_value = send_buffer.len().saturating_sub(1);
-        ph.payload_length = ph.payload_length_value;
-        ph.packet_number_offset = 1;
+        ph.packet_number_mask = 0;
+        ph.packet_number_truncated = 0;
+        if has_loss_bit {
+            ph.has_loss_bits = true;
+            ph.loss_bit_l = (flags & 0x08) != 0;
+            ph.loss_bit_q = (flags & 0x10) != 0;
+        }
+        ph.payload_length = if ph.packet_type == PacketType::Error {
+            0
+        } else {
+            send_buffer.len() - ph.offset
+        };
         return ph;
     }
 
@@ -273,6 +362,15 @@ fn parse_outgoing_header(send_buffer: &[u8]) -> PacketHeader {
     ph.version = version;
     let mut pos = 5usize;
 
+    if version != 0 {
+        let Some(version_index) = supported_version_index(version) else {
+            ph.packet_type = PacketType::Error;
+            ph.version_index = -1;
+            return ph;
+        };
+        ph.version_index = version_index;
+    }
+
     if pos >= send_buffer.len() {
         ph.packet_type = PacketType::Error;
         return ph;
@@ -283,9 +381,11 @@ fn parse_outgoing_header(send_buffer: &[u8]) -> PacketHeader {
         ph.packet_type = PacketType::Error;
         return ph;
     }
-    if let Some(cid) = ConnectionId::clone_from_slice(&send_buffer[pos..pos + dcid_len]) {
-        ph.dest_connection_id = cid;
-    }
+    let Some(cid) = ConnectionId::clone_from_slice(&send_buffer[pos..pos + dcid_len]) else {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    };
+    ph.dest_connection_id = cid;
     pos += dcid_len;
 
     if pos >= send_buffer.len() {
@@ -298,9 +398,11 @@ fn parse_outgoing_header(send_buffer: &[u8]) -> PacketHeader {
         ph.packet_type = PacketType::Error;
         return ph;
     }
-    if let Some(cid) = ConnectionId::clone_from_slice(&send_buffer[pos..pos + scid_len]) {
-        ph.src_connection_id = cid;
-    }
+    let Some(cid) = ConnectionId::clone_from_slice(&send_buffer[pos..pos + scid_len]) else {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    };
+    ph.src_connection_id = cid;
     pos += scid_len;
 
     if version == 0 {
@@ -311,31 +413,66 @@ fn parse_outgoing_header(send_buffer: &[u8]) -> PacketHeader {
         return ph;
     }
 
-    ph.packet_type = crate::internal::parse_long_packet_type(flags, 0);
+    ph.packet_type = crate::internal::parse_long_packet_type(flags, ph.version_index);
     ph.quic_bit_is_zero = (flags & 0x40) == 0;
+    ph.spin = false;
+    ph.has_spin_bit = false;
 
-    if ph.packet_type == PacketType::Initial {
-        let mut tok_len = 0u64;
-        match frames_varint_decode(&send_buffer[pos..], &mut tok_len) {
-            Some(rest) => {
-                pos = send_buffer.len() - rest.len();
-                let token_end = pos.saturating_add(tok_len as usize);
-                if token_end <= send_buffer.len() {
+    match ph.packet_type {
+        PacketType::Initial => {
+            ph.packet_context = PacketContext::Initial;
+            ph.epoch = Epoch::Initial;
+            let mut tok_len = 0u64;
+            match frames_varint_decode(&send_buffer[pos..], &mut tok_len) {
+                Some(rest) => {
+                    pos = send_buffer.len() - rest.len();
+                    let Some(token_len) = usize::try_from(tok_len).ok() else {
+                        ph.packet_type = PacketType::Error;
+                        ph.offset = send_buffer.len();
+                        return ph;
+                    };
+                    let token_end = pos.saturating_add(token_len);
+                    if token_end > send_buffer.len() {
+                        ph.packet_type = PacketType::Error;
+                        ph.offset = send_buffer.len();
+                        return ph;
+                    }
                     ph.token_bytes = send_buffer[pos..token_end].to_vec();
                     pos = token_end;
                 }
+                None => {
+                    ph.packet_type = PacketType::Error;
+                    return ph;
+                }
             }
-            None => {
-                ph.packet_type = PacketType::Error;
-                return ph;
-            }
+        }
+        PacketType::ZeroRttProtected => {
+            ph.packet_context = PacketContext::Application;
+            ph.epoch = Epoch::ZeroRtt;
+        }
+        PacketType::Handshake => {
+            ph.packet_context = PacketContext::Handshake;
+            ph.epoch = Epoch::Handshake;
+        }
+        PacketType::Retry => {
+            ph.packet_context = PacketContext::Initial;
+            ph.epoch = Epoch::Initial;
+        }
+        _ => {
+            ph.packet_type = PacketType::Error;
+            return ph;
         }
     }
 
     if ph.packet_type == PacketType::Retry {
         ph.offset = pos;
-        ph.payload_length_value = send_buffer.len().saturating_sub(pos);
-        ph.payload_length = ph.payload_length_value;
+        ph.packet_number_offset = pos;
+        if send_buffer.len() > pos {
+            ph.payload_length_value = send_buffer.len() - pos;
+            ph.payload_length = ph.payload_length_value;
+        } else {
+            ph.packet_type = PacketType::Error;
+        }
         return ph;
     }
 
@@ -350,10 +487,23 @@ fn parse_outgoing_header(send_buffer: &[u8]) -> PacketHeader {
     };
     let len_consumed = (send_buffer.len() - after_len.len()) - pos;
     pos += len_consumed;
+    let Ok(payload_len) = usize::try_from(payload_len) else {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    };
+    if after_len.len() < payload_len {
+        ph.packet_type = PacketType::Error;
+        ph.payload_length = send_buffer.len().saturating_sub(ph.offset);
+        ph.payload_length_value = ph.payload_length;
+        return ph;
+    }
     ph.packet_number_offset = pos;
     ph.offset = pos;
-    ph.payload_length_value = payload_len as usize;
-    ph.payload_length = payload_len as usize;
+    ph.payload_length_value = payload_len;
+    ph.payload_length = payload_len;
+    if ph.quic_bit_is_zero && !do_grease_quic_bit {
+        ph.packet_type = PacketType::Error;
+    }
 
     ph
 }
@@ -374,23 +524,40 @@ fn read_length(bytes: &[u8]) -> Option<(usize, &[u8])> {
     Some((n, rest))
 }
 
+fn log_stream_error<'a>(out: &mut Vec<u8>, bytes_in: &'a [u8]) -> Option<&'a [u8]> {
+    let length = bytes_in.len().min(26);
+    append_frame(out, &bytes_in[..length]);
+    None
+}
+
 fn log_stream_frame<'a>(out: &mut Vec<u8>, bytes_in: &'a [u8]) -> Option<&'a [u8]> {
     let bytes_begin = bytes_in;
     if bytes_in.is_empty() {
         return None;
     }
     let ftype = bytes_in[0];
-    let mut bytes = skip_fixed(bytes_in, 1)?;
-    bytes = frames_varint_skip(bytes)?;
+    let mut bytes = match skip_fixed(bytes_in, 1) {
+        Some(rest) => rest,
+        None => return log_stream_error(out, bytes_begin),
+    };
+    bytes = match frames_varint_skip(bytes) {
+        Some(rest) => rest,
+        None => return log_stream_error(out, bytes_begin),
+    };
     if (ftype & 4) != 0 {
-        bytes = frames_varint_skip(bytes)?;
+        bytes = match frames_varint_skip(bytes) {
+            Some(rest) => rest,
+            None => return log_stream_error(out, bytes_begin),
+        };
     }
 
-    let head_len = bytes_begin.len() - bytes.len();
     let has_length = (ftype & 2) != 0;
     let length: usize;
     if has_length {
-        let (l, rest) = read_length(bytes)?;
+        let (l, rest) = match read_length(bytes) {
+            Some(v) => v,
+            None => return log_stream_error(out, bytes_begin),
+        };
         length = l;
         bytes = rest;
     } else {
@@ -403,9 +570,11 @@ fn log_stream_frame<'a>(out: &mut Vec<u8>, bytes_in: &'a [u8]) -> Option<&'a [u8
     }
 
     if has_length {
-        let copy_end = head_len.saturating_add(extra_bytes).min(bytes_begin.len());
+        let header_len = bytes_begin.len() - bytes.len();
+        let copy_end = header_len + extra_bytes.min(bytes.len());
         append_frame(out, &bytes_begin[..copy_end]);
     } else {
+        let head_len = bytes_begin.len() - bytes.len();
         let mut log_buffer = Vec::with_capacity(head_len + 8 + extra_bytes);
         log_buffer.extend_from_slice(&bytes_begin[..head_len]);
         let mut len_buf = [0u8; 8];
@@ -1138,11 +1307,17 @@ impl Binlog for Connection {
         let path_id = get_path_id(self, path_x);
 
         // The C body calls `picoquic_parse_packet_header(cnx->quic,
-        // send_buffer, …)` to recover the header from the encrypted
-        // wire form.  `parse_packet_header` lives on [`Quic`] and
-        // `Connection` carries no back-pointer; do a minimal in-line
-        // parse so we can still emit a useful record.
-        let mut ph = parse_outgoing_header(send_buffer);
+        // send_buffer, …, &pcnx, 0)` with `pcnx` pre-set to this
+        // connection.  Mirror the outgoing short-header CID-length
+        // rule locally before emitting the binlog record.
+        let outgoing_short_dcid_len = initial_remote_connection_id(self).len();
+        let mut ph = parse_outgoing_header(
+            send_buffer,
+            outgoing_short_dcid_len,
+            self.version_index,
+            self.local_parameters.do_grease_quic_bit,
+            self.is_loss_bit_enabled_outgoing,
+        );
 
         let checksum_length: usize = {
             let epoch = match ph.packet_type {
@@ -1313,14 +1488,59 @@ impl Binlog for Connection {
     }
 
     fn new_connection(&mut self) {
-        // The C body opens a new file using `cnx->quic->binlog_dir`.
-        // `Connection` carries no back-pointer to its `Quic`, so the
-        // file-open path lives on the Quic side; here we only emit
-        // the `new_connection` record when the file handle is
-        // already attached, mirroring the C `bin_log_fns == NULL`
-        // short-circuit.
-        if self.f_binlog.is_none() {
+        let quic_ptr = self.quic_ptr;
+        if quic_ptr.is_null() {
             return;
+        }
+
+        let (bin_dir, use_unique_log_names, creation_time) = unsafe {
+            // SAFETY: `quic_ptr` is installed by `Quic::create_cnx_internal`
+            // and remains valid while the connection is live.  This block only
+            // snapshots context-level logging configuration and checks the
+            // open-log cap before the connection-owned file is replaced.
+            let quic = &mut *quic_ptr;
+            if quic.bin_log_fns.is_none()
+                || quic.current_number_of_open_logs >= quic.max_simultaneous_logs
+            {
+                return;
+            }
+            let Some(bin_dir) = quic.binlog_dir.as_ref().or(quic.qlog_dir.as_ref()).cloned() else {
+                return;
+            };
+            (bin_dir, quic.use_unique_log_names, quic.time())
+        };
+
+        self.f_binlog = None;
+
+        let cid_name = connection_id_hexa(&self.initial_connection_id);
+        let role = if self.client_mode { "client" } else { "server" };
+        let file_name = if use_unique_log_names {
+            format!("{}.{:x}.{}.log", cid_name, self.log_unique, role)
+        } else {
+            format!("{}.{}.log", cid_name, role)
+        };
+        let log_filename = bin_dir.join(file_name);
+        if log_filename.to_string_lossy().len() >= 512 {
+            return;
+        }
+        self.binlog_file_name = Some(log_filename.clone());
+
+        let Some(f_binlog) = create_binlog(
+            &log_filename,
+            creation_time,
+            self.local_parameters.initial_max_path_id > 0,
+        ) else {
+            self.binlog_file_name = None;
+            return;
+        };
+        self.f_binlog = Some(f_binlog);
+
+        unsafe {
+            // SAFETY: same ownership invariant as above; this mirrors the C
+            // context-level open-log accounting increment after successful
+            // binlog creation.
+            (*quic_ptr).current_number_of_open_logs =
+                (*quic_ptr).current_number_of_open_logs.saturating_add(1);
         }
 
         let cid = self.initial_connection_id;
@@ -1332,21 +1552,7 @@ impl Binlog for Connection {
             .map(|a| a.congestion_algorithm_id)
             .unwrap_or("");
         let spin_policy = self.spin_policy as u64;
-        let remote_cid: ConnectionId = self
-            .paths
-            .first()
-            .and_then(|p| p.tuples.first())
-            .and_then(|t| t.remote_connection_id_index)
-            .and_then(|idx| {
-                self.remote_connection_id_stashes.iter().find_map(|stash| {
-                    stash
-                        .connection_ids
-                        .iter()
-                        .find(|r| (r.sequence as usize) == idx)
-                        .map(|r| r.connection_id)
-                })
-            })
-            .unwrap_or_default();
+        let remote_cid = initial_remote_connection_id(self);
 
         let mut buf = ByteStreamBuf::default();
         let Some(mut msg) = buf.stream(BYTESTREAM_MAX_BUFFER_SIZE) else {
@@ -1374,27 +1580,54 @@ impl Binlog for Connection {
         let now = self.quic_time();
 
         let mut buf = ByteStreamBuf::default();
-        let Some(mut msg) = buf.stream(BYTESTREAM_MAX_BUFFER_SIZE) else {
-            self.f_binlog = None;
-            self.binlog_file_name = None;
-            return;
-        };
-        compose_event_header(&mut msg, &cid, now, 0, LogEventType::ConnectionClose);
-        let payload = msg.as_bytes().to_vec();
-        drop(msg);
+        if let Some(mut msg) = buf.stream(BYTESTREAM_MAX_BUFFER_SIZE) {
+            compose_event_header(&mut msg, &cid, now, 0, LogEventType::ConnectionClose);
+            let payload = msg.as_bytes().to_vec();
+            drop(msg);
+
+            if let Some(f) = self.f_binlog.as_mut() {
+                write_record(f, &payload);
+            }
+        }
 
         if let Some(f) = self.f_binlog.as_mut() {
-            write_record(f, &payload);
             let _ = f.flush();
         }
 
-        // Drop the file handle and release the file-name bookkeeping.
-        // The C body also calls `quic->autoqlog_fn(cnx)` and
-        // decrements `quic->current_number_of_open_logs`; both
-        // require a back-pointer to `Quic` we don't carry here, so
-        // those bookkeeping hooks fire on the Quic side at teardown.
+        // Close the file before auto-qlog conversion, matching C's
+        // `cnx->f_binlog = picoquic_file_close(...)`.
         self.f_binlog = None;
+        let quic_ptr = self.quic_ptr;
+
+        if !quic_ptr.is_null() {
+            // SAFETY: `quic_ptr` is installed by `Quic::create_cnx_internal`
+            // and remains valid while the connection is live.  Borrow only
+            // the disjoint context fields needed for the close hook; the
+            // callback receives a shared connection borrow, as required by
+            // `AutoQlog::run`.
+            unsafe {
+                let qlog_dir = &(*quic_ptr).qlog_dir;
+                let autoqlog_fn = &mut (*quic_ptr).autoqlog_fn;
+                if qlog_dir.is_some()
+                    && let Some(autoqlog) = autoqlog_fn.as_mut()
+                {
+                    let _ = autoqlog.run(self);
+                }
+            }
+        }
+
         self.binlog_file_name = None;
+
+        if !quic_ptr.is_null() {
+            // SAFETY: same ownership invariant as above; this mirrors the C
+            // context-level log-accounting decrement after the file was closed.
+            unsafe {
+                let open_logs = &mut (*quic_ptr).current_number_of_open_logs;
+                if *open_logs > 0 {
+                    *open_logs -= 1;
+                }
+            }
+        }
     }
 
     fn cc_dump(&mut self, path_x: &mut Path, current_time: Instant) {
@@ -1529,6 +1762,235 @@ impl Binlog for Connection {
     }
 }
 
+struct BinlogLogger;
+
+impl Logger for BinlogLogger {
+    fn quic_app_message(
+        &mut self,
+        _quic: &mut Quic,
+        _cid: &ConnectionId,
+        _args: core::fmt::Arguments<'_>,
+    ) {
+    }
+
+    fn quic_pdu(
+        &mut self,
+        _quic: &mut Quic,
+        _receiving: bool,
+        _current_time: Instant,
+        _cid64: u64,
+        _addr_peer: &SocketAddr,
+        _addr_local: &SocketAddr,
+        _packet_length: usize,
+    ) {
+    }
+
+    fn quic_close(&mut self, quic: &mut Quic) {
+        quic.binlog_close();
+    }
+
+    fn app_message(&mut self, connection: &mut Connection, args: core::fmt::Arguments<'_>) {
+        if connection.f_binlog.is_some() {
+            Binlog::message_v(connection, args);
+        }
+    }
+
+    fn pdu(
+        &mut self,
+        connection: &mut Connection,
+        receiving: bool,
+        current_time: Instant,
+        addr_peer: &SocketAddr,
+        addr_local: &SocketAddr,
+        packet_length: usize,
+        unique_path_id: u64,
+        ecn: u8,
+    ) {
+        if !connection.is_still_logging() {
+            return;
+        }
+        let cid = connection.initial_connection_id;
+        if let Some(f) = connection.f_binlog.as_mut() {
+            crate::binlog::pdu(
+                f,
+                &cid,
+                receiving,
+                current_time,
+                addr_peer,
+                addr_local,
+                packet_length,
+                unique_path_id,
+                ecn,
+            );
+        }
+    }
+
+    fn packet(
+        &mut self,
+        connection: &mut Connection,
+        path_x: Option<&mut Path>,
+        receiving: bool,
+        current_time: Instant,
+        ph: &PacketHeader,
+        bytes: &[u8],
+    ) {
+        if !connection.is_still_logging() {
+            return;
+        }
+        let cid = connection.initial_connection_id;
+        let path_id = path_x
+            .as_deref()
+            .map(|path| get_path_id(connection, path))
+            .unwrap_or(0);
+        if let Some(f) = connection.f_binlog.as_mut() {
+            crate::binlog::packet(f, &cid, path_id, receiving, current_time, ph, bytes);
+        }
+    }
+
+    fn dropped_packet(
+        &mut self,
+        connection: &mut Connection,
+        path_x: Option<&mut Path>,
+        ph: &PacketHeader,
+        packet_size: usize,
+        err: i32,
+        current_time: Instant,
+    ) {
+        if !connection.is_still_logging() || connection.f_binlog.is_none() {
+            return;
+        }
+
+        if let Some(path_x) = path_x {
+            Binlog::dropped_packet(connection, path_x, ph, packet_size, err, current_time);
+            return;
+        }
+
+        let cid = connection.initial_connection_id;
+        let mut buf = ByteStreamBuf::default();
+        let Some(mut msg) = buf.stream(BYTESTREAM_MAX_BUFFER_SIZE) else {
+            return;
+        };
+        let _ = msg.write_u32(0);
+        compose_event_header(&mut msg, &cid, current_time, 0, LogEventType::PacketDropped);
+        let _ = msg.write_varint(ph.packet_type as u64);
+        let _ = msg.write_varint(packet_size as u64);
+        let _ = msg.write_varint(err as u64);
+
+        let body_len = (msg.len().saturating_sub(4)) as u32;
+        let mut payload = msg.as_bytes().to_vec();
+        drop(msg);
+        payload[..4].copy_from_slice(&body_len.to_be_bytes());
+        if let Some(f) = connection.f_binlog.as_mut() {
+            let _ = f.write_all(&payload);
+        }
+    }
+
+    fn buffered_packet(
+        &mut self,
+        connection: &mut Connection,
+        path_x: &mut Path,
+        ptype: PacketType,
+        current_time: Instant,
+    ) {
+        if connection.f_binlog.is_some() && connection.is_still_logging() {
+            Binlog::buffered_packet(connection, path_x, ptype, current_time);
+        }
+    }
+
+    fn outgoing_packet(
+        &mut self,
+        connection: &mut Connection,
+        path_x: &mut Path,
+        bytes: &[u8],
+        sequence_number: u64,
+        pn_length: usize,
+        send_buffer: &[u8],
+        current_time: Instant,
+    ) {
+        if connection.f_binlog.is_some() && connection.is_still_logging() {
+            Binlog::outgoing_packet(
+                connection,
+                path_x,
+                bytes,
+                sequence_number,
+                pn_length,
+                send_buffer,
+                current_time,
+            );
+        }
+    }
+
+    fn packet_lost(
+        &mut self,
+        connection: &mut Connection,
+        path_x: &mut Path,
+        ptype: PacketType,
+        sequence_number: u64,
+        trigger: &str,
+        dcid: Option<&ConnectionId>,
+        packet_size: usize,
+        current_time: Instant,
+    ) {
+        if connection.f_binlog.is_some() && connection.is_still_logging() {
+            Binlog::packet_lost(
+                connection,
+                path_x,
+                ptype,
+                sequence_number,
+                trigger,
+                dcid,
+                packet_size,
+                current_time,
+            );
+        }
+    }
+
+    fn negotiated_alpn(
+        &mut self,
+        connection: &mut Connection,
+        is_local: bool,
+        sni: &[u8],
+        alpn: &[u8],
+        alpn_list: &[&[u8]],
+    ) {
+        if connection.f_binlog.is_some() {
+            Binlog::negotiated_alpn(connection, is_local, sni, alpn, alpn_list);
+        }
+    }
+
+    fn transport_extension(&mut self, connection: &mut Connection, is_local: bool, params: &[u8]) {
+        if connection.f_binlog.is_some() {
+            Binlog::transport_extension(connection, is_local, params);
+        }
+    }
+
+    fn tls_ticket(&mut self, connection: &mut Connection, ticket: &[u8]) {
+        if !connection.is_still_logging() {
+            return;
+        }
+        let cid = connection.initial_connection_id;
+        if let Some(f) = connection.f_binlog.as_mut() {
+            crate::binlog::tls_ticket(f, cid, ticket);
+        }
+    }
+
+    fn new_connection(&mut self, connection: &mut Connection) {
+        Binlog::new_connection(connection);
+    }
+
+    fn close_connection(&mut self, connection: &mut Connection) {
+        if connection.f_binlog.is_some() {
+            Binlog::close_connection(connection);
+        }
+    }
+
+    fn cc_dump(&mut self, connection: &mut Connection, path_x: &mut Path, current_time: Instant) {
+        if connection.f_binlog.is_some() && connection.is_still_logging() {
+            Binlog::cc_dump(connection, path_x, current_time);
+        }
+    }
+}
+
 /// C: `binlog_app_message` (picoquic/logwriter.c:1300)
 ///
 /// Per-connection unified-log adapter: emit the app message only when this
@@ -1582,20 +2044,96 @@ impl Quic {
     ///
     /// C: `void picoquic_enable_binlog(picoquic_quic_t*)`.
     pub fn enable_binlog(&mut self) {
-        // C: `quic->bin_log_fns = &binlog_functions;` installs the
-        // unified-logging vtable.  In Rust the per-event binlog
-        // dispatch lives directly on the [`Binlog`] trait
-        // (implemented for [`Connection`]); the unified [`Logger`]
-        // dispatch path on `Quic` is a no-op for an unconfigured
-        // backend per `Connection::log_new_connection`.  Leaving
-        // `bin_log_fns` as `None` matches the established pattern
-        // in `set_qlog` / `set_textlog` and avoids an empty-shell
-        // trait object — `is_still_logging` keys off `f_binlog`,
-        // which is the source of truth for whether a record-writing
-        // call should fire.
-        let _ = &self.bin_log_fns;
+        // C: `quic->bin_log_fns = &binlog_functions;`.
+        let logger = self
+            .bin_log_fns
+            .get_or_insert_with(|| {
+                let logger: LoggerRef = Rc::new(RefCell::new(BinlogLogger));
+                logger
+            })
+            .clone();
+        for connection in self.connections.iter_mut() {
+            connection.bin_log_fns = Some(logger.clone());
+        }
     }
 }
 
 #[cfg(test)]
-mod test {}
+mod test {
+    use super::*;
+
+    #[test]
+    fn stream_frame_with_length_logs_length_varint_and_payload_preview() {
+        let bytes = [0x0a, 0x01, 0x03, 0xaa, 0xbb, 0xcc, 0xdd];
+        let mut out = Vec::new();
+
+        let rest = log_stream_frame(&mut out, &bytes);
+
+        assert_eq!(rest, Some(&bytes[6..]));
+        assert_eq!(out, [0x06, 0x0a, 0x01, 0x03, 0xaa, 0xbb, 0xcc]);
+    }
+
+    #[test]
+    fn zero_length_stream_frame_with_length_logs_encoded_length() {
+        let bytes = [0x0a, 0x01, 0x00, 0xff];
+        let mut out = Vec::new();
+
+        let rest = log_stream_frame(&mut out, &bytes);
+
+        assert_eq!(rest, Some(&bytes[3..]));
+        assert_eq!(out, [0x03, 0x0a, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn short_stream_frame_logs_cautious_error_prefix() {
+        let bytes = [0x0a];
+        let mut out = Vec::new();
+
+        let rest = log_stream_frame(&mut out, &bytes);
+
+        assert_eq!(rest, None);
+        assert_eq!(out, [0x01, 0x0a]);
+    }
+
+    #[test]
+    fn outgoing_short_header_uses_connection_remote_cid_length() {
+        let bytes = [0x64, 0x01, 0x02, 0x03, 0x04, 0xaa, 0xbb, 0xcc, 0xdd];
+
+        let ph = parse_outgoing_header(&bytes, 4, 0, false, true);
+
+        assert_eq!(ph.packet_type, PacketType::OneRttProtected);
+        assert_eq!(
+            ph.dest_connection_id,
+            ConnectionId::clone_from_slice(&[0x01, 0x02, 0x03, 0x04]).unwrap()
+        );
+        assert_eq!(ph.offset, 5);
+        assert_eq!(ph.packet_number_offset, 5);
+        assert_eq!(ph.payload_length, 4);
+        assert_eq!(ph.version_index, 0);
+        assert_eq!(ph.epoch, Epoch::OneRtt);
+        assert_eq!(ph.packet_context, PacketContext::Application);
+        assert!(ph.has_spin_bit);
+        assert!(ph.has_loss_bits);
+        assert!(ph.spin);
+        assert!(ph.key_phase);
+    }
+
+    #[test]
+    fn outgoing_long_header_uses_version_specific_packet_type() {
+        let bytes = [
+            0xd3, 0x6b, 0x33, 0x43, 0xcf, 0x01, 0x11, 0x01, 0x22, 0x00, 0x05, 0xaa, 0xbb, 0xcc,
+            0xdd, 0xee,
+        ];
+
+        let ph = parse_outgoing_header(&bytes, 0, 0, false, false);
+
+        assert_eq!(ph.packet_type, PacketType::Initial);
+        assert_eq!(ph.version, crate::internal::Version::V2 as u32);
+        assert_eq!(ph.version_index, 1);
+        assert_eq!(ph.offset, 11);
+        assert_eq!(ph.packet_number_offset, 11);
+        assert_eq!(ph.payload_length, 5);
+        assert_eq!(ph.epoch, Epoch::Initial);
+        assert_eq!(ph.packet_context, PacketContext::Initial);
+    }
+}

@@ -203,7 +203,13 @@ impl NewrenoState {
 pub struct NewrenoCongestionControl;
 
 impl CongestionControl for NewrenoCongestionControl {
-    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant) {
+    fn alg_init(
+        &self,
+        _connection: &mut Connection,
+        path_x: &mut Path,
+        option_string: Option<&str>,
+        current_time: Instant,
+    ) {
         picoquic_newreno_init(path_x, option_string, current_time);
     }
 

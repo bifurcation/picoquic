@@ -262,8 +262,11 @@ impl CubicState {
                 CubicAlgState::SlowStart => {
                     path_x.cwin = path_x.update_target_cwin_estimation();
                     if path_x.last_time_acked_data_frame_sent > path_x.last_sender_limited_time {
-                        path_x.cwin +=
-                            path_x.slow_start_increase_ex(ack_state.nb_bytes_acknowledged, false);
+                        path_x.cwin += path_x.slow_start_increase_ex(
+                            connection,
+                            ack_state.nb_bytes_acknowledged,
+                            false,
+                        );
                         if path_x.cwin >= self.ssthresh {
                             self.w_reno = path_x.cwin as f64 / 2.0;
                             path_x.is_ssthresh_initialized = true;

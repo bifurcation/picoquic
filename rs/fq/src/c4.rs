@@ -1,9 +1,11 @@
 //! Translation of `picoquic/c4.c` — C4 congestion control.
 
-use crate::cc_common::{ConnectionCc, PathCc, SMOOTHED_LOSS_FACTOR, SMOOTHED_LOSS_SCOPE};
+use crate::cc_common::{ConnectionCc, SMOOTHED_LOSS_FACTOR, SMOOTHED_LOSS_SCOPE};
 use crate::internal::{CWIN_INITIAL, Connection, Path};
 use crate::utils::{bytes_from_rate, rate_from_bytes};
-use crate::{CongestionNotification, PacketContext, PerAckState, State};
+use crate::{
+    CongestionControl, CongestionNotification, Instant, PacketContext, PerAckState, State,
+};
 
 // ---------------------------------------------------------------------------
 // Constants from c4.c `#define`s.
@@ -124,6 +126,43 @@ pub struct C4State {
 }
 
 impl C4State {
+    fn zeroed_with_option(option_string: Option<String>) -> Self {
+        Self {
+            alg_state: C4AlgState::default(),
+            nominal_rate: 0,
+            nominal_max_rtt: 0,
+            initial_cwnd: 0,
+            running_min_rtt: u64::MAX,
+            alpha_1024_current: C4_ALPHA_INITIAL,
+            alpha_1024_previous: 0,
+            nb_packets_in_startup: 0,
+            era_sequence: 0,
+            nb_cruise_left_before_push: 0,
+            seed_cwin: 0,
+            seed_rate: 0,
+            probe_level: 0,
+            nb_eras_no_increase: 0,
+            push_rate_old: 0,
+            push_alpha: 0,
+            era_max_rtt: 0,
+            era_min_rtt: 0,
+            delay_threshold: 0,
+            recent_delay_excess: 0,
+            last_lost_packet_number: 0,
+            smoothed_drop_rate: 0.0,
+            ecn_alpha: 0,
+            ecn_ect1: 0,
+            ecn_ce: 0,
+            ecn_threshold: 0,
+            congestion_notified: false,
+            push_was_not_limited: false,
+            use_seed_cwin: false,
+            initial_after_jitter: false,
+            excess_ce_after_push: false,
+            option_string,
+        }
+    }
+
     /// C: `c4_sensitivity_1024` (picoquic/c4.c:244)
     ///
     /// Fixed-point sensitivity in [0, 1024] scaled to `nominal_rate`:
@@ -300,7 +339,23 @@ impl C4State {
         if connection.connection_state < State::Ready {
             return false;
         }
-        path_x.lowest_not_ack() > self.era_sequence
+        Self::lowest_not_ack(path_x, connection) > self.era_sequence
+    }
+
+    /// C: `picoquic_cc_get_lowest_not_ack` (picoquic/cc_common.c:55)
+    fn lowest_not_ack(path_x: &Path, connection: &Connection) -> u64 {
+        let pkt_ctx = if connection.is_multipath_enabled {
+            &path_x.pkt_ctx
+        } else {
+            &connection.pkt_ctx[PacketContext::Application as usize]
+        };
+
+        pkt_ctx
+            .pending
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or(pkt_ctx.highest_acknowledged.wrapping_add(1))
     }
 
     /// C: `c4_era_reset` (picoquic/c4.c:475)
@@ -821,55 +876,34 @@ impl C4State {
 
     /// C: `c4_reset` (picoquic/c4.c:517)
     ///
-    /// Zeroes the C4 state (preserving `option_string`), then re-initialises
-    /// via `enter_initial`.  Called on algorithm reset notifications and during
-    /// `c4_init`.
-    ///
-    /// The C signature carries `option_string` as an explicit parameter so the
-    /// caller can supply it directly (e.g. from `c4_init`).  In the Rust
-    /// translation the field is owned by [`C4State`], so the method preserves
-    /// the existing value — equivalent to the C pattern
-    /// `c4_reset(state, path, state->option_string)` used in the Reset
-    /// notification path.
-    pub fn reset(&mut self, path_x: &mut Path, connection: &Connection) {
-        let option_string = self.option_string.take();
-        // Zero all fields.
-        *self = C4State {
-            alg_state: C4AlgState::default(),
-            nominal_rate: 0,
-            nominal_max_rtt: 0,
-            initial_cwnd: 0,
-            running_min_rtt: u64::MAX,
-            alpha_1024_current: C4_ALPHA_INITIAL,
-            alpha_1024_previous: 0,
-            nb_packets_in_startup: 0,
-            era_sequence: 0,
-            nb_cruise_left_before_push: 0,
-            seed_cwin: 0,
-            seed_rate: 0,
-            probe_level: 0,
-            nb_eras_no_increase: 0,
-            push_rate_old: 0,
-            push_alpha: 0,
-            era_max_rtt: 0,
-            era_min_rtt: 0,
-            delay_threshold: 0,
-            recent_delay_excess: 0,
-            last_lost_packet_number: 0,
-            smoothed_drop_rate: 0.0,
-            ecn_alpha: 0,
-            ecn_ect1: 0,
-            ecn_ce: 0,
-            ecn_threshold: 0,
-            congestion_notified: false,
-            push_was_not_limited: false,
-            use_seed_cwin: false,
-            initial_after_jitter: false,
-            excess_ce_after_push: false,
-            option_string,
-        };
+    /// Zeroes the C4 state with the supplied option string, then
+    /// re-initialises via `enter_initial`.
+    pub fn reset_with_option(
+        &mut self,
+        path_x: &mut Path,
+        connection: &Connection,
+        option_string: Option<&str>,
+    ) {
+        let option_string = option_string.map(str::to_owned);
+        self.reset_with_owned_option(path_x, connection, option_string);
+    }
+
+    fn reset_with_owned_option(
+        &mut self,
+        path_x: &mut Path,
+        connection: &Connection,
+        option_string: Option<String>,
+    ) {
+        *self = Self::zeroed_with_option(option_string);
         self.set_options();
         self.enter_initial(path_x, connection);
+    }
+
+    /// Zeroes the C4 state (preserving `option_string`), then re-initialises
+    /// via `enter_initial`.  Called on algorithm reset notifications.
+    pub fn reset(&mut self, path_x: &mut Path, connection: &Connection) {
+        let option_string = self.option_string.take();
+        self.reset_with_owned_option(path_x, connection, option_string);
     }
 
     /// C: `c4_notify` (picoquic/c4.c:1025)
@@ -959,6 +993,90 @@ impl C4State {
         }
     }
 }
+
+/// C: `c4_init` (picoquic/c4.c:625)
+///
+/// Creates or reuses the path's C4 state block, enables lost-feedback
+/// notifications on the connection, then resets the state with the init
+/// option string.
+pub fn c4_init(
+    connection: &mut Connection,
+    path_x: &mut Path,
+    option_string: Option<&str>,
+    _current_time: Instant,
+) {
+    let mut state = path_x
+        .congestion_alg_state
+        .take()
+        .and_then(|boxed| boxed.downcast::<C4State>().ok())
+        .map(|boxed| *boxed)
+        .unwrap_or_else(|| C4State::zeroed_with_option(None));
+
+    connection.is_lost_feedback_notification_required = true;
+    state.reset_with_option(path_x, connection, option_string);
+    path_x.congestion_alg_state = Some(Box::new(state));
+}
+
+/// Congestion-control vtable adapter for C4.
+pub struct C4CongestionControl;
+
+impl CongestionControl for C4CongestionControl {
+    fn alg_init(
+        &self,
+        connection: &mut Connection,
+        path_x: &mut Path,
+        option_string: Option<&str>,
+        current_time: Instant,
+    ) {
+        c4_init(connection, path_x, option_string, current_time);
+    }
+
+    fn alg_notify(
+        &self,
+        connection: &mut Connection,
+        path_x: &mut Path,
+        notification: CongestionNotification,
+        ack_state: &PerAckState,
+        current_time: Instant,
+    ) {
+        let Some(boxed_state) = path_x.congestion_alg_state.take() else {
+            path_x.is_cc_data_updated = true;
+            return;
+        };
+
+        let mut state = match boxed_state.downcast::<C4State>() {
+            Ok(state) => *state,
+            Err(boxed_state) => {
+                path_x.congestion_alg_state = Some(boxed_state);
+                path_x.is_cc_data_updated = true;
+                return;
+            }
+        };
+
+        state.notify(
+            connection,
+            path_x,
+            notification,
+            Some(ack_state),
+            current_time.ticks(),
+        );
+        path_x.congestion_alg_state = Some(Box::new(state));
+    }
+
+    fn alg_delete(&self, path_x: &mut Path) {
+        path_x.congestion_alg_state = None;
+    }
+
+    fn alg_observe(&self, path_x: &Path) -> Option<(u64, u64)> {
+        path_x
+            .congestion_alg_state
+            .as_ref()
+            .and_then(|state| state.downcast_ref::<C4State>())
+            .map(C4State::observe)
+    }
+}
+
+pub static C4_CONTROL: C4CongestionControl = C4CongestionControl;
 
 /// C: `c4_logger` (picoquic/c4.c:199)
 ///

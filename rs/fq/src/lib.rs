@@ -752,7 +752,13 @@ impl Default for PerAckState {
 /// version accepted a nullable `char const*` that callers either
 /// owned for the duration of the call or set to `NULL`.
 pub trait CongestionControl: Sync {
-    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant);
+    fn alg_init(
+        &self,
+        connection: &mut Connection,
+        path_x: &mut Path,
+        option_string: Option<&str>,
+        current_time: Instant,
+    );
 
     fn alg_notify(
         &self,
@@ -825,7 +831,13 @@ static CC_ALGORITHM_REGISTRY: std::sync::OnceLock<Vec<&'static CongestionAlgorit
 struct BaselineCongestionControl;
 
 impl CongestionControl for BaselineCongestionControl {
-    fn alg_init(&self, path_x: &mut Path, _option_string: Option<&str>, _current_time: Instant) {
+    fn alg_init(
+        &self,
+        _connection: &mut Connection,
+        path_x: &mut Path,
+        _option_string: Option<&str>,
+        _current_time: Instant,
+    ) {
         path_x.cwin = crate::internal::CWIN_INITIAL;
         path_x.bytes_in_transit = 0;
     }
@@ -923,7 +935,7 @@ static C4_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "c4",
     congestion_algorithm_number: 8,
     ecn_mark: ECN_ECT_1,
-    algorithm: &BASELINE_CC,
+    algorithm: &c4::C4_CONTROL,
 };
 static ALL_CC_ALGORITHMS: [&CongestionAlgorithm; 10] = [
     &NEWRENO_ALGORITHM,

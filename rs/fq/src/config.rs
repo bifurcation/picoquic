@@ -229,7 +229,7 @@ static OPTION_TABLE: &[OptionEntry] = &[
         name: "cc_algo",
         nb_params: 1,
         param_sample: "cc_algorithm",
-        help: "Use the specified congestion control algorithm. Defaults to bbr.",
+        help: "Use the specified congestion control algorithm. Defaults to bbr. Supported values are:",
     },
     OptionEntry {
         id: OptionId::CcOption,
@@ -541,8 +541,22 @@ static OPTION_TABLE: &[OptionEntry] = &[
 ///
 /// Parses a hex-encoded QUIC version number.  Returns 0 on any invalid input,
 /// matching the C behaviour of breaking on the first unrecognised character.
+/// The C `uint32_t` accumulation wraps on overflow, so overlong valid strings
+/// keep the low 32 bits instead of failing.
 fn parse_hex_version(s: &str) -> u32 {
-    u32::from_str_radix(s, 16).unwrap_or(0)
+    let mut v = 0u32;
+
+    for b in s.bytes() {
+        let c = match b {
+            b'0'..=b'9' => u32::from(b - b'0'),
+            b'a'..=b'f' => u32::from(b - b'a') + 10,
+            b'A'..=b'F' => u32::from(b - b'A') + 10,
+            _ => return 0,
+        };
+        v = v.wrapping_mul(16).wrapping_add(c);
+    }
+
+    v
 }
 
 /// C: `config_optval_string` (picoquic/config.c:181)
@@ -650,7 +664,7 @@ fn option_entry_by_name(name: &str) -> Option<(usize, &'static OptionEntry)> {
     OPTION_TABLE
         .iter()
         .enumerate()
-        .find(|(_, e)| e.name == name)
+        .find(|(_, e)| e.name.starts_with(name))
 }
 
 /// C: `config_set_string_param` (picoquic/config.c:148)
@@ -660,7 +674,6 @@ fn option_entry_by_name(name: &str) -> Option<(usize, &'static OptionEntry)> {
 /// is non-empty.  Returns `Err(InvalidArgument)` when `x` is out of
 /// bounds or the param is empty (the C path where `length == 0` causes
 /// `malloc` to be skipped and `-1` is returned).
-#[allow(dead_code)]
 fn config_set_string_param(v: &mut Option<String>, params: &[&str], x: usize) -> Result<(), Error> {
     *v = None;
     if x < params.len() && !params[x].is_empty() {
@@ -750,7 +763,6 @@ pub fn picoquic_get_command_line_option_value(
 /// (`0` / `-1`) maps to `Ok(())` / `Err`.
 fn apply_option(config: &mut Config, entry: &OptionEntry, params: &[&str]) -> Result<(), Error> {
     let p0 = params.first().copied();
-    let p1 = params.get(1).copied();
     match entry.id {
         OptionId::Cert => {
             config.server_cert_file = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
@@ -986,10 +998,8 @@ fn apply_option(config: &mut Config, entry: &OptionEntry, params: &[&str]) -> Re
             config.address_discovery_mode = v + 1;
         }
         OptionId::EchServer => {
-            config.ech_key_file = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
-            if let Some(s) = p1 {
-                config.ech_config_file = Some(s.to_string());
-            }
+            config_set_string_param(&mut config.ech_key_file, params, 0)?;
+            config_set_string_param(&mut config.ech_config_file, params, 1)?;
         }
         OptionId::EchInit => {
             config.ech_public_name = Some(p0.ok_or(Error::InvalidArgument)?.to_string());
@@ -1301,7 +1311,10 @@ impl Config {
         argv: &[&str],
         optarg: Option<&str>,
     ) -> Result<(), Error> {
-        let (_, entry) = parse_option_string(opt_string).ok_or(Error::InvalidArgument)?;
+        let Some((_, entry)) = parse_option_string(opt_string) else {
+            eprintln!("Unknown option: {}", opt_string);
+            return Ok(());
+        };
         let params = collect_params(entry, p_optind, argv, optarg)?;
         apply_option(self, entry, &params)
     }
@@ -1343,6 +1356,21 @@ impl Config {
                 let _ = w.write_char(' ');
             }
             let _ = writeln!(w, " {}", e.help);
+            if e.id == OptionId::CcAlgo {
+                let algorithms = crate::congestion_control_algorithms();
+                if !algorithms.is_empty() {
+                    for _ in 0..18 {
+                        let _ = w.write_char(' ');
+                    }
+                    for (i, algorithm) in algorithms.iter().enumerate() {
+                        if i != 0 {
+                            let _ = w.write_str(", ");
+                        }
+                        let _ = w.write_str(algorithm.congestion_algorithm_id);
+                    }
+                    let _ = writeln!(w, ".");
+                }
+            }
         }
     }
 
@@ -1467,9 +1495,18 @@ impl Config {
             quic.set_cookie_mode(2);
         }
 
+        let mut cc_algo = None;
         if let Some(ref cc_id) = self.cc_algo_id {
-            let _ = quic.set_default_congestion_algorithm_by_name(cc_id);
+            cc_algo = crate::get_congestion_algorithm(cc_id);
+            if cc_algo.is_none() {
+                eprintln!(
+                    "Unrecognized congestion algorithm: {}. Using BBR isntead.",
+                    cc_id
+                );
+            }
         }
+        let cc_algo = cc_algo.unwrap_or(&crate::BBR_ALGORITHM);
+        quic.set_default_congestion_algorithm_ex(cc_algo, self.cc_algo_option_string.as_deref());
 
         let _ = quic.set_default_spinbit_policy(self.spinbit_policy);
         quic.set_default_lossbit_policy(self.lossbit_policy);
@@ -1477,6 +1514,12 @@ impl Config {
         quic.set_default_idle_timeout(crate::Duration::from_ticks(self.idle_timeout as u64 * 1000));
         quic.set_cwin_max(self.cwin_max);
         quic.set_default_address_discovery_mode(self.address_discovery_mode);
+        let _ = crate::utils::set_preferred_address(
+            &mut quic.default_tp.preferred_address,
+            self.preferred_address_v4.as_deref(),
+            self.preferred_address_v6.as_deref(),
+            self.local_port,
+        );
 
         if let Some(ref token_file) = self.token_file_name {
             let _ = quic.load_retry_tokens(token_file);
@@ -1537,15 +1580,14 @@ impl Config {
 
         let mut failed = false;
 
-        if let Some(ref public_name) = self.ech_public_name {
-            if self.ech_key_file.is_none() || self.ech_config_file.is_none() {
-                // key file or config file not specified — cannot create ECH config
+        if self.ech_public_name.is_some() {
+            if self.ech_key_file.is_none() || self.ech_config_file.is_some() {
+                eprintln!(
+                    "Cannot create a configuration if key and config file are not specified."
+                );
             } else {
-                let key_file = self.ech_key_file.as_deref().unwrap();
-                let cfg_file = self.ech_config_file.as_deref().unwrap();
-                if crate::ech_create_config_file(public_name, key_file, cfg_file).is_err() {
-                    failed = true;
-                }
+                // The literal C branch would pass a NULL config-file pointer here.
+                failed = true;
             }
         }
 
@@ -1611,6 +1653,25 @@ mod test {
         assert_eq!(config_atoi(&["-5"], 0), Err(Error::InvalidArgument));
     }
 
+    // --- parse_hex_version ---
+
+    #[test]
+    fn parse_hex_version_accepts_hex_digits() {
+        assert_eq!(parse_hex_version("ff000012"), 0xff000012);
+        assert_eq!(parse_hex_version("6B3343cf"), 0x6b3343cf);
+    }
+
+    #[test]
+    fn parse_hex_version_invalid_character_returns_zero() {
+        assert_eq!(parse_hex_version("12g4"), 0);
+    }
+
+    #[test]
+    fn parse_hex_version_wraps_like_uint32_t() {
+        assert_eq!(parse_hex_version("100000001"), 1);
+        assert_eq!(parse_hex_version("100000000"), 0);
+    }
+
     // --- config_optval_string ---
 
     #[test]
@@ -1635,5 +1696,104 @@ mod test {
         let result = config_optval_string(&mut buf, b"");
         assert_eq!(result, "");
         assert_eq!(buf[0], 0);
+    }
+
+    // --- ECH server option handling ---
+
+    #[test]
+    fn ech_server_set_option_requires_config_file_and_clears_old_config() {
+        let mut cfg = Config {
+            ech_key_file: Some("old_key.pem".to_string()),
+            ech_config_file: Some("old_config.bin".to_string()),
+            ..Config::default()
+        };
+
+        assert_eq!(
+            cfg.set_option(OptionId::EchServer, Some("new_key.pem")),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(cfg.ech_key_file.as_deref(), Some("new_key.pem"));
+        assert_eq!(cfg.ech_config_file, None);
+    }
+
+    #[test]
+    fn ech_server_command_line_sets_key_and_config_files() {
+        let mut cfg = Config::default();
+        let mut optind = 0usize;
+
+        assert_eq!(
+            cfg.command_line('E', &mut optind, &["ech_config.bin"], Some("ech_key.pem")),
+            Ok(())
+        );
+        assert_eq!(optind, 1);
+        assert_eq!(cfg.ech_key_file.as_deref(), Some("ech_key.pem"));
+        assert_eq!(cfg.ech_config_file.as_deref(), Some("ech_config.bin"));
+    }
+
+    #[test]
+    fn command_line_ex_unknown_option_succeeds_without_consuming_args() {
+        let mut cfg = Config::default();
+        let mut optind = 0usize;
+
+        assert_eq!(
+            cfg.command_line_ex(
+                "--not_a_picoquic_option",
+                &mut optind,
+                &["extra"],
+                Some("ignored")
+            ),
+            Ok(())
+        );
+        assert_eq!(optind, 0);
+        assert_eq!(cfg.server_cert_file, None);
+    }
+
+    #[test]
+    fn command_line_long_option_prefix_matches_c_lookup() {
+        let long_log_index = picoquic_config_get_option_char_index('L');
+        assert_ne!(long_log_index, -1);
+
+        assert_eq!(
+            picoquic_config_get_command_line_option_index("--long_log"),
+            long_log_index
+        );
+        assert_eq!(
+            picoquic_config_get_command_line_option_index("--long"),
+            long_log_index
+        );
+        assert_eq!(
+            picoquic_config_get_command_line_option_index("--long_log_extra"),
+            -1
+        );
+    }
+
+    #[test]
+    fn command_line_ex_accepts_long_option_prefix() {
+        let mut cfg = Config::default();
+        let mut optind = 0usize;
+
+        assert_eq!(
+            cfg.command_line_ex("--long", &mut optind, &[], None),
+            Ok(())
+        );
+        assert_eq!(optind, 0);
+        assert!(cfg.use_long_log);
+    }
+
+    #[test]
+    fn ech_server_empty_config_file_clears_and_errors() {
+        let mut cfg = Config {
+            ech_config_file: Some("old_config.bin".to_string()),
+            ..Config::default()
+        };
+        let mut optind = 0usize;
+
+        assert_eq!(
+            cfg.command_line('E', &mut optind, &[""], Some("ech_key.pem")),
+            Err(Error::InvalidArgument)
+        );
+        assert_eq!(optind, 1);
+        assert_eq!(cfg.ech_key_file.as_deref(), Some("ech_key.pem"));
+        assert_eq!(cfg.ech_config_file, None);
     }
 }

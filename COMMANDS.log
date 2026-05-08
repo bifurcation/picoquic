@@ -1724,6 +1724,35 @@
   cargo fmt
   cargo test --no-run
   cargo clippy --tests --all-features -- -D warnings
+  rg -n "todo!|unimplemented!|// SKIP:|not yet wired|Phase 4 body" rs/fq/src/bbr.rs rs/fq/src/bbr1.rs rs/fq/src/config.rs rs/fq/src/ech.rs rs/fq/src/internal.rs rs/fq/src/binlog.rs rs/fq/src/lb.rs rs/fq/src/socks.rs rs/fq/src/lib.rs
+  rg -n "Err\\(Error::Generic\\)|Err\\(crate::Error::Generic\\)" rs/fq/src/bbr.rs rs/fq/src/bbr1.rs rs/fq/src/config.rs rs/fq/src/ech.rs rs/fq/src/internal.rs rs/fq/src/binlog.rs rs/fq/src/lb.rs rs/fq/src/socks.rs rs/fq/src/lib.rs
+  rg -n "BBRInflight|picoquic_bbr_init|picoquic_bbr_reset|BBR1HandleRestartFromIdle|BBR1OnAllPacketsLost|BBR1OnEnterFastRecovery|picoquic_bbr1_init|picoquic_get_command_line_option_value|picoquic_ech_configure_quic_ctx|picoquic_apply_reset_stream_frame|picoquic_copy_single_stream_frame_for_retransmit|picoquic_estimate_path_bandwidth|picoquic_queue_data_repeat_adjust|picoquic_queue_max_path_id_frame|picoquic_queue_path_cid_blocked_frame|picoquic_queue_paths_blocked_frame|binlog_app_message|picoquic_remove_header_protection|picoquic_lb_compat_cid_verify_stream_cipher|picoquic_send_through_socket" rs/fq/src
+  rg -n "todo!|unimplemented!|// SKIP:|not yet wired|Phase 4 body" rs/fq/src/bbr.rs rs/fq/src/bbr1.rs rs/fq/src/config.rs rs/fq/src/ech.rs rs/fq/src/internal.rs rs/fq/src/binlog.rs rs/fq/src/lb.rs rs/fq/src/socks.rs rs/fq/src/lib.rs
+  sed -n '3728,3860p' rs/fq/src/lib.rs && sed -n '3995,4110p' rs/fq/src/lib.rs && sed -n '4218,4245p' rs/fq/src/lib.rs
+  rg -n "picoquic_mark_direct_receive_stream|picoquic_set_stream_not_coalesced|picoquic_set_stream_priority|picoquic_mark_high_priority_stream|picoquic_reset_stream\\(|picoquic_reset_stream_at|picoquic_stop_sending|picoquic_discard_stream|picoquic_get_remote_stream_error|picoquic_set_stream_remote_error" picoquic
+  rg -n "queue_misc_frame\\(|pub fn queue_misc_frame|fn queue_misc_frame|append_varint" rs/fq/src/lib.rs rs/fq/src/internal.rs
+  sed -n '160,250p' picoquic/sender.c && sed -n '370,490p' picoquic/sender.c
+  sed -n '3698,3735p' picoquic/quicctx.c && sed -n '5515,5530p' picoquic/quicctx.c
+  sed -n '3016,3032p' rs/fq/src/lib.rs && sed -n '3668,3684p' rs/fq/src/lib.rs
+  cargo clippy --tests --all-features -- -D warnings
+  cargo fmt
+  cargo test --no-run
+  cargo clippy --tests --all-features -- -D warnings
+  rg -n "trait StreamDirectReceive|direct_receive" rs/fq/src/lib.rs rs/fq/src/internal.rs
+  sed -n '560,585p' rs/fq/src/lib.rs
+  sed -n '3718,3775p' picoquic/quicctx.c
+  rg -n "InvalidStreamId|StreamAlreadyClosed|CannotSetActiveStream|IllegalTransportExtension|NoCallback|Callback" rs/fq/src/errors.rs rs/fq/src/lib.rs
+  rg -n "fn enqueue_output_stream_token|enqueue_output_stream_token" rs/fq/src/lib.rs
+  sed -n '3694,3710p' rs/fq/src/lib.rs
+  sed -n '3710,3728p' rs/fq/src/lib.rs
+  rg -n "DEFAULT_STREAM_PRIORITY" rs/fq/src/lib.rs rs/fq/src/internal.rs
+  cargo fmt
+  cargo test --no-run
+  cargo fmt
+  cargo test --no-run
+  cargo fmt
+  cargo test --no-run
+  cargo clippy --tests --all-features -- -D warnings
   cargo fmt
   cargo test --no-run
   cargo clippy --tests --all-features -- -D warnings
@@ -2378,6 +2407,141 @@
   cargo clippy --tests --all-features -- -D warnings
   tail -40 COMMANDS.log
 
+2026-05-07 - Phase 4B missing implementation batch instruction and source/Rust inspection:
+  sed -n '1,220p' CLAUDE.md
+  sed -n '1,220p' TRANSLATE_PLAN.md
+  sed -n '1,240p' xlate/impl_translation_guide.md
+  tail -n 20 COMMANDS.log
+  sed -n '560,940p' picoquic/bbr.c
+  sed -n '440,500p' picoquic/bbr1.c && sed -n '1030,1120p' picoquic/bbr1.c
+  sed -n '650,735p' picoquic/config.c
+  sed -n '315,375p' picoquic/ech.c
+  sed -n '320,380p' picoquic/frames.c && sed -n '2190,2470p' picoquic/frames.c && sed -n '2850,2930p' picoquic/frames.c && sed -n '6000,6285p' picoquic/frames.c
+  sed -n '600,640p' picoquic/packet.c && sed -n '150,195p' picoquic/picoquic_lb.c && sed -n '1250,1280p' picoquic/picosocks.c && sed -n '1288,1315p' picoquic/logwriter.c
+  rg -n "BBRInflight|bbr_init|bbr_reset|struct .*Bbr|BbrState|picoquic_bbr" rs/fq/src/bbr.rs
+  sed -n '1,260p' rs/fq/src/bbr.rs && sed -n '520,980p' rs/fq/src/bbr.rs
+  rg -n "BBR1HandleRestartFromIdle|BBR1OnAllPacketsLost|BBR1OnEnterFastRecovery|bbr1_init|bbr1_reset|Bbr1State|Bbr1" rs/fq/src/bbr1.rs
+  sed -n '1,260p' rs/fq/src/bbr1.rs && sed -n '420,520p' rs/fq/src/bbr1.rs && sed -n '1000,1140p' rs/fq/src/bbr1.rs
+  rg -n "picoquic_get_command_line_option_value|config_set_option|option_table|CommandLine" rs/fq/src/config.rs
+  sed -n '1,260p' rs/fq/src/config.rs && sed -n '620,760p' rs/fq/src/config.rs
+  rg -n "picoquic_apply_reset_stream_frame|copy_single_stream_frame|estimate_path_bandwidth|queue_data_repeat_adjust|queue_max_path_id|queue_path_cid_blocked|queue_paths_blocked|remove_header_protection|reset_stream|data_repeat|MaxPath|PathCid" rs/fq/src/internal.rs
+  sed -n '1,260p' rs/fq/src/internal.rs
+  rg -n "struct Connection|struct Path|struct Packet|struct StreamHead|enum PacketContext|MiscFrame|queue_misc|find_or_create_stream|flow_control_check|signal_stream|parse_stream_header|format_stream_frame|skip_frame|frames_varint|sack" rs/fq/src/internal.rs
+  rg -n "ech_configure|release_quic_ech|ech_|hpke|tls_master" rs/fq/src/ech.rs rs/fq/src/*.rs
+  rg -n "binlog_app_message|picoquic_binlog_message|f_binlog|Binlog|app_message" rs/fq/src/binlog.rs rs/fq/src/*.rs
+  rg -n "lb_compat_cid_verify_stream_cipher|one_pass_stream|load_balancer|LoadBalancer|cid_encryption|ConnectionId" rs/fq/src/lb.rs rs/fq/src/*.rs
+  rg -n "send_through_socket|sendmsg|Socket|sock_err|picosocks" rs/fq/src/socks.rs rs/fq/src/*.rs
+  sed -n '9300,9905p' rs/fq/src/internal.rs
+  sed -n '9905,10120p' rs/fq/src/internal.rs
+  sed -n '11140,11460p' rs/fq/src/internal.rs
+  sed -n '12540,12620p' rs/fq/src/internal.rs && sed -n '12840,12945p' rs/fq/src/internal.rs && sed -n '13320,13410p' rs/fq/src/internal.rs
+  sed -n '6860,6955p' rs/fq/src/internal.rs && sed -n '7440,7500p' rs/fq/src/internal.rs
+  sed -n '2420,2925p' rs/fq/src/internal.rs
+  sed -n '210,340p' rs/fq/src/bbr.rs
+  sed -n '1460,1570p' rs/fq/src/bbr.rs
+  sed -n '1840,1910p' rs/fq/src/bbr.rs
+  sed -n '960,1010p' rs/fq/src/bbr1.rs
+  sed -n '760,840p' rs/fq/src/bbr1.rs
+  sed -n '1160,1240p' rs/fq/src/bbr1.rs
+  sed -n '1910,1965p' rs/fq/src/bbr.rs
+  tail -n 35 COMMANDS.log
+  rg -n "Phase 4B missing implementation|sed -n '1,220p' CLAUDE|BBRInflight" COMMANDS.log
+  sed -n '2368,2410p' COMMANDS.log
+  tail -n 5 COMMANDS.log
+  rg -n "todo!|unimplemented!|// SKIP:|Phase 4 body|not yet wired|Err\\(Error::Generic\\)|Err\\(crate::Error::Generic\\)" rs/fq/src/bbr.rs rs/fq/src/bbr1.rs rs/fq/src/config.rs rs/fq/src/ech.rs rs/fq/src/internal.rs rs/fq/src/binlog.rs rs/fq/src/lb.rs rs/fq/src/socks.rs
+  rg -n "pub fn (picoquic_|bbr|BBR)|fn (picoquic_|bbr|BBR)|pub fn .*init|pub fn .*reset|impl BbrState|impl Bbr1State" rs/fq/src/bbr.rs rs/fq/src/bbr1.rs
+  sed -n '430,455p' rs/fq/src/lib.rs && rg -n "BbrState|Bbr1State|bbr::|bbr1::|CC_ALGO_NUMBER_BBR" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/*.rs
+  rg -n "OnTransmit|on_transmit|idle_restart|packet_conservation|on_all|fast_recovery" rs/fq/src/bbr1.rs
+  sed -n '280,325p' rs/fq/src/bbr1.rs && sed -n '700,745p' rs/fq/src/bbr1.rs
+  sed -n '1080,1245p' rs/fq/src/config.rs
+  sed -n '700,980p' rs/fq/src/config.rs
+  sed -n '1210,1540p' rs/fq/src/config.rs
+  rg -n "fn collect_params|parse_option_string" rs/fq/src/config.rs
+  sed -n '980,1025p' rs/fq/src/config.rs
+  sed -n '4388,4416p' rs/fq/src/lib.rs && sed -n '1030,1055p' rs/fq/src/ech.rs
+  sed -n '1760,2045p' rs/fq/src/internal.rs && sed -n '870,920p' rs/fq/src/ech.rs
+  sed -n '2045,2125p' rs/fq/src/internal.rs
+  rg -n "Quic \\{|impl Quic \\{|pub fn new\\(" rs/fq/src/internal.rs rs/fq/src/lib.rs | head -40
+  sed -n '1334,1490p' rs/fq/src/lib.rs
+  sed -n '1490,1565p' rs/fq/src/lib.rs
+  sed -n '948,1050p' rs/fq/src/binlog.rs && sed -n '430,455p' rs/fq/src/logger.rs
+  sed -n '1550,1590p' rs/fq/src/binlog.rs && sed -n '1500,1535p' rs/fq/src/binlog.rs
+  sed -n '317,395p' rs/fq/src/lb.rs && sed -n '465,508p' rs/fq/src/lb.rs
+  sed -n '390,430p' rs/fq/src/lb.rs && sed -n '508,522p' rs/fq/src/lb.rs
+  sed -n '60,120p' rs/fq/src/socks.rs && sed -n '211,250p' rs/fq/src/socks.rs && sed -n '510,560p' rs/fq/src/socks.rs
+  sed -n '1,60p' rs/fq/src/socks.rs
+  sed -n '840,930p' rs/fq/src/internal.rs && sed -n '2190,2245p' rs/fq/src/internal.rs
+  sed -n '2245,2268p' rs/fq/src/internal.rs && rg -n "check_sack_list|sack_list.*check|is_stream.*local|IS_BIDIR|IS_LOCAL" rs/fq/src/internal.rs rs/fq/src/stream.rs
+  sed -n '1,72p' rs/fq/src/stream.rs && rg -n "check_sack|fn .*sack.*check|picoquic_check_sack_list" rs/fq/src/internal.rs rs/fq/src/*.rs
+  rg -n "picoquic_check_sack_list" picoquic rs/fq/src
+  sed -n '328,356p' picoquic/sacks.c && rg -n "fn check|check_sack|contains.*range|SackList" rs/fq/src/tests/sacktest.rs rs/fq/src/internal.rs | head -80
+  sed -n '7950,7975p' rs/fq/src/internal.rs
+  sed -n '7975,7992p' rs/fq/src/internal.rs
+  rg -n "pub fn find_stream|fn find_stream|create_missing_streams|find_or_create_stream|flow_control_check|delete_stream_if_closed" rs/fq/src/internal.rs
+  sed -n '9068,9115p' rs/fq/src/internal.rs && sed -n '9220,9240p' rs/fq/src/internal.rs && rg -n "flow_control_check_stream_offset|flow_control" rs/fq/src/internal.rs | head -40
+  rg -n "picoquic_flow_control_check_stream_offset" picoquic rs/fq/src/internal.rs
+  sed -n '196,220p' picoquic/frames.c
+  sed -n '220,245p' picoquic/frames.c
+  rg -n "pub enum State|State::Ready|ClientReadyStart|AlmostReady" rs/fq/src/lib.rs rs/fq/src/internal.rs | head -60
+  sed -n '218,238p' rs/fq/src/lib.rs && rg -n "fn connection_error|pub fn connection_error|connection_error_ex" rs/fq/src/internal.rs | head -30
+  sed -n '5590,5616p' rs/fq/src/internal.rs && rg -n "StreamState|FINAL_OFFSET|TRANSPORT_FINAL|TransportError" rs/fq/src/errors.rs rs/fq/src/*.rs | head -60
+  sed -n '216,230p' rs/fq/src/errors.rs && rg -n "MAX_DATA|DataLimit|FlowControl|FinalOffset|FrameFormat" rs/fq/src/errors.rs
+  sed -n '1,130p' rs/fq/src/arena.rs
+  sed -n '130,230p' rs/fq/src/arena.rs
+  rg -n "path_cid_next_sequence_number|find_or_create_remote_cnxid_stash|RemoteConnectionIdStash|remote_cnxid" rs/fq/src/internal.rs
+  sed -n '4806,4830p' rs/fq/src/internal.rs
+  sed -n '4830,4834p' rs/fq/src/internal.rs
+  rg -n "bandwidth_estimate|compute_ack_gap_and_delay|ack_frequency" rs/fq/src/internal.rs rs/fq/src/lib.rs | head -120
+  sed -n '5930,5970p' rs/fq/src/internal.rs && sed -n '8436,8468p' rs/fq/src/internal.rs && sed -n '8678,8694p' rs/fq/src/internal.rs
+  sed -n '500,640p' rs/fq/src/internal.rs
+  rg -n "AEAD_NOT_READY|AeadNotReady|ERROR_AEAD|AEAD" rs/fq/src/errors.rs rs/fq/src/internal.rs rs/fq/src/*.rs picoquic/*.h
+  sed -n '8138,8154p' rs/fq/src/internal.rs
+  sed -n '2470,2535p' rs/fq/src/bbr.rs
+  rg -n "impl Default for Bbr1State" rs/fq/src/bbr1.rs
+  sed -n '1,40p' rs/fq/src/ech.rs
+  sed -n '910,940p' rs/fq/src/ech.rs
+  rg -n "internal::Quic \\{|Quic \\{" rs/fq/src -g '*.rs'
+  sed -n '9638,9698p' rs/fq/src/internal.rs
+  rg -n "format_paths_blocked_frame|format_path_cid_blocked_frame|format_max_path_id_frame" rs/fq/src/internal.rs
+  sed -n '13770,13820p' rs/fq/src/internal.rs
+  sed -n '6010,6035p' rs/fq/src/internal.rs
+  sed -n '6045,6065p' rs/fq/src/internal.rs
+  cargo fmt
+  cargo test --no-run
+  sed -n '1060,1135p' rs/fq/src/internal.rs
+  sed -n '5960,6035p' rs/fq/src/internal.rs
+  sed -n '6035,6055p' rs/fq/src/internal.rs
+  cargo fmt
+  cargo test --no-run
+  sed -n '1,220p' CLAUDE.md
+  sed -n '1,220p' TRANSLATE_PLAN.md
+  sed -n '1,240p' xlate/impl_translation_guide.md
+  tail -n 20 COMMANDS.log
+  sed -n '560,940p' picoquic/bbr.c
+  sed -n '440,500p' picoquic/bbr1.c && sed -n '1030,1120p' picoquic/bbr1.c
+  sed -n '650,735p' picoquic/config.c
+  sed -n '315,375p' picoquic/ech.c
+  sed -n '320,380p' picoquic/frames.c && sed -n '2190,2470p' picoquic/frames.c && sed -n '2850,2930p' picoquic/frames.c && sed -n '6000,6285p' picoquic/frames.c
+  sed -n '600,640p' picoquic/packet.c && sed -n '150,195p' picoquic/picoquic_lb.c && sed -n '1250,1280p' picoquic/picosocks.c && sed -n '1288,1315p' picoquic/logwriter.c
+  rg -n "BBRInflight|bbr_init|bbr_reset|struct .*Bbr|BbrState|picoquic_bbr" rs/fq/src/bbr.rs
+  sed -n '1,260p' rs/fq/src/bbr.rs && sed -n '520,980p' rs/fq/src/bbr.rs
+  rg -n "BBR1HandleRestartFromIdle|BBR1OnAllPacketsLost|BBR1OnEnterFastRecovery|bbr1_init|bbr1_reset|Bbr1State|Bbr1" rs/fq/src/bbr1.rs
+  sed -n '1,260p' rs/fq/src/bbr1.rs && sed -n '420,520p' rs/fq/src/bbr1.rs && sed -n '1000,1140p' rs/fq/src/bbr1.rs
+  rg -n "picoquic_get_command_line_option_value|config_set_option|option_table|CommandLine" rs/fq/src/config.rs
+  sed -n '1,260p' rs/fq/src/config.rs && sed -n '620,760p' rs/fq/src/config.rs
+  rg -n "picoquic_apply_reset_stream_frame|copy_single_stream_frame|estimate_path_bandwidth|queue_data_repeat_adjust|queue_max_path_id|queue_path_cid_blocked|queue_paths_blocked|remove_header_protection|reset_stream|data_repeat|MaxPath|PathCid" rs/fq/src/internal.rs
+  sed -n '1,260p' rs/fq/src/internal.rs
+  rg -n "struct Connection|struct Path|struct Packet|struct StreamHead|enum PacketContext|MiscFrame|queue_misc|find_or_create_stream|flow_control_check|signal_stream|parse_stream_header|format_stream_frame|skip_frame|frames_varint|sack" rs/fq/src/internal.rs
+  rg -n "ech_configure|release_quic_ech|ech_|hpke|tls_master" rs/fq/src/ech.rs rs/fq/src/*.rs
+  rg -n "binlog_app_message|picoquic_binlog_message|f_binlog|Binlog|app_message" rs/fq/src/binlog.rs rs/fq/src/*.rs
+  rg -n "lb_compat_cid_verify_stream_cipher|one_pass_stream|load_balancer|LoadBalancer|cid_encryption|ConnectionId" rs/fq/src/lb.rs rs/fq/src/*.rs
+  rg -n "send_through_socket|sendmsg|Socket|sock_err|picosocks" rs/fq/src/socks.rs rs/fq/src/*.rs
+  git status --short
+  ls -l rs/fq/ech_config.txt
+  rg -n "ech_config.txt" rs/fq/src picoquic picoquictest
+  sed -n '1,20p' rs/fq/ech_config.txt
+  git status --short
+
 2026-05-07 - Final line-reference and diff inspection for OpenSSL/ECN batch:
   rg -n "picoquic_openssl_get_certificate_verifier|set_openssl_private_key_from_key_file|picoquic_ptls_openssl_load|picoquic_ptls_openssl_log_version" rs/fq/src/sys/openssl.rs
   rg -n "picoquic_socket_set_ecn_options_ex|setsockopt_uint|struct Socket2Udp|fn set_ecn_options_ex" rs/fq/src/socks.rs rs/fq/src/socks_socket2.rs
@@ -2451,3 +2615,438 @@
   cargo clippy --tests --all-features -- -D warnings
   rg --files -g 'COMMANDS.log'
   rg -n "" COMMANDS.log
+
+2026-05-07 - Inspect Phase 4B quicctx batch instructions, Rust state, and C source bodies:
+  sed -n '1,220p' CLAUDE.md
+  sed -n '1,260p' TRANSLATE_PLAN.md
+  sed -n '1,260p' xlate/impl_translation_guide.md
+  rg -n "picoquic_(check_new_path_allowed|cnx_by_icid|cnx_by_id|cnx_by_net|cnx_by_secret|create\(|create_cnx_internal|create_local_cnxid|create_random_cnx_id|find_local_cnxid|get_path_quality_from_context|notify_destination_unreachable|register_net_id|remove_stashed_cnxid|reset_cnx|retire_local_cnxid|set_verify_certificate_callback|subscribe_to_quality_update_per_path_context|unregister_net_icid|unregister_net_id)" rs/fq/src picoquic/quicctx.c
+  sed -n '1,260p' rs/fq/src/lib.rs
+  sed -n '1,260p' rs/fq/src/internal.rs
+  rg -n "todo!|unimplemented!|SKIP:|picoquic_create|notify_destination|reset_cnx|create_cnx_internal|cnx_by_|local_cnxid|register_net|path_quality|verify_certificate" rs/fq/src/lib.rs rs/fq/src/internal.rs
+  sed -n '620,780p' picoquic/quicctx.c
+  sed -n '1270,1370p' picoquic/quicctx.c
+  sed -n '1180,1525p' rs/fq/src/lib.rs
+  sed -n '2820,2910p' rs/fq/src/lib.rs
+  sed -n '2940,3180p' rs/fq/src/internal.rs
+  sed -n '3180,3560p' rs/fq/src/internal.rs
+  sed -n '3560,3905p' rs/fq/src/internal.rs
+  sed -n '3905,4025p' rs/fq/src/internal.rs
+  rg -n "pub struct Quic|pub struct Connection|pub struct Path|pub struct Tuple|pub struct LocalConnectionId|pub struct LocalConnectionIdList|pub struct RemoteConnectionId|pub struct RemoteConnectionIdStash|pub struct PathQuality" rs/fq/src/internal.rs rs/fq/src/lib.rs
+  sed -n '2200,2365p' picoquic/quicctx.c
+  sed -n '2668,2732p' picoquic/quicctx.c
+  sed -n '3060,3155p' picoquic/quicctx.c
+  sed -n '3788,3875p' picoquic/quicctx.c
+  sed -n '3958,4040p' picoquic/quicctx.c
+  sed -n '4039,4210p' picoquic/quicctx.c
+  sed -n '4210,4355p' picoquic/quicctx.c
+  sed -n '4928,4995p' picoquic/quicctx.c
+  sed -n '5208,5298p' picoquic/quicctx.c
+  sed -n '5480,5498p' picoquic/quicctx.c
+  sed -n '1624,1648p' picoquic/quicctx.c
+  sed -n '1,260p' rs/fq/src/hash.rs
+  sed -n '1843,2065p' rs/fq/src/internal.rs
+  sed -n '2330,2665p' rs/fq/src/internal.rs
+  sed -n '260,560p' rs/fq/src/hash.rs
+  sed -n '2665,2928p' rs/fq/src/internal.rs
+  sed -n '580,630p' rs/fq/src/lib.rs
+  sed -n '630,670p' rs/fq/src/lib.rs
+  rg -n "find_or_create_(remote|local)|obtain_stashed|get_cnxid_from_stash|delete_local_cnxid|reset_packet_context|reset_ack_context|clear_stream|setup_initial|initialize_tls_stream|set_path_challenge|demote_path|find_path_by_address|refresh_path_quality_thresholds|get_sequence_number|subscribe_to_quality" rs/fq/src/internal.rs rs/fq/src/lib.rs
+  rg -n "pub enum InternalError|MIGRATION|PATH_" rs/fq/src/errors.rs rs/fq/src/lib.rs rs/fq/src/internal.rs
+  sed -n '1,120p' rs/fq/src/errors.rs
+  sed -n '2210,2305p' rs/fq/src/lib.rs
+  sed -n '4385,4565p' rs/fq/src/internal.rs
+  sed -n '4565,4985p' rs/fq/src/internal.rs
+  sed -n '5400,5475p' rs/fq/src/internal.rs
+  sed -n '5788,5825p' rs/fq/src/internal.rs
+  sed -n '7390,7420p' rs/fq/src/internal.rs
+  sed -n '11896,11935p' rs/fq/src/internal.rs
+  sed -n '11970,12035p' rs/fq/src/internal.rs
+  sed -n '12035,12130p' rs/fq/src/internal.rs
+  sed -n '12130,12220p' rs/fq/src/internal.rs
+  sed -n '12770,12820p' rs/fq/src/internal.rs
+  sed -n '360,430p' scripts/phase4_common.py
+  sed -n '1200,1340p' scripts/phase4_common.py
+  rg -n 'picoquic_check_new_path_allowed|picoquic_cnx_by_id|picoquic_create_cnx_internal|picoquic_create\(' xlate -g '*.json' -g '*.md'
+  sed -n '1,60p' scripts/phase4_common.py
+  sed -n '140,230p' scripts/phase4_common.py
+  sed -n '34220,34295p' xlate/function_translation_map.json
+  sed -n '622,655p' scripts/phase4_common.py
+  sed -n '655,690p' scripts/phase4_common.py
+  sed -n '29100,29160p' xlate/function_translation_map.json
+
+2026-05-07 - Inspect tests and TLS/congestion/version helpers for quicctx batch:
+  rg -n "new_path_allowed|cnx_by|local_cnx|stashed|reset_cnx|destination_unreachable|quality_update|create_cnx_internal|Quic::new|create\(" rs/fq/src/tests rs/fq/tests rs/fq/src -g '*.rs'
+  rg -n "struct Verify|trait TlsCallbacks|verify_certificate|set_verify" rs/fq/src/tls.rs rs/fq/src/tls_api.rs rs/fq/src/*.rs
+  rg -n "fn setup_initial_traffic_keys|fn create_tls_context|fn initialize_tls_stream|tlscontext" rs/fq/src/internal.rs rs/fq/src/tls*.rs
+  sed -n '1,180p' rs/fq/src/tests/cnx_creation.rs
+  sed -n '180,330p' rs/fq/src/tests/cnx_creation.rs
+  sed -n '240,285p' rs/fq/src/tests/multipath.rs
+  rg -n "pub fn connection_by_id|pub fn connection_by_net|pub fn next_cnx|connection_by_secret|connection_by_icid|register_path|unregister" rs/fq/src/lib.rs rs/fq/src/internal.rs
+  sed -n '5740,5785p' rs/fq/src/lib.rs
+  sed -n '13680,13820p' rs/fq/src/internal.rs
+  sed -n '5500,5590p' rs/fq/src/internal.rs
+  sed -n '4115,4155p' rs/fq/src/internal.rs
+  rg -n "connection_by_net\(|connection_by_id\(|connection_by_icid\(|connection_by_secret\(" rs/fq/src/internal.rs rs/fq/src/lib.rs
+  rg -n "InternalError::(MigrationDisabled|PathNotReady|PathLimitExceeded|PathIdBlocked|PathCidBlocked)|Error::Protocol\(" rs/fq/src
+  rg -n "impl From<InternalError|fn .*internal" rs/fq/src/lib.rs rs/fq/src/errors.rs
+  rg -n "subscribe_new_path_allowed|test_and_signal_new_path_allowed|check_new_path" xlate/function_translation_map.json rs/fq/src/internal.rs rs/fq/src/lib.rs
+  sed -n '1640,1965p' rs/fq/src/lib.rs
+  sed -n '2150,2195p' rs/fq/src/lib.rs
+  sed -n '920,945p' rs/fq/src/tls_api.rs
+  sed -n '945,980p' rs/fq/src/tls_api.rs
+  sed -n '1066,1088p' rs/fq/src/tls_api.rs
+  sed -n '1308,1335p' rs/fq/src/tls_api.rs
+  rg -n "ticket_encryption|encrypt_ticket|aead_encrypt_ticket|ticket.*key|master_tlscontext|encrypt ticket" rs/fq/src/tls_api.rs rs/fq/src/internal.rs rs/fq/src/tls.rs picoquic/tls_api.c
+  sed -n '760,910p' rs/fq/src/tls_api.rs
+  sed -n '1725,1862p' picoquic/tls_api.c
+  rg -n "DEFAULT_CONGESTION|default_congestion_alg|newreno|NEW_RENO|congestion_control" rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/newreno.rs rs/fq/src/*.rs
+  sed -n '850,885p' rs/fq/src/lib.rs
+  rg -n "get_version_index|INTEROP|Version::|supported_versions|version_index" rs/fq/src/internal.rs rs/fq/src/lib.rs
+  sed -n '300,340p' rs/fq/src/internal.rs
+  rg -n "MTU_OVERHEAD|mtu_overhead|PICOQUIC_MTU_OVERHEAD|OVERHEAD" rs/fq/src picoquic
+  sed -n '974,992p' rs/fq/src/lib.rs
+  rg -n "enum SpinbitVersion" -A20 rs/fq/src/lib.rs
+  rg -n "create_cnxid_reset_secret|reset_secret" rs/fq/src/tls_api.rs rs/fq/src/internal.rs rs/fq/src/lib.rs
+  sed -n '1568,1592p' rs/fq/src/tls_api.rs
+
+2026-05-07 - Verify and inspect Phase 4B quicctx changes:
+  cargo fmt
+  cargo test --no-run
+  cargo test create_cnx
+  cargo test create_quic
+  cargo test getter
+  sed -n '1,55p' rs/fq/src/tests/getter.rs
+  rg -n "set_default_connection_id_length" -A18 -B5 rs/fq/src/lib.rs
+  sed -n '70,110p' rs/fq/src/tests/getter.rs
+  rg -n "set_local_addr|picoquic_set_local" picoquic/quicctx.c rs/fq/src/lib.rs
+  sed -n '5438,5455p' picoquic/quicctx.c
+  sed -n '5455,5462p' picoquic/quicctx.c
+  cargo fmt
+  cargo test getter
+  cargo fmt
+  cargo test getter
+  git diff -- rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/tls_api.rs
+  rg -n 'not yet wired|Phase 4 body|TODO|unimplemented!|todo!|// SKIP:' rs/fq/src/lib.rs rs/fq/src/internal.rs rs/fq/src/tls_api.rs
+  cargo fmt
+  cargo test --no-run
+  cargo clippy --tests --all-features -- -D warnings
+  tail -40 COMMANDS.log
+
+2026-05-07 - Phase 4D deep review of BBRBoundBWForModel:
+  rg -n "" CLAUDE.md
+  rg -n "" TRANSLATE_PLAN.md
+  git status --short
+  rg -n -C 30 "BBRBoundBWForModel|bw_hi|bw_lo|max_bw|picoquic_bbr_state_t" picoquic/bbr.c
+  rg -n -C 30 "picoquic_bbr_state_t|bw_hi|bw_lo|max_bw" picoquic
+  rg -n -C 35 "bound_bw_for_model|bw_hi|bw_lo|max_bw|struct Bbr" rs/fq/src/bbr.rs
+  cargo test bound_bw_for_model
+  git diff -- rs/fq/src/bbr.rs
+  git diff -- COMMANDS.log
+  rg -n "Phase 4D|bound_bw|BBRBoundBWForModel|cargo test bound_bw" COMMANDS.log
+
+2026-05-07 - Phase 4D deep review of BBRBoundCwndForModel:
+  rg -n "" CLAUDE.md
+  rg -n "" TRANSLATE_PLAN.md
+  git status --short
+  rg -n -C 30 "BBRBoundCwndForModel|BBRInflightWithHeadroom|IsInAProbeBWState|BBRMinPipeCwnd|picoquic_bbr_alg_probe_bw_cruise|inflight_lo|inflight_hi" picoquic/bbr.c picoquic/*.h
+  rg -n -C 30 "bound_cwnd_for_model|inflight_with_headroom|is_in_a_probe_bw_state|BBR_MIN_PIPE_CWND|ProbeBwCruise|inflight_lo|inflight_hi" rs/fq/src/bbr.rs
+  rg -n -C 35 "pub fn bound_cwnd_for_model|pub fn bound_cwnd_for_probe_rtt|pub fn probe_rtt_cwnd|pub fn update_max_inflight|pub fn set_cwnd" rs/fq/src/bbr.rs
+  rg -n -C 25 "struct Path|pub struct Path|impl Default for Path|fn default\(|send_mtu|cwin" rs/fq/src/internal.rs
+  rg -n -C 20 "BBRSetCwnd|BBRBoundCwndForProbeRTT|BBRProbeRTTCwnd|BBRUpdateMaxInflight|BBRInflightWithBw" picoquic/bbr.c
+  rg -n "" COMMANDS.log
+  git diff -- COMMANDS.log rs/fq/src/bbr.rs
+
+2026-05-07 - Phase 5 planning and script setup:
+  git status --short
+  sed -n '880,1335p' TRANSLATE_PLAN.md
+  sed -n '1,220p' CLAUDE.md
+  sed -n '110,170p' scripts/README.md
+  git log --oneline -12
+  ls scripts
+  sed -n '1,240p' scripts/phase4c.py
+  sed -n '1,260p' scripts/phase4e.py
+  rg -n "test|picoquictest|phase3|cargo test|phase5" scripts rs/fq xlate -g '*.py' -g '*.json' -g '*.md'
+  sed -n '1,260p' scripts/phase4_common.py
+  sed -n '1,260p' scripts/phase4d.py
+  sed -n '1,240p' scripts/phase3_check.py
+  sed -n '1,220p' scripts/phase3.py
+  sed -n '260,620p' scripts/phase4d.py
+  sed -n '260,620p' scripts/phase4e.py
+  sed -n '240,420p' scripts/phase4_common.py
+  sed -n '420,760p' scripts/phase4_common.py
+  sed -n '1,240p' scripts/agent_runner.py
+  sed -n '760,980p' scripts/phase4_common.py
+  find rs/fq/src/tests -maxdepth 1 -type f
+  sed -n '1,120p' rs/fq/src/tests/sacktest.rs
+  sed -n '1,120p' rs/fq/src/tests/config.rs
+  sed -n '1,120p' picoquictest/config_test.c
+  sed -n '1,160p' rs/fq/src/tests/mod.rs
+  rg -n "^#\[test\]|^fn |^pub fn|/// C:" rs/fq/src/tests/config.rs
+  rg -n "^int .*test|_test\(void\)|^static int" picoquictest/config_test.c
+  rg -n "config_option_letters|config_set_option|config_get_option" rs/fq/src/tests/config.rs
+  rg -n "def source_body|def html_page|def load_function_map" scripts/phase4_common.py
+  sed -n '1340,1405p' scripts/phase4_common.py
+  python3 scripts/phase4b.py --status
+  python3 scripts/phase4d.py --status
+  python3 scripts/phase3_check.py --quiet
+  python3 -m py_compile scripts/phase5_common.py scripts/phase5a.py scripts/phase5b.py scripts/phase5c.py
+  python3 scripts/phase5a.py --status
+  python3 scripts/phase5b.py --status
+  python3 scripts/phase5c.py --status
+  ps -axo pid,etime,command
+  kill -TERM 85242 85244 85677
+  find xlate -maxdepth 2 -path '*phase5c*' -print
+  python3 scripts/phase5a.py --dry-run --limit 3
+  python3 scripts/phase5b.py --dry-run --limit 3
+  find xlate/phase5c_runs -maxdepth 1 -type f -print
+  rg -n '\"status\": \"(unmapped|missing_c|missing_rust)\"|\"test_name\"|\"entry_fn\"|\"source_basename\"' xlate/test_translation_map.json
+  rg -n "sim_link_test" picoquic_t picoquictest rs/fq/src/tests
+  tail -20 COMMANDS.log
+  python3 scripts/phase5a.py --dry-run --shard-count 4 --shard-index 0 --limit 2
+  python3 scripts/phase5b.py --dry-run --bucket-count 4 --bucket-index 0 --limit 2
+  python3 scripts/phase5c.py --dry-run --limit 2
+  ps -axo pid,etime,comm
+  kill -TERM 87478 87479 87480
+  python3 -m py_compile scripts/phase5_common.py scripts/phase5a.py scripts/phase5b.py scripts/phase5c.py
+  find xlate/phase5c_runs -maxdepth 1 -type f -print
+  sed -n '1,260p' CLAUDE.md
+  sed -n '1,260p' TRANSLATE_PLAN.md
+  sed -n '1,320p' scripts/phase5a.py
+  sed -n '1,260p' scripts/phase5_common.py
+  git status --short
+  sed -n '320,760p' scripts/phase5a.py
+  rg -n "agent response did not include this test|cert_verify_bad_cert|ackfrq_basic|sim_link" xlate/phase5a_reviews.json
+  sed -n '1,120p' xlate/test_translation_map.json
+  find xlate/codex_logs/phase5a -type f | head -20
+  sed -n '1,220p' xlate/codex_logs/phase5a/cert_verify_bad_cert_test__cleartext_pn_vector_test__config_preferred_test__plus_2.log
+  python3 -m py_compile scripts/phase5a.py
+  git diff -- scripts/phase5a.py
+  python3 scripts/phase5a.py --clear-placeholders --no-refresh-map
+  python3 scripts/phase5a.py --status --no-refresh-map
+  python3 scripts/phase5a.py --dry-run --no-refresh-map --limit 5
+  rg -n "agent response did not include this test" xlate/phase5a_reviews.json
+  tail -40 COMMANDS.log
+  sed -n '30,140p' scripts/phase5a.py
+  sed -n '150,310p' scripts/phase5a.py
+  sed -n '395,455p' scripts/phase5a.py
+  git status --short scripts/phase5a.py xlate/phase5a_reviews.json xlate/phase5a_report.html COMMANDS.log
+  sed -n '270,390p' scripts/phase5a.py
+  sed -n '455,560p' scripts/phase5a.py
+  sed -n '1,260p' scripts/phase4e.py
+  sed -n '260,620p' scripts/phase4e.py
+  sed -n '1,260p' scripts/phase4d.py
+  python3 scripts/phase4b.py --status
+  python3 scripts/phase4d.py --status
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase5a.py --status --no-refresh-map
+  python3 scripts/phase5c.py --status
+  sed -n '260,620p' scripts/phase4d.py
+  sed -n '620,920p' scripts/phase4d.py
+  sed -n '1,260p' scripts/agent_runner.py
+  sed -n '1,260p' scripts/phase4_common.py
+  sed -n '1,260p' scripts/README.md
+  sed -n '1,260p' scripts/phase5a.py
+  sed -n '260,620p' scripts/phase5a.py
+  rg -n "Phase 4E|Phase 5A|Phase 5B|Phase 5C" TRANSLATE_PLAN.md
+  sed -n '520,720p' TRANSLATE_PLAN.md
+  sed -n '260,520p' scripts/agent_runner.py
+  find xlate/codex_logs/phase5a -type f | wc -l
+  find xlate/codex_logs/phase5a -type f | head -5
+  sed -n '1248,1308p' TRANSLATE_PLAN.md
+  python3 -m py_compile scripts/phase4e.py scripts/phase5a.py
+  python3 scripts/phase4e.py --dry-run --limit 3
+  python3 scripts/phase5a.py --replay-logs --no-refresh-map
+  git diff -- scripts/phase4e.py scripts/phase5a.py scripts/README.md TRANSLATE_PLAN.md
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase5a.py --status --no-refresh-map
+  python3 scripts/phase5a.py --dry-run --no-refresh-map --limit 5
+  git status --short
+  export CARGO_TARGET_DIR=/private/tmp/fq-target; python3 scripts/phase5a.py --agent codex --no-refresh-map --batch-size 1
+  export CARGO_TARGET_DIR=/private/tmp/fq-target; python3 scripts/phase4e.py --agent codex --batch-size 1
+  find xlate/codex_logs/phase5a -type f -maxdepth 1 -print | xargs ls -t | head -3
+  find xlate/codex_logs/phase4e -type f -maxdepth 1 -print | xargs ls -t | head -3
+  tail -120 xlate/codex_logs/phase5a/warptest_worst_test.log
+  tail -120 xlate/codex_logs/phase4e/BBRCheckPathSaturated.log
+  export CARGO_TARGET_DIR=/private/tmp/fq-target; python3 scripts/phase5a.py --agent codex --no-refresh-map --batch-size 1
+  export CARGO_TARGET_DIR=/private/tmp/fq-target; python3 scripts/phase4e.py --agent codex --batch-size 1
+  ps -axo pid,etime,command | rg "phase4e.py|phase5a.py|codex exec"
+  tail -30 xlate/codex_logs/phase5a/warptest_worst_test.log
+  tail -30 xlate/codex_logs/phase4e/BBRCheckPathSaturated.log
+  python3 -m py_compile scripts/phase5a.py
+  python3 scripts/phase5a.py --replay-logs --no-refresh-map
+  tail -120 xlate/codex_logs/phase4e_confirm/BBRCheckPathSaturated.log
+  tail -80 xlate/codex_logs/phase4e/BBRCheckPathSaturated.log
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase4d.py --status
+  find xlate/codex_logs/phase4e -type f -maxdepth 1 -print | xargs ls -t | head -5
+  find xlate/codex_logs/phase4e_confirm -type f -maxdepth 1 -print | xargs ls -t | head -5
+  tail -80 xlate/codex_logs/phase4e_confirm/BBRStartProbeBW_DOWN.log
+  tail -100 xlate/codex_logs/phase4e_confirm/BBRUpdateProbeBWCyclePhase.log
+  tail -80 xlate/codex_logs/phase4e/BBRUpdateProbeBWCyclePhase.log
+  ps -axo pid,etime,command | rg "phase4e.py|codex exec"
+  tail -100 xlate/codex_logs/phase4e_confirm/binlog_close_connection.log
+  tail -80 xlate/codex_logs/phase4e/BBRUpdateControlParameters.log
+  tail -80 xlate/codex_logs/phase4e_confirm/binlog_new_connection.log
+  tail -80 xlate/codex_logs/phase4e_confirm/binlog_outgoing_packet.log
+  python3 scripts/phase4b.py --status
+  python3 scripts/phase4d.py --status
+  python3 scripts/phase5a.py --status --no-refresh-map
+  python3 scripts/phase5c.py --status
+  tail -80 xlate/codex_logs/phase4e_confirm/picoquic_cc_slow_start_increase.log
+  rg -n -C 4 '"outcome": "blocked"' xlate/phase5a_reviews.json
+  python3 scripts/phase5a.py --status --no-refresh-map
+  rg -n "sim_link_test|sim_link" picoquic_t picoquictest rs/fq/src/tests xlate/test_translation_map.json
+  sed -n '1,80p' xlate/test_translation_map.json
+  sed -n '1560,1595p' xlate/test_translation_map.json
+  sed -n '80,110p' picoquictest/picoquictest.h
+  sed -n '95,110p' picoquic_t/picoquic_t.c
+  sed -n '100,155p' rs/fq/src/tests/harness.rs
+  rg -n "\bsim_link_test\s*\(" .
+  sed -n '1,180p' scripts/phase5_common.py
+  sed -n '180,340p' scripts/phase5_common.py
+  python3 scripts/phase5a.py --status --no-refresh-map
+  ps -axo pid,etime,command | rg "phase4e.py|codex exec"
+  python3 -m py_compile scripts/phase5_common.py scripts/phase5a.py
+  git diff -- scripts/phase5_common.py scripts/phase5a.py
+  python3 scripts/phase5a.py --prune-stale-reviews
+  python3 scripts/phase5a.py --dry-run --no-refresh-map --only sim_link_test --limit 3
+  rg -n -C 10 '"entry_fn": "sim_link_test"|"test_name": "sim_link"|"test_id": "picoquic.*/sim_link' xlate/test_translation_map.json
+  rg -n '"picoquic/sim_link.c:sim_link_test"|"sim_link_test"|"sim_link"' xlate/phase5a_reviews.json
+  python3 scripts/phase5a.py --dry-run --no-refresh-map --only sim_link_test --limit 3
+  export CARGO_TARGET_DIR=/private/tmp/fq-target; python3 scripts/phase5a.py --agent codex --no-refresh-map --only sim_link_test --batch-size 1 --allow-concurrent-rust-changes
+  rg -n -C 5 'picoquic/sim_link.c:sim_link_test|"test_name": "sim_link"|"outcome": "blocked"' xlate/phase5a_reviews.json xlate/test_translation_map.json
+  python3 scripts/phase5a.py --status --no-refresh-map
+  python3 scripts/phase5b.py --status
+  sed -n '1,280p' scripts/phase5b.py
+  sed -n '280,620p' scripts/phase5b.py
+  python3 scripts/phase5b.py --status
+  python3 scripts/phase4e.py --status
+  ps -axo pid,etime,command | rg "phase4e.py|phase5b.py|codex exec"
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase5a.py --status
+  python3 scripts/phase5b.py --status
+  git status --short
+  git branch --show-current
+  ps -axo pid,ppid,stat,etime,command | rg "phase4e.py|phase5b.py|codex exec"
+  ls -lt xlate/codex_logs/phase4e_confirm | head
+  ls -lt xlate/codex_logs/phase4e | head
+  ls -lt xlate/prompts/phase4e_confirm | head
+  tail -n 80 xlate/codex_logs/phase4e_confirm/picoquic_create_and_configure.log
+  ps -axo pid,ppid,stat,etime,command | rg "phase4e.py|phase5b.py|codex exec"
+  python3 scripts/phase4e.py --status
+  sed -n '220,620p' scripts/phase4e.py
+  ls -lt xlate/codex_logs/phase4e | head
+  tail -n 60 xlate/codex_logs/phase4e/picoquic_cc_increased_window.log
+  find xlate/codex_logs/phase4e -maxdepth 1 -type f -name '*cc_increased*' -print
+  sed -n '620,980p' scripts/phase4e.py
+  ps -axo pid,ppid,stat,etime,command | rg "16913|81795|phase4e.py|codex exec|cargo"
+  find xlate/codex_logs/phase4e -maxdepth 1 -type f -mmin -5 -print
+  python3 scripts/phase4e.py --status
+  sleep 60
+  ps -axo pid,ppid,stat,etime,command | rg "81795|phase4e.py|codex exec|cargo"
+  python3 scripts/phase4e.py --status
+  find xlate/codex_logs/phase4e -maxdepth 1 -type f -mmin -3 -print
+  while ps -p 19070 >/dev/null; do sleep 1; done; kill -STOP 81795; ps -p 81795 -o pid,stat,etime,command
+  ps -axo pid,ppid,stat,etime,command | rg "19070|81795|phase4e.py|codex exec|cargo"
+  find xlate/codex_logs/phase4e -maxdepth 1 -type f -mmin -2 -print
+  git diff --name-only -- rs/fq/src/internal.rs
+  git status --short
+  git ls-files xlate | head -n 80
+  git ls-files scripts | rg "phase5|README"
+  ls -l xlate/phase5a_reviews.json xlate/phase5a_report.html xlate/test_translation_map.json
+  ls -ld xlate/prompts/phase5a xlate/codex_logs/phase5a
+  python3 -m py_compile scripts/phase5_common.py scripts/phase5a.py scripts/phase5b.py scripts/phase5c.py
+  git diff -- TRANSLATE_PLAN.md scripts/README.md scripts/phase5_common.py scripts/phase5a.py scripts/phase5b.py scripts/phase5c.py
+  git diff --stat -- TRANSLATE_PLAN.md scripts/README.md scripts/phase5_common.py scripts/phase5a.py scripts/phase5b.py scripts/phase5c.py xlate/test_translation_map.json xlate/phase5a_reviews.json xlate/phase5a_report.html
+  git add -- TRANSLATE_PLAN.md scripts/README.md scripts/phase5_common.py scripts/phase5a.py scripts/phase5b.py scripts/phase5c.py xlate/test_translation_map.json xlate/phase5a_reviews.json xlate/phase5a_report.html
+  git status --short
+  git diff --cached --stat
+  git diff --cached --name-only
+  git commit -m "Add Phase 5 test audit tooling"
+  git worktree list
+  ls -ld /private/tmp/picoquic-5b
+  git rev-parse --short HEAD
+  git branch --list c2rust-phase5b
+  git worktree add -b c2rust-phase5b /private/tmp/picoquic-5b HEAD
+  python3 scripts/phase5b.py --status
+  git status --short
+  git worktree list
+  export CARGO_TARGET_DIR=/private/tmp/fq-target-5b; python3 scripts/phase5b.py --agent codex --batch-size 1
+  ps -axo pid,ppid,stat,etime,command | rg "phase5b.py|/private/tmp/picoquic-5b|codex exec"
+  python3 scripts/phase5b.py --status
+  kill -CONT 81795
+  ps -axo pid,ppid,stat,etime,command | rg "81795|phase4e.py|phase5b.py|codex exec|cargo"
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase5b.py --status
+  sed -n '1,240p' scripts/phase4e.py
+  sed -n '1,260p' scripts/phase5b.py
+  sed -n '1,220p' CLAUDE.md
+  sed -n '1,220p' TRANSLATE_PLAN.md
+  sed -n '240,620p' scripts/phase4e.py
+  sed -n '260,620p' scripts/phase5b.py
+  git status --short
+  tail -40 COMMANDS.log
+  sed -n '620,980p' scripts/phase4e.py
+  sed -n '1,260p' scripts/phase5_common.py
+  sed -n '1,240p' scripts/phase5a.py
+  sed -n '1,260p' scripts/phase4d.py
+  rg -n "def save_json|def rel|REPO_ROOT|XLATE" scripts/phase4_common.py
+  sed -n '1,120p' scripts/phase4_common.py
+  sed -n '120,220p' scripts/phase4_common.py
+  git -C /private/tmp/picoquic-5b status --short
+  python3 -m py_compile scripts/phase4e.py scripts/phase5b.py scripts/phase_cluster_plan.py
+  python3 scripts/phase4e.py --dry-run --limit 1
+  python3 scripts/phase5b.py --dry-run --limit 1
+  git diff -- scripts/phase4e.py scripts/phase5b.py scripts/phase_cluster_plan.py
+  git status --short scripts/phase4e.py scripts/phase5b.py scripts/phase_cluster_plan.py
+  git -C /private/tmp/picoquic-5b rev-parse --abbrev-ref HEAD
+  git rev-parse --abbrev-ref HEAD
+  git status --short scripts
+  git diff --stat
+  sed -n '1,260p' scripts/phase4d_record_results.py
+  git status --short xlate/test_translation_map.json xlate/phase5a_reviews.json xlate/phase5b_repairs.json
+  git diff -- xlate/test_translation_map.json
+  git status --short
+  git status --short xlate/test_translation_map.json
+  git add scripts/phase4e.py scripts/phase5b.py scripts/phase_cluster_plan.py
+  git diff --cached --stat
+  git commit -m "Add repair cluster planning support"
+  python3 scripts/phase5b.py --status
+  python3 scripts/phase4e.py --status
+  rg -n -C 6 '"outcome": "blocked"|"outcome": "fixed"' xlate/phase5b_repairs.json
+  ls -lt xlate/codex_logs/phase5b | head -n 20
+  tail -n 100 xlate/codex_logs/phase5b/ackfrq_short_test.log
+  ps -axo pid,ppid,stat,etime,command | rg "phase5b.py|/private/tmp/picoquic-5b|codex exec|cargo"
+  python3 scripts/phase5b.py --status
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase5b.py --status
+  ps -axo pid,ppid,stat,etime,command | rg "81795|20781|phase4e.py|phase5b.py|codex exec|cargo"
+  ls -lt xlate/codex_logs/phase4e xlate/codex_logs/phase4e_confirm | head -n 20
+  ls -lt xlate/codex_logs/phase5b | head -n 20
+  python3 scripts/phase4b.py --status
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase5a.py --status
+  python3 scripts/phase5b.py --status
+  ps -axo pid,ppid,stat,etime,command | rg "phase4e.py|phase5b.py|codex exec|cargo"
+  ps -axo pid,ppid,stat,etime,command | rg "phase4e.py|phase5b.py|codex exec|cargo"
+  ls -lt xlate/codex_logs/phase4e xlate/codex_logs/phase4e_confirm | head -n 20
+  ls -lt xlate/codex_logs/phase5b | head -n 20
+  ps -axo pid,ppid,stat,etime,command | rg "phase4e.py|phase5b.py|codex exec|cargo"
+  kill -INT 33626 33994 37475 40229
+  ps -axo pid,ppid,stat,etime,command | rg "phase4e.py|phase5b.py|codex exec|cargo"
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase5b.py --status
+  ps -axo pid,ppid,stat,etime,command | rg "phase4e.py|phase5b.py|codex exec|cargo"
+  git status --short
+  git status --short
+  ls -lt xlate/codex_logs/phase4e xlate/codex_logs/phase4e_confirm | head -n 12
+  ls -lt xlate/codex_logs/phase5b | head -n 12
+  python3 scripts/phase4e.py --dry-run --only picoquic_apply_reset_stream_frame --limit 3
+  python3 scripts/phase5b.py --dry-run --only app_limit_cc_test --limit 3
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase5b.py --status
+  sleep 5
+  ps -axo pid,ppid,stat,etime,command | rg "81795|phase4e.py|phase5b.py|codex exec|cargo"
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase5b.py --status
