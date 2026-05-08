@@ -3040,6 +3040,28 @@
   git -C /private/tmp/picoquic-5b status --short
   find xlate/clusters -maxdepth 3 -type f | sort
   find /private/tmp/picoquic-5b/xlate/clusters -maxdepth 3 -type f | sort
+  git add COMMANDS.log xlate/clusters
+  git diff --cached --stat
+  git status --short xlate/clusters COMMANDS.log
+  git commit -m "Prepare Phase 4E repair clusters"
+  git -C /private/tmp/picoquic-5b add COMMANDS.log xlate/clusters
+  git -C /private/tmp/picoquic-5b diff --cached --stat
+  git -C /private/tmp/picoquic-5b status --short COMMANDS.log xlate/clusters
+  git -C /private/tmp/picoquic-5b commit -m "Prepare Phase 5B repair clusters"
+  git worktree list
+  git branch --list 'c2rust-4e-cluster-*' 'c2rust-5b-cluster-*'
+  ls -d /private/tmp/picoquic-4e-* /private/tmp/picoquic-5b-*
+  git log --oneline -5
+  for i in {00..08}; do git worktree add -b c2rust-4e-cluster-$i /private/tmp/picoquic-4e-$i c2rust; done
+  for i in {00..10}; do git worktree add -b c2rust-5b-cluster-$i /private/tmp/picoquic-5b-$i c2rust-phase5b; done
+  CARGO_TARGET_DIR=/private/tmp/fq-target python3 scripts/phase4b.py --status
+  python3 scripts/phase4e.py --status
+  python3 scripts/phase5a.py --status
+  python3 scripts/phase5b.py --status
+  python3 scripts/phase4a.py --status
+  git worktree list
+  ps -axo pid,ppid,stat,etime,command | rg "phase4e.py|phase5b.py|codex exec|cargo"
+  find /private/tmp -maxdepth 1 -type d \( -name 'picoquic-4e-*' -o -name 'picoquic-5b-*' \) | sort | wc -l
   python3 scripts/phase5b.py --status
   python3 scripts/phase4e.py --status
   rg -n -C 6 '"outcome": "blocked"|"outcome": "fixed"' xlate/phase5b_repairs.json
