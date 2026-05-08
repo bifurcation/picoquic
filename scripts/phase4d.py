@@ -14,6 +14,7 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -36,13 +37,19 @@ from phase4_common import (
     source_body,
 )
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Phase 4 tooling runs on POSIX.
+    fcntl = None
+
 PHASE4C_REVIEWS = XLATE / "phase4c_reviews.json"
 RESULTS = XLATE / "phase4d_results.json"
+RESULTS_LOCK = XLATE / "phase4d_results.lock"
 REPORT = XLATE / "phase4d_report.html"
 PROMPTS_DIR = XLATE / "prompts" / "phase4d"
 
 PHASE4C_WORK_STATUSES = {"suspect", "definitely_not_ok"}
-OUTCOMES = {"ok", "fixed", "blocked"}
+OUTCOMES = {"ok", "needs_fix", "fixed", "blocked"}
 
 ALLOWED_TOOLS = (
     "Read Edit Write Glob Grep "
@@ -54,6 +61,13 @@ ALLOWED_TOOLS = (
     "Bash(cargo fmt:*) "
     "Bash(cargo clippy:*) "
     "Bash(python3 scripts/phase4_check.py:*)"
+)
+
+CLASSIFY_ALLOWED_TOOLS = (
+    "Read Glob Grep "
+    "Bash(rg:*) "
+    "Bash(git diff:*) "
+    "Bash(git status:*)"
 )
 
 
@@ -70,14 +84,41 @@ def phase4c_review_map() -> dict:
     )
 
 
+@contextlib.contextmanager
+def results_file_lock():
+    RESULTS_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    with RESULTS_LOCK.open("a") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
 def load_results() -> dict:
-    results = load_json(RESULTS, {"schema_version": 1, "results": {}})
-    results.setdefault("results", {})
-    return results
+    with results_file_lock():
+        results = load_json(RESULTS, {"schema_version": 1, "results": {}})
+        results.setdefault("results", {})
+        return results
 
 
-def save_results(results: dict) -> None:
-    save_json(RESULTS, results)
+def update_results(updates: dict[str, dict], *, force: bool) -> dict:
+    with results_file_lock():
+        results = load_json(RESULTS, {"schema_version": 1, "results": {}})
+        result_map = results.setdefault("results", {})
+        for c_id, result in updates.items():
+            if (
+                force
+                or c_id not in result_map
+                or result_map[c_id].get("outcome") == "needs_fix"
+            ):
+                result_map[c_id] = result
+        tmp = RESULTS.with_name(f"{RESULTS.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n")
+        tmp.replace(RESULTS)
+        return results
 
 
 def work_entries(
@@ -88,6 +129,9 @@ def work_entries(
     only: str | None = None,
     force: bool = False,
     order: str = "severity",
+    classify_only: bool = False,
+    shard_count: int = 1,
+    shard_index: int = 0,
 ) -> list[dict]:
     done = results.get("results", {})
     out: list[dict] = []
@@ -97,8 +141,6 @@ def work_entries(
         if review.get("status") not in PHASE4C_WORK_STATUSES:
             continue
         if only and c_id != only and e.get("c", {}).get("name") != only:
-            continue
-        if not force and c_id in done:
             continue
         item = dict(e)
         item["phase4c_review"] = review
@@ -111,6 +153,20 @@ def work_entries(
                 e.get("c_id", ""),
             )
         )
+    if shard_count > 1:
+        out = [
+            e for i, e in enumerate(out)
+            if i % shard_count == shard_index
+        ]
+    if not force:
+        if classify_only:
+            out = [e for e in out if e["c_id"] not in done]
+        else:
+            out = [
+                e for e in out
+                if e["c_id"] not in done
+                or done[e["c_id"]].get("outcome") == "needs_fix"
+            ]
     return out
 
 
@@ -128,7 +184,7 @@ def log_path(agent: agent_runner.AgentConfig, batch: list[dict]) -> Path:
     )
 
 
-def compose_prompt(batch: list[dict]) -> str:
+def compose_prompt(batch: list[dict], *, classify_only: bool) -> str:
     sections: list[str] = []
     for e in batch:
         c = e["c"]
@@ -159,8 +215,44 @@ def compose_prompt(batch: list[dict]) -> str:
             )
         )
 
-    return "\n".join(
-        [
+    if classify_only:
+        mode = [
+            "# Phase 4D deep translation classification",
+            "",
+            "You are classifying Phase 4C non-OK C/Rust function-pair",
+            "audit entries.  Phase 4C was intentionally body-only and",
+            "shallow; Phase 4D classification is allowed to inspect",
+            "broader context.",
+            "",
+            "For each entry:",
+            "",
+            "1. Read the C function and any directly relevant C context:",
+            "   types, constants/macros, helper callees, and callers when",
+            "   needed to understand observable behavior.",
+            "2. Read the Rust function in context, including local types,",
+            "   helpers, tests, and nearby translated functions.",
+            "3. Decide whether the Phase 4C concern is a false positive.",
+            "",
+            "Do not edit files in this classification pass.  Report:",
+            "",
+            "* `ok` when the Rust behavior is acceptable after deeper",
+            "  inspection.",
+            "* `needs_fix` when the Rust translation is actually wrong and",
+            "  should be repaired in a later 4D repair pass.",
+            "* `blocked` only when the analysis cannot be completed without",
+            "  a concrete external decision or missing dependency.",
+            "",
+            "Return final JSON with this shape:",
+            "",
+            "```json",
+            "{\"results\":[{\"c_id\":\"...\",\"outcome\":\"ok|needs_fix|blocked\","
+            "\"analysis\":\"short deeper-review conclusion\","
+            "\"fix_summary\":\"empty unless outcome is needs_fix\","
+            "\"files_changed\":[],\"verification\":[]}]}",
+            "```",
+        ]
+    else:
+        mode = [
             "# Phase 4D deep translation review and repair",
             "",
             "You are resolving Phase 4C non-OK C/Rust function-pair audit",
@@ -202,6 +294,11 @@ def compose_prompt(batch: list[dict]) -> str:
             "\"files_changed\":[\"rs/fq/src/...\"],"
             "\"verification\":[\"cargo ...\"]}]}",
             "```",
+        ]
+
+    return "\n".join(
+        [
+            *mode,
             "",
             "Entries:",
             "",
@@ -234,7 +331,12 @@ def extract_json(text: str) -> dict:
     raise ValueError("no JSON object found")
 
 
-def normalize_results(raw: dict, batch: list[dict]) -> dict[str, dict]:
+def normalize_results(
+    raw: dict,
+    batch: list[dict],
+    *,
+    classify_only: bool,
+) -> dict[str, dict]:
     def string_list(value: object) -> list[str]:
         if not isinstance(value, list):
             return []
@@ -247,6 +349,8 @@ def normalize_results(raw: dict, batch: list[dict]) -> dict[str, dict]:
         outcome = item.get("outcome")
         if c_id not in batch_ids or outcome not in OUTCOMES:
             continue
+        if classify_only and outcome == "fixed":
+            outcome = "needs_fix"
         by_id[c_id] = {
             "c_id": c_id,
             "phase4c_status": next(
@@ -327,7 +431,7 @@ def write_report(mapping: dict, reviews: dict, results: dict) -> None:
         "<h2>Summary</h2>",
         "<table><tr><th>Outcome</th><th>Count</th><th>Percent</th></tr>",
     ]
-    for status in ("ok", "fixed", "blocked", "pending"):
+    for status in ("ok", "needs_fix", "fixed", "blocked", "pending"):
         n = counts.get(status, 0)
         pct = 0.0 if total == 0 else 100.0 * n / total
         body.append(f"<tr><td>{esc(status)}</td><td>{n}</td><td>{pct:.1f}%</td></tr>")
@@ -335,6 +439,7 @@ def write_report(mapping: dict, reviews: dict, results: dict) -> None:
 
     for section, title in (
         ("blocked", "Blocked"),
+        ("needs_fix", "Needs Repair"),
         ("fixed", "Fixed"),
         ("ok", "Confirmed OK"),
         ("pending", "Pending"),
@@ -383,7 +488,7 @@ def print_status(mapping: dict, reviews: dict, results: dict) -> None:
     for status in ("suspect", "definitely_not_ok"):
         print(f"  phase4c {status:17s} {c_counts.get(status, 0)}")
     print("phase4d outcomes:")
-    for status in ("ok", "fixed", "blocked", "pending"):
+    for status in ("ok", "needs_fix", "fixed", "blocked", "pending"):
         print(f"  {status:24s} {r_counts.get(status, 0)}")
 
 
@@ -392,10 +497,16 @@ def main() -> int:
     agent_runner.add_agent_args(parser, model_help_context="Phase 4D repair agent")
     parser.add_argument("--status", action="store_true", help="show Phase 4D progress")
     parser.add_argument("--dry-run", action="store_true", help="print selected entries without invoking an agent")
+    parser.add_argument("--classify-only", action="store_true",
+                        help="deep-review and classify entries without editing Rust")
     parser.add_argument("--force", action="store_true", help="re-run entries with existing Phase 4D results")
     parser.add_argument("--only", help="limit to one c_id or C function name")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--shard-count", type=int, default=1,
+                        help="split Phase 4D work across this many parallel workers")
+    parser.add_argument("--shard-index", type=int, default=0,
+                        help="zero-based worker index when --shard-count is greater than one")
     parser.add_argument("--max-turns", type=int, default=250)
     parser.add_argument("--skip-gate", action="store_true", help="skip cargo gates after a batch that changes Rust")
     parser.add_argument(
@@ -405,6 +516,10 @@ def main() -> int:
         help="severity reviews definitely_not_ok entries before suspect entries",
     )
     args = parser.parse_args()
+    if args.shard_count < 1:
+        parser.error("--shard-count must be at least 1")
+    if args.shard_index < 0 or args.shard_index >= args.shard_count:
+        parser.error("--shard-index must satisfy 0 <= index < shard-count")
 
     mapping = load_function_map()
     reviews = phase4c_review_map()
@@ -434,10 +549,17 @@ def main() -> int:
         only=args.only,
         force=args.force,
         order=args.order,
+        classify_only=args.classify_only,
+        shard_count=args.shard_count,
+        shard_index=args.shard_index,
     )
     if args.limit is not None:
         selected = selected[: args.limit]
-    print(f"selected Phase 4C non-OK entries: {len(selected)}")
+    shard = ""
+    if args.shard_count > 1:
+        shard = f" for shard {args.shard_index}/{args.shard_count}"
+    mode = "classification" if args.classify_only else "repair"
+    print(f"selected Phase 4C non-OK entries{shard} ({mode}): {len(selected)}")
     if args.dry_run:
         for e in selected[:50]:
             review = e["phase4c_review"]
@@ -466,6 +588,9 @@ def main() -> int:
             only=args.only,
             force=args.force,
             order=args.order,
+            classify_only=args.classify_only,
+            shard_count=args.shard_count,
+            shard_index=args.shard_index,
         )
         pending = [e for e in pending if e["c_id"] not in processed_ids]
         if args.limit is not None:
@@ -474,7 +599,7 @@ def main() -> int:
             break
 
         batch = pending[:batch_size]
-        prompt = compose_prompt(batch)
+        prompt = compose_prompt(batch, classify_only=args.classify_only)
         pfile = prompt_path(batch)
         pfile.write_text(prompt)
         before_rs = rs_diff_names()
@@ -490,7 +615,7 @@ def main() -> int:
             phase="phase4d",
             label=pfile.stem,
             prompt_file=pfile,
-            allowed_tools=ALLOWED_TOOLS,
+            allowed_tools=CLASSIFY_ALLOWED_TOOLS if args.classify_only else ALLOWED_TOOLS,
             max_turns=args.max_turns,
         )
         if res.returncode != 0:
@@ -499,7 +624,11 @@ def main() -> int:
 
         try:
             parsed = extract_json(res.stdout + "\n" + res.stderr)
-            updates = normalize_results(parsed, batch)
+            updates = normalize_results(
+                parsed,
+                batch,
+                classify_only=args.classify_only,
+            )
         except (ValueError, json.JSONDecodeError) as exc:
             updates = {
                 e["c_id"]: {
@@ -514,15 +643,16 @@ def main() -> int:
                 for e in batch
             }
 
-        result_map = results.setdefault("results", {})
-        result_map.update(updates)
-        save_results(results)
+        results = update_results(updates, force=args.force)
         processed += len(batch)
         processed_ids.update(e["c_id"] for e in batch)
 
         after_rs = rs_diff_names()
+        if args.classify_only and after_rs != before_rs:
+            print("classify-only agent changed Rust files; aborting")
+            return 3
         fixed = any(item.get("outcome") == "fixed" for item in updates.values())
-        if fixed or after_rs != before_rs:
+        if not args.classify_only and (fixed or after_rs != before_rs):
             gate = run_gate(args.skip_gate)
             if gate != 0:
                 print(f"gate failed with exit {gate}")
@@ -533,6 +663,7 @@ def main() -> int:
                 return refresh
             mapping = load_function_map()
 
+    results = load_results()
     write_report(mapping, reviews, results)
     print_status(mapping, reviews, results)
     print(f"wrote: {RESULTS.relative_to(REPO_ROOT)}")
