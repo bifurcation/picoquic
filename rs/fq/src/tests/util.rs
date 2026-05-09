@@ -26,9 +26,14 @@
 
 use core::net::SocketAddr;
 
-use crate::internal::{Connection, MAX_ACK_RANGE_REPEAT, SackList, Version, format_ack_frame};
+use crate::internal::{
+    Connection, INTEROP_VERSION_LATEST, MAX_ACK_RANGE_REPEAT, NB_PATH_TARGET, SackList, Version,
+    format_ack_frame, init_transport_parameters, public_random,
+};
 use crate::tp::TransportParameters;
-use crate::{ConnectionId, Instant, MAX_PACKET_SIZE, PacketContext, Quic, RESET_SECRET_SIZE};
+use crate::{
+    ConnectionId, Instant, MAX_PACKET_SIZE, PacketContext, Quic, RESET_SECRET_SIZE, State,
+};
 
 // ---------------------------------------------------------------------------
 // Deterministic test RNG.
@@ -657,6 +662,9 @@ pub struct TestClientEndpoint {
     /// Maximum backlog of not-yet-processed incoming packets.
     /// C: `packet_queue_max`.
     pub packet_queue_max: usize,
+    /// Pass an undefined local destination address to incoming packets.
+    /// C: `addr_to_unspec`.
+    pub addr_to_unspec: bool,
 }
 
 /// Combined TLS-API test context holding two QUIC contexts, their
@@ -697,6 +705,9 @@ pub struct TestTlsApiCtx {
     /// When `true`, substitute `client_addr_natted` for outgoing packets.
     /// C: `test_ctx->client_use_nat`.
     pub client_use_nat: bool,
+    /// Prepend a malformed coalesced packet on client departures after the
+    /// handshake starts. C: `test_ctx->do_bad_coalesce_test`.
+    pub do_bad_coalesce_test: bool,
     /// Count of address-discovery observations received by the test.
     /// C: `test_ctx->nb_address_observed`.
     pub nb_address_observed: u64,
@@ -823,8 +834,6 @@ pub fn tls_api_connection_loop(
     queue_delay_max: u64,
     simulated_time: &mut Instant,
 ) -> crate::Result<()> {
-    test_ctx.c_to_s_link.loss_mask = Some(*loss_mask);
-    test_ctx.s_to_c_link.loss_mask = Some(*loss_mask);
     test_ctx.c_to_s_link.queue_delay_max = queue_delay_max;
     test_ctx.s_to_c_link.queue_delay_max = queue_delay_max;
 
@@ -837,11 +846,12 @@ pub fn tls_api_connection_loop(
     {
         let mut was_active = false;
         nb_trials += 1;
-        tls_api_one_sim_round(
+        tls_api_one_sim_round_inner(
             test_ctx,
             simulated_time,
             Instant::from_ticks(0),
             &mut was_active,
+            Some(loss_mask),
         )?;
 
         let client_disc = test_ctx
@@ -927,9 +937,6 @@ pub fn tls_api_data_sending_loop(
     simulated_time: &mut Instant,
     max_trials: i32,
 ) -> crate::Result<()> {
-    test_ctx.c_to_s_link.loss_mask = Some(*loss_mask);
-    test_ctx.s_to_c_link.loss_mask = Some(*loss_mask);
-
     let max = if max_trials <= 0 {
         4_000_000
     } else {
@@ -942,11 +949,12 @@ pub fn tls_api_data_sending_loop(
     {
         let mut was_active = false;
         nb_trials += 1;
-        tls_api_one_sim_round(
+        tls_api_one_sim_round_inner(
             test_ctx,
             simulated_time,
             Instant::from_ticks(0),
             &mut was_active,
+            Some(loss_mask),
         )?;
 
         if was_active {
@@ -1046,6 +1054,118 @@ pub fn tls_api_one_sim_round(
     time_out: Instant,
     was_active: &mut bool,
 ) -> crate::Result<()> {
+    tls_api_one_sim_round_inner(test_ctx, simulated_time, time_out, was_active, None)
+}
+
+/// Advance the simulation by one round with the same shared loss-mask
+/// semantics used by `tls_api_connection_loop` and `tls_api_data_sending_loop`.
+pub fn tls_api_one_sim_round_with_loss(
+    test_ctx: &mut TestTlsApiCtx,
+    simulated_time: &mut Instant,
+    time_out: Instant,
+    was_active: &mut bool,
+    loss_mask: &mut u64,
+) -> crate::Result<()> {
+    tls_api_one_sim_round_inner(
+        test_ctx,
+        simulated_time,
+        time_out,
+        was_active,
+        Some(loss_mask),
+    )
+}
+
+fn sim_link_submit_with_loss(
+    link: &mut TestSimLink,
+    packet: TestSimPacket,
+    current_time: Instant,
+    loss_mask: &mut Option<&mut u64>,
+) {
+    if let Some(mask) = loss_mask.as_deref_mut() {
+        link.loss_mask = Some(*mask);
+        link.submit(packet, current_time);
+        if let Some(link_mask) = link.loss_mask {
+            *mask = link_mask;
+        }
+    } else {
+        link.submit(packet, current_time);
+    }
+}
+
+fn sim_link_admit_pending_with_loss(
+    link: &mut TestSimLink,
+    current_time: Instant,
+    loss_mask: &mut Option<&mut u64>,
+) {
+    if let Some(mask) = loss_mask.as_deref_mut() {
+        link.loss_mask = Some(*mask);
+        link.admit_pending(current_time);
+        if let Some(link_mask) = link.loss_mask {
+            *mask = link_mask;
+        }
+    } else {
+        link.admit_pending(current_time);
+    }
+}
+
+fn tls_api_prepare_bad_coalesce_packet(cnx: &Connection, bytes: &mut [u8]) -> crate::Result<usize> {
+    const BAD_PAYLOAD_LENGTH: usize = 21;
+
+    let path = cnx.paths.first().ok_or(crate::Error::Generic)?;
+    let tuple = path.tuples.first().ok_or(crate::Error::Generic)?;
+    let remote_cnxid = tuple
+        .remote_connection_id_index
+        .and_then(|cid_index| {
+            cnx.remote_connection_id_stashes
+                .iter()
+                .find(|stash| stash.unique_path_id == path.unique_path_id)
+                .and_then(|stash| stash.connection_ids.get(cid_index))
+        })
+        .or_else(|| {
+            cnx.remote_connection_id_stashes
+                .iter()
+                .find(|stash| stash.unique_path_id == path.unique_path_id)
+                .and_then(|stash| stash.connection_ids.first())
+        })
+        .map(|remote_cnxid| remote_cnxid.connection_id)
+        .ok_or(crate::Error::Generic)?;
+    let local_cnxid = tuple
+        .local_connection_id
+        .and_then(|token| cnx.local_connection_ids.get(token))
+        .map(|local_cnxid| local_cnxid.connection_id)
+        .ok_or(crate::Error::Generic)?;
+
+    let required = 1 + 4 + 1 + remote_cnxid.len() + 1 + local_cnxid.len() + 1 + BAD_PAYLOAD_LENGTH;
+    if bytes.len() < required {
+        return Err(crate::Error::BufferTooSmall);
+    }
+
+    let mut offset = 0usize;
+    bytes[offset] = 0xE0;
+    offset += 1;
+    bytes[offset..offset + 4].copy_from_slice(&cnx.version_number().to_be_bytes());
+    offset += 4;
+    bytes[offset] = remote_cnxid.len() as u8;
+    offset += 1;
+    bytes[offset..offset + remote_cnxid.len()].copy_from_slice(remote_cnxid.as_bytes());
+    offset += remote_cnxid.len();
+    bytes[offset] = local_cnxid.len() as u8;
+    offset += 1;
+    bytes[offset..offset + local_cnxid.len()].copy_from_slice(local_cnxid.as_bytes());
+    offset += local_cnxid.len();
+    bytes[offset] = BAD_PAYLOAD_LENGTH as u8;
+    offset += 1;
+    public_random(&mut bytes[offset..offset + BAD_PAYLOAD_LENGTH]);
+    Ok(offset + BAD_PAYLOAD_LENGTH)
+}
+
+fn tls_api_one_sim_round_inner(
+    test_ctx: &mut TestTlsApiCtx,
+    simulated_time: &mut Instant,
+    time_out: Instant,
+    was_active: &mut bool,
+    mut loss_mask: Option<&mut u64>,
+) -> crate::Result<()> {
     // Stateless packet takes priority.
     if test_ctx.qserver.pending_stateless_packets.front().is_some() {
         if let Some(sp) = test_ctx.qserver.dequeue_stateless_packet()
@@ -1065,7 +1185,12 @@ pub fn tls_api_one_sim_round(
                         l.submit(pkt, *simulated_time);
                     }
                 } else {
-                    test_ctx.s_to_c_link.submit(pkt, *simulated_time);
+                    sim_link_submit_with_loss(
+                        &mut test_ctx.s_to_c_link,
+                        pkt,
+                        *simulated_time,
+                        &mut loss_mask,
+                    );
                 }
             }
         }
@@ -1200,7 +1325,11 @@ pub fn tls_api_one_sim_round(
                         .map(|a| a == test_ctx.client_addr)
                         .unwrap_or(false);
                     if addr_to_ok && pkt.length > 0 {
-                        let addr_to = pkt.addr_to.unwrap_or(test_ctx.client_addr);
+                        let addr_to = if test_ctx.client_endpoint.addr_to_unspec {
+                            crate::unspecified_socket_addr()
+                        } else {
+                            pkt.addr_to.unwrap_or(test_ctx.client_addr)
+                        };
                         let ecn = pkt.ecn_mark;
                         let _ = test_ctx.qclient.incoming_packet(
                             &mut pkt.bytes[..pkt.length],
@@ -1239,7 +1368,11 @@ pub fn tls_api_one_sim_round(
                     && let Some(mut pkt) = link.dequeue(t)
                 {
                     let addr_from = pkt.addr_from.unwrap_or(test_ctx.server_addr);
-                    let addr_to = pkt.addr_to.unwrap_or(test_ctx.client_addr_2);
+                    let addr_to = if test_ctx.client_endpoint.addr_to_unspec {
+                        crate::unspecified_socket_addr()
+                    } else {
+                        pkt.addr_to.unwrap_or(test_ctx.client_addr_2)
+                    };
                     let ecn = pkt.ecn_mark;
                     let _ = test_ctx.qclient.incoming_packet(
                         &mut pkt.bytes[..pkt.length],
@@ -1274,15 +1407,19 @@ pub fn tls_api_one_sim_round(
                 continue;
             }
             Act::ClientAdm => {
-                test_ctx
-                    .s_to_c_link
-                    .admit_pending(Instant::from_ticks(next_time));
+                sim_link_admit_pending_with_loss(
+                    &mut test_ctx.s_to_c_link,
+                    Instant::from_ticks(next_time),
+                    &mut loss_mask,
+                );
                 continue;
             }
             Act::ServerAdm => {
-                test_ctx
-                    .c_to_s_link
-                    .admit_pending(Instant::from_ticks(next_time));
+                sim_link_admit_pending_with_loss(
+                    &mut test_ctx.c_to_s_link,
+                    Instant::from_ticks(next_time),
+                    &mut loss_mask,
+                );
                 continue;
             }
             Act::ClientAdm2 => {
@@ -1314,10 +1451,19 @@ pub fn tls_api_one_sim_round(
     match next_action {
         Act::ClientDep => {
             let mut buf = [0u8; MAX_PACKET_SIZE];
-            let prep = test_ctx
-                .qclient
-                .first_cnx_mut()
-                .and_then(|c| c.prepare_packet(*simulated_time, &mut buf).ok());
+            let mut coalesced_length = 0usize;
+            let prep = {
+                let do_bad_coalesce_test = test_ctx.do_bad_coalesce_test;
+                if let Some(cnx) = test_ctx.qclient.first_cnx_mut() {
+                    if do_bad_coalesce_test && cnx.state() > State::ServerHandshake {
+                        coalesced_length = tls_api_prepare_bad_coalesce_packet(cnx, &mut buf)?;
+                    }
+                    cnx.prepare_packet(*simulated_time, &mut buf[coalesced_length..])
+                        .ok()
+                } else {
+                    None
+                }
+            };
             if let Some(pp) = prep
                 && pp.send_length > 0
             {
@@ -1344,17 +1490,23 @@ pub fn tls_api_one_sim_round(
                         test_ctx.c_to_s_link.is_unreachable
                     };
                     if !is_unreach && let Ok(mut pkt) = TestSimPacket::create() {
+                        let send_length = coalesced_length + pp.send_length;
                         pkt.addr_from = Some(addr_from);
                         pkt.addr_to = Some(pp.addr_to);
                         pkt.ecn_mark = test_ctx.packet_ecn_default;
-                        pkt.length = pp.send_length;
-                        pkt.bytes[..pp.send_length].copy_from_slice(&buf[..pp.send_length]);
+                        pkt.length = send_length;
+                        pkt.bytes[..send_length].copy_from_slice(&buf[..send_length]);
                         if use_link2 {
                             if let Some(l) = test_ctx.c_to_s_link_2.as_mut() {
                                 l.submit(pkt, *simulated_time);
                             }
                         } else {
-                            test_ctx.c_to_s_link.submit(pkt, *simulated_time);
+                            sim_link_submit_with_loss(
+                                &mut test_ctx.c_to_s_link,
+                                pkt,
+                                *simulated_time,
+                                &mut loss_mask,
+                            );
                         }
                     }
                 }
@@ -1402,7 +1554,12 @@ pub fn tls_api_one_sim_round(
                                 l.submit(pkt, *simulated_time);
                             }
                         } else {
-                            test_ctx.s_to_c_link.submit(pkt, *simulated_time);
+                            sim_link_submit_with_loss(
+                                &mut test_ctx.s_to_c_link,
+                                pkt,
+                                *simulated_time,
+                                &mut loss_mask,
+                            );
                         }
                     }
                 }
@@ -1492,6 +1649,7 @@ pub fn cert_verify_set_ctx(
         client_addr_2: SocketAddr::from(([0u8; 4], 0u16)),
         client_addr_natted: SocketAddr::from(([0u8; 4], 0u16)),
         client_use_nat: false,
+        do_bad_coalesce_test: false,
         nb_address_observed: 0,
         loss_mask_default: 0,
         blackhole_start: 0,
@@ -1678,6 +1836,7 @@ fn tls_api_init_ctx_ex_named(
         client_addr_2: SocketAddr::from(([10u8, 0, 0, 3], 1234u16)),
         client_addr_natted: SocketAddr::from(([0u8; 4], 0u16)),
         client_use_nat: false,
+        do_bad_coalesce_test: false,
         nb_address_observed: 0,
         loss_mask_default: 0,
         blackhole_start: 0,
@@ -2076,7 +2235,10 @@ pub fn test_set_minimal_cnx_with_time(_simulated_time: &mut Instant) -> crate::R
         None,
         None,
     )
-    .ok_or(crate::Error::Generic)?;
+    .ok_or_else(|| {
+        eprintln!("cnx_ddos: qddos context creation failed");
+        crate::Error::Generic
+    })?;
 
     quic.create_connection(
         ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
@@ -2088,7 +2250,10 @@ pub fn test_set_minimal_cnx_with_time(_simulated_time: &mut Instant) -> crate::R
         Some("minimal"),
         true,
     )
-    .ok_or(crate::Error::Generic)?;
+    .ok_or_else(|| {
+        eprintln!("cnx_ddos: test context creation failed");
+        crate::Error::Generic
+    })?;
 
     Ok(quic)
 }
@@ -2834,8 +2999,8 @@ pub fn tester_push_frame_packet(
 
 /// Run a TLS API handshake with a specific packet-loss bitmask.
 /// C: `tls_api_loss_test` in `picoquictest/tls_api_test.c`.
-pub fn tls_api_loss_test(_loss_mask: u64) -> crate::Result<()> {
-    tls_api_test_with_loss(None, 0, Some(TEST_SNI), Some(TEST_ALPN))
+pub fn tls_api_loss_test(loss_mask: u64) -> crate::Result<()> {
+    tls_api_test_with_initial_loss(loss_mask, None, 0, Some(TEST_SNI), Some(TEST_ALPN))
 }
 
 /// Run a complete TLS API scenario with given ticket file, version, SNI, and ALPN.
@@ -2846,10 +3011,20 @@ pub fn tls_api_test_with_loss(
     _sni: Option<&str>,
     _alpn: Option<&str>,
 ) -> crate::Result<()> {
+    tls_api_test_with_initial_loss(0, ticket_file, proposed_version, _sni, _alpn)
+}
+
+fn tls_api_test_with_initial_loss(
+    initial_loss_mask: u64,
+    ticket_file: Option<&str>,
+    proposed_version: u32,
+    _sni: Option<&str>,
+    _alpn: Option<&str>,
+) -> crate::Result<()> {
     let mut simulated_time = Instant::from_ticks(0);
     let mut test_ctx = tls_api_init_ctx(&mut simulated_time, proposed_version, ticket_file)
         .ok_or(crate::Error::Generic)?;
-    let mut loss_mask = 0u64;
+    let mut loss_mask = initial_loss_mask;
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
     tls_api_test_with_loss_final(
         &mut test_ctx,
@@ -2937,47 +3112,284 @@ pub fn mtu_drop_cc_algotest(_algo_id: &'static str, _target_time: u64) -> crate:
 
 /// Run one stop-sending test.  `discard=true` → discard stream variant.
 /// C: `stop_sending_test_one` in `picoquictest/tls_api_test.c`.
-pub fn stop_sending_test_one(_discard: bool, _reset_loss: bool) -> crate::Result<()> {
+pub fn stop_sending_test_one(discard: bool, reset_loss: bool) -> crate::Result<()> {
+    const STOP_SENDING_LATENCY: u64 = 100_000;
+    const TEST_SCENARIO_STOP_SENDING: &[TestApiStreamDesc] = &[
+        TestApiStreamDesc {
+            stream_id: 4,
+            previous_stream_id: 0,
+            q_len: 257,
+            r_len: 1_000_000,
+        },
+        TestApiStreamDesc {
+            stream_id: 8,
+            previous_stream_id: 4,
+            q_len: 531,
+            r_len: 11_000,
+        },
+    ];
+
     let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx =
-        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
-    let mut loss_mask = if _reset_loss {
-        0x0fff_ffff_ffff_ffffu64
-    } else {
-        0
-    };
+    let mut loss_mask = 0x0f0f_0f0f_0f00_0000u64;
+    let mut test_ctx = tls_api_init_ctx(&mut simulated_time, Version::InternalTest1 as u32, None)
+        .ok_or(crate::Error::Generic)?;
+
+    test_ctx.c_to_s_link.microsec_latency = STOP_SENDING_LATENCY;
+    test_ctx.s_to_c_link.microsec_latency = STOP_SENDING_LATENCY;
+
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    let scenario = [TestApiStreamDesc {
-        stream_id: 1,
-        previous_stream_id: 0,
-        q_len: 1_000_000,
-        r_len: 1_000_000,
-    }];
-    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
-    if _discard {
-        test_ctx.cnx_client().discard_stream(1, 0).ok();
-    } else {
-        test_ctx.cnx_client().stop_sending(1, 0).ok();
+    if !test_ctx.client_ready() || !test_ctx.server_ready() {
+        return Err(crate::Error::Generic);
     }
+
+    test_api_init_send_recv_scenario(&mut test_ctx, TEST_SCENARIO_STOP_SENDING)?;
+
+    let mut nb_initial_loop = 0;
+    while nb_initial_loop < 64
+        && test_ctx
+            .test_streams
+            .first()
+            .map(|stream| stream.r_recv_nb == 0)
+            .unwrap_or(true)
+    {
+        nb_initial_loop += 1;
+        tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 16)?;
+    }
+    if test_ctx
+        .test_streams
+        .first()
+        .map(|stream| stream.r_recv_nb == 0)
+        .unwrap_or(true)
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    let stopped_stream_id = TEST_SCENARIO_STOP_SENDING[0].stream_id;
+    if discard {
+        test_ctx.cnx_client().discard_stream(stopped_stream_id, 1)?;
+        if let Some(stream) = test_ctx.test_streams.first_mut() {
+            stream.r_received = true;
+        } else {
+            return Err(crate::Error::Generic);
+        }
+    } else {
+        test_ctx.cnx_client().stop_sending(stopped_stream_id, 1)?;
+    }
+
+    if reset_loss {
+        loss_mask = 0x0000_00fc_0000_0000u64;
+    }
+
     tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
+
+    if test_ctx.server_callback_error_detected || test_ctx.client_callback_error_detected {
+        return Err(crate::Error::Generic);
+    }
+
+    for (i, stream) in test_ctx.test_streams.iter().enumerate() {
+        if stream.q_recv_nb != stream.q_len
+            || (i == 0 && stream.r_recv_nb == stream.r_len)
+            || (i != 0 && stream.r_recv_nb != stream.r_len)
+            || !stream.q_received
+            || !stream.r_received
+        {
+            return Err(crate::Error::Generic);
+        }
+    }
+
+    if test_ctx.qclient.nb_data_nodes_allocated > test_ctx.qclient.nb_data_nodes_in_pool()
+        || test_ctx.qserver.nb_data_nodes_allocated > test_ctx.qserver.nb_data_nodes_in_pool()
+    {
+        return Err(crate::Error::Generic);
+    }
+
     tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
 }
 
 /// Run one CNXID-transmit test.
 /// C: `transmit_cnxid_test_one` in `picoquictest/tls_api_test.c`.
 pub fn transmit_cnxid_test_one(
-    _retire_before: bool,
-    _disable: bool,
-    _early: bool,
+    retire_before: bool,
+    disable_migration: bool,
+    retire_number_zero: bool,
 ) -> crate::Result<()> {
+    const SYNC_EMPTY_LOOP_TIMEOUT: u64 = 4_000_000;
+    const DEFAULT_CONNECTION_ID_TTL: u64 = 5_000_000;
+
     let mut simulated_time = Instant::from_ticks(0);
     let mut test_ctx =
         tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
+
+    if disable_migration {
+        let mut test_parameters = TransportParameters::default();
+        init_transport_parameters(&mut test_parameters);
+        test_parameters.migration_disabled = true;
+        test_ctx.qserver.set_default_tp(&test_parameters)?;
+    }
+
+    if retire_before {
+        test_ctx
+            .qserver
+            .set_default_connection_id_ttl(DEFAULT_CONNECTION_ID_TTL);
+    }
+
+    if retire_number_zero {
+        let mut nb_trials = 0;
+        while nb_trials < 16 && !test_ctx.has_cnx_server() {
+            let mut was_active = false;
+            nb_trials += 1;
+            tls_api_one_sim_round(
+                &mut test_ctx,
+                &mut simulated_time,
+                Instant::from_ticks(0),
+                &mut was_active,
+            )?;
+        }
+
+        if !test_ctx.has_cnx_server() {
+            return Err(crate::Error::Generic);
+        }
+
+        let server_list = first_test_connection_mut(&mut test_ctx.qserver)?
+            .local_connection_id_lists
+            .first_mut()
+            .ok_or(crate::Error::Generic)?;
+        server_list.local_connection_id_retire_before = 1;
+    }
+
     let mut loss_mask = 0u64;
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    tls_api_synch_to_empty_loop(&mut test_ctx, &mut simulated_time, 1024, 0, 0)?;
-    tls_api_wait_for_timeout(&mut test_ctx, &mut simulated_time, 3_000_000)?;
+
+    tls_api_synch_to_empty_loop(
+        &mut test_ctx,
+        &mut simulated_time,
+        2048,
+        NB_PATH_TARGET as i32,
+        0,
+    )?;
+
+    if retire_number_zero
+        && first_path_remote_cid_sequence(first_test_connection(&test_ctx.qclient)?)? == 0
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    if retire_before {
+        tls_api_wait_for_timeout(
+            &mut test_ctx,
+            &mut simulated_time,
+            DEFAULT_CONNECTION_ID_TTL - SYNC_EMPTY_LOOP_TIMEOUT,
+        )?;
+
+        if first_local_cid_retire_before(first_test_connection(&test_ctx.qserver)?)? == 0 {
+            return Err(crate::Error::Generic);
+        }
+
+        tls_api_synch_to_empty_loop(
+            &mut test_ctx,
+            &mut simulated_time,
+            2048,
+            NB_PATH_TARGET as i32,
+            0,
+        )?;
+    }
+
+    if first_local_cid_count(first_test_connection(&test_ctx.qclient)?)? < NB_PATH_TARGET
+        || first_local_cid_count(first_test_connection(&test_ctx.qserver)?)? < NB_PATH_TARGET
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    {
+        let client_cnx = first_test_connection(&test_ctx.qclient)?;
+        let server_cnx = first_test_connection(&test_ctx.qserver)?;
+        transmit_cnxid_test_stash(client_cnx, server_cnx)?;
+        transmit_cnxid_test_stash(server_cnx, client_cnx)?;
+    }
+
+    if retire_before {
+        let retire_before_next =
+            first_local_cid_retire_before(first_test_connection(&test_ctx.qserver)?)?;
+        let old_cid_still_stashed =
+            first_remote_cid_stash(first_test_connection(&test_ctx.qclient)?)?
+                .connection_ids
+                .iter()
+                .any(|stashed| stashed.sequence < retire_before_next);
+        if old_cid_still_stashed {
+            return Err(crate::Error::Generic);
+        }
+    }
+
     tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
+}
+
+fn first_test_connection(quic: &Quic) -> crate::Result<&Connection> {
+    quic.connections.iter().next().ok_or(crate::Error::Generic)
+}
+
+fn first_test_connection_mut(quic: &mut Quic) -> crate::Result<&mut Connection> {
+    quic.connections
+        .iter_mut()
+        .next()
+        .ok_or(crate::Error::Generic)
+}
+
+fn first_local_cid_count(cnx: &Connection) -> crate::Result<usize> {
+    cnx.local_connection_id_lists
+        .first()
+        .map(|list| list.connection_ids.len())
+        .ok_or(crate::Error::Generic)
+}
+
+fn first_local_cid_retire_before(cnx: &Connection) -> crate::Result<u64> {
+    cnx.local_connection_id_lists
+        .first()
+        .map(|list| list.local_connection_id_retire_before)
+        .ok_or(crate::Error::Generic)
+}
+
+fn first_remote_cid_stash(
+    cnx: &Connection,
+) -> crate::Result<&crate::internal::RemoteConnectionIdStash> {
+    cnx.remote_connection_id_stashes
+        .first()
+        .ok_or(crate::Error::Generic)
+}
+
+fn first_path_remote_cid_sequence(cnx: &Connection) -> crate::Result<u64> {
+    let path = cnx.paths.first().ok_or(crate::Error::Generic)?;
+    let tuple = path.tuples.first().ok_or(crate::Error::Generic)?;
+    let cid_index = tuple.remote_connection_id_index.unwrap_or(0);
+    cnx.remote_connection_id_stashes
+        .iter()
+        .find(|stash| stash.unique_path_id == path.unique_path_id)
+        .and_then(|stash| stash.connection_ids.get(cid_index))
+        .map(|remote_cid| remote_cid.sequence)
+        .ok_or(crate::Error::Generic)
+}
+
+fn transmit_cnxid_test_stash(cnx1: &Connection, cnx2: &Connection) -> crate::Result<()> {
+    let stash = first_remote_cid_stash(cnx1)?;
+    let cid_list = cnx2
+        .local_connection_id_lists
+        .first()
+        .ok_or(crate::Error::Generic)?;
+
+    if stash.connection_ids.len() != cid_list.connection_ids.len() {
+        return Err(crate::Error::Generic);
+    }
+
+    for (remote_cid, local_token) in stash.connection_ids.iter().zip(&cid_list.connection_ids) {
+        let local_cid = cnx2
+            .local_connection_ids
+            .get(*local_token)
+            .ok_or(crate::Error::Generic)?;
+        if remote_cid.connection_id != local_cid.connection_id {
+            return Err(crate::Error::Generic);
+        }
+    }
+
+    Ok(())
 }
 
 /// Run one NAT-rebinding test.
@@ -3376,31 +3788,384 @@ pub fn grease_quic_bit_test_one(_one_way: bool) -> crate::Result<()> {
 
 /// Run one DDoS-amplification test.
 /// C: `ddos_amplification_test_one` in `picoquictest/tls_api_test.c`.
-pub fn ddos_amplification_test_one(_mode: u32, _flag: u32) -> crate::Result<()> {
+pub fn ddos_amplification_test_one(use_0rtt: u32, do_8k: u32) -> crate::Result<()> {
+    const TICKET_FILE_NAME: &str = "resume_tests_tickets.bin";
+    const SCENARIO_Q_AND_R5000: &[TestApiStreamDesc] = &[TestApiStreamDesc {
+        stream_id: 4,
+        previous_stream_id: 0,
+        q_len: 257,
+        r_len: 5000,
+    }];
+
+    fn server_connection_mut(
+        qserver: &mut Quic,
+        initial_cid: ConnectionId,
+    ) -> Option<&mut Connection> {
+        qserver
+            .connections
+            .iter_mut()
+            .find(|cnx| cnx.initial_connection_id() == initial_cid)
+    }
+
+    fn delete_all_connections(quic: &mut Quic) {
+        while let Some(token) = quic.first_connection().and_then(|cnx| cnx.own_token) {
+            quic.delete_connection(token);
+        }
+    }
+
+    fn ensure_client_initial_queued(
+        cnx: &mut Connection,
+        simulated_time: Instant,
+    ) -> crate::Result<()> {
+        if cnx.tls_stream[0].send_queue.is_empty() {
+            cnx.initialize_tls_stream(simulated_time)?;
+        }
+        cnx.tls_stream[0].sent_offset = 0;
+        Ok(())
+    }
+
+    fn prepare_first_client_packet(
+        qclient: &mut Quic,
+        simulated_time: Instant,
+        buffer: &mut [u8],
+    ) -> crate::Result<(usize, SocketAddr, ConnectionId)> {
+        let cnx = qclient.first_cnx_mut().ok_or(crate::Error::Generic)?;
+        ensure_client_initial_queued(cnx, simulated_time)?;
+        let initial_cid = cnx.initial_connection_id();
+        let prepared = cnx.prepare_packet(simulated_time, buffer)?;
+        if prepared.send_length == 0 {
+            return Err(crate::Error::Generic);
+        }
+
+        Ok((prepared.send_length, prepared.addr_to, initial_cid))
+    }
+
     let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx =
-        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
-    let mut loss_mask = 0u64;
-    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
+    let proposed_version = INTEROP_VERSION_LATEST as u32;
+
+    save_empty_tickets(TICKET_FILE_NAME, simulated_time)?;
+    let mut test_ctx = tls_api_init_ctx(
+        &mut simulated_time,
+        proposed_version,
+        Some(TICKET_FILE_NAME),
+    )
+    .ok_or(crate::Error::Generic)?;
+
+    if do_8k != 0 {
+        test_ctx.qserver.test_large_server_flight = true;
+    }
+
+    if use_0rtt != 0 {
+        test_api_init_send_recv_scenario(&mut test_ctx, SCENARIO_Q_AND_R5000)?;
+
+        let mut loss_mask = 0u64;
+        tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+        session_resume_wait_for_ticket(&mut test_ctx, &mut simulated_time)?;
+        if test_ctx.qclient.stored_tickets.is_empty() {
+            return Err(crate::Error::Generic);
+        }
+
+        delete_all_connections(&mut test_ctx.qserver);
+        delete_all_connections(&mut test_ctx.qclient);
+        test_ctx.test_streams.clear();
+        test_ctx.test_finished = false;
+        test_ctx.streams_finished = false;
+
+        let server_addr = test_ctx.server_addr;
+        let cnx = test_ctx
+            .qclient
+            .create_connection(
+                ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                Some(&server_addr),
+                simulated_time,
+                proposed_version,
+                Some(TEST_SNI),
+                Some(TEST_ALPN),
+                true,
+            )
+            .ok_or(crate::Error::Generic)?;
+        cnx.start_client()?;
+
+        test_api_init_send_recv_scenario(&mut test_ctx, SCENARIO_Q_AND_R5000)?;
+    }
+
+    let mut packet = TestSimPacket::create()?;
+    let (client_packet_length, addr_to, client_initial_cid) =
+        prepare_first_client_packet(&mut test_ctx.qclient, simulated_time, &mut packet.bytes)?;
+
+    packet.length = client_packet_length;
+    let data_sent_by_client = client_packet_length;
+    let addr_from = test_ctx.client_addr;
+    let addr_to = if addr_to.ip().is_unspecified() {
+        test_ctx.server_addr
+    } else {
+        addr_to
+    };
+    let ecn = test_ctx.packet_ecn_default;
+    test_ctx.qserver.incoming_packet(
+        &mut packet.bytes[..packet.length],
+        &addr_from,
+        &addr_to,
+        0,
+        ecn,
+        simulated_time,
+    )?;
+
+    if server_connection_mut(&mut test_ctx.qserver, client_initial_cid).is_none() {
+        eprintln!(
+            "ddos amplification: server connection was not created, qserver connections={}, stateless={}, head={:02x?}",
+            test_ctx.qserver.current_number_connections(),
+            test_ctx.qserver.pending_stateless_packets.len(),
+            &packet.bytes[..packet.length.min(16)]
+        );
+        return Err(crate::Error::Generic);
+    }
+
+    let mut data_sent_by_server = 0usize;
+    let mut nb_loops = 0u32;
+    let mut nb_inactive = 0u32;
+
+    while let Some((server_state, next_wake_time)) =
+        server_connection_mut(&mut test_ctx.qserver, client_initial_cid)
+            .map(|cnx| (cnx.connection_state, cnx.next_wake_time))
+    {
+        if server_state == State::Disconnected || nb_loops >= 1024 || nb_inactive >= 256 {
+            break;
+        }
+
+        simulated_time = next_wake_time;
+        packet.length = 0;
+        nb_loops += 1;
+
+        let prepared = server_connection_mut(&mut test_ctx.qserver, client_initial_cid)
+            .ok_or(crate::Error::Generic)?
+            .prepare_packet(simulated_time, &mut packet.bytes);
+
+        match prepared {
+            Ok(prepared) if prepared.send_length > 0 => {
+                packet.length = prepared.send_length;
+                data_sent_by_server = data_sent_by_server.saturating_add(prepared.send_length);
+                nb_inactive = 0;
+            }
+            Ok(_) => {
+                nb_inactive += 1;
+            }
+            Err(crate::Error::Disconnected) => {
+                break;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    let server_still_live = server_connection_mut(&mut test_ctx.qserver, client_initial_cid)
+        .map(|cnx| cnx.connection_state != State::Disconnected)
+        .unwrap_or(false);
+    if server_still_live {
+        let server_state = server_connection_mut(&mut test_ctx.qserver, client_initial_cid)
+            .map(|cnx| cnx.connection_state);
+        eprintln!(
+            "ddos amplification: server still live state={server_state:?}, loops={nb_loops}, inactive={nb_inactive}, client_bytes={data_sent_by_client}, server_bytes={data_sent_by_server}"
+        );
+        return Err(crate::Error::Generic);
+    }
+
+    if data_sent_by_server > 3 * data_sent_by_client {
+        eprintln!(
+            "ddos amplification: server amplified {data_sent_by_server} > 3 * {data_sent_by_client}"
+        );
+        return Err(crate::Error::Generic);
+    }
+
+    Ok(())
 }
 
 /// Run a CNX-DDOS unit test loop.
 /// C: `cnx_ddos_test_loop` in `picoquictest/tls_api_test.c`.
-pub fn cnx_ddos_test_loop(_nb_cnx: u32, _nb_packets: u32) -> crate::Result<()> {
+pub fn cnx_ddos_test_loop(nb_connections: u32, ddos_interval: u64) -> crate::Result<()> {
+    const SCENARIO_Q2_AND_R2: &[TestApiStreamDesc] = &[
+        TestApiStreamDesc {
+            stream_id: 4,
+            previous_stream_id: 0,
+            q_len: 257,
+            r_len: 2000,
+        },
+        TestApiStreamDesc {
+            stream_id: 8,
+            previous_stream_id: 0,
+            q_len: 531,
+            r_len: 11000,
+        },
+    ];
+
     let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx =
-        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
-    let mut loss_mask = 0u64;
-    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
+    let mut qddos = Quic::new(
+        100,
+        None,
+        None,
+        None,
+        Some(TEST_ALPN),
+        None,
+        None,
+        [0u8; RESET_SECRET_SIZE],
+        simulated_time,
+        None,
+        None,
+    )
+    .ok_or(crate::Error::Generic)?;
+    let mut test_ctx = tls_api_init_ctx_ex2(
+        &mut simulated_time,
+        Version::InternalTest1 as u32,
+        Some(TEST_SNI),
+        Some(TEST_ALPN),
+        None,
+        None,
+    )
+    .ok_or(crate::Error::Generic)?;
+
+    let mut ddos_packets = Vec::with_capacity(nb_connections as usize);
+    for i in 0..nb_connections {
+        let mut ddos_packet = TestSimPacket::create()?;
+        let (token, start_ret) = {
+            let ddos_cnx = qddos
+                .create_connection(
+                    ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                    ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                    Some(&test_ctx.server_addr),
+                    simulated_time,
+                    0,
+                    Some(TEST_SNI),
+                    Some(TEST_ALPN),
+                    true,
+                )
+                .ok_or(crate::Error::Generic)?;
+            let token = ddos_cnx.own_token.ok_or(crate::Error::Generic)?;
+            (token, ddos_cnx.start_client())
+        };
+        if let Err(error) = start_ret {
+            qddos.delete_connection(token);
+            return Err(error);
+        }
+
+        let (send_length, addr_to) = {
+            let prepared = qddos
+                .first_cnx_mut()
+                .ok_or(crate::Error::Generic)?
+                .prepare_packet(simulated_time, &mut ddos_packet.bytes)?;
+            (prepared.send_length, prepared.addr_to)
+        };
+        if send_length == 0 {
+            qddos.delete_connection(token);
+            return Err(crate::Error::Generic);
+        }
+        qddos.delete_connection(token);
+
+        let addr_be = 0x0a01_0000u32.wrapping_add(i);
+        ddos_packet.length = send_length;
+        ddos_packet.addr_from = Some(SocketAddr::from((
+            core::net::Ipv4Addr::from(addr_be.to_be_bytes()),
+            0x8421u16,
+        )));
+        ddos_packet.addr_to = Some(addr_to);
+        ddos_packets.push(ddos_packet);
+    }
+
+    let mut ddos_time = 0u64;
+    let mut nb_ddos_done = 0u32;
+    let mut still_sending = false;
+    let mut max_number_cnx_ctx = 0u32;
+    let mut server_send_buffer = [0u8; MAX_PACKET_SIZE];
+
+    while !ddos_packets.is_empty() || still_sending {
+        let next_time = test_ctx.qserver.next_wake_time(simulated_time);
+        still_sending = false;
+
+        max_number_cnx_ctx = max_number_cnx_ctx.max(test_ctx.qserver.current_number_connections());
+
+        if next_time < ddos_time {
+            simulated_time = Instant::from_ticks(next_time);
+            let send_length = {
+                let prepared = test_ctx
+                    .qserver
+                    .prepare_next_packet(simulated_time, &mut server_send_buffer)?;
+                prepared.send_length
+            };
+            if send_length > 0 {
+                still_sending = true;
+            }
+        } else if let Some(mut ddos_packet) = ddos_packets.pop() {
+            simulated_time = Instant::from_ticks(ddos_time);
+            nb_ddos_done += 1;
+
+            ddos_time = if nb_ddos_done >= nb_connections {
+                u64::MAX
+            } else {
+                ddos_time.saturating_add(ddos_interval)
+            };
+
+            let addr_from = ddos_packet.addr_from.unwrap_or(test_ctx.client_addr);
+            let addr_to = ddos_packet.addr_to.unwrap_or(test_ctx.server_addr);
+            test_ctx.qserver.incoming_packet(
+                &mut ddos_packet.bytes[..ddos_packet.length],
+                &addr_from,
+                &addr_to,
+                0,
+                0,
+                simulated_time,
+            )?;
+            still_sending = true;
+        }
+    }
+
+    let half_open_limit = test_ctx.qserver.max_half_open_retry_threshold();
+    if max_number_cnx_ctx > half_open_limit {
+        return Err(crate::Error::Generic);
+    }
+
+    while let Some(token) = test_ctx
+        .qclient
+        .first_connection()
+        .and_then(|cnx| cnx.own_token)
+    {
+        test_ctx.qclient.delete_connection(token);
+    }
+    {
+        let cnx = test_ctx
+            .qclient
+            .create_connection(
+                ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                Some(&test_ctx.server_addr),
+                simulated_time,
+                Version::InternalTest1 as u32,
+                Some(TEST_SNI),
+                Some(TEST_ALPN),
+                true,
+            )
+            .ok_or(crate::Error::Generic)?;
+        cnx.start_client()?;
+    }
+
+    tls_api_one_scenario_body(
+        &mut test_ctx,
+        &mut simulated_time,
+        SCENARIO_Q2_AND_R2,
+        0,
+        0x0000_4281,
+        0,
+        20_000,
+        2_000_000,
+    )
 }
 
 /// Run one request-client-authentication test.
 /// C: `request_client_authentication_test_one` in `picoquictest/tls_api_test.c`.
 pub fn request_client_authentication_test_one(
-    cert_file: &str,
-    key_file: &str,
+    client_cert_file: &str,
+    client_key_file: &str,
+    server_cert_file: &str,
+    server_key_file: &str,
+    ca_cert_store_file: &str,
 ) -> crate::Result<()> {
     let mut simulated_time = Instant::from_ticks(0);
     let mut test_ctx =
@@ -3409,9 +4174,9 @@ pub fn request_client_authentication_test_one(
     // Recreate qclient with client certificate
     test_ctx.qclient = Quic::new(
         8,
-        Some(cert_file),
-        Some(key_file),
-        Some(TEST_FILE_CERT_STORE),
+        Some(client_cert_file),
+        Some(client_key_file),
+        Some(ca_cert_store_file),
         None,
         None,
         None,
@@ -3434,9 +4199,9 @@ pub fn request_client_authentication_test_one(
     };
     test_ctx.qserver = Quic::new(
         8,
-        Some(TEST_FILE_SERVER_CERT),
-        Some(TEST_FILE_SERVER_KEY),
-        Some(TEST_FILE_CERT_STORE),
+        Some(server_cert_file),
+        Some(server_key_file),
+        Some(ca_cert_store_file),
         Some(TEST_ALPN),
         None,
         None,
@@ -3456,16 +4221,29 @@ pub fn request_client_authentication_test_one(
                 ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
                 Some(&server_addr),
                 simulated_time,
-                Version::InternalTest1 as u32,
+                0,
                 Some(TEST_SNI),
                 Some(TEST_ALPN),
                 true,
             )
             .ok_or(crate::Error::Generic)?;
-        cnx.start_client().ok();
+        cnx.start_client()?;
     }
     let mut loss_mask = 0u64;
-    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+
+    let client_ready = test_ctx.client_ready();
+    let server_ready = test_ctx.server_ready();
+    assert!(
+        client_ready,
+        "client was not ready after mTLS client-auth loop"
+    );
+    assert!(
+        server_ready,
+        "server was not ready after mTLS client-auth loop"
+    );
+
+    Ok(())
 }
 
 /// Keep-alive test implementation.
@@ -3547,17 +4325,79 @@ pub fn short_initial_cid_test_one(_cid_length: u32) -> crate::Result<()> {
 
 /// Run one CID-length test.
 /// C: `cid_length_test_one` in `picoquictest/tls_api_test.c`.
-pub fn cid_length_test_one(_client_cid_length: u32) -> crate::Result<()> {
+pub fn cid_length_test_one(client_cid_length: u32) -> crate::Result<()> {
+    const SCENARIO_Q_AND_R: &[TestApiStreamDesc] = &[TestApiStreamDesc {
+        stream_id: 4,
+        previous_stream_id: 0,
+        q_len: 257,
+        r_len: 2000,
+    }];
+
+    fn remote_cid_len_on_first_path(cnx: &Connection) -> crate::Result<usize> {
+        let path = cnx.paths.first().ok_or(crate::Error::Generic)?;
+        let tuple = path.tuples.first().ok_or(crate::Error::Generic)?;
+        let cid_index = tuple.remote_connection_id_index.unwrap_or(0);
+        cnx.remote_connection_id_stashes
+            .iter()
+            .find(|stash| stash.unique_path_id == path.unique_path_id)
+            .and_then(|stash| stash.connection_ids.get(cid_index))
+            .map(|cid| cid.connection_id.len())
+            .ok_or(crate::Error::Generic)
+    }
+
+    let cid_length = u8::try_from(client_cid_length).map_err(|_| crate::Error::Generic)?;
     let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx =
-        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
+    let mut test_ctx = tls_api_init_ctx(&mut simulated_time, Version::InternalTest1 as u32, None)
+        .ok_or(crate::Error::Generic)?;
+
+    if let Some(token) = test_ctx
+        .qclient
+        .first_cnx_mut()
+        .and_then(|cnx| cnx.own_token)
+    {
+        test_ctx.qclient.delete_connection(token);
+    }
+
     test_ctx
         .qclient
-        .set_default_connection_id_length(_client_cid_length as u8)
+        .set_default_connection_id_length(cid_length)
         .map_err(|_| crate::Error::Generic)?;
+
+    {
+        let cnx = test_ctx
+            .qclient
+            .create_connection(
+                ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                Some(&test_ctx.server_addr),
+                simulated_time,
+                Version::InternalTest1 as u32,
+                Some(TEST_SNI),
+                Some(TEST_ALPN),
+                true,
+            )
+            .ok_or(crate::Error::Generic)?;
+        cnx.start_client()?;
+    }
+
     let mut loss_mask = 0u64;
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
+    wait_client_connection_ready(&mut test_ctx, &mut simulated_time)?;
+    test_api_init_send_recv_scenario(&mut test_ctx, SCENARIO_Q_AND_R)?;
+    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
+
+    assert_eq!(
+        test_ctx.cnx_client().local_cnxid().len(),
+        cid_length as usize,
+        "client local CID length mismatch"
+    );
+    assert_eq!(
+        remote_cid_len_on_first_path(test_ctx.cnx_server())?,
+        cid_length as usize,
+        "server remote CID length mismatch"
+    );
+
+    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, 100_000)
 }
 
 // ---------------------------------------------------------------------------
