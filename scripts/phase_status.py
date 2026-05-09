@@ -192,7 +192,7 @@ def print_report(args: argparse.Namespace) -> None:
     print(
         "Workers: "
         f"screens {screens.get('phase4e', 0)}/{args.phase4e_workers} 4E, "
-        f"{screens.get('phase5b', 0)}/{args.phase5b_clusters} 5B"
+        f"{screens.get('phase5b', 0)}/{args.phase5b_workers} 5B"
     )
     if proc_error:
         print(f"Processes: unavailable ({proc_error})")
@@ -200,9 +200,9 @@ def print_report(args: argparse.Namespace) -> None:
         print(
             "Processes: "
             f"drivers {proc_counts.get('phase4e_driver', 0)}/{args.phase4e_workers} 4E, "
-            f"{proc_counts.get('phase5b_driver', 0)}/{args.phase5b_clusters} 5B; "
+            f"{proc_counts.get('phase5b_driver', 0)}/{args.phase5b_workers} 5B; "
             f"codex {proc_counts.get('phase4e_codex', 0)}/{args.phase4e_workers} 4E, "
-            f"{proc_counts.get('phase5b_codex', 0)}/{args.phase5b_clusters} 5B"
+            f"{proc_counts.get('phase5b_codex', 0)}/{args.phase5b_workers} 5B"
         )
     print(
         "Phase 4E since launch: "
@@ -218,7 +218,8 @@ def print_report(args: argparse.Namespace) -> None:
         f"{p5b['delta'].get('fixed', 0)} fixed / "
         f"{p5b['delta'].get('ok', 0)} ok / "
         f"{p5b['delta'].get('blocked', 0)} blocked; "
-        f"remaining estimate {p5b['remaining']}/{p5b['entries']}; "
+        f"blocked remaining {p5b['delta'].get('blocked', 0)}/{p5b['entries']}; "
+        f"unprocessed estimate {p5b['remaining']}/{p5b['entries']}; "
         f"nonempty logs {p5b['active_logs']}/{args.phase5b_clusters}"
     )
     print("", flush=True)
@@ -232,6 +233,7 @@ def main() -> int:
     parser.add_argument("--phase4e-clusters", type=int, default=9)
     parser.add_argument("--phase4e-workers", type=int, default=10)
     parser.add_argument("--phase5b-clusters", type=int, default=11)
+    parser.add_argument("--phase5b-workers", type=int, default=10)
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="repeat forever at this interval")
     args = parser.parse_args()
 

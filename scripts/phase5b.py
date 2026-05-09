@@ -54,7 +54,6 @@ ALLOWED_TOOLS = (
     "Bash(git diff:*) "
     "Bash(git status:*) "
     "Bash(cargo check:*) "
-    "Bash(cargo test:*) "
     "Bash(cargo fmt:*) "
     "Bash(cargo clippy:*) "
     "Bash(python3 scripts/phase3_check.py:*)"
@@ -126,6 +125,40 @@ def needs_fix_entries(
             continue
         item = dict(entry)
         item["phase5a_review"] = review
+        out.append(item)
+    out.sort(key=lambda e: (e.get("expected_rust_file", ""), e.get("rust_test_name", "")))
+    return out
+
+
+def blocked_entries(
+    mapping: dict,
+    reviews: dict,
+    repairs: dict,
+    *,
+    only: str | None,
+    rust_file: str | None,
+) -> list[dict]:
+    entries_by_id = test_entry_by_id(mapping)
+    review_map = reviews.get("reviews", {})
+    out: list[dict] = []
+    for test_id, repair in repairs.get("repairs", {}).items():
+        if repair.get("outcome") != "blocked":
+            continue
+        entry = entries_by_id.get(test_id)
+        if not entry:
+            continue
+        if only and only not in {
+            test_id,
+            entry.get("test_name"),
+            entry.get("entry_fn"),
+            entry.get("rust_test_name"),
+        }:
+            continue
+        if rust_file and entry.get("expected_rust_file") != rust_file:
+            continue
+        item = dict(entry)
+        item["phase5a_review"] = review_map.get(test_id, {})
+        item["phase5b_prior_repair"] = repair
         out.append(item)
     out.sort(key=lambda e: (e.get("expected_rust_file", ""), e.get("rust_test_name", "")))
     return out
@@ -245,9 +278,19 @@ def compose_prompt(batch: list[dict]) -> str:
             "  tests with placeholders.",
             "* If the test already matches after closer inspection, report",
             "  `ok` and do not edit source.",
-            "* If the Rust implementation is too incomplete for a faithful",
-            "  test to compile or run, keep the test faithful and report",
-            "  `blocked` with the implementation dependency.",
+            "* Phase 5B is about test/API correspondence, not test success.",
+            "  The Rust test must exist, compile as a test, and be runnable",
+            "  by the Rust test harness, but it may fail arbitrarily early",
+            "  because the Rust library implementation is incomplete.",
+            "* Do not report `blocked` merely because the implementation",
+            "  returns the wrong state, fails a handshake, lacks protocol",
+            "  behavior, or would fail the test. Those are Phase 5C issues.",
+            "* Report `blocked` only when the faithful test cannot be",
+            "  written, compiled, or exposed as a runnable Rust test because",
+            "  the necessary Rust API/test-harness surface is missing or",
+            "  ambiguous.",
+            "* Do not run full `cargo test` in this pass. Use source review",
+            "  and, if needed, `cargo check --tests` for compile validation.",
             "",
             f"Owned Rust test file(s): {', '.join(f'`{f}`' for f in owned_files)}",
             "",
@@ -259,6 +302,97 @@ def compose_prompt(batch: list[dict]) -> str:
             "\"fix_summary\":\"what changed, or empty\","
             "\"files_changed\":[\"rs/fq/src/tests/...\"],"
             "\"verification\":[\"cargo ...\"]}]}",
+            "```",
+            "",
+            "Entries:",
+            "",
+            "\n".join(sections),
+        ]
+    )
+
+
+def compose_reclassify_prompt(batch: list[dict]) -> str:
+    owned_files = sorted({entry["expected_rust_file"] for entry in batch})
+    sections: list[str] = []
+    for entry in batch:
+        c = entry.get("c") or {}
+        rust = entry.get("rust") or {}
+        review = entry["phase5a_review"]
+        prior = entry.get("phase5b_prior_repair", {})
+        rust_span = (
+            f"{rust.get('file')}:{rust.get('start_line')}-{rust.get('end_line')}"
+            if rust else f"{entry.get('expected_rust_file')}:missing"
+        )
+        sections.append(
+            "\n".join(
+                [
+                    f"## `{entry['test_id']}`",
+                    f"* C test-table name: `{entry.get('test_name')}`",
+                    f"* C entry function: `{entry.get('entry_fn')}`",
+                    f"* Rust test: `{entry.get('rust_test_name')}`",
+                    f"* Expected Rust file: `{entry.get('expected_rust_file')}`",
+                    f"* Rust span: `{rust_span}`",
+                    f"* Phase 5A analysis: {review.get('analysis', '')}",
+                    f"* Prior Phase 5B blocked analysis: {prior.get('analysis', '')}",
+                    f"* Prior Phase 5B fix note: {prior.get('fix_summary', '')}",
+                    "",
+                    "### C test body",
+                    "```c",
+                    source_body(c),
+                    "```",
+                    "",
+                    "### Current Rust test body",
+                    "```rust",
+                    source_body(rust) if rust else "",
+                    "```",
+                    "",
+                ]
+            )
+        )
+
+    return "\n".join(
+        [
+            "# Phase 5B reclassify blocked Rust tests",
+            "",
+            "You are revisiting Phase 5B entries previously marked",
+            "`blocked`. The prior pass used the wrong standard: runtime",
+            "library failures were sometimes recorded as Phase 5B blocks.",
+            "",
+            "Correct Phase 5B standard:",
+            "",
+            "* Phase 5B is about the Rust test matching the C test's API",
+            "  calls and API-visible assertions.",
+            "* The Rust test must be present, compile as a Rust test, and",
+            "  be runnable by the Rust test harness.",
+            "* The Rust test does not need to pass. It may fail arbitrarily",
+            "  early because the Rust library implementation is incomplete;",
+            "  that belongs to Phase 5C.",
+            "* If the current Rust test already expresses the same API-level",
+            "  contract as C, report `ok`, even if it would fail at runtime.",
+            "* If the test needs edits to express the same API-level contract",
+            "  and to compile/run as a test, make those edits and report",
+            "  `fixed`.",
+            "* Report `blocked` only if the necessary Rust API or test-harness",
+            "  surface is missing/ambiguous such that a faithful compiling",
+            "  runnable test cannot be written without an API/design change.",
+            "* Do not report `blocked` for incomplete handshake behavior,",
+            "  missing protocol side effects, wrong state transitions,",
+            "  wrong error codes, callback counters not updating, or other",
+            "  library behavior failures. Mention those as Phase 5C notes",
+            "  in `analysis` while reporting `ok` or `fixed`.",
+            "* Do not run full `cargo test` in this pass. Use source review",
+            "  and, if needed, `cargo check --tests` for compile validation.",
+            "",
+            f"Owned Rust test file(s): {', '.join(f'`{f}`' for f in owned_files)}",
+            "",
+            "Return final JSON with this shape:",
+            "",
+            "```json",
+            "{\"repairs\":[{\"test_id\":\"...\",\"outcome\":\"fixed|ok|blocked\","
+            "\"analysis\":\"short reclassification conclusion\","
+            "\"fix_summary\":\"what changed, or empty\","
+            "\"files_changed\":[\"rs/fq/src/tests/...\"],"
+            "\"verification\":[\"cargo check --tests\", \"source review\"]}]}",
             "```",
             "",
             "Entries:",
@@ -442,6 +576,8 @@ def main() -> int:
     agent_runner.add_agent_args(parser, model_help_context="Phase 5B test repair agent")
     parser.add_argument("--status", action="store_true", help="show Phase 5B repair progress")
     parser.add_argument("--dry-run", action="store_true", help="print selected tests without invoking an agent")
+    parser.add_argument("--reclassify-blocked", action="store_true",
+                        help="revisit prior blocked results using the narrowed Phase 5B standard")
     parser.add_argument("--force", action="store_true", help="re-run tests with existing Phase 5B results")
     parser.add_argument("--only", help="limit to one test_id, C entry function, C test name, or Rust test name")
     parser.add_argument("--rust-file", help="limit to one expected Rust test file")
@@ -466,14 +602,23 @@ def main() -> int:
         print_status(reviews, repairs)
         return 0
 
-    selected = needs_fix_entries(
-        mapping,
-        reviews,
-        repairs,
-        only=args.only,
-        rust_file=args.rust_file,
-        force=args.force,
-    )
+    if args.reclassify_blocked:
+        selected = blocked_entries(
+            mapping,
+            reviews,
+            repairs,
+            only=args.only,
+            rust_file=args.rust_file,
+        )
+    else:
+        selected = needs_fix_entries(
+            mapping,
+            reviews,
+            repairs,
+            only=args.only,
+            rust_file=args.rust_file,
+            force=args.force,
+        )
     if args.id_list:
         selected = apply_id_list(selected, load_id_list(args.id_list))
     selected = apply_file_bucket(
@@ -487,7 +632,8 @@ def main() -> int:
     bucket = ""
     if args.bucket_count > 1:
         bucket = f" for bucket {args.bucket_index}/{args.bucket_count}"
-    print(f"selected Phase 5B needs_fix tests{bucket}: {len(selected)}")
+    mode_label = "blocked tests for reclassification" if args.reclassify_blocked else "needs_fix tests"
+    print(f"selected Phase 5B {mode_label}{bucket}: {len(selected)}")
     if args.dry_run:
         for entry in selected[:80]:
             print(
@@ -504,7 +650,7 @@ def main() -> int:
     batch_size = max(1, args.batch_size)
     while processed < len(selected):
         batch = selected[processed:processed + batch_size]
-        prompt = compose_prompt(batch)
+        prompt = compose_reclassify_prompt(batch) if args.reclassify_blocked else compose_prompt(batch)
         pfile = prompt_path(batch)
         pfile.write_text(prompt)
         before_rs = rs_diff_names()
@@ -541,7 +687,7 @@ def main() -> int:
                 for entry in batch
             }
 
-        repairs = update_repairs(updates, force=args.force)
+        repairs = update_repairs(updates, force=args.force or args.reclassify_blocked)
         phase5a.update_reviews(phase5a_updates(updates), force=True)
         processed += len(batch)
 
