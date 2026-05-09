@@ -2,6 +2,7 @@
 
 #![allow(non_snake_case)]
 
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::fs::File;
@@ -11,9 +12,11 @@ use std::rc::Rc;
 use crate::bytestream::{BYTESTREAM_MAX_BUFFER_SIZE, ByteStream};
 use crate::frames::FrameType;
 use crate::internal::{
-    CID_REFRESH_DELAY, ENFORCED_INITIAL_MTU, MICROSEC_HANDSHAKE_MAX, NB_PATH_TARGET, PacketType,
-    SUPPORTED_VERSIONS, Version, create_long_header, init_transport_parameters,
-    protect_packet_header, Connection, Epoch, update_payload_length, varint_encode,
+    CHALLENGE_REPEAT_MAX, CID_REFRESH_DELAY, Connection, ENFORCED_INITIAL_MTU, Epoch,
+    INTEROP_VERSION_LATEST, MICROSEC_HANDSHAKE_MAX, NB_PATH_TARGET, PN_RANDOM_MIN, PacketType,
+    SUPPORTED_VERSIONS, TOKEN_DELAY_LONG, TOKEN_DELAY_SHORT, Version, create_long_header,
+    init_transport_parameters, parse_long_packet_type, protect_packet_header,
+    update_payload_length, varint_encode,
 };
 use crate::tests::util::{
     TEST_ALPN, TEST_FILE_CERT_STORE, TEST_FILE_CERT_STORE_ED25519, TEST_FILE_CLIENT_CERT_ED25519,
@@ -29,15 +32,15 @@ use crate::tests::util::{
     qlog_fns_test_one, qlog_trace_test_one, ready_to_send_test_one, red_cc_algotest,
     request_client_authentication_test_one, save_empty_tickets, session_resume_test_one,
     session_resume_wait_for_ticket, short_initial_cid_test_one, stop_sending_test_one,
-    test_api_init_send_recv_scenario, test_random, test_uniform_random, tester_push_frame_packet,
-    tester_simple_ack_frame, tester_wait_handshake_key, tls_api_close_with_losses,
-    tls_api_connection_loop, tls_api_data_sending_loop, tls_api_init_ctx, tls_api_init_ctx_ex,
-    tls_api_init_ctx_ex2, tls_api_loss_test, tls_api_one_scenario_body,
-    tls_api_one_scenario_body_connect, tls_api_one_scenario_body_ex,
-    tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex, tls_api_one_sim_round,
-    tls_api_one_sim_round_with_loss, tls_api_retry_test_one, tls_api_synch_to_empty_loop,
-    tls_api_test_with_loss, tls_retry_token_test_one, transmit_cnxid_test_one,
-    tls_api_one_scenario_verify, wait_client_connection_ready, zero_rtt_test_one,
+    test_api_init_send_recv_scenario, test_random, test_random_bytes, test_uniform_random,
+    tester_push_frame_packet, tester_simple_ack_frame, tester_wait_handshake_key,
+    tls_api_close_with_losses, tls_api_connection_loop, tls_api_data_sending_loop,
+    tls_api_init_ctx, tls_api_init_ctx_ex, tls_api_init_ctx_ex2, tls_api_loss_test,
+    tls_api_one_scenario_body, tls_api_one_scenario_body_connect, tls_api_one_scenario_body_ex,
+    tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex, tls_api_one_scenario_verify,
+    tls_api_one_sim_round, tls_api_one_sim_round_with_loss, tls_api_retry_test_one,
+    tls_api_synch_to_empty_loop, tls_api_test_with_loss, tls_retry_token_test_one,
+    transmit_cnxid_test_one, wait_client_connection_ready, zero_rtt_test_one,
 };
 use crate::tls_api::{
     aead_confidentiality_limit, aead_integrity_limit, ecb_create_by_name, get_certs_from_file,
@@ -45,13 +48,22 @@ use crate::tls_api::{
     tls_api_init, tls_api_unload,
 };
 use crate::{
-    AES_128_GCM_SHA256, CHACHA20_POLY1305_SHA256, CallbackEvent, CongestionAlgorithm,
-    ConnectionId, Duration, Instant, LossbitVersion, MAX_PACKET_SIZE, PacketContext, PmtudPolicy,
-    Quic, RESET_SECRET_SIZE, State, StreamDataCallback, TransportError, TransportParameters,
-    get_congestion_algorithm, is_handshake_error, register_all_congestion_control_algorithms,
+    AES_128_GCM_SHA256, CHACHA20_POLY1305_SHA256, CallbackEvent, CongestionAlgorithm, ConnectionId,
+    Duration, Instant, LossbitVersion, MAX_PACKET_SIZE, NB_PACKET_CONTEXT, PacketContext,
+    PmtudPolicy, Quic, RESET_SECRET_SIZE, State, StreamDataCallback, TransportError,
+    TransportParameters, get_congestion_algorithm, is_handshake_error,
+    register_all_congestion_control_algorithms,
 };
 
 const V1: u32 = Version::InternalTest1 as u32;
+const QUALITY_UPDATE_CSV: &str = "quality_update.csv";
+const QUALITY_UPDATE_REF: &str = "picoquictest/quality_update_ref.txt";
+const RANDOM_PADDING_TICKET_FILE: &str = "random_padding_tickets.bin";
+const RANDOM_PADDING_TEXT_LOG: &str = "random_padding_log.txt";
+const QUALITY_UPDATE_CSV: &str = "quality_update.csv";
+const QUALITY_UPDATE_REF: &str = "picoquictest/quality_update_ref.txt";
+const RANDOM_PADDING_TICKET_FILE: &str = "random_padding_tickets.bin";
+const RANDOM_PADDING_TEXT_LOG: &str = "random_padding_log.txt";
 
 const TEST_SCENARIO_VERY_LONG: &[TestApiStreamDesc] = &[TestApiStreamDesc {
     stream_id: 4,
@@ -5630,7 +5642,188 @@ fn perflog() {}
 /// → decode).
 #[test]
 fn pn_enc_1rtt() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("pn_enc_1rtt");
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut loss_mask = 0u64;
+    let mut test_ctx = tls_api_init_ctx(&mut simulated_time, 0, None).expect("ctx");
+
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)
+        .expect("pn_enc_1rtt connection");
+    wait_application_aead_ready(&mut test_ctx, &mut simulated_time)
+        .expect("pn_enc_1rtt application aead");
+
+    let seq_num_1: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
+    let sample_1: [u8; 16] = [
+        0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93, 0x17,
+        0x2a,
+    ];
+    let seq_num_2: [u8; 4] = [0xba, 0xba, 0xc0, 0x00];
+    let sample_2: [u8; 16] = [
+        0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93, 0x17, 0x2a, 0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f,
+        0x96,
+    ];
+
+    let epoch = Epoch::OneRtt as usize;
+    let (qclient, qserver) = (&mut test_ctx.qclient, &mut test_ctx.qserver);
+    let client = qclient.first_cnx_mut().expect("client connection");
+    let server = qserver.first_cnx_mut().expect("server connection");
+
+    for _i in [1, 2] {
+        test_one_pn_enc_pair(
+            &seq_num_1,
+            client.crypto_context[epoch]
+                .pn_enc
+                .as_deref()
+                .expect("client 1-RTT pn_enc"),
+            server.crypto_context[epoch]
+                .pn_dec
+                .as_deref()
+                .expect("server 1-RTT pn_dec"),
+            &sample_1,
+        );
+        test_one_pn_enc_pair(
+            &seq_num_2,
+            server.crypto_context[epoch]
+                .pn_enc
+                .as_deref()
+                .expect("server 1-RTT pn_enc"),
+            client.crypto_context[epoch]
+                .pn_dec
+                .as_deref()
+                .expect("client 1-RTT pn_dec"),
+            &sample_2,
+        );
+    }
+}
+
+/// C: `wait_application_aead_ready` in `picoquictest/tls_api_test.c`.
+fn wait_application_aead_ready(
+    test_ctx: &mut TestTlsApiCtx,
+    simulated_time: &mut Instant,
+) -> crate::Result<()> {
+    let time_out = Instant::from_ticks(simulated_time.ticks() + 4_000_000);
+    let mut nb_trials = 0;
+    let mut nb_inactive = 0;
+
+    while simulated_time.ticks() < time_out.ticks()
+        && test_ctx.client_ready()
+        && test_ctx.server_ready()
+        && !server_application_aead_ready(test_ctx)
+        && nb_trials < 1024
+        && nb_inactive < 64
+    {
+        let mut was_active = false;
+        nb_trials += 1;
+        tls_api_one_sim_round(test_ctx, simulated_time, time_out, &mut was_active)?;
+        if was_active {
+            nb_inactive = 0;
+        } else {
+            nb_inactive += 1;
+        }
+    }
+
+    if server_application_aead_ready(test_ctx) {
+        Ok(())
+    } else {
+        Err(crate::Error::Generic)
+    }
+}
+
+fn server_application_aead_ready(test_ctx: &mut TestTlsApiCtx) -> bool {
+    test_ctx
+        .qserver
+        .first_cnx_mut()
+        .map(|c| {
+            c.crypto_context[Epoch::OneRtt as usize]
+                .aead_decrypt
+                .is_some()
+        })
+        .unwrap_or(false)
+}
+
+/// C: `test_one_pn_enc_pair` in `picoquictest/cleartext_aead_test.c`.
+fn test_one_pn_enc_pair(
+    seqnum: &[u8],
+    pn_enc: &dyn crate::tls::HeaderKey,
+    pn_dec: &dyn crate::tls::HeaderKey,
+    sample: &[u8; 16],
+) {
+    let enc_mask = pn_enc.mask(*sample);
+    let mut encoded = [0u8; 16];
+    for (out, (pn, mask)) in encoded.iter_mut().zip(seqnum.iter().zip(enc_mask.iter())) {
+        *out = pn ^ mask;
+    }
+
+    let dec_mask = pn_dec.mask(*sample);
+    let mut decoded = [0u8; 16];
+    for (out, (pn, mask)) in decoded.iter_mut().zip(encoded.iter().zip(dec_mask.iter())) {
+        *out = pn ^ mask;
+    }
+
+    assert_eq!(
+        &decoded[..seqnum.len()],
+        seqnum,
+        "PN enc/dec roundtrip failed"
+    );
+}
+
+fn pn_random_check_sequence(cnx: &Connection, cnx_name: &str, randomize_all: bool) {
+    for pc in 0..NB_PACKET_CONTEXT {
+        let send_sequence = cnx.pkt_ctx[pc].send_sequence;
+        if randomize_all || pc == PacketContext::Initial as usize {
+            assert!(
+                send_sequence >= PN_RANDOM_MIN as u64,
+                "{cnx_name} packet context {pc} sequence {send_sequence} below random minimum"
+            );
+        } else {
+            assert!(
+                send_sequence < PN_RANDOM_MIN as u64,
+                "{cnx_name} packet context {pc} sequence {send_sequence} unexpectedly randomized"
+            );
+        }
+    }
+}
+
+fn pn_random_test_one(randomize_all: bool) -> crate::Result<()> {
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut loss_mask = 0u64;
+    let initial_cid = ConnectionId::clone_from_slice(&[0xff, 0x12, 0x34, 0, 0, 0, 0, 0])
+        .ok_or(crate::Error::Generic)?;
+    let mut test_ctx = tls_api_init_ctx_ex(&mut simulated_time, V1, None, Some(&initial_cid))
+        .ok_or(crate::Error::Generic)?;
+
+    let random_initial = if randomize_all { 2 } else { 1 };
+    test_ctx.qclient.set_random_initial(random_initial);
+    test_ctx.qserver.set_random_initial(random_initial);
+    test_ctx.qserver.set_log_level(1);
+
+    let first_pc = if randomize_all {
+        PacketContext::Application as usize
+    } else {
+        PacketContext::Initial as usize
+    };
+    {
+        let cnx_client = test_ctx.cnx_client();
+        for pc in first_pc..NB_PACKET_CONTEXT {
+            cnx_client.pkt_ctx[pc].send_sequence = PN_RANDOM_MIN as u64 + 17 + pc as u64;
+        }
+    }
+
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+    if !test_ctx.client_ready() || !test_ctx.server_ready() {
+        return Err(crate::Error::Generic);
+    }
+    pn_random_check_sequence(test_ctx.cnx_client(), "client", randomize_all);
+    pn_random_check_sequence(test_ctx.cnx_server(), "server", randomize_all);
+
+    let scenario_q_and_r = [TestApiStreamDesc {
+        stream_id: 4,
+        previous_stream_id: 0,
+        q_len: 257,
+        r_len: 2000,
+    }];
+    test_api_init_send_recv_scenario(&mut test_ctx, &scenario_q_and_r)?;
+    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
+    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, 1_000_000)
 }
 
 /// C: `pn_random_test` in `picoquictest/tls_api_test.c`.
@@ -5639,7 +5832,226 @@ fn pn_enc_1rtt() {
 /// RFC 9000 §12.3.
 #[test]
 fn pn_random() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("pn_random");
+    pn_random_test_one(false).expect("pn_random initial-only");
+    pn_random_test_one(true).expect("pn_random all packet number spaces");
+}
+
+fn port_blocked_is_retry(send_buffer: &[u8], send_length: usize) -> bool {
+    if send_length < 5 || (send_buffer[0] & 0x80) == 0 {
+        return false;
+    }
+
+    let packet_version = u32::from_be_bytes([
+        send_buffer[1],
+        send_buffer[2],
+        send_buffer[3],
+        send_buffer[4],
+    ]);
+    let Some(version_index) = SUPPORTED_VERSIONS
+        .iter()
+        .position(|version| *version as u32 == packet_version)
+    else {
+        return false;
+    };
+
+    parse_long_packet_type(send_buffer[0], version_index as i32) == PacketType::Retry
+}
+
+fn port_blocked_test_one(
+    qserver: &mut crate::internal::Quic,
+    packet: &mut [u8],
+    addr_from: SocketAddr,
+    addr_to: SocketAddr,
+    expect_blocked: bool,
+    retry_accepted: bool,
+    current_time: Instant,
+    label: &str,
+) -> crate::Result<()> {
+    qserver.incoming_packet_ex(packet, &addr_from, &addr_to, 0, 0, current_time)?;
+
+    let mut send_buffer = [0u8; MAX_PACKET_SIZE];
+    let send_length = qserver
+        .prepare_next_packet_ex(current_time, &mut send_buffer)?
+        .send_length;
+
+    if expect_blocked {
+        assert!(
+            send_length == 0
+                || (retry_accepted && port_blocked_is_retry(&send_buffer, send_length)),
+            "{label}: server sent {send_length} bytes to blocked source {addr_from}"
+        );
+    } else {
+        assert!(
+            send_length > 0,
+            "{label}: server did not respond to unblocked source {addr_from}"
+        );
+    }
+
+    Ok(())
+}
+
+fn port_blocked_prepare_initial_packet(
+    test_ctx: &mut TestTlsApiCtx,
+    current_time: Instant,
+    send_buffer: &mut [u8; MAX_PACKET_SIZE],
+) -> crate::Result<usize> {
+    test_ctx.cnx_client().initialize_tls_stream(current_time)?;
+
+    let cnx = test_ctx.cnx_client();
+    let crypto_data = cnx.tls_stream[Epoch::Initial as usize]
+        .send_queue
+        .front()
+        .map(|node| node.bytes.clone())
+        .ok_or(crate::Error::Generic)?;
+    let sequence_number = cnx.pkt_ctx[PacketContext::Initial as usize].send_sequence;
+    let header_length =
+        cnx.predict_packet_header_length_for_pc(PacketType::Initial, PacketContext::Initial);
+
+    let mut pn_offset = 0usize;
+    let mut pn_length = 0usize;
+    let actual_header_length = cnx.create_packet_header_at(
+        PacketType::Initial,
+        sequence_number,
+        0,
+        0,
+        header_length,
+        send_buffer,
+        &mut pn_offset,
+        &mut pn_length,
+    );
+    if actual_header_length != header_length || pn_length == 0 {
+        return Err(crate::Error::Generic);
+    }
+
+    let mut cleartext_length = header_length;
+    send_buffer[cleartext_length] = crate::frames::FrameType::CryptoHs as u8;
+    cleartext_length += 1;
+    cleartext_length += varint_encode(&mut send_buffer[cleartext_length..], 0);
+    cleartext_length += varint_encode(
+        &mut send_buffer[cleartext_length..],
+        crypto_data.len() as u64,
+    );
+    let crypto_end = cleartext_length + crypto_data.len();
+    if crypto_end > send_buffer.len() {
+        return Err(crate::Error::BufferTooSmall);
+    }
+    send_buffer[cleartext_length..crypto_end].copy_from_slice(&crypto_data);
+    cleartext_length = crypto_end;
+
+    let checksum_length = cnx.get_checksum_length(Epoch::Initial);
+    let padded_length = ENFORCED_INITIAL_MTU.saturating_sub(checksum_length);
+    if cleartext_length < padded_length {
+        send_buffer[cleartext_length..padded_length].fill(0);
+        cleartext_length = padded_length;
+    }
+
+    let header = send_buffer[..header_length].to_vec();
+    let mut payload = send_buffer[header_length..cleartext_length].to_vec();
+    let aead = cnx.crypto_context[Epoch::Initial as usize]
+        .aead_encrypt
+        .as_deref()
+        .ok_or(crate::Error::Tls)?;
+    let pn_enc = cnx.crypto_context[Epoch::Initial as usize]
+        .pn_enc
+        .as_deref()
+        .ok_or(crate::Error::Tls)?;
+    aead.encrypt(sequence_number, &header, &mut payload);
+
+    let send_length = header_length + payload.len();
+    if send_length > send_buffer.len() {
+        return Err(crate::Error::BufferTooSmall);
+    }
+    send_buffer[..header_length].copy_from_slice(&header);
+    send_buffer[header_length..send_length].copy_from_slice(&payload);
+    update_payload_length(send_buffer, pn_offset, pn_offset, send_length);
+    protect_packet_header(&mut send_buffer[..send_length], pn_offset, 0x0f, pn_enc);
+
+    Ok(send_length)
+}
+
+fn port_blocked_test_address(
+    addr_from: SocketAddr,
+    addr_to: SocketAddr,
+    expect_blocked: bool,
+    do_disable: bool,
+) -> crate::Result<()> {
+    let mut simulated_time = Instant::from_ticks(0);
+    let initial_cid = ConnectionId::clone_from_slice(&[0x50, 0x0b, 0x10, 0xc0, 0, 0, 0, 0])
+        .ok_or(crate::Error::Generic)?;
+    let mut test_ctx = tls_api_init_ctx_ex(&mut simulated_time, V1, None, Some(&initial_cid))
+        .ok_or(crate::Error::Generic)?;
+    test_ctx.qserver.set_port_blocking_disabled(do_disable);
+
+    let mut vn_probe = [0xaa; ENFORCED_INITIAL_MTU];
+    vn_probe[1..5].copy_from_slice(&[0xa1, 0xa2, 0xa3, 0xa4]);
+    vn_probe[5] = 8;
+    vn_probe[14] = 8;
+    port_blocked_test_one(
+        &mut test_ctx.qserver,
+        &mut vn_probe,
+        addr_from,
+        addr_to,
+        expect_blocked,
+        false,
+        simulated_time,
+        "version negotiation",
+    )?;
+
+    simulated_time = Instant::from_ticks(simulated_time.ticks() + 1_000);
+    let mut one_rtt_probe = [0xbb; ENFORCED_INITIAL_MTU];
+    one_rtt_probe[0] = 0x7f;
+    port_blocked_test_one(
+        &mut test_ctx.qserver,
+        &mut one_rtt_probe,
+        addr_from,
+        addr_to,
+        expect_blocked,
+        false,
+        simulated_time,
+        "unexpected one-rtt",
+    )?;
+
+    simulated_time = Instant::from_ticks(simulated_time.ticks() + 1_000);
+    let mut client_packet = [0u8; MAX_PACKET_SIZE];
+    let client_send_length =
+        port_blocked_prepare_initial_packet(&mut test_ctx, simulated_time, &mut client_packet)?;
+    port_blocked_test_one(
+        &mut test_ctx.qserver,
+        &mut client_packet[..client_send_length],
+        addr_from,
+        addr_to,
+        expect_blocked,
+        true,
+        simulated_time,
+        "initial",
+    )
+}
+
+fn port_blocked_test_port(port: u16, expect_blocked: bool) -> crate::Result<()> {
+    let addresses = [
+        (
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), port),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 961),
+            "IPv4",
+        ),
+        (
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0x2001, 2, 3, 0, 0, 0, 0, 4)), port),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::new(0x2002, 3, 0, 0, 0, 0, 0, 4)), 961),
+            "IPv6",
+        ),
+    ];
+
+    for (addr_from, addr_to, family) in addresses {
+        for do_disable in [false, true] {
+            let actually_blocked = expect_blocked && !do_disable;
+            port_blocked_test_address(addr_from, addr_to, actually_blocked, do_disable)
+                .unwrap_or_else(|err| {
+                    panic!("port_blocked port={port} family={family} disable={do_disable}: {err:?}")
+                });
+        }
+    }
+
+    Ok(())
 }
 
 /// C: `port_blocked_test` in `picoquictest/tls_api_test.c`.
@@ -5648,7 +6060,24 @@ fn pn_random() {
 /// amplification risks (53, 138, 1900, 5353, 11211).
 #[test]
 fn port_blocked() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("port_blocked");
+    const BLOCKED_PORTS_TO_TEST: [u16; 6] = [0, 53, 138, 1900, 5353, 11211];
+    const UNBLOCKED_PORTS_TO_TEST: [u16; 3] = [443, 4433, 33721];
+
+    for port in BLOCKED_PORTS_TO_TEST {
+        assert!(
+            crate::check_port_blocked(port),
+            "test port {port} should be in the blocked set"
+        );
+        port_blocked_test_port(port, true).expect("blocked port");
+    }
+
+    for port in UNBLOCKED_PORTS_TO_TEST {
+        assert!(
+            !crate::check_port_blocked(port),
+            "test port {port} should not be in the blocked set"
+        );
+        port_blocked_test_port(port, false).expect("unblocked port");
+    }
 }
 
 /// C: `preferred_address_test` in `picoquictest/tls_api_test.c`.
@@ -5679,11 +6108,166 @@ fn preferred_address_zero() {
 
 /// C: `probe_api_test` in `picoquictest/tls_api_test.c`.
 ///
-/// Verifies the path-probing API: sends PATH_CHALLENGE and validates the
-/// PATH_RESPONSE.
+/// Verifies that the path-probing API accepts probes until the path table is
+/// full, then rejects the capacity trial.
 #[test]
 fn probe_api() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("probe_api");
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut loss_mask = 0u64;
+    let t4: [SocketAddr; NB_PATH_TARGET] = core::array::from_fn(|i| {
+        SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::new(i as u8, i as u8, i as u8, i as u8)),
+            1000u16 + i as u16,
+        )
+    });
+    let t6: [SocketAddr; NB_PATH_TARGET] = core::array::from_fn(|i| {
+        SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::from([i as u8; 16])),
+            2000u16 + i as u16,
+        )
+    });
+    let mut test_ctx = tls_api_init_ctx(&mut simulated_time, V1, None).expect("probe_api ctx");
+
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)
+        .expect("probe_api connection");
+    tls_api_synch_to_empty_loop(
+        &mut test_ctx,
+        &mut simulated_time,
+        2048,
+        NB_PATH_TARGET as i32,
+        0,
+    )
+    .expect("probe_api sync");
+
+    let client_local_cid_count = first_local_cnxid_count(test_ctx.cnx_client());
+    assert!(
+        client_local_cid_count >= NB_PATH_TARGET,
+        "Only {client_local_cid_count} CID created on client."
+    );
+    let server_local_cid_count = first_local_cnxid_count(test_ctx.cnx_server());
+    assert!(
+        server_local_cid_count >= NB_PATH_TARGET,
+        "Only {server_local_cid_count} CID created on server."
+    );
+
+    let client = test_ctx.cnx_client();
+    let mut nb_trials = 0usize;
+
+    for i in 1..NB_PATH_TARGET {
+        if client.nb_paths() >= NB_PATH_TARGET {
+            break;
+        }
+
+        for j in 0..2 {
+            let ret_probe = if j == 0 {
+                client.probe_new_path(&t4[0], &t4[i], simulated_time)
+            } else {
+                client.probe_new_path(&t6[0], &t6[i], simulated_time)
+            };
+            nb_trials += 1;
+
+            if nb_trials < NB_PATH_TARGET {
+                assert!(
+                    ret_probe.is_ok(),
+                    "Trial {nb_trials} ({i}, {j}) fails with ret = {ret_probe:?}"
+                );
+            } else {
+                assert!(
+                    ret_probe.is_err(),
+                    "Trial {nb_trials} ({i}, {j}) succeeds unexpectedly"
+                );
+            }
+
+            if ret_probe.is_ok() {
+                seed_probe_path_challenges(client, i, j);
+            }
+        }
+    }
+}
+
+fn first_local_cnxid_count(cnx: &Connection) -> usize {
+    cnx.local_connection_id_lists
+        .first()
+        .map(|list| list.connection_ids.len())
+        .unwrap_or(0)
+}
+
+fn first_remote_cnxid_stash_count(cnx: &Connection) -> usize {
+    cnx.remote_connection_id_stashes
+        .first()
+        .map(|stash| stash.connection_ids.len())
+        .unwrap_or(0)
+}
+
+fn retire_cnxid_refill_ready(test_ctx: &mut TestTlsApiCtx) -> bool {
+    let (client_local, client_has_misc, client_stash_count, client_backlog_empty) = {
+        let client = test_ctx.cnx_client();
+        (
+            first_local_cnxid_count(client),
+            client.has_misc_frames(),
+            first_remote_cnxid_stash_count(client),
+            client.is_cnx_backlog_empty(),
+        )
+    };
+    let (server_local, server_backlog_empty) = {
+        let server = test_ctx.cnx_server();
+        (
+            first_local_cnxid_count(server),
+            server.is_cnx_backlog_empty(),
+        )
+    };
+
+    client_local >= NB_PATH_TARGET
+        && server_local >= NB_PATH_TARGET
+        && !client_has_misc
+        && client_stash_count >= NB_PATH_TARGET - 1
+        && client_backlog_empty
+        && server_backlog_empty
+}
+
+fn assert_cnxid_stash_matches_peer(cnx: &Connection, peer: &Connection, cnx_text: &str) {
+    let stash_count = first_remote_cnxid_stash_count(cnx);
+    let peer_local_count = first_local_cnxid_count(peer);
+    assert_eq!(
+        stash_count, peer_local_count,
+        "On {cnx_text}, {stash_count} items in stash instead of {peer_local_count}."
+    );
+
+    let Some(stash) = cnx.remote_connection_id_stashes.first() else {
+        return;
+    };
+    let Some(peer_list) = peer.local_connection_id_lists.first() else {
+        return;
+    };
+
+    for (rank, (stashed, peer_token)) in stash
+        .connection_ids
+        .iter()
+        .zip(peer_list.connection_ids.iter())
+        .enumerate()
+    {
+        let peer_cid = peer
+            .local_connection_ids
+            .get(*peer_token)
+            .unwrap_or_else(|| panic!("On {cnx_text}, peer CID token #{rank} is missing."));
+        assert_eq!(
+            stashed.connection_id, peer_cid.connection_id,
+            "On {cnx_text}, cnx ID of stash #{rank} does not match cid[{}] of peer.",
+            peer_cid.sequence
+        );
+    }
+}
+
+fn seed_probe_path_challenges(cnx: &mut Connection, i: usize, j: usize) {
+    let path_id = cnx.nb_paths() - 1;
+    let tuple = cnx.paths[path_id]
+        .tuples
+        .first_mut()
+        .expect("new probe path should have a first tuple");
+
+    for ichal in 0..CHALLENGE_REPEAT_MAX {
+        tuple.challenge[ichal] = 10000 + 10 * i as u64 + j as u64 + 1000 * ichal as u64;
+    }
 }
 
 /// C: `qlog_fns_test` in `picoquictest/tls_api_test.c`.
@@ -5734,7 +6318,44 @@ fn qlog_trace_parallel() {
 /// the RTT or bandwidth estimate changes.
 #[test]
 fn quality_update() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("quality_update");
+    use std::io::Write as _;
+
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut test_ctx = tls_api_init_ctx(&mut simulated_time, V1, None).expect("ctx");
+    let quality_update_scenario = [TestApiStreamDesc {
+        stream_id: 4,
+        previous_stream_id: 0,
+        q_len: 257,
+        r_len: 2000,
+    }];
+
+    {
+        let mut file = std::fs::File::create(QUALITY_UPDATE_CSV).expect("quality_update.csv");
+        writeln!(
+            file,
+            "Time, Path_id, Sending_rate_CB, Pacing_rate, Receive_Rate, CWIN, RTT"
+        )
+        .expect("quality_update header");
+    }
+
+    test_ctx
+        .cnx_client()
+        .subscribe_to_quality_update(0x10000, crate::Duration::from_ticks(0x1000));
+
+    tls_api_one_scenario_body_ex(
+        &mut test_ctx,
+        &mut simulated_time,
+        &quality_update_scenario,
+        1_000_000,
+        0,
+        0,
+        20_000,
+        3_600_000,
+        &[],
+    )
+    .expect("quality_update scenario");
+
+    compare_text_files(QUALITY_UPDATE_CSV, QUALITY_UPDATE_REF).expect("quality_update reference");
 }
 
 /// C: `tls_quant_params_test` in `picoquictest/tls_api_test.c`.
@@ -5744,29 +6365,166 @@ fn quality_update() {
 #[test]
 fn quant_params() {
     let mut t = Instant::from_ticks(0);
-    let mut ctx = tls_api_init_ctx(&mut t, V1, None).expect("ctx");
-    tls_api_one_scenario_body(&mut ctx, &mut t, &[], 0, 0, 0, 0, 3_510_000).expect("quant_params");
+    let mut client_params = crate::TransportParameters::default();
+    crate::internal::init_transport_parameters(&mut client_params);
+    client_params.initial_max_data = 0x4000;
+    client_params.initial_max_stream_id_bidir = 0;
+    client_params.initial_max_stream_id_unidir = 16_384;
+    client_params.initial_max_stream_data_bidi_local = 0x2000;
+    client_params.initial_max_stream_data_bidi_remote = 0x2000;
+    client_params.initial_max_stream_data_uni = 0x2000;
+
+    let mut ctx = tls_api_one_scenario_init_ex(
+        &mut t,
+        Version::InternalTest1,
+        Some(&client_params),
+        None,
+        None,
+    )
+    .expect("ctx");
+    let quant_scenario = [TestApiStreamDesc {
+        stream_id: 4,
+        previous_stream_id: 0,
+        q_len: 257,
+        r_len: 10_000,
+    }];
+    tls_api_one_scenario_body(&mut ctx, &mut t, &quant_scenario, 0, 0, 0, 0, 3_510_000)
+        .expect("quant_params");
 }
 
 /// C: `random_padding_test` in `picoquictest/tls_api_test.c`.
 ///
-/// Verifies that random-length padding is applied to 1-RTT packets as
-/// configured.
+/// Mutates the first client packet by appending deterministic random bytes,
+/// marks the first appended byte as non-QUIC, and verifies that the server
+/// accepts the real packet and the connection completes.
 #[test]
 fn random_padding() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("random_padding");
+    let mut random_context = 0x1234_5678_90ab_cdef;
+
+    random_padding_test_one(128, &mut random_context, 0).expect("random_padding_128");
+    random_padding_test_one(16, &mut random_context, 1).expect("random_padding_16");
+}
+
+fn random_padding_test_one(
+    pad_length: usize,
+    random_context: &mut u64,
+    test_id: u8,
+) -> crate::Result<()> {
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut loss_mask = 0u64;
+    let mut initial_cid_bytes = [0x8a, 0x8d, 0x08, 0x9a, 0xdd, 0, 0, 0];
+    initial_cid_bytes[5] = test_id;
+    let initial_cid =
+        ConnectionId::clone_from_slice(&initial_cid_bytes).ok_or(crate::Error::Generic)?;
+
+    save_empty_tickets(RANDOM_PADDING_TICKET_FILE, simulated_time)?;
+
+    let mut test_ctx = tls_api_init_ctx_ex(
+        &mut simulated_time,
+        INTEROP_VERSION_LATEST as u32,
+        Some(RANDOM_PADDING_TICKET_FILE),
+        Some(&initial_cid),
+    )
+    .ok_or(crate::Error::Generic)?;
+
+    test_ctx
+        .qserver
+        .set_textlog(Some(RANDOM_PADDING_TEXT_LOG))?;
+    test_ctx.qserver.set_qlog(".")?;
+    test_ctx.qserver.set_log_level(1);
+
+    let mut packet = TestSimPacket::create()?;
+    let prepared = test_ctx
+        .cnx_client()
+        .prepare_packet(simulated_time, &mut packet.bytes)?;
+    if prepared.send_length == 0 {
+        return Err(crate::Error::Generic);
+    }
+
+    let padded_length = prepared
+        .send_length
+        .checked_add(pad_length)
+        .filter(|length| *length <= MAX_PACKET_SIZE)
+        .ok_or(crate::Error::BufferTooSmall)?;
+    packet.length = prepared.send_length;
+    packet.addr_to = Some(prepared.addr_to);
+    packet.addr_from = Some(test_ctx.client_addr);
+
+    test_random_bytes(
+        random_context,
+        &mut packet.bytes[packet.length..padded_length],
+    );
+    packet.bytes[packet.length] |= 0x80;
+    packet.length = padded_length;
+
+    simulated_time = Instant::from_ticks(
+        simulated_time
+            .ticks()
+            .saturating_add(test_ctx.c_to_s_link.microsec_latency),
+    );
+    let addr_from = packet.addr_from.ok_or(crate::Error::Generic)?;
+    let addr_to = packet.addr_to.ok_or(crate::Error::Generic)?;
+    test_ctx.qserver.incoming_packet(
+        &mut packet.bytes[..packet.length],
+        &addr_from,
+        &addr_to,
+        0,
+        0,
+        simulated_time,
+    )?;
+    if !test_ctx.has_cnx_server() {
+        return Err(crate::Error::Generic);
+    }
+
+    let queue_delay_max = 2 * test_ctx.c_to_s_link.microsec_latency;
+    tls_api_connection_loop(
+        &mut test_ctx,
+        &mut loss_mask,
+        queue_delay_max,
+        &mut simulated_time,
+    )?;
+
+    if test_ctx.client_ready() && test_ctx.server_ready() {
+        Ok(())
+    } else {
+        Err(crate::Error::Generic)
+    }
 }
 
 /// C: `random_public_tester_test` in `picoquictest/tls_api_test.c`.
 ///
-/// Runs 100 rounds of the public-key tester to validate the random-number
-/// distribution with a chi-squared test.
+/// Verifies the seeded public uniform RNG distribution with a chi-squared
+/// test over 11 buckets.
 #[test]
 fn random_public_tester() {
-    for _ in 0..100 {
-        tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN))
-            .expect("random_public_tester");
+    const RANDOM_PUBLIC_TEST_CONST: usize = 11;
+    const RANDOM_PUBLIC_TEST_ROUNDS: usize = 100;
+    const RANDOM_PUBLIC_TEST_SEED: u64 = 0xDEAD_BEEF_CAFE_C001;
+    const RANDOM_PUBLIC_CHI_SQUARE: f64 = 18.31;
+
+    let mut r_count = [0usize; RANDOM_PUBLIC_TEST_CONST];
+
+    crate::public_random_seed_64(RANDOM_PUBLIC_TEST_SEED, 1);
+
+    for _ in 0..(RANDOM_PUBLIC_TEST_CONST * RANDOM_PUBLIC_TEST_ROUNDS) {
+        let x = crate::picoquic_uniform_random(RANDOM_PUBLIC_TEST_CONST as u64);
+        assert!(
+            x < RANDOM_PUBLIC_TEST_CONST as u64,
+            "Value {x} >= {RANDOM_PUBLIC_TEST_CONST}"
+        );
+        r_count[x as usize] += 1;
     }
+
+    let mut chi_squared = 0.0;
+    for count in r_count {
+        let delta = RANDOM_PUBLIC_TEST_ROUNDS as f64 - count as f64;
+        chi_squared += (delta * delta) / RANDOM_PUBLIC_TEST_ROUNDS as f64;
+    }
+
+    assert!(
+        chi_squared <= RANDOM_PUBLIC_CHI_SQUARE,
+        "Chi2 = {chi_squared}, larger than {RANDOM_PUBLIC_CHI_SQUARE}"
+    );
 }
 
 /// C: `ready_to_send_test` in `picoquictest/tls_api_test.c`.
@@ -5803,7 +6561,7 @@ fn ready_to_zfin() {
 
 /// C: `red_bbr_test` in `picoquictest/tls_api_test.c`.
 ///
-/// RED (random early discard) test using BBR; target_time=500 ms, mtu=170.
+/// RED (random early discard) test using BBR; target_time=500 ms, loss_target=170.
 #[test]
 fn red_bbr() {
     red_cc_algotest("bbr", 500_000, 170).expect("red_bbr");
@@ -5811,7 +6569,7 @@ fn red_bbr() {
 
 /// C: `red_cubic_test` in `picoquictest/tls_api_test.c`.
 ///
-/// RED test using Cubic; target_time=510 ms, mtu=225.
+/// RED test using Cubic; target_time=510 ms, loss_target=225.
 #[test]
 fn red_cubic() {
     red_cc_algotest("cubic", 510_000, 225).expect("red_cubic");
@@ -5819,7 +6577,7 @@ fn red_cubic() {
 
 /// C: `red_dcubic_test` in `picoquictest/tls_api_test.c`.
 ///
-/// RED test using Delay-based Cubic; target_time=500 ms, mtu=275.
+/// RED test using Delay-based Cubic; target_time=500 ms, loss_target=275.
 #[test]
 fn red_dcubic() {
     red_cc_algotest("dcubic", 500_000, 275).expect("red_dcubic");
@@ -5827,7 +6585,7 @@ fn red_dcubic() {
 
 /// C: `red_fast_test` in `picoquictest/tls_api_test.c`.
 ///
-/// RED test using FastCC; target_time=500 ms, mtu=250.
+/// RED test using FastCC; target_time=500 ms, loss_target=250.
 #[test]
 fn red_fast() {
     red_cc_algotest("fast", 500_000, 250).expect("red_fast");
@@ -5835,7 +6593,7 @@ fn red_fast() {
 
 /// C: `red_newreno_test` in `picoquictest/tls_api_test.c`.
 ///
-/// RED test using NewReno; target_time=500 ms, mtu=150.
+/// RED test using NewReno; target_time=500 ms, loss_target=150.
 #[test]
 fn red_newreno() {
     red_cc_algotest("newreno", 500_000, 150).expect("red_newreno");
@@ -5862,7 +6620,93 @@ fn request_client_authentication() {
 /// server refills the supply automatically.
 #[test]
 fn retire_cnxid() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("retire_cnxid");
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut loss_mask = 0u64;
+    let mut test_ctx = tls_api_init_ctx(&mut simulated_time, V1, None).expect("retire_cnxid ctx");
+
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)
+        .expect("retire_cnxid connection");
+    tls_api_synch_to_empty_loop(
+        &mut test_ctx,
+        &mut simulated_time,
+        2048,
+        NB_PATH_TARGET as i32,
+        0,
+    )
+    .expect("retire_cnxid initial sync");
+
+    let client_local_cid_count = first_local_cnxid_count(test_ctx.cnx_client());
+    assert!(
+        client_local_cid_count >= NB_PATH_TARGET,
+        "Only {client_local_cid_count} cids created on client."
+    );
+    let server_local_cid_count = first_local_cnxid_count(test_ctx.cnx_server());
+    assert!(
+        server_local_cid_count >= NB_PATH_TARGET,
+        "Only {server_local_cid_count} cids created on server."
+    );
+
+    for i in 2..NB_PATH_TARGET {
+        let client = test_ctx.cnx_client();
+        let (stash_index, cid_index) = client
+            .obtain_stashed_connection_id(0)
+            .unwrap_or_else(|| panic!("Could not retrieve cnx ID #{}.", i - 1));
+        let sequence =
+            client.remote_connection_id_stashes[stash_index].connection_ids[cid_index].sequence;
+        client
+            .queue_retire_connection_id_frame(0, sequence)
+            .expect("queue RETIRE_CONNECTION_ID");
+        let _ = client.remove_stashed_cnxid(0, cid_index, None);
+    }
+
+    let time_out = Instant::from_ticks(simulated_time.ticks() + 8_000_000);
+    let mut nb_rounds = 0;
+    let mut success = false;
+
+    while simulated_time.ticks() < time_out.ticks()
+        && nb_rounds < 2048
+        && test_ctx
+            .qclient
+            .first_cnx_mut()
+            .map(|c| c.connection_state != crate::State::Disconnected)
+            .unwrap_or(false)
+    {
+        let mut was_active = false;
+        tls_api_one_sim_round(
+            &mut test_ctx,
+            &mut simulated_time,
+            time_out,
+            &mut was_active,
+        )
+        .expect("retire_cnxid refill round");
+        nb_rounds += 1;
+
+        if retire_cnxid_refill_ready(&mut test_ctx) {
+            success = true;
+            break;
+        }
+    }
+
+    assert!(
+        success,
+        "Exit synch loop after {nb_rounds} rounds, backlog or not enough cids ({} & {}).",
+        first_local_cnxid_count(test_ctx.cnx_client()),
+        first_local_cnxid_count(test_ctx.cnx_server())
+    );
+
+    let server_local_cid_count = first_local_cnxid_count(test_ctx.cnx_server());
+    assert_eq!(
+        server_local_cid_count, NB_PATH_TARGET,
+        "Found {server_local_cid_count} cids active on server instead of {NB_PATH_TARGET}."
+    );
+
+    {
+        let (client, server) = (&test_ctx.qclient, &test_ctx.qserver);
+        let client_cnx = client.connections.iter().next().expect("client connection");
+        let server_cnx = server.connections.iter().next().expect("server connection");
+        assert_cnxid_stash_matches_peer(client_cnx, server_cnx, "client");
+        assert_cnxid_stash_matches_peer(server_cnx, client_cnx, "server");
+    }
 }
 
 /// C: `tls_api_retry_test` in `picoquictest/tls_api_test.c`.
@@ -5873,31 +6717,249 @@ fn retry() {
     tls_api_retry_test_one(false).expect("retry");
 }
 
+fn retry_large_delayed_start() -> crate::Result<()> {
+    const TARGET_TIME: u64 = 230_000;
+
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut test_ctx =
+        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
+    let old_initial_cid = test_ctx
+        .qclient
+        .first_cnx_mut()
+        .map(|cnx| cnx.initial_connection_id)
+        .ok_or(crate::Error::Generic)?;
+    let (old_token, _) = test_ctx
+        .qclient
+        .connection_by_id(old_initial_cid)
+        .ok_or(crate::Error::Generic)?;
+    test_ctx.qclient.delete_connection(old_token);
+
+    {
+        let cnx = test_ctx
+            .qclient
+            .create_connection(
+                ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                Some(&test_ctx.server_addr),
+                simulated_time,
+                0,
+                Some(TEST_SNI),
+                Some(TEST_ALPN),
+                true,
+            )
+            .ok_or(crate::Error::Generic)?;
+        cnx.test_large_chello = true;
+    }
+
+    test_ctx.qclient.set_qlog(".")?;
+    test_ctx.cnx_client().start_client()?;
+    test_ctx.qserver.set_cookie_mode(1);
+
+    let mut loss_mask = 0u64;
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+    tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)?;
+
+    assert!(
+        simulated_time.ticks() <= TARGET_TIME,
+        "Retry test completes in {} microsec, more than {}",
+        simulated_time.ticks(),
+        TARGET_TIME
+    );
+
+    Ok(())
+}
+
 /// C: `tls_api_retry_large_test` in `picoquictest/tls_api_test.c`.
 ///
 /// Retry test with a large ClientHello (padded to trigger multi-packet
 /// Initial).
 #[test]
 fn retry_large() {
-    tls_api_retry_test_one(true).expect("retry_large");
+    retry_large_delayed_start().expect("retry_large");
 }
 
 /// C: `tls_retry_token_test` in `picoquictest/tls_api_test.c`.
 ///
-/// Retry-token test: server issues a token (mode=1), client reuses it on
-/// the next connection (dup_token=false).
+/// Retry-token test: exercises Retry-required mode, provide-token mode, and
+/// duplicate-token rejection.
 #[test]
 fn retry_token() {
-    tls_retry_token_test_one(1, false).expect("retry_token");
+    tls_retry_token_test_one(1, false).expect("retry_token retry-required");
+    tls_retry_token_test_one(2, false).expect("retry_token provide-token");
+    tls_retry_token_test_one(1, true).expect("retry_token duplicate");
 }
 
 /// C: `tls_retry_token_valid_test` in `picoquictest/tls_api_test.c`.
 ///
-/// Validates that the retry token is accepted on the resumed connection and
-/// rejected on a different connection attempt.
+/// Validates retry-token and new-token contents, expiry, address binding, RCID
+/// and PN checks, and oversized-token rejection.
 #[test]
 fn retry_token_valid() {
-    tls_retry_token_test_one(2, false).expect("retry_token_valid");
+    const TIME_BASE: u64 = 10_000 * 1_000_000;
+
+    let mut simulated_time = Instant::from_ticks(TIME_BASE);
+    let mut test_ctx = tls_api_init_ctx_ex(&mut simulated_time, V1, None, None).expect("ctx");
+    let quic = &mut test_ctx.qserver;
+
+    let addr = [
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 1234),
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 3456),
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(3, 3, 3, 3)), 1234),
+    ];
+    let n_cid = ConnectionId::default();
+    let cid = [
+        ConnectionId::clone_from_slice(&[1, 1, 1, 1, 1, 1, 1, 1]).expect("cid1"),
+        n_cid,
+        ConnectionId::clone_from_slice(&[2, 2, 2, 2, 2, 2, 2, 2, 2]).expect("cid2"),
+    ];
+    let odcid = [
+        ConnectionId::clone_from_slice(&[3, 3, 3, 3, 3, 3, 3, 3]).expect("odcid"),
+        n_cid,
+    ];
+    let pn = [0u32, 1, 2];
+
+    for token_mode in 0..2 {
+        let expected_new_token = odcid[token_mode].is_empty();
+        let mut token_buffer = [0u8; 128];
+        let token_size = quic
+            .prepare_retry_token(
+                &addr[0],
+                Instant::from_ticks(TIME_BASE),
+                &odcid[token_mode],
+                &cid[token_mode],
+                pn[1],
+                &mut token_buffer,
+            )
+            .expect("prepare_retry_token");
+        let token = &token_buffer[..token_size];
+
+        let verified = quic
+            .verify_retry_token(
+                &addr[0],
+                Instant::from_ticks(TIME_BASE),
+                &cid[0],
+                pn[2],
+                token,
+                false,
+            )
+            .expect("valid token");
+        assert_retry_token_verified(
+            verified,
+            expected_new_token,
+            &odcid[token_mode],
+            "normal parameters",
+        );
+
+        let verified = quic
+            .verify_retry_token(
+                &addr[1],
+                Instant::from_ticks(TIME_BASE),
+                &cid[0],
+                pn[2],
+                token,
+                false,
+            )
+            .expect("same-IP token");
+        assert_retry_token_verified(
+            verified,
+            expected_new_token,
+            &odcid[token_mode],
+            "same IP, different port",
+        );
+
+        assert!(
+            quic.verify_retry_token(
+                &addr[2],
+                Instant::from_ticks(TIME_BASE),
+                &cid[0],
+                pn[2],
+                token,
+                false,
+            )
+            .is_err(),
+            "Token validation does not detect an address change."
+        );
+
+        let expired_delta = if token_mode == 0 {
+            TOKEN_DELAY_SHORT.ticks() + 1
+        } else {
+            TOKEN_DELAY_LONG.ticks() + 1_000_000
+        };
+        assert!(
+            quic.verify_retry_token(
+                &addr[0],
+                Instant::from_ticks(TIME_BASE + expired_delta),
+                &cid[0],
+                pn[2],
+                token,
+                false,
+            )
+            .is_err(),
+            "Token validation does not detect elapsed time."
+        );
+
+        let rcid_mismatch = quic.verify_retry_token(
+            &addr[0],
+            Instant::from_ticks(TIME_BASE),
+            &cid[2],
+            pn[2],
+            token,
+            false,
+        );
+        if token_mode == 0 {
+            assert!(rcid_mismatch.is_err(), "RCID invalidation fails");
+        } else {
+            let verified = rcid_mismatch.expect("new token ignores RCID");
+            assert_retry_token_verified(verified, true, &n_cid, "new token RCID mismatch");
+        }
+
+        for &initial_pn in pn.iter().take(2) {
+            let pn_mismatch = quic.verify_retry_token(
+                &addr[0],
+                Instant::from_ticks(TIME_BASE),
+                &cid[0],
+                initial_pn,
+                token,
+                false,
+            );
+            if token_mode == 0 {
+                assert!(pn_mismatch.is_err(), "PN invalidation fails");
+            } else {
+                let verified = pn_mismatch.expect("new token ignores PN");
+                assert_retry_token_verified(verified, true, &n_cid, "new token PN mismatch");
+            }
+        }
+
+        if token_mode == 0 {
+            let mut big_token = vec![0xa5; MAX_PACKET_SIZE];
+            big_token[..token_size].copy_from_slice(token);
+            assert!(
+                quic.verify_retry_token(
+                    &addr[0],
+                    Instant::from_ticks(TIME_BASE),
+                    &cid[0],
+                    pn[2],
+                    &big_token,
+                    false,
+                )
+                .is_err(),
+                "Bad length check fails"
+            );
+        }
+    }
+}
+
+fn assert_retry_token_verified(
+    verified: crate::tls_api::VerifiedRetryToken,
+    expected_new_token: bool,
+    expected_odcid: &ConnectionId,
+    label: &str,
+) {
+    assert_eq!(
+        verified.is_new_token, expected_new_token,
+        "{label}: wrong new-token classification"
+    );
+    assert_eq!(verified.odcid, *expected_odcid, "{label}: wrong ODCID");
 }
 
 /// C: `tls_api_client_second_loss_test` in `picoquictest/tls_api_test.c`.
@@ -5914,7 +6976,75 @@ fn second_loss() {
 /// receive a server-busy response, and then unblocks the server.
 #[test]
 fn server_busy() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("server_busy");
+    let mut loss_mask = 0u64;
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut test_ctx = tls_api_init_ctx(&mut simulated_time, 0, None).expect("server_busy ctx");
+
+    test_ctx.qserver.server_busy = true;
+    let _ = tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time);
+
+    if let Some(server) = test_ctx.qserver.first_cnx_mut() {
+        assert_eq!(
+            server.state(),
+            crate::State::Disconnected,
+            "server state {:?}, local error {:x}",
+            server.state(),
+            server.local_error()
+        );
+    }
+
+    let client = test_ctx.cnx_client();
+    assert_eq!(
+        client.state(),
+        crate::State::Disconnected,
+        "client state {:?}, remote error {:x}",
+        client.state(),
+        client.remote_error()
+    );
+    assert_eq!(
+        client.remote_error(),
+        crate::TransportError::ServerBusy as u64,
+        "client remote error {:x}",
+        client.remote_error()
+    );
+    assert!(
+        simulated_time.ticks() <= 500_000,
+        "simulated time {}",
+        simulated_time.ticks()
+    );
+
+    test_ctx.qserver.server_busy = false;
+    delete_tls_api_test_connections(&mut test_ctx.qserver);
+    delete_tls_api_test_connections(&mut test_ctx.qclient);
+
+    test_ctx
+        .qclient
+        .create_connection(
+            ConnectionId::with_size(0).expect("null initial CID"),
+            ConnectionId::with_size(0).expect("null remote CID"),
+            Some(&test_ctx.server_addr),
+            simulated_time,
+            0,
+            Some(TEST_SNI),
+            Some(TEST_ALPN),
+            true,
+        )
+        .expect("new client connection")
+        .start_client()
+        .expect("start new client connection");
+
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)
+        .expect("server_busy retry connection");
+    assert!(test_ctx.client_ready(), "client did not reach ready state");
+    assert!(test_ctx.server_ready(), "server did not reach ready state");
+
+    tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0).expect("server_busy close");
+}
+
+fn delete_tls_api_test_connections(quic: &mut crate::internal::Quic) {
+    while let Some(token) = quic.first_connection().and_then(|cnx| cnx.own_token) {
+        quic.delete_connection(token);
+    }
 }
 
 /// C: `tls_api_server_losses_test` in `picoquictest/tls_api_test.c`.
