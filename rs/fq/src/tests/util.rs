@@ -27,12 +27,14 @@
 use core::net::SocketAddr;
 
 use crate::internal::{
-    Connection, INTEROP_VERSION_LATEST, MAX_ACK_RANGE_REPEAT, NB_PATH_TARGET, SackList, Version,
-    format_ack_frame, init_transport_parameters, public_random,
+    Connection, DEFAULT_HOLE_PERIOD, Epoch, INTEROP_VERSION_LATEST, MAX_ACK_RANGE_REPEAT,
+    NB_PATH_TARGET, PacketType, SackList, Version, format_ack_frame, init_transport_parameters,
+    public_random,
 };
 use crate::tp::TransportParameters;
 use crate::{
-    ConnectionId, Instant, MAX_PACKET_SIZE, PacketContext, Quic, RESET_SECRET_SIZE, State,
+    ConnectionId, INITIAL_MTU_IPV4, Instant, MAX_PACKET_SIZE, PacketContext, Quic,
+    RESET_SECRET_SIZE, State, public_random_seed_64,
 };
 
 // ---------------------------------------------------------------------------
@@ -708,6 +710,10 @@ pub struct TestTlsApiCtx {
     /// Prepend a malformed coalesced packet on client departures after the
     /// handshake starts. C: `test_ctx->do_bad_coalesce_test`.
     pub do_bad_coalesce_test: bool,
+    /// When `true`, queue server packets sent to alternate client addresses
+    /// so the test can explicitly relay or drop them.
+    /// C: `test_ctx->client_use_multiple_addresses`.
+    pub client_use_multiple_addresses: bool,
     /// Count of address-discovery observations received by the test.
     /// C: `test_ctx->nb_address_observed`.
     pub nb_address_observed: u64,
@@ -736,6 +742,12 @@ pub struct TestTlsApiCtx {
     /// Default ECN mark applied to outgoing packets.
     /// C: `test_ctx->packet_ecn_default`.
     pub packet_ecn_default: u8,
+    /// Outbound send-buffer size used by the simulated packet loop.
+    /// C: `test_ctx->send_buffer_size`.
+    pub send_buffer_size: usize,
+    /// When true, use the `_ex` sender API and split the returned coalesced
+    /// train into per-segment sim packets. C: `test_ctx->use_udp_gso`.
+    pub use_udp_gso: bool,
     test_streams: Vec<TestApiStream>,
     stream0_target: usize,
     stream0_sent: usize,
@@ -800,6 +812,18 @@ impl TestTlsApiCtx {
     /// C: `test_ctx->cnx_server != NULL`.
     pub fn has_cnx_server(&self) -> bool {
         !self.qserver.connections.is_empty()
+    }
+
+    /// Configure the simulator send buffer. A non-zero value enables the C
+    /// test harness' UDP-GSO style packet splitting.
+    pub fn set_send_buffer_size(&mut self, send_buffer_size: usize) {
+        if send_buffer_size == 0 {
+            self.send_buffer_size = MAX_PACKET_SIZE;
+            self.use_udp_gso = false;
+        } else {
+            self.send_buffer_size = send_buffer_size;
+            self.use_udp_gso = true;
+        }
     }
 }
 
@@ -988,9 +1012,57 @@ pub fn tls_api_data_sending_loop(
 pub fn tls_api_one_scenario_body_verify(
     test_ctx: &mut TestTlsApiCtx,
     simulated_time: &mut Instant,
-    _max_completion_microsec: u64,
+    max_completion_microsec: u64,
 ) -> crate::Result<()> {
-    tls_api_close_with_losses(test_ctx, simulated_time, 0)
+    tls_api_one_scenario_verify(test_ctx)?;
+
+    let close_time = *simulated_time;
+    tls_api_close_with_losses(test_ctx, simulated_time, 0)?;
+
+    if max_completion_microsec != 0 {
+        let completion_time = close_time
+            .ticks()
+            .saturating_sub(test_ctx.cnx_client().start_time.ticks());
+        if completion_time > max_completion_microsec {
+            return Err(crate::Error::Generic);
+        }
+    }
+
+    Ok(())
+}
+
+/// Verify stream delivery and callback state for a completed scenario.
+/// C: `tls_api_one_scenario_verify`.
+pub fn tls_api_one_scenario_verify(test_ctx: &TestTlsApiCtx) -> crate::Result<()> {
+    if test_ctx.server_callback_error_detected || test_ctx.client_callback_error_detected {
+        return Err(crate::Error::Generic);
+    }
+
+    for stream in &test_ctx.test_streams {
+        if stream.q_recv_nb != stream.q_len
+            || stream.r_recv_nb != stream.r_len
+            || !stream.q_received
+            || !stream.r_received
+            || stream.q_rcv != stream.q_src
+            || stream.r_rcv != stream.r_src
+        {
+            return Err(crate::Error::Generic);
+        }
+    }
+
+    if test_ctx.stream0_sent != test_ctx.stream0_target
+        || test_ctx.stream0_sent != test_ctx.stream0_received
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    if test_ctx.qclient.nb_data_nodes_allocated > test_ctx.qclient.nb_data_nodes_in_pool()
+        || test_ctx.qserver.nb_data_nodes_allocated > test_ctx.qserver.nb_data_nodes_in_pool()
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,6 +1116,43 @@ pub const TEST_FILE_SERVER_CERT_ED25519: &str = concat!(
 
 // ---------------------------------------------------------------------------
 // Single-step simulator.
+
+fn submit_prepared_sim_packets(
+    link: &mut TestSimLink,
+    send_buffer: &[u8],
+    send_length: usize,
+    send_msg_size: Option<usize>,
+    addr_from: SocketAddr,
+    addr_to: SocketAddr,
+    ecn_mark: u8,
+    simulated_time: Instant,
+) -> crate::Result<()> {
+    if send_length > send_buffer.len() {
+        return Err(crate::Error::Generic);
+    }
+
+    let chunk_size = send_msg_size.filter(|s| *s > 0).unwrap_or(send_length);
+    let mut offset = 0usize;
+    while offset < send_length {
+        let next = offset.saturating_add(chunk_size).min(send_length);
+        let chunk = &send_buffer[offset..next];
+        if chunk.len() > MAX_PACKET_SIZE {
+            return Err(crate::Error::Generic);
+        }
+
+        let mut pkt = TestSimPacket::create()?;
+        pkt.addr_from = Some(addr_from);
+        pkt.addr_to = Some(addr_to);
+        pkt.ecn_mark = ecn_mark;
+        pkt.length = chunk.len();
+        pkt.bytes[..chunk.len()].copy_from_slice(chunk);
+        link.submit(pkt, simulated_time);
+
+        offset = next;
+    }
+
+    Ok(())
+}
 
 /// Advance the simulation by one round, respecting `time_out` as the earliest
 /// wake-up.  `was_active` is set to `true` when at least one packet was
@@ -1450,16 +1559,22 @@ fn tls_api_one_sim_round_inner(
     // Execute departure.
     match next_action {
         Act::ClientDep => {
-            let mut buf = [0u8; MAX_PACKET_SIZE];
+            let mut buf = vec![0u8; test_ctx.send_buffer_size.max(MAX_PACKET_SIZE)];
             let mut coalesced_length = 0usize;
+            let use_udp_gso = test_ctx.use_udp_gso && !test_ctx.do_bad_coalesce_test;
             let prep = {
                 let do_bad_coalesce_test = test_ctx.do_bad_coalesce_test;
                 if let Some(cnx) = test_ctx.qclient.first_cnx_mut() {
                     if do_bad_coalesce_test && cnx.state() > State::ServerHandshake {
                         coalesced_length = tls_api_prepare_bad_coalesce_packet(cnx, &mut buf)?;
                     }
-                    cnx.prepare_packet(*simulated_time, &mut buf[coalesced_length..])
-                        .ok()
+                    if use_udp_gso {
+                        cnx.prepare_packet_ex(*simulated_time, &mut buf[coalesced_length..])
+                            .ok()
+                    } else {
+                        cnx.prepare_packet(*simulated_time, &mut buf[coalesced_length..])
+                            .ok()
+                    }
                 } else {
                     None
                 }
@@ -1489,35 +1604,65 @@ fn tls_api_one_sim_round_inner(
                     } else {
                         test_ctx.c_to_s_link.is_unreachable
                     };
-                    if !is_unreach && let Ok(mut pkt) = TestSimPacket::create() {
-                        let send_length = coalesced_length + pp.send_length;
-                        pkt.addr_from = Some(addr_from);
-                        pkt.addr_to = Some(pp.addr_to);
-                        pkt.ecn_mark = test_ctx.packet_ecn_default;
-                        pkt.length = send_length;
-                        pkt.bytes[..send_length].copy_from_slice(&buf[..send_length]);
+                    if !is_unreach {
+                        let addr_from = if test_ctx.client_use_nat && !use_link2 {
+                            test_ctx.client_addr_natted
+                        } else {
+                            addr_from
+                        };
                         if use_link2 {
                             if let Some(l) = test_ctx.c_to_s_link_2.as_mut() {
-                                l.submit(pkt, *simulated_time);
+                                submit_prepared_sim_packets(
+                                    l,
+                                    &buf,
+                                    pp.send_length,
+                                    pp.send_msg_size,
+                                    addr_from,
+                                    pp.addr_to,
+                                    test_ctx.packet_ecn_default,
+                                    *simulated_time,
+                                )?;
                             }
-                        } else {
+                        } else if coalesced_length > 0 {
+                            let send_length = coalesced_length + pp.send_length;
+                            let mut pkt = TestSimPacket::create()?;
+                            pkt.addr_from = Some(addr_from);
+                            pkt.addr_to = Some(pp.addr_to);
+                            pkt.ecn_mark = test_ctx.packet_ecn_default;
+                            pkt.length = send_length;
+                            pkt.bytes[..send_length].copy_from_slice(&buf[..send_length]);
                             sim_link_submit_with_loss(
                                 &mut test_ctx.c_to_s_link,
                                 pkt,
                                 *simulated_time,
                                 &mut loss_mask,
                             );
+                        } else {
+                            submit_prepared_sim_packets(
+                                &mut test_ctx.c_to_s_link,
+                                &buf,
+                                pp.send_length,
+                                pp.send_msg_size,
+                                addr_from,
+                                pp.addr_to,
+                                test_ctx.packet_ecn_default,
+                                *simulated_time,
+                            )?;
                         }
                     }
                 }
             }
         }
         Act::ServerDep => {
-            let mut buf = [0u8; MAX_PACKET_SIZE];
-            let prep = test_ctx
-                .qserver
-                .first_cnx_mut()
-                .and_then(|c| c.prepare_packet(*simulated_time, &mut buf).ok());
+            let mut buf = vec![0u8; test_ctx.send_buffer_size];
+            let use_udp_gso = test_ctx.use_udp_gso;
+            let prep = test_ctx.qserver.first_cnx_mut().and_then(|c| {
+                if use_udp_gso {
+                    c.prepare_packet_ex(*simulated_time, &mut buf).ok()
+                } else {
+                    c.prepare_packet(*simulated_time, &mut buf).ok()
+                }
+            });
             if let Some(pp) = prep
                 && pp.send_length > 0
             {
@@ -1543,23 +1688,44 @@ fn tls_api_one_sim_round_inner(
                     } else {
                         test_ctx.s_to_c_link.is_unreachable
                     };
-                    if !is_unreach && let Ok(mut pkt) = TestSimPacket::create() {
-                        pkt.addr_from = Some(addr_from);
-                        pkt.addr_to = Some(pp.addr_to);
-                        pkt.ecn_mark = test_ctx.packet_ecn_default;
-                        pkt.length = pp.send_length;
-                        pkt.bytes[..pp.send_length].copy_from_slice(&buf[..pp.send_length]);
+                    let mut addr_to = pp.addr_to;
+                    let mut simulate_loss = is_unreach;
+                    if !use_link2 && !test_ctx.client_use_multiple_addresses {
+                        if test_ctx.client_use_nat {
+                            if addr_to == test_ctx.client_addr_natted {
+                                addr_to = test_ctx.client_addr;
+                            } else {
+                                simulate_loss = true;
+                            }
+                        } else if addr_to != test_ctx.client_addr {
+                            simulate_loss = true;
+                        }
+                    }
+                    if !simulate_loss {
                         if use_link2 {
                             if let Some(l) = test_ctx.s_to_c_link_2.as_mut() {
-                                l.submit(pkt, *simulated_time);
+                                submit_prepared_sim_packets(
+                                    l,
+                                    &buf,
+                                    pp.send_length,
+                                    pp.send_msg_size,
+                                    addr_from,
+                                    addr_to,
+                                    test_ctx.packet_ecn_default,
+                                    *simulated_time,
+                                )?;
                             }
                         } else {
-                            sim_link_submit_with_loss(
+                            submit_prepared_sim_packets(
                                 &mut test_ctx.s_to_c_link,
-                                pkt,
+                                &buf,
+                                pp.send_length,
+                                pp.send_msg_size,
+                                addr_from,
+                                addr_to,
+                                test_ctx.packet_ecn_default,
                                 *simulated_time,
-                                &mut loss_mask,
-                            );
+                            )?;
                         }
                     }
                 }
@@ -1650,6 +1816,7 @@ pub fn cert_verify_set_ctx(
         client_addr_natted: SocketAddr::from(([0u8; 4], 0u16)),
         client_use_nat: false,
         do_bad_coalesce_test: false,
+        client_use_multiple_addresses: false,
         nb_address_observed: 0,
         loss_mask_default: 0,
         blackhole_start: 0,
@@ -1660,6 +1827,8 @@ pub fn cert_verify_set_ctx(
         test_finished: false,
         ecn_support: 0,
         packet_ecn_default: 0,
+        send_buffer_size: MAX_PACKET_SIZE,
+        use_udp_gso: false,
         test_streams: Vec::new(),
         stream0_target: 0,
         stream0_sent: 0,
@@ -1795,7 +1964,7 @@ fn tls_api_init_ctx_ex_named(
         qclient.set_default_connection_id_length(0).ok()?;
     }
 
-    let qserver = Quic::new(
+    let mut qserver = Quic::new(
         8,
         Some(TEST_FILE_SERVER_CERT),
         Some(TEST_FILE_SERVER_KEY),
@@ -1808,6 +1977,8 @@ fn tls_api_init_ctx_ex_named(
         None,
         Some(&VERIFIER_ENCRYPT_KEY),
     )?;
+    qclient.set_random_initial(0);
+    qserver.set_random_initial(0);
 
     {
         let icid = initial_cid
@@ -1823,7 +1994,7 @@ fn tls_api_init_ctx_ex_named(
             alpn,
             true,
         )?;
-        let _ = cnx.start_client();
+        cnx.start_client().ok()?;
     }
 
     let c_to_s_link = Box::new(TestSimLink::create(0.01, 10_000, None, 0, *simulated_time).ok()?);
@@ -1842,6 +2013,7 @@ fn tls_api_init_ctx_ex_named(
         client_addr_natted: SocketAddr::from(([0u8; 4], 0u16)),
         client_use_nat: false,
         do_bad_coalesce_test: false,
+        client_use_multiple_addresses: false,
         nb_address_observed: 0,
         loss_mask_default: 0,
         blackhole_start: 0,
@@ -1852,6 +2024,8 @@ fn tls_api_init_ctx_ex_named(
         test_finished: false,
         ecn_support: 0,
         packet_ecn_default: 0,
+        send_buffer_size: MAX_PACKET_SIZE,
+        use_udp_gso: false,
         test_streams: Vec::new(),
         stream0_target: 0,
         stream0_sent: 0,
@@ -2832,13 +3006,158 @@ pub fn multipath_test_perf_links(test_ctx: &mut TestTlsApiCtx, link_id: usize) {
 
 /// Run a final loss-tolerant check on a completed test connection.
 /// C: `tls_api_test_with_loss_final` (defined in `picoquictest/tls_api.c`).
-pub fn tls_api_test_with_loss_final(
+pub fn tls_api_test_with_loss_final<'s, 'a, S, A>(
     test_ctx: &mut TestTlsApiCtx,
-    _sni: &str,
-    _alpn: &str,
+    sni: S,
+    alpn: A,
     simulated_time: &mut Instant,
-) -> crate::Result<()> {
+) -> crate::Result<()>
+where
+    S: Into<Option<&'s str>>,
+    A: Into<Option<&'a str>>,
+{
+    let sni = sni.into();
+    let alpn = alpn.into();
+    if test_ctx.qserver.first_cnx_mut().is_some() {
+        verify_tls_api_transport_extension(test_ctx)?;
+        verify_tls_api_sni(test_ctx, sni)?;
+        verify_tls_api_alpn(test_ctx, alpn)?;
+        verify_tls_api_version(test_ctx)?;
+    }
     tls_api_close_with_losses(test_ctx, simulated_time, 0)
+}
+
+fn verify_tls_api_transport_extension(test_ctx: &mut TestTlsApiCtx) -> crate::Result<()> {
+    let (client_local, client_remote) = {
+        let client = test_ctx.cnx_client();
+        (
+            client.local_parameters.clone(),
+            client.remote_parameters.clone(),
+        )
+    };
+    let (server_local, server_remote) = {
+        let server = test_ctx.cnx_server();
+        (
+            server.local_parameters.clone(),
+            server.remote_parameters.clone(),
+        )
+    };
+
+    if client_local.max_idle_timeout.ticks() == 0
+        || client_local.initial_max_data == 0
+        || client_local.initial_max_stream_data_bidi_local == 0
+        || client_local.max_packet_size == 0
+    {
+        return Err(crate::Error::Generic);
+    }
+    if server_local.max_idle_timeout.ticks() == 0
+        || server_local.initial_max_data == 0
+        || server_local.initial_max_stream_data_bidi_remote == 0
+        || server_local.max_packet_size == 0
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    if !transport_parameters_equal(&client_local, &server_remote)
+        || !transport_parameters_equal(&server_local, &client_remote)
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    Ok(())
+}
+
+fn transport_parameters_equal(left: &TransportParameters, right: &TransportParameters) -> bool {
+    left.initial_max_stream_data_bidi_local == right.initial_max_stream_data_bidi_local
+        && left.initial_max_stream_data_bidi_remote == right.initial_max_stream_data_bidi_remote
+        && left.initial_max_stream_data_uni == right.initial_max_stream_data_uni
+        && left.initial_max_data == right.initial_max_data
+        && left.initial_max_stream_id_bidir == right.initial_max_stream_id_bidir
+        && left.initial_max_stream_id_unidir == right.initial_max_stream_id_unidir
+        && left.max_idle_timeout == right.max_idle_timeout
+        && left.max_packet_size == right.max_packet_size
+        && left.max_ack_delay == right.max_ack_delay
+        && left.active_connection_id_limit == right.active_connection_id_limit
+        && left.ack_delay_exponent == right.ack_delay_exponent
+        && left.migration_disabled == right.migration_disabled
+        && left.preferred_address.v4 == right.preferred_address.v4
+        && left.preferred_address.v6 == right.preferred_address.v6
+        && left.preferred_address.connection_id == right.preferred_address.connection_id
+        && left.preferred_address.stateless_reset_token
+            == right.preferred_address.stateless_reset_token
+        && left.max_datagram_frame_size == right.max_datagram_frame_size
+        && left.enable_loss_bit == right.enable_loss_bit
+        && left.enable_time_stamp == right.enable_time_stamp
+        && left.min_ack_delay == right.min_ack_delay
+        && left.do_grease_quic_bit == right.do_grease_quic_bit
+        && left.version_negotiation.current == right.version_negotiation.current
+        && left.version_negotiation.previous == right.version_negotiation.previous
+        && left.version_negotiation.received == right.version_negotiation.received
+        && left.version_negotiation.supported == right.version_negotiation.supported
+        && left.enable_bdp_frame == right.enable_bdp_frame
+        && left.initial_max_path_id == right.initial_max_path_id
+        && left.address_discovery_mode == right.address_discovery_mode
+        && left.is_reset_stream_at_enabled == right.is_reset_stream_at_enabled
+}
+
+fn verify_tls_api_sni(test_ctx: &mut TestTlsApiCtx, expected: Option<&str>) -> crate::Result<()> {
+    let client_matches = {
+        let client = test_ctx.cnx_client();
+        client.sni.as_deref() == expected && client.tls_get_sni() == expected
+    };
+    if !client_matches {
+        return Err(crate::Error::Generic);
+    }
+
+    if test_ctx.cnx_server().tls_get_sni() != expected {
+        return Err(crate::Error::Generic);
+    }
+
+    Ok(())
+}
+
+fn verify_tls_api_alpn(test_ctx: &mut TestTlsApiCtx, expected: Option<&str>) -> crate::Result<()> {
+    let client_matches = {
+        let client = test_ctx.cnx_client();
+        client.alpn.as_deref() == expected && client.tls_get_negotiated_alpn() == expected
+    };
+    if !client_matches {
+        return Err(crate::Error::Generic);
+    }
+
+    if test_ctx.cnx_server().tls_get_negotiated_alpn() != expected {
+        return Err(crate::Error::Generic);
+    }
+
+    Ok(())
+}
+
+fn verify_tls_api_version(test_ctx: &mut TestTlsApiCtx) -> crate::Result<()> {
+    let (client_version_index, proposed_version) = {
+        let client = test_ctx.cnx_client();
+        (client.version_index, client.proposed_version)
+    };
+    let server_version_index = test_ctx.cnx_server().version_index;
+    if client_version_index != server_version_index {
+        return Err(crate::Error::Generic);
+    }
+
+    let Ok(version_index) = usize::try_from(client_version_index) else {
+        return Err(crate::Error::Generic);
+    };
+    let Some(negotiated_version) = crate::internal::SUPPORTED_VERSIONS.get(version_index) else {
+        return Err(crate::Error::Generic);
+    };
+
+    if crate::internal::SUPPORTED_VERSIONS
+        .iter()
+        .any(|version| *version as u32 == proposed_version)
+        && *negotiated_version as u32 != proposed_version
+    {
+        return Err(crate::Error::Generic);
+    }
+
+    Ok(())
 }
 
 /// Advance the sim loop until the client has derived handshake-epoch keys.
@@ -3014,30 +3333,33 @@ pub fn tls_api_loss_test(loss_mask: u64) -> crate::Result<()> {
 pub fn tls_api_test_with_loss(
     ticket_file: Option<&str>,
     proposed_version: u32,
-    _sni: Option<&str>,
-    _alpn: Option<&str>,
+    sni: Option<&str>,
+    alpn: Option<&str>,
 ) -> crate::Result<()> {
-    tls_api_test_with_initial_loss(0, ticket_file, proposed_version, _sni, _alpn)
+    tls_api_test_with_initial_loss(0, ticket_file, proposed_version, sni, alpn)
 }
 
 fn tls_api_test_with_initial_loss(
     initial_loss_mask: u64,
     ticket_file: Option<&str>,
     proposed_version: u32,
-    _sni: Option<&str>,
-    _alpn: Option<&str>,
+    sni: Option<&str>,
+    alpn: Option<&str>,
 ) -> crate::Result<()> {
     let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx = tls_api_init_ctx(&mut simulated_time, proposed_version, ticket_file)
-        .ok_or(crate::Error::Generic)?;
+    let mut test_ctx = tls_api_init_ctx_ex_named(
+        &mut simulated_time,
+        proposed_version,
+        sni,
+        alpn,
+        ticket_file,
+        None,
+        false,
+    )
+    .ok_or(crate::Error::Generic)?;
     let mut loss_mask = initial_loss_mask;
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    tls_api_test_with_loss_final(
-        &mut test_ctx,
-        _sni.unwrap_or(""),
-        _alpn.unwrap_or(""),
-        &mut simulated_time,
-    )
+    tls_api_test_with_loss_final(&mut test_ctx, sni, alpn, &mut simulated_time)
 }
 
 /// Session-resume test helper (two successive connections sharing a ticket file).
@@ -3063,57 +3385,112 @@ pub fn session_resume_test_one(ticket_file: &str) -> crate::Result<()> {
 /// Run one MTU-discovery test.
 /// C: `mtu_discovery_test_one` in `picoquictest/tls_api_test.c`.
 pub fn mtu_discovery_test_one(
-    _policy: u32,
-    _mtu_expected_client: u32,
-    _mtu_expected_server: u32,
-    _target_time: u64,
-    _mtu_max: u32,
+    policy: crate::PmtudPolicy,
+    mtu_expected_client: u64,
+    mtu_expected_server: u64,
+    scenario: &[TestApiStreamDesc],
+    mtu_max: u32,
 ) -> crate::Result<()> {
     let mut simulated_time = Instant::from_ticks(0);
     let mut test_ctx =
         tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
-    let policy = match _policy {
-        1 => crate::PmtudPolicy::Required,
-        2 => crate::PmtudPolicy::Delayed,
-        3 => crate::PmtudPolicy::Blocked,
-        _ => crate::PmtudPolicy::Basic,
-    };
+    test_ctx.qserver.set_default_pmtud_policy(policy);
     test_ctx.cnx_client().set_pmtud_policy(policy);
-    if _mtu_max > 0 {
-        test_ctx.qclient.set_mtu_max(_mtu_max);
+    if mtu_max > 0 {
+        test_ctx.qserver.set_mtu_max(mtu_max);
     }
     let mut loss_mask = 0u64;
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    let scenario = [TestApiStreamDesc {
-        stream_id: 4,
-        previous_stream_id: 0,
-        q_len: 100_000,
-        r_len: 1_000_000,
-    }];
-    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
+    test_api_init_send_recv_scenario(&mut test_ctx, scenario)?;
     tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
-    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, _target_time)
+    let mtu_client = test_ctx.cnx_client().primary_path_send_mtu();
+    if mtu_client != mtu_expected_client {
+        return Err(crate::Error::Generic);
+    }
+    if !test_ctx.has_cnx_server() {
+        return Err(crate::Error::Generic);
+    }
+    let mtu_server = test_ctx.cnx_server().primary_path_send_mtu();
+    if mtu_server != mtu_expected_server {
+        return Err(crate::Error::Generic);
+    }
+    Ok(())
 }
 
 /// Run one MTU-drop congestion-control test.
 /// C: `mtu_drop_cc_algotest` in `picoquictest/tls_api_test.c`.
-pub fn mtu_drop_cc_algotest(_algo_id: &'static str, _target_time: u64) -> crate::Result<()> {
+pub fn mtu_drop_cc_algotest(algo_id: &'static str, target_time: u64) -> crate::Result<()> {
+    const MTU_DROP_LATENCY: u64 = 100_000;
+    const PICOSEC_1MBPS: u64 = 8_000_000;
+
+    crate::register_all_congestion_control_algorithms();
+    let cc_algo = crate::get_congestion_algorithm(algo_id).ok_or(crate::Error::Generic)?;
+
     let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx =
-        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
-    test_ctx.c_to_s_link.microsec_latency = 10_000;
-    test_ctx.s_to_c_link.microsec_latency = 10_000;
+    let mut initial_cid_bytes = [0xa1, 0x10, 0xcc, 0xa1, 0x90, 6, 7, 8];
+    initial_cid_bytes[4] = cc_algo.congestion_algorithm_number;
+    let initial_cid =
+        ConnectionId::clone_from_slice(&initial_cid_bytes).ok_or(crate::Error::Protocol(9))?;
+    let mut test_ctx = tls_api_init_ctx_ex(
+        &mut simulated_time,
+        Version::InternalTest1 as u32,
+        None,
+        Some(&initial_cid),
+    )
+    .ok_or(crate::Error::Protocol(10))?;
+
+    test_ctx.c_to_s_link.microsec_latency = MTU_DROP_LATENCY;
+    test_ctx.c_to_s_link.picosec_per_byte = PICOSEC_1MBPS;
+    test_ctx.s_to_c_link.microsec_latency = MTU_DROP_LATENCY;
+    test_ctx.s_to_c_link.picosec_per_byte = PICOSEC_1MBPS;
+    test_ctx.qserver.set_default_congestion_algorithm(cc_algo);
+    test_ctx.qserver.set_log_level(1);
+
     let mut loss_mask = 0u64;
-    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+    tls_api_connection_loop(
+        &mut test_ctx,
+        &mut loss_mask,
+        2 * MTU_DROP_LATENCY,
+        &mut simulated_time,
+    )?;
+    if !test_ctx.has_cnx_server() {
+        return Err(crate::Error::Generic);
+    }
+    let server_cc_number = test_ctx
+        .cnx_server()
+        .congestion_alg
+        .map(|alg| alg.congestion_algorithm_number)
+        .ok_or(crate::Error::Generic)?;
+    if server_cc_number != cc_algo.congestion_algorithm_number {
+        return Err(crate::Error::Generic);
+    }
+
     let scenario = [TestApiStreamDesc {
         stream_id: 4,
         previous_stream_id: 0,
-        q_len: 100_000,
+        q_len: 257,
         r_len: 1_000_000,
     }];
     test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
+    tls_api_wait_for_timeout(&mut test_ctx, &mut simulated_time, 1_000_000)?;
+
+    let client_send_mtu = test_ctx.cnx_client().primary_path_send_mtu();
+    let server_local_max = test_ctx.cnx_server().local_parameters.max_packet_size as u64;
+    if client_send_mtu != server_local_max {
+        return Err(crate::Error::Generic);
+    }
+
+    let server_send_mtu = test_ctx.cnx_server().primary_path_send_mtu();
+    let client_local_max = test_ctx.cnx_client().local_parameters.max_packet_size as u64;
+    if server_send_mtu != client_local_max {
+        return Err(crate::Error::Generic);
+    }
+
+    test_ctx.c_to_s_link.path_mtu = (INITIAL_MTU_IPV4 + test_ctx.c_to_s_link.path_mtu) / 2;
+    test_ctx.s_to_c_link.path_mtu = (INITIAL_MTU_IPV4 + test_ctx.s_to_c_link.path_mtu) / 2;
+
     tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
-    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, _target_time)
+    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, target_time)
 }
 
 /// Run one stop-sending test.  `discard=true` → discard stream variant.
@@ -3401,18 +3778,18 @@ fn transmit_cnxid_test_stash(cnx1: &Connection, cnx2: &Connection) -> crate::Res
 /// Run one NAT-rebinding test.
 /// C: `nat_rebinding_test_one` in `picoquictest/tls_api_test.c`.
 pub fn nat_rebinding_test_one(
-    _loss_mask: u64,
+    loss_mask_data: u64,
     _cid_zero: bool,
-    _latency: u64,
+    latency: u64,
 ) -> crate::Result<()> {
     let mut simulated_time = Instant::from_ticks(0);
     let mut test_ctx =
         tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
-    if _latency > 0 {
-        test_ctx.c_to_s_link.microsec_latency = _latency;
-        test_ctx.s_to_c_link.microsec_latency = _latency;
+    if latency > 0 {
+        test_ctx.c_to_s_link.microsec_latency = latency;
+        test_ctx.s_to_c_link.microsec_latency = latency;
     }
-    let mut loss_mask = _loss_mask;
+    let mut loss_mask = loss_mask_data;
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
     tls_api_synch_to_empty_loop(&mut test_ctx, &mut simulated_time, 1024, 0, 0)?;
     let scenario = [TestApiStreamDesc {
@@ -3584,14 +3961,227 @@ pub fn migration_controlled_test_one(_mode: u32) -> crate::Result<()> {
     tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
 }
 
+fn padding_test_error(code: u64) -> crate::Error {
+    crate::Error::Protocol(0x5B02_1000 | code)
+}
+
+fn padding_test_predict_pn_length(cnx: &Connection) -> usize {
+    let pkt_ctx = &cnx.pkt_ctx[PacketContext::Application as usize];
+    let mut pn_l = 4usize;
+    let mut delta = if pkt_ctx.send_sequence == 0 {
+        0i128
+    } else {
+        pkt_ctx.send_sequence.saturating_sub(1) as i128
+    };
+
+    if let Some(first_pending) = pkt_ctx.pending.keys().next().copied() {
+        delta -= first_pending as i128;
+    }
+
+    if delta < 262_144 {
+        pn_l = 3;
+        if pkt_ctx.send_sequence < 1024 {
+            pn_l = 2;
+            if pkt_ctx.send_sequence < 16 {
+                pn_l = 1;
+            }
+        }
+    }
+
+    pn_l
+}
+
+fn padding_test_check_packet_length(
+    test_ctx: &mut TestTlsApiCtx,
+    padding_multiple: u32,
+    padding_min_size: u32,
+    test_size: usize,
+    length: usize,
+) -> crate::Result<()> {
+    let (checksum_length, pn_iv_length, pn_length, pn_offset, raw_length, send_mtu) = {
+        let client = test_ctx.cnx_client();
+        let checksum_length = client.get_checksum_length(Epoch::OneRtt);
+        let pn_iv_length = client.crypto_context[Epoch::OneRtt as usize]
+            .pn_enc
+            .as_deref()
+            .map(crate::tls_api::pn_iv_size)
+            .ok_or_else(|| padding_test_error(1))?;
+        let pn_length = padding_test_predict_pn_length(client);
+        let header_length = client.predict_packet_header_length_for_pc(
+            PacketType::OneRttProtected,
+            PacketContext::Application,
+        );
+        let pn_offset = header_length
+            .checked_sub(pn_length)
+            .ok_or_else(|| padding_test_error(2))?;
+        let raw_length = header_length
+            .checked_add(test_size)
+            .ok_or_else(|| padding_test_error(3))?;
+        let send_mtu = usize::try_from(client.primary_path_send_mtu()).unwrap_or(usize::MAX);
+        (
+            checksum_length,
+            pn_iv_length,
+            pn_length,
+            pn_offset,
+            raw_length,
+            send_mtu,
+        )
+    };
+
+    let padding_multiple = padding_multiple as usize;
+    let padding_min_size = padding_min_size as usize;
+    let size_code = test_size as u64;
+
+    if pn_length == 1 && raw_length.saturating_add(checksum_length) > length {
+        return Err(padding_test_error(0x1000 | size_code));
+    }
+    if pn_offset.saturating_add(4).saturating_add(pn_iv_length) > length {
+        return Err(padding_test_error(0x2000 | size_code));
+    }
+
+    if padding_multiple == 0 && padding_min_size == 0 {
+        let natural_ack_slack = raw_length.saturating_add(checksum_length).saturating_add(6);
+        if natural_ack_slack < length
+            && pn_offset.saturating_add(4).saturating_add(pn_iv_length) != length
+        {
+            return Err(padding_test_error(0x3000 | size_code));
+        }
+    } else if padding_min_size != 0 && length < padding_min_size {
+        return Err(padding_test_error(0x4000 | size_code));
+    } else if padding_min_size != 0 && raw_length < padding_min_size {
+        let min_with_checksum = padding_min_size
+            .checked_add(checksum_length)
+            .ok_or_else(|| padding_test_error(4))?;
+        if length != min_with_checksum {
+            return Err(padding_test_error(0x5000 | size_code));
+        }
+    } else if padding_multiple != 0 {
+        let formula_length = length
+            .checked_sub(padding_min_size)
+            .and_then(|v| v.checked_sub(checksum_length))
+            .ok_or_else(|| padding_test_error(0x6000 | size_code))?;
+        if formula_length % padding_multiple != 0 && length != send_mtu {
+            return Err(padding_test_error(0x7000 | size_code));
+        }
+
+        if raw_length > padding_min_size {
+            let padding_over_raw = length
+                .checked_sub(checksum_length)
+                .and_then(|v| v.checked_sub(raw_length))
+                .ok_or_else(|| padding_test_error(0x8000 | size_code))?;
+            if padding_over_raw >= padding_multiple {
+                return Err(padding_test_error(0x9000 | size_code));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Run one padding test.
 /// C: `padding_test_one` in `picoquictest/tls_api_test.c`.
-pub fn padding_test_one(_padding_multiple: u32, _padding_min_size: u32) -> crate::Result<()> {
+pub fn padding_test_one(padding_multiple: u32, padding_min_size: u32) -> crate::Result<()> {
+    const TEST_SIZES: [usize; 15] = [1, 2, 3, 5, 8, 13, 21, 44, 65, 109, 174, 283, 457, 740, 1023];
+
     let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx =
-        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
+    let mut test_ctx = tls_api_init_ctx(&mut simulated_time, Version::InternalTest1 as u32, None)
+        .ok_or_else(|| padding_test_error(5))?;
+    test_ctx
+        .qserver
+        .set_default_padding(padding_multiple, padding_min_size);
+    test_ctx
+        .cnx_client()
+        .set_padding_policy(padding_multiple, padding_min_size);
+
     let mut loss_mask = 0u64;
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+    if !test_ctx.client_ready() || !test_ctx.server_ready() {
+        let client_state = test_ctx
+            .qclient
+            .first_cnx_mut()
+            .map(|cnx| cnx.connection_state as u64)
+            .unwrap_or(0xff);
+        let server_state = test_ctx
+            .qserver
+            .first_cnx_mut()
+            .map(|cnx| cnx.connection_state as u64)
+            .unwrap_or(0xff);
+        return Err(padding_test_error(
+            0xA000 | (client_state << 8) | server_state,
+        ));
+    }
+
+    for test_size in TEST_SIZES {
+        let mut data = vec![crate::frames::FrameType::Padding as u8; test_size];
+        data[test_size - 1] = crate::frames::FrameType::Ping as u8;
+
+        let mut nb_trials = 0;
+        let mut nb_inactive = 0;
+        let mut is_queued = false;
+        let mut is_success = false;
+
+        while nb_trials < 256
+            && nb_inactive < 256
+            && test_ctx.client_ready()
+            && test_ctx.server_ready()
+        {
+            let mut was_active = false;
+            nb_trials += 1;
+
+            let client_empty = test_ctx.cnx_client().is_cnx_backlog_empty();
+            let server_empty = test_ctx.cnx_server().is_cnx_backlog_empty();
+            let links_empty =
+                test_ctx.c_to_s_link.packets.is_empty() && test_ctx.s_to_c_link.packets.is_empty();
+
+            if client_empty && server_empty && links_empty {
+                if !is_queued {
+                    test_ctx.cnx_client().queue_misc_frame(
+                        &data,
+                        false,
+                        PacketContext::Application,
+                    )?;
+                    is_queued = true;
+                } else {
+                    is_success = true;
+                    break;
+                }
+            }
+
+            tls_api_one_sim_round(
+                &mut test_ctx,
+                &mut simulated_time,
+                Instant::from_ticks(0),
+                &mut was_active,
+            )?;
+
+            if is_queued
+                && let Some(length) = test_ctx
+                    .c_to_s_link
+                    .packets
+                    .front()
+                    .map(|packet| packet.length)
+            {
+                padding_test_check_packet_length(
+                    &mut test_ctx,
+                    padding_multiple,
+                    padding_min_size,
+                    test_size,
+                    length,
+                )?;
+            }
+
+            if was_active {
+                nb_inactive = 0;
+            } else {
+                nb_inactive += 1;
+            }
+        }
+
+        if !is_success {
+            return Err(padding_test_error(0xB000 | test_size as u64));
+        }
+    }
+
     tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
 }
 
@@ -3619,23 +4209,168 @@ pub fn qlog_fns_test_one(_recv_ecn: u8) -> crate::Result<()> {
 
 /// Run one optimistic-ACK injection test.
 /// C: `optimistic_ack_test_one` in `picoquictest/tls_api_test.c`.
-pub fn optimistic_ack_test_one(_shall_spoof: bool) -> crate::Result<()> {
+fn optimistic_ack_new_hole(test_ctx: &mut TestTlsApiCtx, hole_number: u64) -> Option<u64> {
+    let server = test_ctx.qserver.first_cnx_mut()?;
+    let pending = &server.pkt_ctx[PacketContext::Application as usize].pending;
+
+    for (&sequence_number, &packet_token) in pending.range(hole_number.saturating_add(1)..) {
+        let Some(packet) = server.queued_packets.get(packet_token) else {
+            continue;
+        };
+        if packet.is_ack_trap {
+            return Some(sequence_number);
+        }
+    }
+
+    None
+}
+
+pub fn optimistic_ack_test_one(shall_spoof: bool) -> crate::Result<()> {
+    const RANDOM_PUBLIC_TEST_SEED: u64 = 0xDEAD_BEEF_CAFE_C001;
+
     let mut simulated_time = Instant::from_ticks(0);
+    let mut initial_cid_bytes = [0x0a, 0x0a, 0x0a, 0x0a, 0, 0, 0, 0];
+    if shall_spoof {
+        initial_cid_bytes[7] = 0xff;
+    }
+    let initial_cid =
+        ConnectionId::clone_from_slice(&initial_cid_bytes).ok_or(crate::Error::Generic)?;
     let mut test_ctx = tls_api_one_scenario_init_ex(
         &mut simulated_time,
         Version::InternalTest1,
         None,
         None,
-        None,
+        Some(&initial_cid),
     )
     .ok_or(crate::Error::Generic)?;
+
+    test_ctx
+        .qserver
+        .set_optimistic_ack_policy(DEFAULT_HOLE_PERIOD as u32);
+    test_ctx.qserver.set_qlog(".").ok();
+    public_random_seed_64(RANDOM_PUBLIC_TEST_SEED, 1);
+
+    tls_api_one_scenario_body_connect(&mut test_ctx, &mut simulated_time, 0, 0)?;
+    test_ctx.stream0_target = 0;
     let scenario = [TestApiStreamDesc {
         stream_id: 4,
         previous_stream_id: 0,
-        q_len: 100_000,
+        q_len: 257,
         r_len: 1_000_000,
     }];
-    tls_api_one_scenario_body(&mut test_ctx, &mut simulated_time, &scenario, 0, 0, 0, 0, 0)
+    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
+
+    test_ctx.c_to_s_link.loss_mask = None;
+    test_ctx.s_to_c_link.loss_mask = None;
+
+    let mut nb_trials = 0;
+    let mut nb_inactive = 0;
+    let mut nb_holes = 0;
+    let mut hole_number = 0;
+    let mut nb_packet_holes_inserted = 0;
+    let mut loop_error = Ok(());
+
+    while nb_trials < 64_000
+        && nb_inactive < 1024
+        && test_ctx.client_ready()
+        && test_ctx.server_ready()
+    {
+        let mut was_active = false;
+        nb_trials += 1;
+
+        if let Err(err) = tls_api_one_sim_round(
+            &mut test_ctx,
+            &mut simulated_time,
+            Instant::from_ticks(0),
+            &mut was_active,
+        ) {
+            loop_error = Err(err);
+            break;
+        }
+
+        if let Some(server) = test_ctx.qserver.first_cnx_mut() {
+            nb_packet_holes_inserted = server.nb_packet_holes_inserted();
+            if server.nb_retransmission_total > 0 {
+                loop_error = Err(crate::Error::Protocol(1));
+                break;
+            }
+        } else {
+            loop_error = Err(crate::Error::Protocol(2));
+            break;
+        }
+
+        if was_active {
+            nb_inactive = 0;
+        } else {
+            nb_inactive += 1;
+        }
+
+        if let Some(new_hole) = optimistic_ack_new_hole(&mut test_ctx, hole_number) {
+            hole_number = new_hole;
+            if shall_spoof {
+                let local_cid = {
+                    let client = test_ctx.cnx_client();
+                    client
+                        .local_connection_id_lists
+                        .first()
+                        .and_then(|list| list.connection_ids.first())
+                        .copied()
+                };
+                if test_ctx.cnx_client().record_pn_received(
+                    PacketContext::Application,
+                    local_cid,
+                    hole_number,
+                    simulated_time,
+                ) != 0
+                {
+                    loop_error = Err(crate::Error::Protocol(3));
+                    break;
+                }
+            }
+            nb_holes += 1;
+        }
+
+        if test_ctx.test_finished {
+            let client_empty = test_ctx
+                .qclient
+                .first_cnx_mut()
+                .is_none_or(|cnx| cnx.is_backlog_empty());
+            let server_empty = test_ctx
+                .qserver
+                .first_cnx_mut()
+                .is_none_or(|cnx| cnx.is_backlog_empty());
+            if client_empty && server_empty {
+                break;
+            }
+        }
+    }
+
+    if shall_spoof {
+        if nb_holes == 0 && nb_packet_holes_inserted == 0 {
+            Err(crate::Error::Protocol(4))
+        } else if nb_holes == 0 {
+            Err(crate::Error::Protocol(5))
+        } else if nb_packet_holes_inserted == 0 {
+            Err(crate::Error::Protocol(6))
+        } else if loop_error.is_ok() && test_ctx.test_finished {
+            Err(crate::Error::Protocol(7))
+        } else {
+            Ok(())
+        }
+    } else {
+        if nb_holes == 0 && nb_packet_holes_inserted == 0 {
+            return Err(crate::Error::Protocol(7));
+        }
+        if nb_holes == 0 {
+            return Err(crate::Error::Protocol(8));
+        }
+        if nb_packet_holes_inserted == 0 {
+            return Err(crate::Error::Protocol(9));
+        }
+        loop_error?;
+        tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, 0)
+            .map_err(|_| crate::Error::Protocol(10))
+    }
 }
 
 /// Run one preferred-address test.
