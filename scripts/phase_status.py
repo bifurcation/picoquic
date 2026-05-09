@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import phase4e
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_WORKTREE_ROOT = Path("/private/tmp")
@@ -50,11 +52,22 @@ def cluster_size(path: Path) -> int:
     return sum(1 for line in path.read_text().splitlines() if line.strip() and not line.lstrip().startswith("#"))
 
 
+def cluster_ids(path: Path) -> list[str]:
+    if not path.is_file():
+        return []
+    ids: list[str] = []
+    for raw in path.read_text().splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if line:
+            ids.append(line)
+    return ids
+
+
 def screen_sessions() -> Counter:
     result = subprocess.run(["screen", "-ls"], capture_output=True, text=True)
     text = result.stdout + result.stderr
     counts: Counter = Counter()
-    for match in re.finditer(r"\d+\.(fq(?:4e|5b)\d+)\s+\(", text):
+    for match in re.finditer(r"\d+\.(fq(?:4e|5b)[A-Za-z0-9]*)\s+\(", text):
         name = match.group(1)
         if name.startswith("fq4e"):
             counts["phase4e"] += 1
@@ -92,26 +105,45 @@ def latest_line(path: Path) -> str:
 
 
 def phase4e_status(repo: Path, worktree_root: Path, clusters: int) -> dict[str, Any]:
-    baseline = outcome_counts(repo / "xlate" / "phase4e_repairs.json", "repairs")
-    total_counts: Counter = Counter()
-    total_entries = 0
-    active_logs = 0
+    all_ids: list[str] = []
     for index in range(clusters):
         suffix = f"{index:02d}"
         wt = worktree_root / f"picoquic-4e-{suffix}"
-        total_counts.update(outcome_counts(wt / "xlate" / "phase4e_repairs.json", "repairs"))
-        total_entries += cluster_size(wt / "xlate" / "clusters" / "phase4e" / f"cluster-{suffix}.txt")
-        if latest_line(wt / "xlate" / "clusters" / "phase4e" / f"worker-{suffix}.out"):
-            active_logs += 1
-    delta = Counter({
-        outcome: total_counts.get(outcome, 0) - clusters * baseline.get(outcome, 0)
-        for outcome in ("fixed", "ok", "needs_fix", "blocked")
-    })
+        all_ids.extend(cluster_ids(wt / "xlate" / "clusters" / "phase4e" / f"cluster-{suffix}.txt"))
+
+    worktrees = [worktree_root / f"picoquic-4e-{index:02d}" for index in range(clusters)]
+    worktrees.extend(sorted(worktree_root.glob("picoquic-4e-r2-*")))
+    repair_maps: list[dict[str, Any]] = []
+    active_logs = 0
+    for wt in worktrees:
+        repairs = load_json(wt / "xlate" / "phase4e_repairs.json", {"repairs": {}})
+        repair_maps.append(repairs.get("repairs", {}))
+        for log in (wt / "xlate" / "clusters").glob("phase4e*/worker*.out"):
+            if latest_line(log):
+                active_logs += 1
+
+    delta: Counter = Counter()
+    for c_id in all_ids:
+        saw_needs_fix = False
+        for repair_map in repair_maps:
+            repair = repair_map.get(c_id)
+            if not repair:
+                continue
+            if phase4e.repair_is_terminal(repair):
+                delta[repair.get("outcome", "unknown")] += 1
+                break
+            if repair.get("outcome") == "needs_fix":
+                saw_needs_fix = True
+        else:
+            if saw_needs_fix:
+                delta["needs_fix"] += 1
+            else:
+                delta["pending"] += 1
     terminal = delta["fixed"] + delta["ok"] + delta["blocked"]
     return {
-        "entries": total_entries,
+        "entries": len(all_ids),
         "delta": delta,
-        "remaining": max(0, total_entries - terminal),
+        "remaining": max(0, len(all_ids) - terminal),
         "active_logs": active_logs,
     }
 
@@ -159,7 +191,7 @@ def print_report(args: argparse.Namespace) -> None:
     print("Cargo tests: not run here; deferred to Phase 5C")
     print(
         "Workers: "
-        f"screens {screens.get('phase4e', 0)}/{args.phase4e_clusters} 4E, "
+        f"screens {screens.get('phase4e', 0)}/{args.phase4e_workers} 4E, "
         f"{screens.get('phase5b', 0)}/{args.phase5b_clusters} 5B"
     )
     if proc_error:
@@ -167,9 +199,9 @@ def print_report(args: argparse.Namespace) -> None:
     else:
         print(
             "Processes: "
-            f"drivers {proc_counts.get('phase4e_driver', 0)}/{args.phase4e_clusters} 4E, "
+            f"drivers {proc_counts.get('phase4e_driver', 0)}/{args.phase4e_workers} 4E, "
             f"{proc_counts.get('phase5b_driver', 0)}/{args.phase5b_clusters} 5B; "
-            f"codex {proc_counts.get('phase4e_codex', 0)}/{args.phase4e_clusters} 4E, "
+            f"codex {proc_counts.get('phase4e_codex', 0)}/{args.phase4e_workers} 4E, "
             f"{proc_counts.get('phase5b_codex', 0)}/{args.phase5b_clusters} 5B"
         )
     print(
@@ -178,8 +210,8 @@ def print_report(args: argparse.Namespace) -> None:
         f"{p4e['delta'].get('ok', 0)} ok / "
         f"{p4e['delta'].get('blocked', 0)} blocked / "
         f"{p4e['delta'].get('needs_fix', 0)} still needs_fix; "
-        f"remaining estimate {p4e['remaining']}/{p4e['entries']}; "
-        f"nonempty logs {p4e['active_logs']}/{args.phase4e_clusters}"
+        f"unresolved estimate {p4e['remaining']}/{p4e['entries']}; "
+        f"nonempty logs {p4e['active_logs']}"
     )
     print(
         "Phase 5B since launch: "
@@ -198,6 +230,7 @@ def main() -> int:
     parser.add_argument("--phase5b-root", type=Path, default=DEFAULT_PHASE5B_ROOT)
     parser.add_argument("--worktree-root", type=Path, default=DEFAULT_WORKTREE_ROOT)
     parser.add_argument("--phase4e-clusters", type=int, default=9)
+    parser.add_argument("--phase4e-workers", type=int, default=10)
     parser.add_argument("--phase5b-clusters", type=int, default=11)
     parser.add_argument("--watch", type=int, metavar="SECONDS", help="repeat forever at this interval")
     args = parser.parse_args()
