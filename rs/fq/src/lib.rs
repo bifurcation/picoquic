@@ -445,7 +445,9 @@ impl ConnectionId {
 // Full bodies live in `crate::internal`; pull them in for use within
 // this module's signatures (no re-export — callers reach them as
 // `crate::internal::*`).
-use crate::internal::{Connection, ConnectionToken, DEFAULT_CRYPTO_EPOCH_LENGTH, Path, Quic};
+use crate::internal::{
+    Connection, ConnectionToken, DEFAULT_CRYPTO_EPOCH_LENGTH, Path, Quic, connection_wake_key,
+};
 
 // ---------------------------------------------------------------------------
 // Application callback events.
@@ -602,6 +604,21 @@ pub trait StreamDataCallback {
             &context.bytes[start..end],
             CallbackEvent::PrepareToSend,
             stream_ctx,
+        )
+    }
+
+    fn prepare_datagram<'buf, 'cnx, 'path>(
+        &mut self,
+        context: &mut crate::internal::DatagramBufferArgument<'buf, 'cnx, 'path>,
+        unique_path_id: u64,
+        _allowed_space: usize,
+    ) -> i32 {
+        self.callback(
+            context.connection_mut(),
+            unique_path_id,
+            &[],
+            CallbackEvent::PrepareDatagram,
+            None,
         )
     }
 }
@@ -897,18 +914,19 @@ impl core::fmt::Debug for CongestionAlgorithm {
 /// [`register_congestion_control_algorithms`] (or its
 /// `_all_` convenience wrapper) is called.
 pub fn congestion_control_algorithms() -> &'static [&'static CongestionAlgorithm] {
-    CC_ALGORITHM_REGISTRY
-        .get()
-        .map(|v| v.as_slice())
-        .unwrap_or(&[])
+    match CC_ALGORITHM_REGISTRY.read() {
+        Ok(registry) => *registry,
+        Err(poisoned) => *poisoned.into_inner(),
+    }
 }
 
 /// Process-wide congestion-control algorithm registry.  Filled by
-/// [`register_congestion_control_algorithms`].  `OnceLock` is used
-/// so the registry can be set once (or never) without locking on
-/// every read after the first call to `congestion_control_algorithms`.
-static CC_ALGORITHM_REGISTRY: std::sync::OnceLock<Vec<&'static CongestionAlgorithm>> =
-    std::sync::OnceLock::new();
+/// [`register_congestion_control_algorithms`].  Each registration
+/// replaces the current slice, matching the C globals
+/// `picoquic_congestion_control_algorithms` and
+/// `picoquic_nb_congestion_control_algorithms`.
+static CC_ALGORITHM_REGISTRY: std::sync::RwLock<&'static [&'static CongestionAlgorithm]> =
+    std::sync::RwLock::new(&[]);
 
 struct BaselineCongestionControl;
 
@@ -965,12 +983,6 @@ static NEWRENO_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     ecn_mark: ECN_ECT_0,
     algorithm: &newreno::NEWRENO_CONTROL,
 };
-static RENO_ALIAS_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
-    congestion_algorithm_id: "reno",
-    congestion_algorithm_number: 1,
-    ecn_mark: ECN_ECT_0,
-    algorithm: &newreno::NEWRENO_CONTROL,
-};
 static CUBIC_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "cubic",
     congestion_algorithm_number: 2,
@@ -985,12 +997,6 @@ static DCUBIC_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
 };
 static FAST_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     congestion_algorithm_id: "fast",
-    congestion_algorithm_number: 4,
-    ecn_mark: ECN_ECT_0,
-    algorithm: &fastcc::FASTCC_CONTROL,
-};
-static FASTCC_ALIAS_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
-    congestion_algorithm_id: "fastcc",
     congestion_algorithm_number: 4,
     ecn_mark: ECN_ECT_0,
     algorithm: &fastcc::FASTCC_CONTROL,
@@ -1019,13 +1025,11 @@ static C4_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
     ecn_mark: ECN_ECT_1,
     algorithm: &c4::C4_CONTROL,
 };
-static ALL_CC_ALGORITHMS: [&CongestionAlgorithm; 10] = [
+static ALL_CC_ALGORITHMS: [&CongestionAlgorithm; 8] = [
     &NEWRENO_ALGORITHM,
-    &RENO_ALIAS_ALGORITHM,
     &CUBIC_ALGORITHM,
     &DCUBIC_ALGORITHM,
     &FAST_ALGORITHM,
-    &FASTCC_ALIAS_ALGORITHM,
     &BBR_ALGORITHM,
     &PRAGUE_ALGORITHM,
     &BBR1_ALGORITHM,
@@ -3532,6 +3536,42 @@ impl Connection {
         ret
     }
 
+    /// Select an available unique path ID for path creation.
+    /// C: `picoquic_find_avalaible_unique_path_id`
+    /// (picoquic/quicctx.c:1651-1684).
+    pub fn find_avalaible_unique_path_id(&mut self, requested_id: u64) -> u64 {
+        if !self.is_multipath_enabled {
+            return if requested_id != 0 && requested_id != u64::MAX {
+                u64::MAX
+            } else {
+                0
+            };
+        }
+
+        let mut unique_path_id = requested_id;
+        if requested_id == u64::MAX && (self.client_mode || self.paths.is_empty()) {
+            while self.unique_path_id_next <= self.max_path_id_remote
+                && self.unique_path_id_next <= self.max_path_id_local
+                && self.unique_path_id_next <= self.max_path_id_in_connection_id_lists
+            {
+                let candidate = self.unique_path_id_next;
+                self.unique_path_id_next = self.unique_path_id_next.saturating_add(1);
+                unique_path_id = candidate;
+                if self
+                    .find_or_create_local_connection_id_list(candidate, false)
+                    .is_some()
+                    && self.find_path_by_unique_id(candidate) < 0
+                {
+                    break;
+                }
+                if candidate == u64::MAX {
+                    break;
+                }
+            }
+        }
+        unique_path_id
+    }
+
     /// Check whether the connection can create a new path now.
     /// C: `picoquic_check_new_path_allowed` (picoquic/quicctx.c:2300-2342).
     pub fn check_new_path_allowed(&self, to_preferred_address: bool) -> Result<(), Error> {
@@ -4531,6 +4571,100 @@ pub struct PreparedCnxPacket {
 }
 
 impl Connection {
+    fn reinsert_self_by_wake_time(&mut self, next_time: Instant) {
+        self.next_wake_time = next_time;
+        let Some(token) = self.own_token else {
+            return;
+        };
+        if self.quic_ptr.is_null() {
+            return;
+        }
+
+        // SAFETY: `quic_ptr` is the owning context installed when this
+        // connection was created.  This mirrors C's `cnx->quic` scheduler
+        // update; the only connection entry touched through the context is
+        // either this connection's wake token or a distinct token displaced
+        // by the splay insert.
+        unsafe {
+            let quic = &mut *self.quic_ptr;
+            if !quic.connections.contains(token) {
+                return;
+            }
+            if let Some(old_membership) = self.connection_wake_membership.take() {
+                quic.connection_wake_tree.remove(old_membership);
+            }
+            if let Ok((tree_token, old_token)) = quic
+                .connection_wake_tree
+                .insert(connection_wake_key(next_time, token), token)
+            {
+                self.connection_wake_membership = Some(tree_token);
+                if let Some(old_token) = old_token
+                    && old_token != token
+                    && let Some(old_connection) = quic.connections.get_mut(old_token)
+                {
+                    old_connection.connection_wake_membership = None;
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn intercept_masked_packet_if_needed(
+        &mut self,
+        current_time: Instant,
+        send_buffer: &mut [u8],
+        send_length: &mut usize,
+        send_msg_size: &mut Option<usize>,
+        addr_to: &mut SocketAddr,
+        addr_from: &mut SocketAddr,
+        if_index: &mut i32,
+    ) -> i32 {
+        if *if_index != RESERVED_IF_INDEX as i32 || *send_length == 0 || self.quic_ptr.is_null() {
+            return 0;
+        }
+
+        // SAFETY: `quic_ptr` is the owning context for this connection.
+        // The mask callback is a context-level hook matching the C
+        // `picomask_intercept_fn` call; the hook may update the output
+        // datagram metadata but must not invalidate this connection.
+        unsafe {
+            let quic = &mut *self.quic_ptr;
+            if quic.mask_ctx.is_none() || quic.mask_fns.is_none() {
+                return 0;
+            }
+
+            let mask_fns = quic.mask_fns.take().expect("checked mask_fns");
+            let mut mask_ctx = quic.mask_ctx.take();
+            let mut msg_size = send_msg_size.unwrap_or(0);
+            let mut p_addr_to = Some(*addr_to);
+            let mut p_addr_from = Some(*addr_from);
+            let ret = mask_fns.intercept(
+                quic,
+                mask_ctx.as_deref_mut(),
+                current_time,
+                send_buffer,
+                send_length,
+                &mut msg_size,
+                &mut p_addr_to,
+                &mut p_addr_from,
+                if_index,
+            );
+
+            quic.mask_ctx = mask_ctx;
+            quic.mask_fns = Some(mask_fns);
+            if let Some(updated) = p_addr_to {
+                *addr_to = updated;
+            }
+            if let Some(updated) = p_addr_from {
+                *addr_from = updated;
+            }
+            if send_msg_size.is_some() {
+                *send_msg_size = Some(msg_size);
+            }
+            ret
+        }
+    }
+
     /// Prepare the next packet on this connection (the `_ex`
     /// flavour reports GSO segment size when the packet is a
     /// coalesced train).
@@ -4555,130 +4689,242 @@ impl Connection {
         }
 
         if ret == 0 {
-            if self.path_demotion_needed {
-                self.delete_abandoned_paths(current_time, &mut next_wake_time);
-            }
-            if self.tuple_demotion_needed {
-                self.delete_demoted_tuples(current_time, &mut next_wake_time);
-            }
-
-            if let Some((path_token, tuple_index)) =
-                self.select_next_path_tuple(current_time, &mut next_wake_time)
-            {
+            let mut send_msg_size_value = 0usize;
+            if let Some((
+                path_token,
+                tuple_index,
+                selected_addr_to,
+                selected_addr_from,
+                selected_if_index,
+            )) = self.picoquic_handle_send_paths(
+                current_time,
+                &mut next_wake_time,
+                send_buffer.len(),
+                Some(&mut send_msg_size_value),
+            ) {
                 let path_idx = path_token.slot_idx();
-                if let Some(path) = self.paths.get(path_idx)
-                    && let Some(tuple) = path.tuples.get(tuple_index)
-                {
-                    addr_to = tuple.peer_addr;
-                    addr_from = tuple.local_addr;
-                    if_index = tuple.if_index as i32;
-                    send_msg_size = Some(path.send_mtu);
-                    if send_buffer.len() > path.send_mtu {
-                        self.is_sending_large_buffer = true;
-                    }
-                }
-
+                addr_to = selected_addr_to;
+                addr_from = selected_addr_from;
+                if_index = selected_if_index;
+                send_msg_size = Some(send_msg_size_value);
                 let initial_next_time = next_wake_time;
                 let mut coalesced_packet_size = 0usize;
-                let mut is_initial_sent = 0;
-                let packet_max = send_buffer.len();
+                let selected_tuple_is_first = tuple_index == 0;
 
-                while ret == 0 && send_length < send_buffer.len() {
+                while ret == 0 {
+                    let mut is_initial_sent = 0;
+                    let mut packet_max = send_buffer.len().saturating_sub(send_length);
+                    let packet_buffer_start = send_length;
+                    if packet_max == 0 {
+                        break;
+                    }
+                    coalesced_packet_size = 0;
                     next_wake_time = initial_next_time;
-                    let available = packet_max.saturating_sub(coalesced_packet_size);
-                    if available == 0 {
-                        break;
-                    }
-                    let mut packet = crate::internal::Connection::empty_sender_packet(current_time);
-                    let mut segment_length = 0usize;
-                    let packet_buffer_start = send_length.saturating_add(coalesced_packet_size);
-                    let packet_buffer_end = packet_buffer_start
-                        .saturating_add(available)
-                        .min(send_buffer.len());
-                    if packet_buffer_start >= packet_buffer_end {
-                        break;
+
+                    if let Some(msg_size) = send_msg_size
+                        && msg_size > 0
+                        && send_length > 0
+                        && packet_max > msg_size
+                    {
+                        packet_max = msg_size;
                     }
 
-                    // SAFETY: `path_ptr` points into `self.paths[path_idx]`.
-                    // This mirrors the C call shape (`cnx` plus `path_x`).
-                    // The selected path is the only path mutably modified by
-                    // this segment/path-control formatting call.
-                    let path_ptr: *mut Path = &raw mut self.paths[path_idx];
-                    ret = unsafe {
-                        if tuple_index != 0 {
-                            match self.prepare_path_control_packet(
-                                &mut *path_ptr,
-                                tuple_index,
-                                &mut packet,
-                                current_time,
-                                &mut send_buffer[packet_buffer_start..packet_buffer_end],
-                                &mut next_wake_time,
-                            ) {
-                                Ok(written) => {
-                                    segment_length = written;
-                                    0
+                    while ret == 0 {
+                        let mut available = packet_max;
+                        let mut segment_length = 0usize;
+
+                        if coalesced_packet_size > 0 {
+                            packet_max = self
+                                .paths
+                                .get(path_idx)
+                                .map(|path| path.send_mtu)
+                                .unwrap_or(packet_max);
+                            if packet_max
+                                < coalesced_packet_size
+                                    .saturating_add(crate::internal::MIN_SEGMENT_SIZE)
+                            {
+                                break;
+                            }
+                            available = packet_max.saturating_sub(coalesced_packet_size);
+                        }
+
+                        let packet_buffer_offset =
+                            packet_buffer_start.saturating_add(coalesced_packet_size);
+                        let packet_buffer_end = packet_buffer_offset
+                            .saturating_add(available)
+                            .min(send_buffer.len());
+                        if selected_tuple_is_first && packet_buffer_offset >= packet_buffer_end {
+                            break;
+                        }
+
+                        let mut packet =
+                            crate::internal::Connection::empty_sender_packet(current_time);
+                        let path_ptr: *mut Path = &raw mut self.paths[path_idx];
+
+                        if !selected_tuple_is_first {
+                            let path_control_max =
+                                send_buffer.len().saturating_sub(packet_buffer_start);
+                            // SAFETY: `path_ptr` points into the selected
+                            // path.  The path-control helper mirrors the C
+                            // call that receives both `cnx` and `path_x`.
+                            ret = unsafe {
+                                match self.prepare_path_control_packet_for_tuple(
+                                    &mut *path_ptr,
+                                    tuple_index,
+                                    &mut packet,
+                                    current_time,
+                                    &mut send_buffer[packet_buffer_start..],
+                                    path_control_max,
+                                    &mut next_wake_time,
+                                ) {
+                                    Ok(path_control_length) => {
+                                        if path_control_length > 0 {
+                                            send_length =
+                                                send_length.saturating_add(path_control_length);
+                                        }
+                                        0
+                                    }
+                                    Err(error) => Self::status_from_error(error),
                                 }
-                                Err(_) => crate::errors::InternalError::FrameBufferTooSmall as i32,
+                            };
+                        } else {
+                            // SAFETY: `path_ptr` points into `self.paths[path_idx]`.
+                            // This mirrors the C call shape (`cnx` plus `path_x`).
+                            // The selected path is the only path mutably modified by
+                            // this segment-formatting call.
+                            ret = unsafe {
+                                self.prepare_segment(
+                                    &mut *path_ptr,
+                                    &mut packet,
+                                    current_time,
+                                    &mut send_buffer[packet_buffer_offset..packet_buffer_end],
+                                    available,
+                                    &mut segment_length,
+                                    &mut next_wake_time,
+                                    &mut is_initial_sent,
+                                )
+                            };
+                        }
+
+                        if ret == 0 {
+                            if selected_tuple_is_first {
+                                coalesced_packet_size =
+                                    coalesced_packet_size.saturating_add(segment_length);
+                            }
+                            if packet.length == 0
+                                || packet.packet_type
+                                    == crate::internal::PacketType::OneRttProtected
+                            {
+                                break;
+                            } else if segment_length == 0 {
+                                crate::logger::Log::app_message(
+                                    self,
+                                    format_args!(
+                                        "Send bug: segment length = {}, packet length = {}\n",
+                                        segment_length, packet.length
+                                    ),
+                                );
+                                break;
                             }
                         } else {
-                            self.prepare_segment(
-                                &mut *path_ptr,
-                                &mut packet,
-                                current_time,
-                                &mut send_buffer[packet_buffer_start..packet_buffer_end],
-                                available,
-                                &mut segment_length,
-                                &mut next_wake_time,
-                                &mut is_initial_sent,
-                            )
+                            if coalesced_packet_size != 0 {
+                                ret = 0;
+                            }
+                            break;
                         }
-                    };
 
-                    if ret == 0 {
-                        coalesced_packet_size =
-                            coalesced_packet_size.saturating_add(segment_length);
-                        if packet.length == 0
-                            || packet.packet_type == crate::internal::PacketType::OneRttProtected
-                            || segment_length == 0
+                        if self
+                            .quic_ref()
+                            .map(|q| q.dont_coalesce_init)
+                            .unwrap_or(false)
+                            || !selected_tuple_is_first
                         {
                             break;
                         }
-                    } else if coalesced_packet_size != 0 {
-                        ret = 0;
-                        break;
-                    } else {
+                    }
+
+                    if ret != 0 {
                         break;
                     }
 
-                    if self
-                        .quic_ref()
-                        .map(|q| q.dont_coalesce_init)
-                        .unwrap_or(false)
+                    if is_initial_sent != 0
+                        && self.connection_state < State::ClientAlmostReady
+                        && coalesced_packet_size > 0
+                        && coalesced_packet_size < crate::internal::ENFORCED_INITIAL_MTU
+                    {
+                        let padding = packet_max.saturating_sub(coalesced_packet_size);
+                        let start = packet_buffer_start.saturating_add(coalesced_packet_size);
+                        let end = start.saturating_add(padding).min(send_buffer.len());
+                        if start < end {
+                            crate::internal::public_random(&mut send_buffer[start..end]);
+                            coalesced_packet_size =
+                                coalesced_packet_size.saturating_add(end - start);
+                        }
+                    }
+
+                    if coalesced_packet_size > packet_max {
+                        crate::logger::Log::app_message(
+                            self,
+                            format_args!(
+                                "BUFFER OVERFLOW? Packet size {} larger than {}",
+                                coalesced_packet_size, packet_max
+                            ),
+                        );
+                    }
+
+                    if coalesced_packet_size > 0 {
+                        self.max_mtu_sent = self.max_mtu_sent.max(coalesced_packet_size);
+                        self.nb_packets_sent = self.nb_packets_sent.saturating_add(1);
+                        let unique_path_id = self
+                            .paths
+                            .get(path_idx)
+                            .map(|path| path.unique_path_id)
+                            .unwrap_or(0);
+                        crate::logger::Log::pdu(
+                            self,
+                            false,
+                            current_time,
+                            &addr_to,
+                            &addr_from,
+                            coalesced_packet_size,
+                            unique_path_id,
+                            0,
+                        );
+                    }
+
+                    if coalesced_packet_size > 0 || self.connection_state == State::Disconnected {
+                        next_wake_time = current_time;
+                        self.next_wake_time = current_time;
+                    }
+
+                    send_length = send_length.saturating_add(coalesced_packet_size);
+
+                    ret = self.intercept_masked_packet_if_needed(
+                        current_time,
+                        send_buffer,
+                        &mut send_length,
+                        &mut send_msg_size,
+                        &mut addr_to,
+                        &mut addr_from,
+                        &mut if_index,
+                    );
+                    if ret < 0 || send_length == 0 {
+                        break;
+                    }
+
+                    let Some(msg_size) = send_msg_size else {
+                        break;
+                    };
+                    if coalesced_packet_size > msg_size {
+                        send_msg_size = Some(coalesced_packet_size);
+                    } else if coalesced_packet_size != msg_size
+                        || send_length.saturating_add(msg_size) > send_buffer.len()
                     {
                         break;
                     }
                 }
 
-                if is_initial_sent != 0
-                    && self.connection_state < State::ClientAlmostReady
-                    && coalesced_packet_size > 0
-                    && coalesced_packet_size < crate::internal::ENFORCED_INITIAL_MTU
-                {
-                    let padding = packet_max.saturating_sub(coalesced_packet_size);
-                    let start = coalesced_packet_size;
-                    let end = start.saturating_add(padding).min(send_buffer.len());
-                    crate::internal::public_random(&mut send_buffer[start..end]);
-                    coalesced_packet_size = end;
-                }
-
-                if coalesced_packet_size > 0 {
-                    self.max_mtu_sent = self.max_mtu_sent.max(coalesced_packet_size);
-                    self.nb_packets_sent = self.nb_packets_sent.saturating_add(1);
-                    next_wake_time = current_time;
-                }
-                send_length = send_length.saturating_add(coalesced_packet_size);
-
-                if send_length > 0 {
+                if send_length > 0 && path_idx < self.paths.len() {
                     let path_ptr: *const Path = &raw const self.paths[path_idx];
                     // SAFETY: immutable borrow of selected path for statistics
                     // after segment formatting has completed.
@@ -4696,7 +4942,7 @@ impl Connection {
         if ret == 0 {
             self.program_app_wake_time(&mut next_wake_time);
         }
-        self.next_wake_time = next_wake_time;
+        self.reinsert_self_by_wake_time(next_wake_time);
 
         if ret == 0 {
             Ok(PreparedCnxPacket {
@@ -4841,6 +5087,32 @@ fn enqueue_output_stream_token(connection: &mut Connection, token: internal::Str
         })
         .unwrap_or(connection.output_streams.len());
     connection.output_streams.insert(pos, token);
+}
+
+fn can_insert_output_stream(
+    client_mode: bool,
+    max_stream_id_bidir_remote: u64,
+    max_stream_id_unidir_remote: u64,
+    stream_id: u64,
+) -> bool {
+    use crate::stream::{Role, StreamId};
+
+    let sid = StreamId(stream_id);
+    let local_role = if client_mode {
+        Role::Client
+    } else {
+        Role::Server
+    };
+    if !sid.is_local(local_role) {
+        return true;
+    }
+
+    let max_stream_id_remote = if sid.is_bidir() {
+        max_stream_id_bidir_remote
+    } else {
+        max_stream_id_unidir_remote
+    };
+    stream_id <= max_stream_id_remote
 }
 
 impl Connection {
@@ -4996,14 +5268,20 @@ impl Connection {
         let stream_token = self.find_stream_for_writing(stream_id)?;
         let has_callback = self.has_stream_data_callback();
         let mut should_enqueue = false;
+        let mut should_reinsert = false;
 
         {
             let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
 
             if is_active {
-                if !stream.fin_requested && !stream.reset_requested && has_callback {
+                let can_set_active_after_reset =
+                    !stream.reset_requested || !stream.sack_list.check(0, stream.reliable_size);
+                if !stream.fin_requested && can_set_active_after_reset && has_callback {
                     stream.app_stream_ctx = v_stream_ctx;
-                    stream.is_active = true;
+                    if !stream.is_active {
+                        stream.is_active = true;
+                        should_reinsert = true;
+                    }
                     if !stream.is_output_stream {
                         stream.is_output_stream = true;
                         should_enqueue = true;
@@ -5019,6 +5297,9 @@ impl Connection {
 
         if should_enqueue {
             enqueue_output_stream_token(self, stream_token);
+        }
+        if should_reinsert {
+            self.reinsert_self_by_wake_time(self.quic_time());
         }
         Ok(())
     }
@@ -5070,14 +5351,14 @@ impl Connection {
         } else if self.high_priority_stream_id == stream_id {
             self.high_priority_stream_id = u64::MAX;
         }
-        self.set_stream_priority(
-            stream_id,
-            if is_high_priority {
-                0
-            } else {
-                DEFAULT_STREAM_PRIORITY
-            },
-        )
+        let stream_priority = if is_high_priority {
+            0
+        } else {
+            self.quic_ref()
+                .map(|quic| quic.default_stream_priority)
+                .unwrap_or(DEFAULT_STREAM_PRIORITY)
+        };
+        self.set_stream_priority(stream_id, stream_priority)
     }
 
     /// Override the priority used for outbound datagrams on this
@@ -5193,7 +5474,14 @@ impl Connection {
         app_stream_ctx: Option<Box<dyn core::any::Any>>,
     ) -> Result<(), Error> {
         let stream_token = self.find_stream_for_writing(stream_id)?;
+        let can_enqueue = can_insert_output_stream(
+            self.client_mode,
+            self.max_stream_id_bidir_remote,
+            self.max_stream_id_unidir_remote,
+            stream_id,
+        );
         let mut should_enqueue = false;
+        let mut should_reinsert = false;
 
         {
             let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
@@ -5222,11 +5510,13 @@ impl Connection {
                     offset,
                     bytes: data.to_vec(),
                 });
+                should_reinsert = true;
             }
 
             stream.is_active = false;
             stream.app_stream_ctx = app_stream_ctx;
             if !stream.is_output_stream
+                && can_enqueue
                 && (!stream.send_queue.is_empty() || (stream.fin_requested && !stream.fin_sent))
             {
                 stream.is_output_stream = true;
@@ -5237,6 +5527,9 @@ impl Connection {
         self.nb_bytes_queued = self.nb_bytes_queued.saturating_add(data.len() as u64);
         if should_enqueue {
             enqueue_output_stream_token(self, stream_token);
+        }
+        if should_reinsert {
+            self.reinsert_self_by_wake_time(self.quic_time());
         }
         Ok(())
     }
@@ -5254,35 +5547,39 @@ impl Connection {
         local_stream_error: u64,
         reliable_size: u64,
     ) -> Result<(), Error> {
+        let mut result = Ok(());
+        let mut output_stream_token = None;
+
         if reliable_size > 0 && !self.is_reset_stream_at_enabled {
-            return Err(Error::Protocol(
+            result = Err(Error::Protocol(
                 InternalError::IllegalTransportExtension as u64,
             ));
-        }
-        let stream_token = self
-            .find_stream(stream_id)
-            .ok_or(Error::Protocol(InternalError::InvalidStreamId as u64))?;
-        let mut should_enqueue = false;
-        {
-            let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
-            stream.app_stream_ctx = None;
-            if stream.fin_sent && !stream.sack_list.check(0, stream.fin_offset) {
-                return Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
-            }
-            if !stream.reset_requested {
-                stream.local_error = local_stream_error;
-                stream.reset_requested = true;
-                stream.reliable_size = reliable_size;
-                if !stream.is_output_stream {
-                    stream.is_output_stream = true;
-                    should_enqueue = true;
+        } else if let Some(stream_token) = self.find_stream(stream_id) {
+            if let Some(stream) = self.streams.get_mut(stream_token) {
+                stream.app_stream_ctx = None;
+                if stream.fin_sent && !stream.sack_list.check(0, stream.fin_offset) {
+                    result = Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
+                } else if !stream.reset_requested {
+                    stream.local_error = local_stream_error;
+                    stream.reset_requested = true;
+                    stream.reliable_size = reliable_size;
+                    if !stream.is_output_stream {
+                        stream.is_output_stream = true;
+                        output_stream_token = Some(stream_token);
+                    }
                 }
+            } else {
+                result = Err(Error::Memory);
             }
+        } else {
+            result = Err(Error::Protocol(InternalError::InvalidStreamId as u64));
         }
-        if should_enqueue {
+
+        if let Some(stream_token) = output_stream_token {
             enqueue_output_stream_token(self, stream_token);
         }
-        Ok(())
+        self.reinsert_self_by_wake_time(self.quic_time());
+        result
     }
 
     /// Open the flow-control window for an inbound stream up to the
@@ -5292,7 +5589,9 @@ impl Connection {
         stream_id: u64,
         expected_data_size: u64,
     ) -> Result<(), Error> {
-        if self.connection_state != State::Ready {
+        if self.connection_state != State::Ready
+            || self.quic_ref().map(|quic| quic.max_data_limit).unwrap_or(0) != 0
+        {
             return Ok(());
         }
 
@@ -5306,8 +5605,6 @@ impl Connection {
                 return Ok(());
             }
             stream.maxdata_local = max_required;
-            stream.maxdata_local_acked = max_required;
-            stream.max_stream_updated = false;
             max_required
         };
         self.max_stream_data_local = self.max_stream_data_local.max(new_stream_max);
@@ -5347,29 +5644,34 @@ impl Connection {
 
     /// Send a STOP_SENDING frame for this stream.
     pub fn stop_sending(&mut self, stream_id: u64, local_stream_error: u64) -> Result<(), Error> {
-        let stream_token = self
-            .find_stream(stream_id)
-            .ok_or(Error::Protocol(InternalError::InvalidStreamId as u64))?;
-        let mut should_enqueue = false;
-        {
-            let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
-            stream.app_stream_ctx = None;
-            if stream.reset_received {
-                return Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
-            }
-            if !stream.stop_sending_requested {
-                stream.local_stop_error = local_stream_error;
-                stream.stop_sending_requested = true;
-                if !stream.is_output_stream {
-                    stream.is_output_stream = true;
-                    should_enqueue = true;
+        let mut result = Ok(());
+        let mut output_stream_token = None;
+
+        if let Some(stream_token) = self.find_stream(stream_id) {
+            if let Some(stream) = self.streams.get_mut(stream_token) {
+                stream.app_stream_ctx = None;
+                if stream.reset_received {
+                    result = Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
+                } else if !stream.stop_sending_requested {
+                    stream.local_stop_error = local_stream_error;
+                    stream.stop_sending_requested = true;
+                    if !stream.is_output_stream {
+                        stream.is_output_stream = true;
+                        output_stream_token = Some(stream_token);
+                    }
                 }
+            } else {
+                result = Err(Error::Memory);
             }
+        } else {
+            result = Err(Error::Protocol(InternalError::InvalidStreamId as u64));
         }
-        if should_enqueue {
+
+        if let Some(stream_token) = output_stream_token {
             enqueue_output_stream_token(self, stream_token);
         }
-        Ok(())
+        self.reinsert_self_by_wake_time(self.quic_time());
+        result
     }
 
     /// Drop a stream from local bookkeeping (rejecting further peer
@@ -5404,7 +5706,14 @@ impl Connection {
 
     /// Toggle datagram readiness for this connection.
     pub fn mark_datagram_ready(&mut self, is_ready: bool) -> Result<(), Error> {
+        let was_ready = self.is_datagram_ready;
         self.is_datagram_ready = is_ready;
+        if !was_ready && is_ready {
+            if self.remote_parameters.max_datagram_frame_size == 0 {
+                return Err(Error::Generic);
+            }
+            self.reinsert_self_by_wake_time(self.quic_time());
+        }
         Ok(())
     }
 
@@ -5414,34 +5723,92 @@ impl Connection {
         unique_path_id: u64,
         is_path_ready: bool,
     ) -> Result<(), Error> {
-        if let Some(path) = self
+        let Some(path_index) = self
             .paths
-            .iter_mut()
-            .find(|p| p.unique_path_id == unique_path_id)
-        {
-            path.is_datagram_ready = is_path_ready;
-            Ok(())
-        } else {
-            Err(Error::InvalidArgument)
+            .iter()
+            .position(|p| p.unique_path_id == unique_path_id)
+        else {
+            return Err(Error::InvalidArgument);
+        };
+
+        let was_ready = self.paths[path_index].is_datagram_ready;
+        self.paths[path_index].is_datagram_ready = is_path_ready;
+        if !was_ready && is_path_ready {
+            if self.remote_parameters.max_datagram_frame_size == 0 {
+                return Err(Error::Generic);
+            }
+            self.reinsert_self_by_wake_time(self.quic_time());
         }
+        Ok(())
     }
 }
 
 /// C: `provide_datagram_buffer`.  Old API, prefer
 /// [`provide_datagram_buffer_ex`].
-pub fn provide_datagram_buffer(
-    context: &mut crate::internal::DatagramBufferArgument,
+pub fn provide_datagram_buffer<'a>(
+    context: &'a mut crate::internal::DatagramBufferArgument<'_, '_, '_>,
     length: usize,
-) -> Option<&mut [u8]> {
-    context.provide_buffer(length)
+) -> Option<&'a mut [u8]> {
+    provide_datagram_buffer_ex(context, length, DatagramActive::NotActive)
 }
 
-pub fn provide_datagram_buffer_ex(
-    context: &mut crate::internal::DatagramBufferArgument,
+pub fn provide_datagram_buffer_ex<'a>(
+    context: &'a mut crate::internal::DatagramBufferArgument<'_, '_, '_>,
     length: usize,
     is_active: DatagramActive,
-) -> Option<&mut [u8]> {
-    context.provide_buffer_ex(length, is_active)
+) -> Option<&'a mut [u8]> {
+    context.set_datagram_active(is_active);
+
+    if length == 0 || length > context.allowed_space {
+        return None;
+    }
+
+    let payload_start = {
+        let after_length =
+            crate::internal::varint_encode(&mut context.bytes[context.byte_index..], length as u64)
+                .checked_add(context.byte_index)
+                .filter(|&after_length| after_length != context.byte_index);
+
+        if let Some(after_length) = after_length
+            && let Some(after_data) = after_length.checked_add(length)
+            && after_data <= context.bytes.len()
+        {
+            context.after_data = after_data;
+            after_length
+        } else {
+            let encoded = crate::internal::varint_encode(
+                context.bytes,
+                crate::frames::FrameType::Datagram as u64,
+            );
+            if encoded == 0 {
+                return None;
+            }
+
+            let mut payload_start = encoded;
+            let tail = payload_start.checked_add(length)?;
+            if tail > context.bytes.len() {
+                return None;
+            }
+
+            if tail < context.bytes.len() {
+                let delta = context.bytes.len() - tail;
+                context.bytes[..delta].fill(crate::frames::FrameType::Padding as u8);
+                let encoded = crate::internal::varint_encode(
+                    &mut context.bytes[delta..],
+                    crate::frames::FrameType::Datagram as u64,
+                );
+                if encoded == 0 {
+                    return None;
+                }
+                payload_start = delta + encoded;
+            }
+
+            context.after_data = payload_start + length;
+            payload_start
+        }
+    };
+
+    context.bytes.get_mut(payload_start..context.after_data)
 }
 
 // ---------------------------------------------------------------------------
@@ -5476,7 +5843,23 @@ impl Connection {
 
     /// Enable keep-alives at the given interval (microseconds).
     pub fn enable_keep_alive(&mut self, interval: Duration) {
-        self.keep_alive_interval = interval;
+        if interval.ticks() == 0 {
+            let mut idle_timeout = self.idle_timeout.ticks();
+            if idle_timeout == 0 {
+                idle_timeout = self
+                    .local_parameters
+                    .max_idle_timeout
+                    .ticks()
+                    .saturating_mul(1000);
+            }
+            if let Some(path) = self.paths.first() {
+                let pto_floor = 3u64.saturating_mul(path.retransmit_timer.ticks());
+                idle_timeout = idle_timeout.max(pto_floor);
+            }
+            self.keep_alive_interval = Duration::from_ticks(idle_timeout / 2);
+        } else {
+            self.keep_alive_interval = interval;
+        }
     }
 
     /// Disable any previously-enabled keep-alive.
@@ -5573,24 +5956,35 @@ impl Connection {
 /// typically file-scope statics, mirroring how
 /// `register_all_cc_algorithms.c` builds the list.
 pub fn register_congestion_control_algorithms(alg: &'static [&'static CongestionAlgorithm]) {
-    // Best-effort set: if the registry was already initialised, this is a no-op
-    // (OnceLock semantics).
-    let _ = CC_ALGORITHM_REGISTRY.set(alg.to_vec());
+    match CC_ALGORITHM_REGISTRY.write() {
+        Ok(mut registry) => *registry = alg,
+        Err(poisoned) => *poisoned.into_inner() = alg,
+    }
 }
 
 /// Convenience wrapper around
 /// [`register_congestion_control_algorithms`] that pulls in every
 /// algorithm shipped with the crate.
 pub fn register_all_congestion_control_algorithms() {
-    let _ = CC_ALGORITHM_REGISTRY.set(ALL_CC_ALGORITHMS.to_vec());
+    register_congestion_control_algorithms(&ALL_CC_ALGORITHMS);
 }
 
 /// Look up a registered algorithm by name (`alg_id`).
 pub fn get_congestion_algorithm(alg_id: &str) -> Option<&'static CongestionAlgorithm> {
-    congestion_control_algorithms()
+    let algorithms = congestion_control_algorithms();
+    let alg = algorithms
         .iter()
         .copied()
-        .find(|a| a.congestion_algorithm_id == alg_id)
+        .find(|a| a.congestion_algorithm_id == alg_id);
+
+    if alg.is_none() && alg_id == "reno" {
+        algorithms
+            .iter()
+            .copied()
+            .find(|a| a.congestion_algorithm_id == "newreno")
+    } else {
+        alg
+    }
 }
 
 impl Quic {
@@ -5613,20 +6007,15 @@ impl Quic {
     }
 
     /// Convenience: select the default algorithm by name (looking up
-    /// in the registry).  Returns `Err` when no registered algorithm
-    /// matches `alg_name`.
+    /// in the registry).  Unknown names mirror the C NULL lookup result
+    /// by clearing the default algorithm and option string.
     pub fn set_default_congestion_algorithm_by_name(
         &mut self,
         alg_name: &str,
     ) -> Result<(), Error> {
-        match get_congestion_algorithm(alg_name) {
-            Some(alg) => {
-                self.default_congestion_alg = Some(alg);
-                self.default_congestion_alg_option_string = None;
-                Ok(())
-            }
-            None => Err(Error::InvalidArgument),
-        }
+        self.default_congestion_alg = get_congestion_algorithm(alg_name);
+        self.default_congestion_alg_option_string = None;
+        Ok(())
     }
 }
 
@@ -5634,8 +6023,7 @@ impl Connection {
     /// Override the congestion-control algorithm for this
     /// connection.
     pub fn set_congestion_algorithm(&mut self, algo: &'static CongestionAlgorithm) {
-        self.congestion_alg = Some(algo);
-        self.congestion_alg_option_string = None;
+        self.set_congestion_algorithm_ex(algo, None);
     }
 
     /// Same as [`Self::set_congestion_algorithm`] but passes
@@ -5645,8 +6033,31 @@ impl Connection {
         alg: &'static CongestionAlgorithm,
         alg_option_string: Option<&str>,
     ) {
+        if let Some(old_alg) = self.congestion_alg {
+            for path in &mut self.paths {
+                old_alg.algorithm.alg_delete(path);
+            }
+        }
+
         self.congestion_alg = Some(alg);
         self.congestion_alg_option_string = alg_option_string.map(|s| s.to_owned());
+
+        let opt_owned = self.congestion_alg_option_string.clone();
+        let option = opt_owned.as_deref();
+        let current_time = self.quic_time();
+
+        if let Some(new_alg) = self.congestion_alg {
+            for i in 0..self.paths.len() {
+                // SAFETY: `path_ptr` points to one path inside this
+                // connection.  Congestion-control init is allowed to mutate
+                // that path and disjoint connection fields, matching the C
+                // call shape that passes both `cnx` and `path[i]`.
+                let path_ptr: *mut Path = &raw mut self.paths[i];
+                new_alg
+                    .algorithm
+                    .alg_init(self, unsafe { &mut *path_ptr }, option, current_time);
+            }
+        }
     }
 
     /// Set the priority limit above which streams bypass congestion
@@ -5675,7 +6086,7 @@ impl Connection {
     ) {
         self.pacing_decrease_threshold = decrease_threshold;
         self.pacing_increase_threshold = increase_threshold;
-        self.is_pacing_update_requested = true;
+        self.is_pacing_update_requested = decrease_threshold.min(increase_threshold) != u64::MAX;
     }
 
     /// Current pacing rate (bytes per second).
@@ -5820,10 +6231,18 @@ pub fn reset_tls_api(flags: u64) {
     crate::tls_api::tls_api_reset(flags);
 }
 
+/// Return the AES-128-GCM-SHA-256 TLS cipher-suite identifier for the
+/// requested memory mode.
+///
+/// The C API returns an opaque `ptls_cipher_suite_t *`; the Rust
+/// provider registry exposes the registered IANA suite ID instead.
+/// C: `picoquic_get_aes128gcm_sha256_v`.
+pub fn picoquic_get_aes128gcm_sha256_v(use_low_memory: bool) -> Option<u16> {
+    crate::tls_api::picoquic_get_cipher_suite_by_id_v(i32::from(AES_128_GCM_SHA256), use_low_memory)
+}
+
 /// True when the minicrypto implementation is the active cipher suite
-/// for AES-128-GCM-SHA-256.  C: comparison of
-/// `picoquic_get_aes128gcm_sha256_v(use_low_memory)` against the
-/// address of `ptls_minicrypto_aes128gcmsha256`.
+/// for AES-128-GCM-SHA-256.
 pub fn is_minicrypto_aes128gcm_sha256(use_low_memory: bool) -> bool {
     crate::tls_api::is_minicrypto_aes128gcm_sha256(use_low_memory)
 }
@@ -5844,7 +6263,26 @@ impl Connection {
     /// Returns `true` when the send backlog for this connection is empty.
     /// C: `picoquic_is_cnx_backlog_empty`.
     pub fn is_cnx_backlog_empty(&self) -> bool {
-        self.nb_bytes_queued == 0 && self.misc_frames.is_empty() && self.output_streams.is_empty()
+        let mut backlog_empty = true;
+
+        if self.connection_state < State::Ready {
+            backlog_empty = self
+                .pkt_ctx_backlog_empty(&self.pkt_ctx[PacketContext::Initial as usize])
+                && self.pkt_ctx_backlog_empty(&self.pkt_ctx[PacketContext::Handshake as usize]);
+        }
+
+        if self.is_multipath_enabled {
+            backlog_empty = backlog_empty
+                && self
+                    .paths
+                    .iter()
+                    .all(|path| self.pkt_ctx_backlog_empty(&path.pkt_ctx));
+        } else if backlog_empty {
+            backlog_empty =
+                self.pkt_ctx_backlog_empty(&self.pkt_ctx[PacketContext::Application as usize]);
+        }
+
+        backlog_empty
     }
 
     /// Return the next available local stream ID.  `is_unidirectional`
@@ -6600,7 +7038,10 @@ impl Quic {
             return;
         };
 
-        if let Ok((tree_token, old)) = self.connection_wake_tree.insert(next_time.ticks(), token) {
+        if let Ok((tree_token, old)) = self
+            .connection_wake_tree
+            .insert(connection_wake_key(next_time, token), token)
+        {
             if let Some(cnx) = self.connections.get_mut(token) {
                 cnx.connection_wake_membership = Some(tree_token);
             }
@@ -6725,6 +7166,13 @@ impl Quic {
                 new_context_created: false,
             };
         }
+        if ph.has_reserved_bit_set {
+            return ParsedSegment {
+                ret: InternalError::PacketHeaderParsing as i32,
+                connection: None,
+                new_context_created: false,
+            };
+        }
         if self.enforce_client_only
             || self.server_busy
             || self.current_number_connections >= self.tentative_max_number_connections
@@ -6769,6 +7217,7 @@ impl Quic {
         let is_address_blocked = !self.is_port_blocking_disabled && check_addr_blocked(addr_from);
         let mut has_good_token = false;
         let mut has_bad_token = false;
+        let mut is_new_token = false;
         let mut verified_token = None;
         if !ph.token_bytes.is_empty() {
             let token_bytes = ph.token_bytes.clone();
@@ -6782,13 +7231,19 @@ impl Quic {
             ) {
                 Ok(token) => {
                     has_good_token = true;
+                    is_new_token = token.is_new_token;
                     verified_token = Some(token);
                 }
-                Err(_) => has_bad_token = true,
+                Err(_) => {
+                    has_bad_token = true;
+                    is_new_token = token_bytes.len() <= 128
+                        && token_bytes.len() >= 8
+                        && token_bytes[0] & 0x80 != 0;
+                }
             }
         }
 
-        if has_bad_token {
+        if has_bad_token && !is_new_token {
             return ParsedSegment {
                 ret: InternalError::InvalidToken as i32,
                 connection: None,
@@ -7087,7 +7542,7 @@ impl Quic {
                 );
                 InternalError::Retry as i32
             }
-            Err(error) => Self::parse_error_status(error),
+            Err(_) => InternalError::Memory as i32,
         }
     }
 

@@ -20,7 +20,8 @@
 //!   compatibility.  Builds a [`LoopParam`] on the stack and forwards.
 //! * [`run_v2`] — takes a [`LoopParam`] directly.
 //! * [`NetworkThreadCtx::run`] — takes a fully-populated
-//!   [`NetworkThreadCtx`]; the threaded entry point.
+//!   [`NetworkThreadCtx`] plus the associated [`Quic`]; the v3
+//!   entry point.
 //!
 //! Plus the threading helpers ([`NetworkThreadCtx::spawn`] et al.)
 //! that wrap `pthread_create` / `CreateThread`.
@@ -57,7 +58,10 @@
 //!   callback_ctx` companion folds into the trait implementor's
 //!   state.  The C `(cb_mode, void* callback_argv)` tagged-union
 //!   pair becomes the typed [`LoopEvent`] enum — each variant
-//!   carries the payload type the C `cb_mode` implied.
+//!   carries the payload type the C `cb_mode` implied.  The server
+//!   thread fan-out wraps one supplied boxed trait object in shared
+//!   forwarding adapters so every thread sees the same callback/hook,
+//!   matching the C function-pointer reuse.
 //! * `SocketCtx* s_ctx` is used as both a single object
 //!   ([`SocketCtx::close`]) and a fixed-size array
 //!   ([`open_sockets`] writes up to `PACKET_LOOP_SOCKETS_MAX`
@@ -73,8 +77,10 @@
 //!   set of unrelated booleans (see `config.rs` for the
 //!   established convention).
 //! * `volatile int` fields in [`NetworkThreadCtx`]
-//!   become plain `i32` / `bool` — `Send`/`Sync` is out of v1 scope,
-//!   so the volatile semantics have nowhere to land.
+//!   become plain `i32` / `bool`.  The threaded entry point keeps
+//!   the C back-pointer shape at one small unsafe boundary because
+//!   the translated `Quic` and callback graph are intentionally not
+//!   `Send` in v1.
 //! * `sockaddr_storage` fields fold into `Option<SocketAddr>`,
 //!   matching the [`socks`] convention (`AF_UNSPEC` ↔ `None`).
 //! * The Windows-only fields (`overlap`, `WSARecvMsg`, `WSASendMsg`,
@@ -91,6 +97,8 @@
 
 use core::net::SocketAddr;
 
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use crate::Error;
@@ -316,6 +324,90 @@ pub trait PacketLoopCbFn {
     fn callback(&mut self, quic: &mut Quic, event: LoopEvent<'_>) -> Result<(), Error>;
 }
 
+struct SharedCallback<T: ?Sized> {
+    inner: Arc<Mutex<Box<T>>>,
+}
+
+impl<T: ?Sized> SharedCallback<T> {
+    fn new(callback: Box<T>) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(callback)),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Box<T>> {
+        match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
+
+impl<T: ?Sized> Clone for SharedCallback<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl StreamDataCallback for SharedCallback<dyn StreamDataCallback> {
+    fn callback(
+        &mut self,
+        connection: &mut crate::internal::Connection,
+        stream_id: u64,
+        bytes: &[u8],
+        fin_or_event: crate::CallbackEvent,
+        stream_ctx: Option<&mut dyn core::any::Any>,
+    ) -> i32 {
+        self.lock()
+            .callback(connection, stream_id, bytes, fin_or_event, stream_ctx)
+    }
+
+    fn prepare_datagram<'buf, 'cnx, 'path>(
+        &mut self,
+        context: &mut crate::internal::DatagramBufferArgument<'buf, 'cnx, 'path>,
+        unique_path_id: u64,
+        allowed_space: usize,
+    ) -> i32 {
+        self.lock()
+            .prepare_datagram(context, unique_path_id, allowed_space)
+    }
+}
+
+impl AlpnSelect for SharedCallback<dyn AlpnSelect> {
+    fn select(&mut self, quic: &mut Quic, list: &[&[u8]]) -> Option<usize> {
+        self.lock().select(quic, list)
+    }
+}
+
+impl PacketLoopCbFn for SharedCallback<dyn PacketLoopCbFn> {
+    fn callback(&mut self, quic: &mut Quic, event: LoopEvent<'_>) -> Result<(), Error> {
+        self.lock().callback(quic, event)
+    }
+}
+
+impl CustomThreadCreateFn for SharedCallback<dyn CustomThreadCreateFn> {
+    fn create(
+        &mut self,
+        thread_fn: Box<dyn FnOnce() + Send + 'static>,
+    ) -> Result<JoinHandle<()>, OsError> {
+        self.lock().create(thread_fn)
+    }
+}
+
+impl CustomThreadDeleteFn for SharedCallback<dyn CustomThreadDeleteFn> {
+    fn delete(&mut self, thread: JoinHandle<()>) {
+        self.lock().delete(thread);
+    }
+}
+
+impl CustomThreadSetnameFn for SharedCallback<dyn CustomThreadSetnameFn> {
+    fn set_name(&mut self, thread_name: &str) {
+        self.lock().set_name(thread_name);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Loop options + parameters.
 
@@ -446,9 +538,13 @@ pub trait CustomThreadDeleteFn {
 /// Rust wake-up channel and thread handle carry the cross-thread
 /// synchronization used by this translation.
 pub struct NetworkThreadCtx {
-    // The C `picoquic_quic_t* quic` back-pointer is represented at
-    // the foreground entry point by passing `&mut Quic` into the
-    // private loop helper together with this context.
+    // C `picoquic_quic_t* quic` back-pointer, stored as an address so
+    // the public context remains a plain Rust owner.  Foreground callers
+    // pass `&mut Quic` directly into `run`; background teardown uses this
+    // address to clear `quic.v_thread_ctx`, mirroring C.
+    quic_ctx: Option<usize>,
+    owned_quic: Option<Box<Quic>>,
+    thread_state: Option<Arc<NetworkThreadState>>,
     /// Loop parameters, optionally owned (`is_param_allocated`).
     /// Phase 1 collapses the C borrowed-or-owned discriminant into
     /// a single `Option<Box<…>>`; the borrowed case stores `None`
@@ -504,6 +600,9 @@ pub struct NetworkThreadCtx {
 impl Default for NetworkThreadCtx {
     fn default() -> Self {
         NetworkThreadCtx {
+            quic_ctx: None,
+            owned_quic: None,
+            thread_state: None,
             param: None,
             loop_callback: None,
             thread_delete_fn: None,
@@ -521,6 +620,17 @@ impl Default for NetworkThreadCtx {
             return_code: 0,
         }
     }
+}
+
+#[derive(Debug, Copy, Clone)]
+struct NetworkThreadCtxPtr(usize);
+
+#[derive(Debug, Default)]
+struct NetworkThreadState {
+    ready: AtomicBool,
+    should_close: AtomicBool,
+    closed: AtomicBool,
+    return_code: AtomicI32,
 }
 
 fn af_for_addr(addr: &SocketAddr) -> i32 {
@@ -572,10 +682,11 @@ fn return_code(error: &Error) -> i32 {
 }
 
 fn store_loop_result(thread_ctx: &mut NetworkThreadCtx, result: &Result<(), Error>) {
-    thread_ctx.return_code = match result {
+    let code = match result {
         Ok(()) => 0,
         Err(error) => return_code(error),
     };
+    thread_ctx.set_return_code(code);
 }
 
 fn loop_callback(
@@ -656,6 +767,7 @@ pub fn packet_loop_open_socket<S: Socket>(
     Ok(())
 }
 
+#[cfg(not(unix))]
 fn recv_from_sockets<S: Socket>(
     s_ctx: &mut [SocketCtx<S>],
     nb_sockets_available: usize,
@@ -689,9 +801,21 @@ fn recv_from_sockets<S: Socket>(
 /// as undefined.
 ///
 /// C: `picoquic/sockloop.c:picoquic_close_network_wake_up`.
-#[allow(dead_code)]
 fn close_network_wake_up(thread_ctx: &mut NetworkThreadCtx) {
     if thread_ctx.wake_up_defined {
+        #[cfg(unix)]
+        {
+            for fd in &mut thread_ctx.wake_up_pipe_fd {
+                if *fd >= 0 {
+                    // SAFETY: `fd` is one end of the wake-up pipe opened by
+                    // `open_network_wake_up` and is not used after this close.
+                    unsafe {
+                        libc::close(*fd);
+                    }
+                    *fd = -1;
+                }
+            }
+        }
         thread_ctx.wake_up_sender = None;
         thread_ctx.wake_up_receiver = None;
         thread_ctx.wake_up_defined = false;
@@ -699,31 +823,42 @@ fn close_network_wake_up(thread_ctx: &mut NetworkThreadCtx) {
 }
 
 /// Open the wake-up channel for a network thread context.
-/// Replaces the C `pipe()` call with an `mpsc` channel; both
-/// sender and receiver are stored in `thread_ctx` so the foreground
-/// loop (`wait_for_wake_up`) can block on the receiver.
+/// Uses the same pipe-backed wake-up path as the C POSIX loop when
+/// available; non-Unix builds retain the channel fallback.
 /// On success sets `wake_up_defined = true`; `_ret` is left
 /// unchanged (mirrors C where `*ret` is only written on failure).
 ///
 /// C: `picoquic/sockloop.c:picoquic_open_network_wake_up` (line 1705–1725).
-#[allow(dead_code)]
-fn open_network_wake_up(thread_ctx: &mut NetworkThreadCtx, _ret: &mut i32) {
+fn open_network_wake_up(thread_ctx: &mut NetworkThreadCtx, ret: &mut i32) {
     thread_ctx.wake_up_defined = false;
-    let (sender, receiver) = std::sync::mpsc::channel();
-    thread_ctx.wake_up_sender = Some(sender);
-    thread_ctx.wake_up_receiver = Some(receiver);
-    thread_ctx.wake_up_defined = true;
+    thread_ctx.wake_up_pipe_fd = [-1, -1];
+
+    #[cfg(unix)]
+    {
+        let mut pipe_fd = [-1; 2];
+        // SAFETY: `pipe_fd` points to two writable `c_int` slots that libc
+        // initializes on success.
+        if unsafe { libc::pipe(pipe_fd.as_mut_ptr()) } != 0 {
+            *ret = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
+        } else {
+            thread_ctx.wake_up_pipe_fd = pipe_fd;
+            thread_ctx.wake_up_defined = true;
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        thread_ctx.wake_up_sender = Some(sender);
+        thread_ctx.wake_up_receiver = Some(receiver);
+        thread_ctx.wake_up_defined = true;
+    }
 }
 
 /// Populate a `pollfd` array for the poll-based packet loop.
 /// Slot 0 holds the wake-up read end (when `thread_ctx.wake_up_defined`);
 /// subsequent slots hold the open socket fds; unused trailing slots are set
 /// to `-1` so `poll(2)` ignores them.
-///
-/// In the Rust translation the internal loop uses `mpsc` channels rather
-/// than `poll(2)`, so `thread_ctx.wake_up_pipe_fd[0]` is always `-1`.
-/// Callers that drive their own `poll(2)` loop should use a real pipe
-/// and set `wake_up_pipe_fd[0]` accordingly.
 ///
 /// C: `picoquic/sockloop.c:picoquic_packet_loop_set_fds` (line 884–905,
 /// `#elif defined(PICOQUIC_WITH_POLL)` branch).
@@ -736,7 +871,7 @@ pub fn packet_loop_set_fds<S: crate::socks::Socket>(
 ) {
     for entry in poll_list.iter_mut() {
         *entry = libc::pollfd {
-            fd: 0,
+            fd: -1,
             events: 0,
             revents: 0,
         };
@@ -896,6 +1031,7 @@ pub fn packet_loop_poll<S: Socket>(
     Ok(None)
 }
 
+#[cfg(not(unix))]
 fn wait_for_wake_up(thread_ctx: &mut NetworkThreadCtx, delta_t: i64) -> bool {
     let Some(receiver) = thread_ctx.wake_up_receiver.as_ref() else {
         return false;
@@ -975,11 +1111,17 @@ fn run_packet_loop<S: Socket>(
     let mut gso_enabled = !param.do_not_use_gso;
     let mut sc_duration = SystemCallDuration::default();
     let mut result = Ok(());
+    #[cfg(unix)]
+    let mut poll_list = [libc::pollfd {
+        fd: -1,
+        events: 0,
+        revents: 0,
+    }; PACKET_LOOP_SOCKETS_MAX + 1];
 
-    thread_ctx.thread_is_ready = true;
-    thread_ctx.thread_is_closed = false;
+    thread_ctx.set_thread_ready(true);
+    thread_ctx.set_thread_closed(false);
 
-    while result.is_ok() && !thread_ctx.thread_should_close {
+    while result.is_ok() && !thread_ctx.should_close() {
         let mut delta_t = 0;
         let current_time = Instant::from_ticks(crate::current_time());
         if !loop_immediate {
@@ -1008,12 +1150,66 @@ fn run_packet_loop<S: Socket>(
         loop_immediate = false;
 
         let previous_time = current_time;
-        let is_wake_up_event = wait_for_wake_up(thread_ctx, delta_t);
-        let recv_result = if is_wake_up_event {
-            Ok(None)
-        } else {
-            recv_from_sockets(&mut s_ctx, nb_sockets_available, &mut recv_buffer)
+
+        #[cfg(unix)]
+        let (is_wake_up_event, recv_info) = {
+            let mut is_wake_up_event = false;
+            packet_loop_set_fds(&mut poll_list, &s_ctx, nb_sockets_available, thread_ctx);
+            let poll_result = packet_loop_poll(
+                &mut s_ctx,
+                nb_sockets_available,
+                &mut poll_list,
+                &mut recv_buffer,
+                delta_t,
+                &mut is_wake_up_event,
+                thread_ctx,
+            );
+            let recv_info = match poll_result {
+                Ok(Some(info)) => Some((
+                    info.socket_rank,
+                    RecvInfo {
+                        addr_from: info.addr_from,
+                        addr_dest: info.addr_dest,
+                        dest_if: info.dest_if,
+                        received_ecn: info.received_ecn,
+                        bytes_recv: info.bytes_recv,
+                    },
+                )),
+                Ok(None) => None,
+                Err(error) => {
+                    result = if thread_ctx.should_close() {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    };
+                    break;
+                }
+            };
+            (is_wake_up_event, recv_info)
         };
+
+        #[cfg(not(unix))]
+        let (is_wake_up_event, recv_info) = {
+            let is_wake_up_event = wait_for_wake_up(thread_ctx, delta_t);
+            let recv_result = if is_wake_up_event {
+                Ok(None)
+            } else {
+                recv_from_sockets(&mut s_ctx, nb_sockets_available, &mut recv_buffer)
+            };
+            let recv_info = match recv_result {
+                Ok(info) => info,
+                Err(error) => {
+                    result = if thread_ctx.should_close() {
+                        Ok(())
+                    } else {
+                        Err(error)
+                    };
+                    break;
+                }
+            };
+            (is_wake_up_event, recv_info)
+        };
+
         let current_time = Instant::from_ticks(crate::current_time());
 
         if options.do_system_call_duration
@@ -1029,24 +1225,14 @@ fn run_packet_loop<S: Socket>(
             break;
         }
 
-        let recv_info = match recv_result {
-            Ok(info) => info,
-            Err(error) => {
-                result = if thread_ctx.thread_should_close {
-                    Ok(())
-                } else {
-                    Err(error)
-                };
+        if is_wake_up_event {
+            if let Err(error) =
+                loop_callback(&mut thread_ctx.loop_callback, quic, LoopEvent::WakeUp)
+            {
+                result = Err(error);
                 break;
             }
-        };
-
-        if is_wake_up_event
-            && let Err(error) =
-                loop_callback(&mut thread_ctx.loop_callback, quic, LoopEvent::WakeUp)
-        {
-            result = Err(error);
-            break;
+            continue;
         }
 
         let mut simulate_nat = false;
@@ -1233,8 +1419,8 @@ fn run_packet_loop<S: Socket>(
         }
     }
 
-    thread_ctx.thread_is_ready = false;
-    thread_ctx.thread_is_closed = true;
+    thread_ctx.set_thread_ready(false);
+    thread_ctx.set_thread_closed(true);
 
     for ctx in s_ctx.iter_mut().take(nb_sockets) {
         ctx.close();
@@ -1245,7 +1431,7 @@ fn run_packet_loop<S: Socket>(
     {
         result = Ok(());
     }
-    if thread_ctx.thread_should_close && result.is_err() {
+    if thread_ctx.should_close() && result.is_err() {
         result = Ok(());
     }
     store_loop_result(thread_ctx, &result);
@@ -1270,12 +1456,8 @@ impl Quic {
         let mut thread_ctx = NetworkThreadCtx::default();
         thread_ctx.param = Some(Box::new(*param));
         thread_ctx.loop_callback = loop_callback;
-        let mut owned_param = thread_ctx.param.take().ok_or(Error::Memory)?;
-        let result = run_packet_loop::<crate::socks_socket2::Socket2Udp>(
-            self,
-            &mut owned_param,
-            &mut thread_ctx,
-        );
+        let result = thread_ctx.run(self);
+        let owned_param = thread_ctx.param.take().ok_or(Error::Memory)?;
         *param = *owned_param;
         thread_ctx.param = Some(owned_param);
         result
@@ -1311,40 +1493,80 @@ impl Quic {
 // NetworkThreadCtx: background-thread management and the v3 entry point.
 
 impl NetworkThreadCtx {
+    fn set_thread_ready(&mut self, value: bool) {
+        if let Some(state) = self.thread_state.as_ref() {
+            state.ready.store(value, Ordering::Release);
+        } else {
+            self.thread_is_ready = value;
+        }
+    }
+
+    fn set_thread_closed(&mut self, value: bool) {
+        if let Some(state) = self.thread_state.as_ref() {
+            state.closed.store(value, Ordering::Release);
+        } else {
+            self.thread_is_closed = value;
+        }
+    }
+
+    fn set_return_code(&mut self, value: i32) {
+        if let Some(state) = self.thread_state.as_ref() {
+            state.return_code.store(value, Ordering::Release);
+        } else {
+            self.return_code = value;
+        }
+    }
+
+    fn should_close(&self) -> bool {
+        self.thread_should_close
+            || self
+                .thread_state
+                .as_ref()
+                .is_some_and(|state| state.should_close.load(Ordering::Acquire))
+    }
+
+    fn refresh_thread_state(&mut self) {
+        if let Some(state) = self.thread_state.as_ref() {
+            self.thread_is_ready = state.ready.load(Ordering::Acquire);
+            self.thread_should_close = state.should_close.load(Ordering::Acquire);
+            self.thread_is_closed = state.closed.load(Ordering::Acquire);
+            self.return_code = state.return_code.load(Ordering::Acquire);
+        }
+    }
+
     /// Run the packet loop using `self` as the fully-populated thread
     /// context.  C: `void* packet_loop_v3(void* v_ctx)`.
     ///
     /// The C entry returns its `void*` exit code only to satisfy the
-    /// thread-function prototype; callers read the result back from
-    /// `return_code`.
-    pub fn run(&mut self) {
+    /// thread-function prototype; callers read the integer status back
+    /// from `return_code`.  Rust also returns the rich [`Error`] for
+    /// foreground callers.
+    pub fn run(&mut self, quic: &mut Quic) -> Result<(), Error> {
         if let Some(thread_name) = self.thread_name.as_deref()
             && let Some(setname) = self.thread_setname_fn.as_mut()
         {
             setname.set_name(thread_name);
         }
-        self.thread_is_ready = true;
-        self.thread_is_closed = false;
-        self.return_code = 0;
 
-        if self.wake_up_defined {
-            loop {
-                if self.thread_should_close {
-                    break;
-                }
-                let Some(receiver) = self.wake_up_receiver.as_ref() else {
-                    break;
-                };
-                match receiver.recv_timeout(std::time::Duration::from_millis(1)) {
-                    Ok(()) => {}
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            }
+        let Some(mut param) = self.param.take() else {
+            let result = Err(Error::InvalidArgument);
+            self.set_thread_ready(false);
+            self.set_thread_closed(true);
+            store_loop_result(self, &result);
+            return result;
+        };
+
+        let result = run_packet_loop::<crate::socks_socket2::Socket2Udp>(quic, &mut param, self);
+        self.param = Some(param);
+
+        if self.thread_is_closed {
+            result
+        } else {
+            self.set_thread_ready(false);
+            self.set_thread_closed(true);
+            store_loop_result(self, &result);
+            result
         }
-
-        self.thread_is_ready = false;
-        self.thread_is_closed = true;
     }
 
     /// Spawn a packet loop on its own OS thread using the platform
@@ -1377,40 +1599,152 @@ impl NetworkThreadCtx {
         thread_name: Option<&str>,
         loop_callback: Option<Box<dyn PacketLoopCbFn>>,
     ) -> Result<Box<Self>, OsError> {
-        let (sender, receiver) = std::sync::mpsc::channel();
+        let quic_ptr = quic as *mut Quic as usize;
+        Self::spawn_custom_from_ptr(
+            quic_ptr,
+            None,
+            param,
+            thread_create_fn,
+            thread_delete_fn,
+            thread_setname_fn,
+            thread_name,
+            loop_callback,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_custom_owned(
+        mut quic: Box<Quic>,
+        param: LoopParam,
+        thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
+        thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
+        thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
+        thread_name: Option<&str>,
+        loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+    ) -> Result<Box<Self>, OsError> {
+        let quic_ptr = (&mut *quic) as *mut Quic as usize;
+        Self::spawn_custom_from_ptr(
+            quic_ptr,
+            Some(quic),
+            param,
+            thread_create_fn,
+            thread_delete_fn,
+            thread_setname_fn,
+            thread_name,
+            loop_callback,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_custom_from_ptr(
+        quic_ptr: usize,
+        owned_quic: Option<Box<Quic>>,
+        param: LoopParam,
+        thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
+        thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
+        thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
+        thread_name: Option<&str>,
+        loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+    ) -> Result<Box<Self>, OsError> {
+        let thread_state = Arc::new(NetworkThreadState::default());
         let mut thread_ctx = Box::new(NetworkThreadCtx::default());
+        let thread_ctx_ptr = (&mut *thread_ctx) as *mut NetworkThreadCtx as usize;
+        // SAFETY: `quic_ptr` is produced either from the caller's live
+        // `&mut Quic` or from the boxed `Quic` moved into this context below.
+        // In both cases the pointee remains valid until `Drop` joins the
+        // spawned packet-loop thread and clears `v_thread_ctx`.
+        unsafe {
+            (*(quic_ptr as *mut Quic)).v_thread_ctx =
+                Some(Box::new(NetworkThreadCtxPtr(thread_ctx_ptr)));
+        }
+        thread_ctx.quic_ctx = Some(quic_ptr);
+        thread_ctx.owned_quic = owned_quic;
+        thread_ctx.thread_state = Some(thread_state.clone());
         thread_ctx.param = Some(Box::new(param));
         thread_ctx.loop_callback = loop_callback;
         thread_ctx.thread_delete_fn = thread_delete_fn;
         thread_ctx.thread_setname_fn = thread_setname_fn;
         thread_ctx.thread_name = thread_name.map(str::to_owned);
-        thread_ctx.wake_up_pipe_fd = [-1, -1];
-        thread_ctx.wake_up_sender = Some(sender);
-        thread_ctx.wake_up_receiver = None;
-        thread_ctx.wake_up_defined = true;
+        let mut ret = 0;
+        open_network_wake_up(&mut thread_ctx, &mut ret);
+        if !thread_ctx.wake_up_defined {
+            thread_ctx.quic_ctx = None;
+            // SAFETY: same pointer validity as the installation above.
+            unsafe {
+                (*(quic_ptr as *mut Quic)).v_thread_ctx = None;
+            }
+            return Err(OsError(ret));
+        }
+        #[cfg(not(unix))]
+        let receiver = {
+            let Some(receiver) = thread_ctx.wake_up_receiver.take() else {
+                thread_ctx.quic_ctx = None;
+                // SAFETY: same pointer validity as the installation above.
+                unsafe {
+                    (*(quic_ptr as *mut Quic)).v_thread_ctx = None;
+                }
+                return Err(OsError(-1));
+            };
+            receiver
+        };
         thread_ctx.is_threaded = true;
 
-        let name_for_thread = thread_ctx.thread_name.clone();
         let thread_fn: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
-            if let Some(name) = name_for_thread {
-                let _ = name;
+            let thread_ctx = thread_ctx_ptr as *mut NetworkThreadCtx;
+            let quic = quic_ptr as *mut Quic;
+            // SAFETY: `spawn_custom` allocates `thread_ctx` in a `Box` before
+            // spawning and returns that same box to the caller, so the allocation
+            // address is stable until `Drop` joins the thread.  The C API this
+            // translates requires the application to serialize non-callback QUIC
+            // access while the packet-loop thread is running; the Rust API keeps
+            // that contract because the translated `Quic` and callback graph are
+            // not `Send` in v1.
+            unsafe {
+                let thread_ctx = &mut *thread_ctx;
+                #[cfg(not(unix))]
+                {
+                    thread_ctx.wake_up_receiver = Some(receiver);
+                }
+                let _ = thread_ctx.run(&mut *quic);
+                #[cfg(not(unix))]
+                {
+                    thread_ctx.wake_up_receiver = None;
+                }
             }
-            while receiver.recv().is_ok() {}
         });
 
-        let handle = if let Some(mut create_fn) = thread_create_fn {
-            create_fn.create(thread_fn)?
+        let handle_result = if let Some(mut create_fn) = thread_create_fn {
+            create_fn.create(thread_fn)
         } else if let Some(name) = thread_ctx.thread_name.clone() {
             std::thread::Builder::new()
                 .name(name)
                 .spawn(thread_fn)
-                .map_err(|error| OsError(error.raw_os_error().unwrap_or(-1)))?
+                .map_err(|error| OsError(error.raw_os_error().unwrap_or(-1)))
         } else {
-            internal_thread_create(thread_fn)?
+            internal_thread_create(thread_fn)
+        };
+        let handle = match handle_result {
+            Ok(handle) => handle,
+            Err(error) => {
+                // SAFETY: same pointer validity as the installation above.
+                unsafe {
+                    (*(quic_ptr as *mut Quic)).v_thread_ctx = None;
+                }
+                thread_ctx.is_threaded = false;
+                thread_ctx.quic_ctx = None;
+                return Err(error);
+            }
         };
         thread_ctx.pthread = Some(handle);
-        thread_ctx.thread_is_ready = true;
-        let _ = quic.time();
+        for _ in 0..2000 {
+            if thread_state.ready.load(Ordering::Acquire)
+                || thread_state.closed.load(Ordering::Acquire)
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        thread_ctx.refresh_thread_state();
         Ok(thread_ctx)
     }
 
@@ -1424,18 +1758,43 @@ impl NetworkThreadCtx {
         if !self.wake_up_defined {
             return Err(OsError(-1));
         }
-        let Some(sender) = self.wake_up_sender.as_ref() else {
-            return Err(OsError(-1));
-        };
-        sender.send(()).map_err(|_| OsError(32))
+        #[cfg(unix)]
+        {
+            if self.wake_up_pipe_fd[1] < 0 {
+                return Err(OsError(-1));
+            }
+            let byte = [0u8; 1];
+            // SAFETY: the write end is owned by this context while
+            // `wake_up_defined` is true, and `byte` is a valid one-byte buffer.
+            let written =
+                unsafe { libc::write(self.wake_up_pipe_fd[1], byte.as_ptr().cast(), byte.len()) };
+            if written == 1 {
+                Ok(())
+            } else if written == 0 {
+                Err(OsError(32))
+            } else {
+                Err(OsError(
+                    std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
+                ))
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let Some(sender) = self.wake_up_sender.as_ref() else {
+                return Err(OsError(-1));
+            };
+            sender.send(()).map_err(|_| OsError(32))
+        }
     }
 }
 
 impl Drop for NetworkThreadCtx {
     fn drop(&mut self) {
         self.thread_should_close = true;
-        self.wake_up_defined = false;
-        self.wake_up_sender = None;
+        if let Some(state) = self.thread_state.as_ref() {
+            state.should_close.store(true, Ordering::Release);
+        }
+        let _ = self.wake_up();
         if let Some(handle) = self.pthread.take() {
             if let Some(delete_fn) = self.thread_delete_fn.as_mut() {
                 delete_fn.delete(handle);
@@ -1443,7 +1802,25 @@ impl Drop for NetworkThreadCtx {
                 internal_thread_delete(handle);
             }
         }
+        close_network_wake_up(self);
+        self.refresh_thread_state();
+        if let Some(quic) = self.owned_quic.as_deref_mut() {
+            quic.v_thread_ctx = None;
+            self.quic_ctx = None;
+        } else if let Some(quic_ptr) = self.quic_ctx.take() {
+            // SAFETY: `quic_ctx` is installed by `spawn_custom` from the live
+            // `&mut Quic` passed by the caller.  This mirrors C teardown, which
+            // requires deleting the network thread before freeing its QUIC
+            // context.
+            unsafe {
+                let quic = &mut *(quic_ptr as *mut Quic);
+                quic.v_thread_ctx = None;
+            }
+        }
         self.thread_is_closed = true;
+        if let Some(state) = self.thread_state.as_ref() {
+            state.closed.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -1464,7 +1841,9 @@ impl Drop for NetworkThreadCtx {
 pub fn internal_thread_create(
     thread_fn: Box<dyn FnOnce() + Send + 'static>,
 ) -> Result<JoinHandle<()>, OsError> {
-    Ok(std::thread::spawn(thread_fn))
+    std::thread::Builder::new()
+        .spawn(thread_fn)
+        .map_err(|error| OsError(error.raw_os_error().unwrap_or(-1)))
 }
 
 /// Default implementation of [`CustomThreadDeleteFn`].
@@ -1495,7 +1874,19 @@ impl Quic {
     /// C: `struct st_network_thread_ctx_t* get_thread_ctx(picoquic_quic_t*)`.
     pub fn thread_ctx(&mut self) -> Option<&mut NetworkThreadCtx> {
         let b = self.v_thread_ctx.as_mut()?;
-        b.as_mut().downcast_mut::<NetworkThreadCtx>()
+        if b.is::<NetworkThreadCtx>() {
+            return b.as_mut().downcast_mut::<NetworkThreadCtx>();
+        }
+        let ctx_ptr = b.as_mut().downcast_mut::<NetworkThreadCtxPtr>()?.0;
+        if ctx_ptr == 0 {
+            None
+        } else {
+            // SAFETY: `NetworkThreadCtxPtr` is only installed by
+            // `spawn_custom`, which points it at the returned boxed context.
+            // The caller must follow the same lifetime rule as C: do not ask
+            // the QUIC context for its thread context after deleting it.
+            unsafe { Some(&mut *(ctx_ptr as *mut NetworkThreadCtx)) }
+        }
     }
 
     /// Build a server-side QUIC context with the extra hooks
@@ -1551,12 +1942,12 @@ impl Config {
     pub fn start_server_threads(
         &mut self,
         current_time: Instant,
-        mut alpn_select_fn: Option<Box<dyn AlpnSelect>>,
-        mut default_callback: Option<Box<dyn StreamDataCallback>>,
-        mut loop_callback: Option<Box<dyn PacketLoopCbFn>>,
-        mut thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
-        mut thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
-        mut thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
+        alpn_select_fn: Option<Box<dyn AlpnSelect>>,
+        default_callback: Option<Box<dyn StreamDataCallback>>,
+        loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+        thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
+        thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
+        thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
         thread_ctxs: &mut [Option<Box<NetworkThreadCtx>>],
     ) -> Result<usize, Error> {
         let nb_threads = if self.nb_threads > thread_ctxs.len() as i32 {
@@ -1567,9 +1958,8 @@ impl Config {
             self.nb_threads as usize
         };
 
-        if self.ticket_encryption_key.is_none() {
-            let mut key = vec![0u8; 16];
-            if let Some(mut quic) = Quic::new(
+        if self.ticket_encryption_key.is_none()
+            && let Some(mut quic) = Quic::new(
                 1,
                 None,
                 None,
@@ -1581,19 +1971,37 @@ impl Config {
                 current_time,
                 None,
                 None,
-            ) {
-                rand_core::RngCore::fill_bytes(&mut *quic.rng, &mut key);
-            }
+            )
+        {
+            let mut key = vec![0u8; 16];
+            rand_core::RngCore::fill_bytes(&mut *quic.rng, &mut key);
             self.ticket_encryption_key = Some(key);
         }
+
+        let alpn_select_fn: Option<SharedCallback<dyn AlpnSelect>> =
+            alpn_select_fn.map(SharedCallback::new);
+        let default_callback: Option<SharedCallback<dyn StreamDataCallback>> =
+            default_callback.map(SharedCallback::new);
+        let loop_callback: Option<SharedCallback<dyn PacketLoopCbFn>> =
+            loop_callback.map(SharedCallback::new);
+        let thread_create_fn: Option<SharedCallback<dyn CustomThreadCreateFn>> =
+            thread_create_fn.map(SharedCallback::new);
+        let thread_delete_fn: Option<SharedCallback<dyn CustomThreadDeleteFn>> =
+            thread_delete_fn.map(SharedCallback::new);
+        let thread_setname_fn: Option<SharedCallback<dyn CustomThreadSetnameFn>> =
+            thread_setname_fn.map(SharedCallback::new);
 
         let mut created = 0usize;
         for slot in thread_ctxs.iter_mut().take(nb_threads) {
             let qserver = Quic::create_server(
                 self,
                 current_time,
-                default_callback.take(),
-                alpn_select_fn.take(),
+                default_callback
+                    .as_ref()
+                    .map(|callback| Box::new((*callback).clone()) as Box<dyn StreamDataCallback>),
+                alpn_select_fn
+                    .as_ref()
+                    .map(|callback| Box::new((*callback).clone()) as Box<dyn AlpnSelect>),
             )?;
 
             let local_port = if self.local_port != 0 {
@@ -1612,15 +2020,22 @@ impl Config {
                 ..LoopParam::default()
             };
 
-            let mut qserver = qserver;
-            let thread_ctx = NetworkThreadCtx::spawn_custom(
-                &mut qserver,
+            let thread_ctx = NetworkThreadCtx::spawn_custom_owned(
+                qserver,
                 param,
-                thread_create_fn.take(),
-                thread_delete_fn.take(),
-                thread_setname_fn.take(),
+                thread_create_fn
+                    .as_ref()
+                    .map(|callback| Box::new((*callback).clone()) as Box<dyn CustomThreadCreateFn>),
+                thread_delete_fn
+                    .as_ref()
+                    .map(|callback| Box::new((*callback).clone()) as Box<dyn CustomThreadDeleteFn>),
+                thread_setname_fn.as_ref().map(|callback| {
+                    Box::new((*callback).clone()) as Box<dyn CustomThreadSetnameFn>
+                }),
                 None,
-                loop_callback.take(),
+                loop_callback
+                    .as_ref()
+                    .map(|callback| Box::new((*callback).clone()) as Box<dyn PacketLoopCbFn>),
             )
             .map_err(|_| Error::Generic)?;
             *slot = Some(thread_ctx);

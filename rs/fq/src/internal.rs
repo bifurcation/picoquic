@@ -73,6 +73,10 @@ use crate::{Duration, Instant};
 /// Stable across operations on other connections.
 pub type ConnectionToken = Token<Connection>;
 
+pub(crate) fn connection_wake_key(next_wake_time: Instant, token: ConnectionToken) -> (u64, usize) {
+    (next_wake_time.ticks(), token.slot_idx())
+}
+
 /// Token into the per-`Quic` registered-token replay-protection arena.
 pub type RegisteredTokenToken = Token<RegisteredToken>;
 
@@ -2070,9 +2074,15 @@ pub trait AutoQlog {
 
 /// C: `performance_log_fn` — emit a per-connection
 /// performance log row.  `should_delete` is `true` on connection
-/// teardown.  Callback is read-only over `quic` / `connection`.
+/// teardown.  A missing `connection` is the Rust shape for C's
+/// `cnx == NULL` cleanup call.
 pub trait PerformanceLog {
-    fn emit(&mut self, quic: &Quic, connection: &Connection, should_delete: bool) -> i32;
+    fn emit(
+        &mut self,
+        connection: Option<&Connection>,
+        should_delete: bool,
+        is_last_connection: bool,
+    ) -> i32;
 
     fn close(&mut self, _quic: &Quic) -> i32 {
         0
@@ -2251,11 +2261,13 @@ pub struct Quic {
     /// matters.
     pub connections: Arena<Connection>,
 
-    /// Per-connection wake-up scheduler keyed by `next_wake_time`.
+    /// Per-connection wake-up scheduler keyed by `(next_wake_time, slot)`.
     /// Splay-tree access locality matters here — the next-to-fire
     /// connection is usually adjacent to the one we just touched.
+    /// The slot tie-breaker lets multiple connections share the same
+    /// wake time, matching the C intrusive tree's one node per connection.
     /// C: `connection_wake_tree`.
-    pub connection_wake_tree: SplayTree<u64, ConnectionToken>,
+    pub connection_wake_tree: SplayTree<(u64, usize), ConnectionToken>,
 
     /// In-progress (currently being serviced) connection.  C:
     /// `*mut Connection` re-entrancy slot.
@@ -3305,9 +3317,12 @@ impl Quic {
         let Some(mut perflog) = self.perflog_fn.take() else {
             return;
         };
-        if let Some(cnx) = self.connections.get(token) {
-            let _ = perflog.emit(self, cnx, should_delete);
-        }
+        let is_last_connection = self.connections.len() <= 1;
+        let _ = perflog.emit(
+            self.connections.get(token),
+            should_delete,
+            is_last_connection,
+        );
         self.perflog_fn = Some(perflog);
     }
 
@@ -4318,6 +4333,8 @@ impl Quic {
             })
             .collect();
 
+        let _ = self.perflog(Some(token), false);
+
         for membership in local_cid_memberships {
             self.connection_by_id.remove(membership);
         }
@@ -5132,10 +5149,40 @@ impl Connection {
         send_buffer: &mut [u8],
         next_wake_time: &mut Instant,
     ) -> Result<usize, crate::Error> {
+        self.prepare_path_control_packet_for_tuple(
+            path_x,
+            tuple_index,
+            packet,
+            current_time,
+            send_buffer,
+            send_buffer.len(),
+            next_wake_time,
+        )
+    }
+
+    /// Format a path-control packet for the selected tuple.
+    ///
+    /// C: `picoquic_prepare_path_control_packet` (picoquic/paths.c:151-232).
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_path_control_packet_for_tuple(
+        &mut self,
+        path_x: &mut Path,
+        tuple_index: usize,
+        packet: &mut Packet,
+        current_time: Instant,
+        send_buffer: &mut [u8],
+        send_buffer_max: usize,
+        next_wake_time: &mut Instant,
+    ) -> Result<usize, crate::Error> {
+        if tuple_index >= path_x.tuples.len() {
+            packet.length = 0;
+            return Ok(0);
+        }
+
         let packet_type = PacketType::OneRttProtected;
         let pc = PacketContext::Application;
         let checksum_overhead = self.get_checksum_length(Epoch::OneRtt);
-        let send_buffer_min_max = send_buffer.len().min(path_x.send_mtu);
+        let send_buffer_min_max = send_buffer_max.min(path_x.send_mtu).min(send_buffer.len());
         if send_buffer_min_max <= checksum_overhead {
             packet.length = 0;
             return Ok(0);
@@ -5145,28 +5192,62 @@ impl Connection {
         let mut is_pure_ack = 1;
         let mut is_challenge_padding_needed = 0;
         let mut ret = 0;
+        let mut send_length = 0usize;
         let bytes_limit = send_buffer_min_max
             .saturating_sub(checksum_overhead)
             .min(packet.bytes.len());
-        let pkt_ctx = if self.is_multipath_enabled {
-            &path_x.pkt_ctx
+        let path_idx = self
+            .paths
+            .iter()
+            .position(|path| path.unique_path_id == path_x.unique_path_id)
+            .unwrap_or(0);
+        let (pkt_send_sequence, first_pending_seq) = if self.is_multipath_enabled {
+            (
+                path_x.pkt_ctx.send_sequence,
+                path_x.pkt_ctx.pending.keys().next().copied(),
+            )
         } else {
-            &self.pkt_ctx[pc as usize]
+            let pkt_ctx = &self.pkt_ctx[pc as usize];
+            (
+                pkt_ctx.send_sequence,
+                pkt_ctx.pending.keys().next().copied(),
+            )
         };
-        let header_length = self.predict_packet_header_length_from_state(packet_type, pkt_ctx);
+        let mut header_length = self.predict_packet_header_length_at(
+            packet_type,
+            path_idx,
+            tuple_index,
+            pkt_send_sequence,
+            first_pending_seq,
+        );
         let mut length = header_length;
 
         packet.packet_context = pc;
         packet.packet_type = packet_type;
         packet.offset = header_length;
-        packet.sequence_number = pkt_ctx.send_sequence;
+        packet.sequence_number = pkt_send_sequence;
         packet.send_time = current_time;
         packet.send_path = Some(Self::path_token_for_path(path_x));
-        packet.checksum_overhead = checksum_overhead;
 
         if length <= bytes_limit {
+            let mut pn_offset = 0usize;
+            let mut pn_length = 0usize;
+            length = self.create_packet_header_at(
+                packet_type,
+                pkt_send_sequence,
+                path_idx,
+                tuple_index,
+                header_length,
+                &mut packet.bytes,
+                &mut pn_offset,
+                &mut pn_length,
+            );
+            header_length = length;
+            packet.offset = header_length;
+
+            let mut offset = length;
             let tail_len = {
-                let tail = &mut packet.bytes[length..bytes_limit];
+                let tail = &mut packet.bytes[offset..bytes_limit];
                 match self.prepare_tuple_challenge_frames(
                     path_x,
                     tuple_index,
@@ -5184,13 +5265,15 @@ impl Connection {
                     }
                 }
             };
-            length = bytes_limit.saturating_sub(tail_len);
+            offset = bytes_limit.saturating_sub(tail_len);
+            length = offset;
 
-            if ret == 0 && self.is_address_discovery_provider && tuple_index < path_x.tuples.len() {
-                let mut tuple = path_x.tuples.remove(tuple_index);
-                let _ = {
-                    let tail = &mut packet.bytes[length..bytes_limit];
-                    prepare_observed_address_frame(
+            if ret == 0 && self.is_address_discovery_provider && !path_x.tuples.is_empty() {
+                let selected_index = tuple_index.min(path_x.tuples.len() - 1);
+                let mut tuple = path_x.tuples.remove(selected_index);
+                {
+                    let tail = &mut packet.bytes[offset..bytes_limit];
+                    let _ = prepare_observed_address_frame(
                         tail,
                         path_x,
                         &mut tuple,
@@ -5199,9 +5282,9 @@ impl Connection {
                         &mut self.observed_number,
                         &mut more_data,
                         &mut is_pure_ack,
-                    )
-                };
-                path_x.tuples.insert(tuple_index, tuple);
+                    );
+                }
+                path_x.tuples.insert(selected_index, tuple);
             }
         } else {
             ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
@@ -5224,36 +5307,39 @@ impl Connection {
         } else {
             length = 0;
         }
+        packet.length = length;
 
-        let mut send_length = 0;
-        if tuple_index < path_x.tuples.len() {
-            let mut tuple = path_x.tuples.remove(tuple_index);
-            self.finalize_and_protect_packet_tuple(
-                packet,
-                ret,
-                length,
-                header_length,
-                checksum_overhead,
-                &mut send_length,
-                send_buffer,
-                send_buffer_min_max,
-                path_x,
-                current_time,
-                &mut tuple,
-            );
-            path_x.tuples.insert(tuple_index, tuple);
-        } else {
-            packet.length = 0;
-        }
+        let final_tuple_index = tuple_index.min(path_x.tuples.len() - 1);
+        let mut tuple = path_x.tuples.remove(final_tuple_index);
+        self.finalize_and_protect_packet_tuple(
+            packet,
+            ret,
+            length,
+            header_length,
+            checksum_overhead,
+            &mut send_length,
+            send_buffer,
+            send_buffer_min_max,
+            path_x,
+            current_time,
+            &mut tuple,
+        );
+        path_x.tuples.insert(final_tuple_index, tuple);
 
         if send_length > 0 {
-            self.set_sender_wake_now(next_wake_time, current_time);
+            *next_wake_time = current_time;
+            self.next_wake_time = current_time;
             if ret == 0 && self.is_still_logging() {
                 crate::logger::Log::cc_dump(self, current_time);
             }
         }
         packet.is_ack_eliciting = is_pure_ack == 0;
-        Ok(send_length)
+
+        if ret == 0 {
+            Ok(send_length)
+        } else {
+            Err(crate::internal::sender_status_to_error(ret))
+        }
     }
 
     /// Append PATH_CHALLENGE frames into `bytes` for `path_x`.
@@ -7904,7 +7990,7 @@ impl Connection {
             }
             if let Ok((tree_token, old_token)) = quic
                 .connection_wake_tree
-                .insert(current_time.ticks(), token)
+                .insert(connection_wake_key(current_time, token), token)
             {
                 new_membership = Some(tree_token);
                 if let Some(old_token) = old_token
@@ -7985,7 +8071,6 @@ impl Quic {
         let &tok = self.connection_by_icid.get(ht)?;
         Some(tok)
     }
-
     /// Look up a connection by stateless-reset secret and peer
     /// address.
     /// C: `picoquic_cnx_by_secret` (picoquic/quicctx.c:5277-5292).
@@ -8466,8 +8551,9 @@ impl Quic {
             .own_token
             .filter(|token| self.connections.contains(*token));
         if let Some(token) = token
-            && let Ok((tree_token, old)) =
-                self.connection_wake_tree.insert(next_time.ticks(), token)
+            && let Ok((tree_token, old)) = self
+                .connection_wake_tree
+                .insert(connection_wake_key(next_time, token), token)
         {
             connection.connection_wake_membership = Some(tree_token);
             if let Some(old_token) = old
@@ -17826,107 +17912,67 @@ pub struct StreamDataBufferArgument<'a> {
     pub app_buffer: &'a [u8],
 }
 
-/// Callback context supplied for `CallbackEvent::PrepareDatagram`.
-pub struct DatagramBufferArgument {
-    pub allowed_space: usize,
-    pub length: usize,
-    pub is_active: i32,
-    pub is_old_api: i32,
-    pub was_called: i32,
-    pub connection_is_datagram_ready: bool,
-    pub path_is_datagram_ready: bool,
-    payload: Vec<u8>,
+// ---------------------------------------------------------------------------
+// Datagram data buffer (callback argument for "prepare datagram").
+
+pub struct DatagramBufferArgument<'buf, 'cnx, 'path> {
+    pub(crate) connection: &'cnx mut Connection,
+    pub(crate) path_x: Option<&'path mut Path>,
+    pub(crate) bytes: &'buf mut [u8],
+    pub(crate) byte_index: usize,
+    pub(crate) allowed_space: usize,
+    pub(crate) after_data: usize,
+    pub(crate) is_active: i32,
+    pub(crate) is_old_api: bool,
+    pub(crate) was_called: bool,
 }
 
-impl DatagramBufferArgument {
-    fn new(
+impl<'buf, 'cnx, 'path> DatagramBufferArgument<'buf, 'cnx, 'path> {
+    pub(crate) fn new(
+        connection: &'cnx mut Connection,
+        path_x: &'path mut Path,
+        bytes: &'buf mut [u8],
+        byte_index: usize,
         allowed_space: usize,
-        connection_is_datagram_ready: bool,
-        path_is_datagram_ready: bool,
     ) -> Self {
         Self {
+            connection,
+            path_x: Some(path_x),
+            bytes,
+            byte_index,
             allowed_space,
-            length: 0,
+            after_data: 0,
             is_active: 0,
-            is_old_api: 0,
-            was_called: 0,
-            connection_is_datagram_ready,
-            path_is_datagram_ready,
-            payload: Vec::new(),
+            is_old_api: false,
+            was_called: false,
         }
     }
 
-    pub fn provide_buffer(&mut self, length: usize) -> Option<&mut [u8]> {
-        self.provide_buffer_ex(length, DatagramActive::NotActive)
+    pub fn connection_mut(&mut self) -> &mut Connection {
+        &mut *self.connection
     }
 
-    pub fn provide_buffer_ex(
-        &mut self,
-        length: usize,
-        is_active: DatagramActive,
-    ) -> Option<&mut [u8]> {
-        let active_bits = is_active as u8;
-        self.is_active = i32::from((active_bits & 1) != 0);
-        self.was_called = 1;
+    pub(crate) fn set_datagram_active(&mut self, is_active: DatagramActive) {
+        let bits = is_active as u8;
+        self.is_active = i32::from(bits & 1);
+        self.was_called = true;
 
-        if self.is_old_api == 0 {
-            self.connection_is_datagram_ready = (active_bits & 1) != 0;
-            self.path_is_datagram_ready = (active_bits >> 1) != 0;
-        }
-
-        self.length = 0;
-        if length == 0 || length > self.allowed_space {
-            self.payload.clear();
-            return None;
-        }
-
-        if self.payload.len() < length {
-            self.payload.try_reserve(length - self.payload.len()).ok()?;
-        }
-        self.payload.resize(length, 0);
-        self.length = length;
-        Some(&mut self.payload[..length])
-    }
-
-    fn format_into<'a>(
-        &self,
-        bytes: &'a mut [u8],
-        datagram_l_header_len: usize,
-    ) -> Option<&'a mut [u8]> {
-        let length = self.length;
-        if length == 0 || length > self.allowed_space {
-            return Some(bytes);
-        }
-
-        let length_len = varint_encode(&mut bytes[datagram_l_header_len..], length as u64);
-        if length_len != 0 && bytes.len() >= datagram_l_header_len + length_len + length {
-            let payload_offset = datagram_l_header_len + length_len;
-            bytes[payload_offset..payload_offset + length].copy_from_slice(&self.payload[..length]);
-            return Some(&mut bytes[payload_offset + length..]);
-        }
-
-        let datagram_header_len = varint_encode(bytes, crate::frames::FrameType::Datagram as u64);
-        if datagram_header_len == 0 || bytes.len() < datagram_header_len + length {
-            return None;
-        }
-
-        let mut payload_offset = datagram_header_len;
-        let tail = payload_offset + length;
-        if tail < bytes.len() {
-            let padding = bytes.len() - tail;
-            bytes[..padding].fill(crate::frames::FrameType::Padding as u8);
-            let encoded = varint_encode(
-                &mut bytes[padding..],
-                crate::frames::FrameType::Datagram as u64,
-            );
-            if encoded == 0 || bytes.len() < padding + encoded + length {
-                return None;
+        if !self.is_old_api {
+            self.connection.is_datagram_ready = (bits & 1) != 0;
+            if let Some(path) = self.path_x.as_mut() {
+                path.is_datagram_ready = (bits >> 1) != 0;
             }
-            payload_offset = padding + encoded;
         }
+    }
 
-        bytes[payload_offset..payload_offset + length].copy_from_slice(&self.payload[..length]);
-        Some(&mut bytes[payload_offset + length..])
+    pub(crate) fn invoke_prepare_datagram(&mut self, unique_path_id: u64) -> i32 {
+        let Some(mut callback) = self.connection.callback_fn.take() else {
+            return 0;
+        };
+        let allowed_space = self.allowed_space;
+        let ret = callback.prepare_datagram(self, unique_path_id, allowed_space);
+        self.connection.callback_fn = Some(callback);
+        ret
     }
 }
 
@@ -20145,38 +20191,6 @@ pub fn format_misc_frames_in_context<'a>(
 }
 
 impl Connection {
-    pub(crate) fn reinsert_self_by_wake_time(&mut self, next_time: Instant) {
-        self.next_wake_time = next_time;
-
-        let Some(token) = self.own_token else {
-            return;
-        };
-        let old_membership = self.connection_wake_membership.take();
-        let mut next_membership = old_membership;
-
-        if let Some(quic) = self.quic_mut()
-            && quic.connections.contains(token)
-        {
-            if let Some(old_membership) = old_membership {
-                quic.connection_wake_tree.remove(old_membership);
-            }
-            next_membership = None;
-            if let Ok((tree_token, old_token)) =
-                quic.connection_wake_tree.insert(next_time.ticks(), token)
-            {
-                next_membership = Some(tree_token);
-                if let Some(old_token) = old_token
-                    && old_token != token
-                    && let Some(old_connection) = quic.connections.get_mut(old_token)
-                {
-                    old_connection.connection_wake_membership = None;
-                }
-            }
-        }
-
-        self.connection_wake_membership = next_membership;
-    }
-
     /// Push a fresh misc/datagram frame onto `queue`.  C took two
     /// `*mut *mut MiscFrameHeader` head/tail out-pointers; the Rust
     /// shape just takes the queue and pushes at the back.
@@ -20369,90 +20383,55 @@ pub fn format_ready_datagram_frame<'a>(
 ) -> Option<&'a mut [u8]> {
     *ret = 0;
 
-    let mut header_len = 0;
+    let mut byte_index = 0;
     if !encode_varint_at(
         bytes,
-        &mut header_len,
+        &mut byte_index,
         crate::frames::FrameType::DatagramL as u64,
-    ) || bytes.len().saturating_sub(header_len) < 16
+    ) || bytes.len().saturating_sub(byte_index) < 16
     {
         *more_data = 1;
         return Some(bytes);
     }
 
-    let allowed_space = bytes
-        .len()
-        .saturating_sub(header_len)
+    let allowed_space = (bytes.len() - byte_index)
         .min(connection.remote_parameters.max_datagram_frame_size as usize);
-    let callback_stream_id = if connection.are_path_callbacks_enabled {
+    let unique_path_id = if connection.are_path_callbacks_enabled {
         path_x.unique_path_id
     } else {
         0
     };
-    let connection_datagram_ready_before_callback = connection.is_datagram_ready;
-    let path_datagram_ready_before_callback = path_x.is_datagram_ready;
-    let mut datagram_context = DatagramBufferArgument::new(
-        allowed_space,
-        connection_datagram_ready_before_callback,
-        path_datagram_ready_before_callback,
-    );
-    let callback_bytes = vec![0u8; allowed_space];
 
-    let callback_ret = if let Some(mut callback) = connection.callback_fn.take() {
-        let ret = callback.callback(
-            connection,
-            callback_stream_id,
-            &callback_bytes,
-            CallbackEvent::PrepareDatagram,
-            Some(&mut datagram_context),
-        );
-        connection.callback_fn = Some(callback);
-        ret
-    } else {
-        0
-    };
-
-    if datagram_context.was_called != 0 && datagram_context.is_old_api == 0 {
-        // C updates these flags inside picoquic_provide_datagram_buffer_ex().
-        // The safe Rust callback shape carries the buffer context separately,
-        // so apply the provider result after the callback without clobbering
-        // explicit readiness changes the callback made later.
-        if connection.is_datagram_ready == connection_datagram_ready_before_callback {
-            connection.is_datagram_ready = datagram_context.connection_is_datagram_ready;
-        }
-        if path_x.is_datagram_ready == path_datagram_ready_before_callback {
-            path_x.is_datagram_ready = datagram_context.path_is_datagram_ready;
-        }
-    }
+    let mut context =
+        DatagramBufferArgument::new(connection, path_x, bytes, byte_index, allowed_space);
+    let callback_ret = context.invoke_prepare_datagram(unique_path_id);
 
     if callback_ret != 0 {
         crate::logger::Log::app_message(
-            connection,
+            context.connection_mut(),
             format_args!(
                 "Prepare datagram returns error 0x{:x}",
                 crate::errors::TransportError::InternalError as u64
             ),
         );
-        *ret = connection.connection_error(crate::errors::TransportError::InternalError as u64, 0);
-        return Some(bytes);
-    }
-
-    let sent_length = datagram_context.length;
-    let use_connection_readiness =
-        datagram_context.is_old_api != 0 || datagram_context.was_called == 0;
-    let more_data_flag = if use_connection_readiness {
-        connection.is_datagram_ready
+        *ret = context
+            .connection_mut()
+            .connection_error(crate::errors::TransportError::InternalError as u64, 0);
+        context.after_data = 0;
     } else {
-        datagram_context.is_active != 0
-    };
-    let tail = datagram_context.format_into(bytes, header_len)?;
-
-    if sent_length > 0 {
-        *is_pure_ack = 0;
+        if context.after_data > 0 {
+            *is_pure_ack = 0;
+        }
+        if context.is_old_api || !context.was_called {
+            *more_data |= i32::from(context.connection.is_datagram_ready);
+        } else {
+            *more_data |= context.is_active;
+        }
     }
-    *more_data |= i32::from(more_data_flag);
 
-    Some(tail)
+    let after_data = context.after_data;
+    let DatagramBufferArgument { bytes, .. } = context;
+    Some(&mut bytes[after_data..])
 }
 
 pub fn decode_datagram_frame_header<'a>(
@@ -24875,6 +24854,66 @@ impl Connection {
         self.predict_packet_header_length_from_context_state(packet_type, pkt_ctx)
     }
 
+    pub fn predict_packet_header_length_at(
+        &self,
+        packet_type: PacketType,
+        path_idx: usize,
+        tuple_idx: usize,
+        send_sequence: u64,
+        first_pending_seq: Option<u64>,
+    ) -> usize {
+        let tuple = self
+            .paths
+            .get(path_idx)
+            .and_then(|path| path.tuples.get(tuple_idx).or_else(|| path.tuples.first()));
+        let remote_cid_len = tuple
+            .map(|tuple| self.remote_connection_id_for_tuple(tuple).len())
+            .or_else(|| {
+                self.remote_connection_id_stashes
+                    .first()
+                    .and_then(|stash| stash.connection_ids.first())
+                    .map(|cid| cid.connection_id.len())
+            })
+            .unwrap_or(8);
+        let local_cid_len = tuple
+            .map(|tuple| self.local_connection_id_for_tuple(tuple).len())
+            .unwrap_or(self.local_cid_length as usize);
+
+        if packet_type == PacketType::OneRttProtected {
+            let delta = if let Some(first) = first_pending_seq {
+                send_sequence.saturating_sub(first) as i64
+            } else {
+                send_sequence as i64
+            };
+            let pn_l = if delta >= 262144 {
+                4usize
+            } else if send_sequence >= 1024 {
+                3
+            } else if send_sequence >= 16 {
+                2
+            } else {
+                1
+            };
+            1 + remote_cid_len + pn_l
+        } else {
+            let dest_cid_len = if self.client_mode
+                && (packet_type == PacketType::Initial
+                    || packet_type == PacketType::ZeroRttProtected)
+                && remote_cid_len == 0
+            {
+                self.initial_connection_id.len()
+            } else {
+                remote_cid_len
+            };
+            let mut header_length = 1 + 4 + 2 + dest_cid_len + local_cid_len + 2 + 4;
+            if packet_type == PacketType::Initial {
+                let token_len = self.retry_token.len();
+                header_length += encode_varint_length(token_len as u64) + token_len;
+            }
+            header_length
+        }
+    }
+
     /// Like [`create_packet_header`] but addresses the path and tuple by index
     /// instead of by `&mut` reference.  This avoids the split-borrow problem
     /// that arises when the path and tuple live inside `&mut self`.
@@ -26033,7 +26072,7 @@ impl Connection {
         ret
     }
 
-    fn pkt_ctx_backlog_empty(&self, pkt_ctx: &PacketContextState) -> bool {
+    pub(crate) fn pkt_ctx_backlog_empty(&self, pkt_ctx: &PacketContextState) -> bool {
         let mut backlog_empty = true;
 
         for packet_token in pkt_ctx.pending.values().copied() {
@@ -29791,24 +29830,29 @@ mod test {
     impl StreamDataCallback for ReadyDatagramCallback {
         fn callback(
             &mut self,
-            connection: &mut Connection,
-            stream_id: u64,
-            bytes: &[u8],
-            fin_or_event: CallbackEvent,
-            stream_ctx: Option<&mut dyn Any>,
+            _connection: &mut Connection,
+            _stream_id: u64,
+            _bytes: &[u8],
+            _fin_or_event: CallbackEvent,
+            _stream_ctx: Option<&mut dyn Any>,
         ) -> i32 {
-            assert_eq!(fin_or_event, CallbackEvent::PrepareDatagram);
-            assert_eq!(stream_id, self.expected_stream_id);
-            assert_eq!(bytes.len(), self.expected_allowed_space);
-            let context = stream_ctx
-                .and_then(|ctx| ctx.downcast_mut::<DatagramBufferArgument>())
-                .expect("prepare datagram callback should receive datagram context");
-            let buffer = context
-                .provide_buffer_ex(self.payload.len(), self.active)
-                .expect("datagram payload buffer should be available");
+            panic!("ready datagram test callback should use prepare_datagram")
+        }
+
+        fn prepare_datagram<'buf, 'cnx, 'path>(
+            &mut self,
+            context: &mut DatagramBufferArgument<'buf, 'cnx, 'path>,
+            unique_path_id: u64,
+            allowed_space: usize,
+        ) -> i32 {
+            assert_eq!(unique_path_id, self.expected_stream_id);
+            assert_eq!(allowed_space, self.expected_allowed_space);
+            let buffer =
+                crate::provide_datagram_buffer_ex(context, self.payload.len(), self.active)
+                    .expect("datagram payload buffer should be available");
             buffer.copy_from_slice(&self.payload);
             if let Some(is_ready) = self.mark_connection_ready_after_provider {
-                let _ = connection.mark_datagram_ready(is_ready);
+                let _ = context.connection_mut().mark_datagram_ready(is_ready);
             }
             0
         }
@@ -30124,27 +30168,33 @@ mod test {
 
     #[test]
     fn datagram_buffer_argument_formats_length_delimited_payload() {
-        let mut context = DatagramBufferArgument::new(15, true, false);
-        {
-            let payload = context
-                .provide_buffer_ex(4, DatagramActive::AnyPath)
-                .expect("payload buffer should be available");
-            payload.copy_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
-        }
-
-        assert_eq!(context.was_called, 1);
-        assert_eq!(context.is_active, 1);
-        assert!(context.connection_is_datagram_ready);
-        assert!(!context.path_is_datagram_ready);
-
+        let current_time = Instant::from_ticks(0);
+        let mut quic = new_test_quic(current_time);
+        let cnx = create_datagram_test_connection(&mut quic, current_time);
+        let mut path = cnx.paths.remove(0);
         let mut output = [0u8; 16];
         let header_len = varint_encode(&mut output, crate::frames::FrameType::DatagramL as u64);
-        let remaining = context
-            .format_into(&mut output, header_len)
-            .expect("datagram should format")
-            .len();
+        let (after_data, is_active, was_called, connection_ready, path_ready) = {
+            let mut context =
+                DatagramBufferArgument::new(cnx, &mut path, &mut output, header_len, 15);
+            let payload =
+                crate::provide_datagram_buffer_ex(&mut context, 4, DatagramActive::AnyPath)
+                    .expect("payload buffer should be available");
+            payload.copy_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+            (
+                context.after_data,
+                context.is_active,
+                context.was_called,
+                context.connection.is_datagram_ready,
+                context.path_x.as_ref().unwrap().is_datagram_ready,
+            )
+        };
 
-        assert_eq!(remaining, 10);
+        assert!(was_called);
+        assert_eq!(is_active, 1);
+        assert!(connection_ready);
+        assert!(!path_ready);
+        assert_eq!(output.len() - after_data, 10);
         assert_eq!(output[0], crate::frames::FrameType::DatagramL as u8);
         assert_eq!(output[1], 4);
         assert_eq!(&output[2..6], &[0xaa, 0xbb, 0xcc, 0xdd]);
@@ -30153,26 +30203,31 @@ mod test {
     #[test]
     fn datagram_buffer_argument_squeezes_without_length_when_needed() {
         let expected: Vec<u8> = (0u8..65).collect();
-        let mut context = DatagramBufferArgument::new(65, true, true);
-        {
-            let payload = context
-                .provide_buffer_ex(65, DatagramActive::ThisPathOnly)
-                .expect("payload buffer should be available");
-            payload.copy_from_slice(&expected);
-        }
-
-        assert_eq!(context.is_active, 0);
-        assert!(!context.connection_is_datagram_ready);
-        assert!(context.path_is_datagram_ready);
-
+        let current_time = Instant::from_ticks(0);
+        let mut quic = new_test_quic(current_time);
+        let cnx = create_datagram_test_connection(&mut quic, current_time);
+        let mut path = cnx.paths.remove(0);
         let mut output = [0u8; 66];
         let header_len = varint_encode(&mut output, crate::frames::FrameType::DatagramL as u64);
-        let remaining = context
-            .format_into(&mut output, header_len)
-            .expect("datagram should fit without length")
-            .len();
+        let (after_data, is_active, connection_ready, path_ready) = {
+            let mut context =
+                DatagramBufferArgument::new(cnx, &mut path, &mut output, header_len, 65);
+            let payload =
+                crate::provide_datagram_buffer_ex(&mut context, 65, DatagramActive::ThisPathOnly)
+                    .expect("payload buffer should be available");
+            payload.copy_from_slice(&expected);
+            (
+                context.after_data,
+                context.is_active,
+                context.connection.is_datagram_ready,
+                context.path_x.as_ref().unwrap().is_datagram_ready,
+            )
+        };
 
-        assert_eq!(remaining, 0);
+        assert_eq!(is_active, 0);
+        assert!(!connection_ready);
+        assert!(path_ready);
+        assert_eq!(output.len() - after_data, 0);
         assert_eq!(output[0], crate::frames::FrameType::Datagram as u8);
         assert_eq!(&output[1..], &expected[..]);
     }

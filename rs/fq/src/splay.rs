@@ -7,7 +7,7 @@
 //!
 //! ## API shape
 //!
-//! `SplayTree<K, V>` is a slotmap-backed ordered map.  `K: Ord`
+//! `SplayTree<K, V>` is a slotmap-backed ordered tree.  `K: Ord`
 //! provides comparison; `V` is the stored value (typically a
 //! token into another arena).  Callers handle [`SplayToken`]s
 //! returned by `insert`/`find`; the parent/left/right linkage
@@ -408,16 +408,11 @@ impl<K: Ord, V> SplayTree<K, V> {
     // Public API
 
     /// Insert `(key, value)`, splay it to the root, and return its
-    /// token.  If `key` was already present, the previous value is
-    /// replaced and returned in the `Ok` payload.
+    /// token.  Matching C `picosplay_insert`, equal keys are preserved
+    /// as distinct nodes and insertion descends right on equality.
     ///
     /// Returns [`Error::Memory`] on slot-vector allocation failure.
     pub fn insert(&mut self, key: K, value: V) -> Result<(SplayToken, Option<V>), Error> {
-        if let Some(tok) = self.find(&key) {
-            let old = core::mem::replace(self.value_of_mut(tok.idx), value);
-            return Ok((tok, Some(old)));
-        }
-
         if self.root.is_none() {
             let idx = self.alloc_slot(key, value)?;
             self.root = Some(idx);
@@ -453,6 +448,19 @@ impl<K: Ord, V> SplayTree<K, V> {
         self.splay(idx);
         self.len += 1;
         Ok((self.token_of(idx), None))
+    }
+
+    /// Insert or replace `(key, value)` as a map-style operation.
+    ///
+    /// This is intentionally separate from [`SplayTree::insert`], which
+    /// mirrors C `picosplay_insert` and preserves duplicate keys.
+    pub fn upsert(&mut self, key: K, value: V) -> Result<(SplayToken, Option<V>), Error> {
+        if let Some(tok) = self.find(&key) {
+            let old = core::mem::replace(self.value_of_mut(tok.idx), value);
+            return Ok((tok, Some(old)));
+        }
+
+        self.insert(key, value)
     }
 
     /// Look up `key`, splaying the matching node to the root.
@@ -672,4 +680,43 @@ impl<K: Ord, V> Default for SplayTree<K, V> {
 }
 
 #[cfg(test)]
-mod test {}
+mod test {
+    use super::SplayTree;
+
+    #[test]
+    fn insert_preserves_duplicate_keys() {
+        let mut tree = SplayTree::new();
+
+        let (first, old) = tree.insert(7, "first").unwrap();
+        assert!(old.is_none());
+        let (second, old) = tree.insert(7, "second").unwrap();
+        assert!(old.is_none());
+
+        assert_ne!(first, second);
+        assert_eq!(tree.len(), 2);
+        assert_eq!(tree.get(first), Some(&"first"));
+        assert_eq!(tree.get(second), Some(&"second"));
+
+        let found = tree.find(&7).unwrap();
+        assert_eq!(found, second);
+
+        assert_eq!(tree.remove_by_key(&7), Some("second"));
+        assert_eq!(tree.len(), 1);
+        let found = tree.find(&7).unwrap();
+        assert_eq!(found, first);
+    }
+
+    #[test]
+    fn upsert_replaces_existing_key() {
+        let mut tree = SplayTree::new();
+
+        let (first, old) = tree.upsert(3, "old").unwrap();
+        assert!(old.is_none());
+        let (second, old) = tree.upsert(3, "new").unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(old, Some("old"));
+        assert_eq!(tree.len(), 1);
+        assert_eq!(tree.get(second), Some(&"new"));
+    }
+}

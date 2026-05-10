@@ -91,9 +91,19 @@ impl Socket for Socket2Udp {
     }
 
     fn recv(&mut self, buffer: &mut [u8]) -> Result<RecvInfo, Error> {
-        use std::io::Read;
-        let bytes_recv = self.0.read(buffer).map_err(|_| Error::Generic)?;
+        let uninit_buffer = unsafe {
+            // SAFETY: `recv_from` writes at most `buffer.len()` initialized
+            // bytes into the same allocation, and `u8` has no invalid bit
+            // patterns. The initialized prefix remains readable through
+            // `buffer` after the call returns.
+            &mut *(buffer as *mut [u8] as *mut [core::mem::MaybeUninit<u8>])
+        };
+        let (bytes_recv, addr_from) = self
+            .0
+            .recv_from(uninit_buffer)
+            .map_err(|_| Error::Generic)?;
         Ok(RecvInfo {
+            addr_from: addr_from.as_socket(),
             bytes_recv,
             ..RecvInfo::default()
         })

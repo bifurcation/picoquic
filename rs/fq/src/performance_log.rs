@@ -11,6 +11,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::internal::ConnectionToken;
 use crate::internal::PerformanceLog;
 use crate::utils::print_connection_id_hexa;
 use crate::{Connection, Error, Quic};
@@ -285,16 +286,22 @@ impl PerflogCtx {
 impl PerformanceLog for PerflogCtx {
     /// C: `picoquic_perflog`.  Records the connection's metrics, and
     /// flushes to disk when this is the last connection on the
-    /// context (or on context teardown).
-    fn emit(&mut self, quic: &Quic, connection: &Connection, should_delete: bool) -> i32 {
-        self.record(connection);
-        // C check: cnx_list == cnx && cnx_last == cnx — i.e. the
-        // connection being closed is the only one on this context.
-        // In Rust we count entries in the connection arena; teardown
-        // (`should_delete`) is also a flush trigger.
-        let last_one = quic.connections.len() <= 1;
-        if (last_one || should_delete) && self.save().is_err() {
-            return -1;
+    /// context.  The final `cnx == NULL, should_delete == 1` call only
+    /// releases context state; it does not force a save in the C code.
+    fn emit(
+        &mut self,
+        connection: Option<&Connection>,
+        should_delete: bool,
+        is_last_connection: bool,
+    ) -> i32 {
+        if let Some(connection) = connection {
+            self.record(connection);
+            if is_last_connection && self.save().is_err() {
+                return -1;
+            }
+        }
+        if should_delete {
+            self.items.clear();
         }
         0
     }
@@ -333,6 +340,34 @@ fn file_set_header(perflog_file_name: &Path) {
 }
 
 impl Quic {
+    /// Route the installed performance-log callback and model the
+    /// `should_delete` cleanup side effects.
+    ///
+    /// C: `picoquic_perflog`.
+    pub(crate) fn perflog(
+        &mut self,
+        connection: Option<ConnectionToken>,
+        should_delete: bool,
+    ) -> i32 {
+        let Some(mut perflog_fn) = self.perflog_fn.take() else {
+            return 0;
+        };
+
+        let is_last_connection = connection.is_some() && self.connections.len() <= 1;
+        let ret = perflog_fn.emit(
+            connection.and_then(|token| self.connections.get(token)),
+            should_delete,
+            is_last_connection,
+        );
+
+        if should_delete {
+            self.v_perflog_ctx = None;
+        } else {
+            self.perflog_fn = Some(perflog_fn);
+        }
+        ret
+    }
+
     /// Attach a performance log to this QUIC context, writing CSV
     /// rows to `perflog_file_name` whenever the connection list
     /// drains.  If the file is empty (or missing), a CSV header row
