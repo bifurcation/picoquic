@@ -29,10 +29,10 @@
 //!   [`Quic`]; those keyed on `Connection*` become methods on the
 //!   [`Log`] trait (implemented for [`Connection`]).
 //! * `Path*` — non-NULL for every per-path log event except
-//!   [`Logger::dropped_packet`] and
-//!   [`Logger::packet`], where `packet.c` may pass NULL when
-//!   the path lookup failed.  Those two get `Option<&mut Path>`; the
-//!   rest get `&mut Path`.
+//!   [`Logger::dropped_packet`], [`Logger::packet`], and
+//!   [`Logger::packet_lost`], where the C source may pass NULL when
+//!   the path lookup failed or a lost packet has no send path.  Those
+//!   three get `Option<&mut Path>`; the rest get `&mut Path`.
 //! * `ConnectionId*` — `dcid` in [`Logger::packet_lost`] is
 //!   nullable per `loss_recovery.c` (the call site explicitly
 //!   substitutes NULL when no remote CID is known); the `cid`
@@ -181,7 +181,7 @@ pub trait Logger {
     fn packet_lost(
         &mut self,
         connection: &mut Connection,
-        path_x: &mut Path,
+        path_x: Option<&mut Path>,
         ptype: PacketType,
         sequence_number: u64,
         trigger: &str,
@@ -382,13 +382,14 @@ pub trait Log {
         current_time: Instant,
     );
 
-    /// Log a packet-lost event.  `dcid` is `None` when the remote
+    /// Log a packet-lost event.  `path_x` is `None` when the lost
+    /// packet has no send path; `dcid` is `None` when the remote
     /// connection ID is unknown.
     ///
     /// C: `picoquic_log_packet_lost`.
     fn packet_lost(
         &mut self,
-        path_x: &mut Path,
+        path_x: Option<&mut Path>,
         ptype: PacketType,
         sequence_number: u64,
         trigger: &str,
@@ -696,7 +697,7 @@ impl Log for Connection {
 
     fn packet_lost(
         &mut self,
-        path_x: &mut Path,
+        path_x: Option<&mut Path>,
         ptype: PacketType,
         sequence_number: u64,
         trigger: &str,
@@ -708,10 +709,12 @@ impl Log for Connection {
             return;
         }
 
+        let mut path_x = path_x;
+
         if let Some(text) = logger_ref(&self.text_log_fns) {
             text.borrow_mut().packet_lost(
                 self,
-                path_x,
+                option_path(&mut path_x),
                 ptype,
                 sequence_number,
                 trigger,
@@ -726,7 +729,7 @@ impl Log for Connection {
         {
             bin.borrow_mut().packet_lost(
                 self,
-                path_x,
+                option_path(&mut path_x),
                 ptype,
                 sequence_number,
                 trigger,
@@ -741,7 +744,7 @@ impl Log for Connection {
         {
             qlog.borrow_mut().packet_lost(
                 self,
-                path_x,
+                option_path(&mut path_x),
                 ptype,
                 sequence_number,
                 trigger,

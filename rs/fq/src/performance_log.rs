@@ -298,6 +298,10 @@ impl PerformanceLog for PerflogCtx {
         }
         0
     }
+
+    fn close(&mut self, _quic: &Quic) -> i32 {
+        if self.save().is_err() { -1 } else { 0 }
+    }
 }
 
 /// Probe whether the perflog file is missing or zero-length.

@@ -33,11 +33,10 @@
 //!   on `Connection*` become methods on the [`Binlog`] trait
 //!   (implemented for [`Connection`]).
 //! * `Path*` — only ever accessed inside
-//!   `binlog_get_path_id(connection, path_x)`, which dereferences `path_x`
-//!   to read `unique_path_id`.  Every observed caller passes a
-//!   non-NULL path handle, so this is `&mut Path` for parity with
-//!   the unified-log dispatch trait (which takes the path mutably
-//!   for the same hooks).
+//!   `binlog_get_path_id(connection, path_x)`, which returns zero
+//!   when `path_x` is NULL and otherwise reads `unique_path_id`.
+//!   This maps to `Option<&mut Path>` for packet-lost logging, where
+//!   `loss_recovery.c` can report a lost packet with no send path.
 //! * `const ConnectionId*` (in [`pdu`] / [`packet`]) →
 //!   `&ConnectionId`.  The C contract is "must be non-NULL"; every
 //!   caller passes `&connection->initial_connection_id`.
@@ -1156,16 +1155,17 @@ pub trait Binlog {
         current_time: Instant,
     );
 
-    /// Log a packet-lost event.  `dcid` is `None` when the remote
-    /// connection ID is unknown — the C body emits a single zero
-    /// byte in that case.
+    /// Log a packet-lost event.  `path_x` is `None` when the packet
+    /// has no send path; `dcid` is `None` when the remote connection
+    /// ID is unknown — the C body emits a single zero byte in that
+    /// case.
     ///
     /// C: `void binlog_packet_lost(Connection*, Path*,
     /// packet_type_enum, uint64_t, char const*,
     /// ConnectionId*, size_t, uint64_t)`.
     fn packet_lost(
         &mut self,
-        path_x: &mut Path,
+        path_x: Option<&mut Path>,
         ptype: PacketType,
         sequence_number: u64,
         trigger: &str,
@@ -1354,7 +1354,7 @@ impl Binlog for Connection {
 
     fn packet_lost(
         &mut self,
-        path_x: &mut Path,
+        path_x: Option<&mut Path>,
         ptype: PacketType,
         sequence_number: u64,
         trigger: &str,
@@ -1366,7 +1366,10 @@ impl Binlog for Connection {
             return;
         }
         let cid = self.initial_connection_id;
-        let path_id = get_path_id(self, path_x);
+        let path_id = path_x
+            .as_deref()
+            .map(|path| get_path_id(self, path))
+            .unwrap_or(0);
 
         let mut buf = ByteStreamBuf::default();
         let Some(mut msg) = buf.stream(BYTESTREAM_MAX_BUFFER_SIZE) else {
@@ -1923,7 +1926,7 @@ impl Logger for BinlogLogger {
     fn packet_lost(
         &mut self,
         connection: &mut Connection,
-        path_x: &mut Path,
+        path_x: Option<&mut Path>,
         ptype: PacketType,
         sequence_number: u64,
         trigger: &str,

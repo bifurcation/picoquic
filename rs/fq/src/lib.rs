@@ -522,6 +522,26 @@ pub trait StreamDataCallback {
         fin_or_event: CallbackEvent,
         stream_ctx: Option<&mut dyn core::any::Any>,
     ) -> i32;
+
+    fn prepare_to_send<'a>(
+        &mut self,
+        connection: &mut Connection,
+        stream_id: u64,
+        context: &mut crate::internal::StreamDataBufferArgument<'a>,
+        stream_ctx: Option<&mut dyn core::any::Any>,
+    ) -> i32 {
+        let start = context.byte_index;
+        let end = start
+            .saturating_add(context.allowed_space)
+            .min(context.bytes.len());
+        self.callback(
+            connection,
+            stream_id,
+            &context.bytes[start..end],
+            CallbackEvent::PrepareToSend,
+            stream_ctx,
+        )
+    }
 }
 
 /// ALPN-selection callback.  Returns the index of the chosen ALPN
@@ -4130,12 +4150,12 @@ impl Quic {
 /// borrowed buffer the application should fill, or `None` on
 /// error.  Lifetime ties the returned slice to `context` so the
 /// borrow ends with the callback.
-pub fn provide_stream_data_buffer<'a>(
-    context: &'a mut crate::internal::StreamDataBufferArgument<'a>,
+pub fn provide_stream_data_buffer<'ctx, 'buf>(
+    context: &'ctx mut crate::internal::StreamDataBufferArgument<'buf>,
     nb_bytes: usize,
     is_fin: bool,
     is_still_active: bool,
-) -> Option<&'a mut [u8]> {
+) -> Option<&'ctx mut [u8]> {
     if nb_bytes > context.allowed_space {
         return None;
     }
@@ -4160,8 +4180,12 @@ pub fn provide_stream_data_buffer<'a>(
             context.bytes[0] = crate::frames::FrameType::Padding as u8;
             context.byte_index += 1;
         } else {
+            let encode_end = context
+                .byte_index
+                .saturating_add(context.byte_space)
+                .min(context.bytes.len());
             let encoded = crate::internal::varint_encode(
-                &mut context.bytes[context.byte_index..context.byte_space],
+                &mut context.bytes[context.byte_index..encode_end],
                 nb_bytes as u64,
             );
             if encoded == 0 {

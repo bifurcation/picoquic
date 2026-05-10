@@ -706,10 +706,11 @@ fn queue_tls_bytes(cnx: &mut Connection, epoch: usize, bytes: &[u8]) -> Result<(
         return Ok(());
     }
     let stream = &mut cnx.tls_stream[epoch];
-    let offset = stream.sent_offset;
-    stream.sent_offset = stream
-        .sent_offset
-        .checked_add(bytes.len() as u64)
+    let offset = stream
+        .send_queue
+        .back()
+        .map(|node| node.offset.checked_add(node.bytes.len() as u64))
+        .unwrap_or(Some(stream.sent_offset))
         .ok_or(Error::InvalidArgument)?;
     stream.send_queue.push_back(StreamQueueNode {
         offset,

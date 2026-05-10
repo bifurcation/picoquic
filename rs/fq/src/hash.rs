@@ -396,6 +396,8 @@ impl<K: Hash + Eq, V> HashTable<K, V> {
 
     /// Remove and return the entry at `token`.  Bumps the slot's
     /// generation.  Returns `None` if the token was already stale.
+    ///
+    /// C: `picohash_delete_item`.
     pub fn remove(&mut self, token: HashToken) -> Option<(K, V)> {
         if !self.is_valid(token) {
             return None;
