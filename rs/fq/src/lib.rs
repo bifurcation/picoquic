@@ -1983,14 +1983,14 @@ impl Quic {
         preferred_version: u32,
         sni: Option<&str>,
         alpn: Option<&str>,
-        _callback: Option<Box<dyn StreamDataCallback>>,
+        callback: Option<Box<dyn StreamDataCallback>>,
     ) -> Option<&mut Connection> {
         // C: picoquic_create_client_cnx — wraps picoquic_create_cnx with
         // null CIDs, then runs picoquic_start_client_cnx and rolls back
         // on failure.  Callback installation is folded in here; the Rust
         // shape stores the boxed callback on Connection, which is the
         // moral equivalent of `cnx->callback_fn`/`cnx->callback_ctx`.
-        self.create_connection(
+        let connection = self.create_connection(
             ConnectionId::with_size(0)?,
             ConnectionId::with_size(0)?,
             Some(addr),
@@ -1999,7 +1999,9 @@ impl Quic {
             sni,
             alpn,
             true,
-        )
+        )?;
+        connection.set_callback(callback);
+        Some(connection)
     }
 
     /// Default callback enablement for path-state events on new
@@ -2087,14 +2089,18 @@ impl Quic {
             .get(connection)
             .and_then(|cnx| cnx.congestion_alg);
 
-        if let Some(cnx) = self.connections.get_mut(connection)
-            && let Some(path) = cnx.paths.get_mut(path_index)
-        {
-            if let Some(alg) = congestion_alg {
+        if let Some(cnx) = self.connections.get_mut(connection) {
+            if let Some(path) = cnx.paths.get_mut(path_index)
+                && let Some(alg) = congestion_alg
+            {
                 alg.algorithm.alg_delete(path);
             }
-            while !path.tuples.is_empty() {
-                path.delete_tuple(0, true);
+            while cnx
+                .paths
+                .get(path_index)
+                .is_some_and(|path| !path.tuples.is_empty())
+            {
+                cnx.delete_tuple(path_index, 0, true);
             }
         }
 
@@ -3110,13 +3116,19 @@ impl Connection {
     /// installed).
     /// C: `picoquic_get_callback_function` — returns `cnx->callback_fn`.
     pub fn callback(&self) -> Option<&dyn StreamDataCallback> {
-        self.callback_fn.as_deref()
+        self.callback_fn.as_deref().or_else(|| {
+            self.quic_ref()
+                .and_then(|quic| quic.default_callback_fn.as_deref())
+        })
     }
 
     /// Borrow the raw callback context associated with this connection.
     /// C: `picoquic_get_callback_context` — returns `cnx->callback_ctx`.
     pub fn callback_ctx(&self) -> Option<&dyn core::any::Any> {
-        self.callback_ctx.as_deref()
+        self.callback_ctx.as_deref().or_else(|| {
+            self.quic_ref()
+                .and_then(|quic| quic.default_callback_ctx.as_deref())
+        })
     }
 
     /// Queue a connection-level frame for transmission.
@@ -3614,19 +3626,36 @@ impl Connection {
                     // SAFETY: `path_ptr` points into `self.paths[path_idx]`.
                     // This mirrors the C call shape (`cnx` plus `path_x`).
                     // The selected path is the only path mutably modified by
-                    // this segment-formatting call.
+                    // this segment/path-control formatting call.
                     let path_ptr: *mut Path = &raw mut self.paths[path_idx];
                     ret = unsafe {
-                        self.prepare_segment(
-                            &mut *path_ptr,
-                            &mut packet,
-                            current_time,
-                            &mut send_buffer[packet_buffer_start..packet_buffer_end],
-                            available,
-                            &mut segment_length,
-                            &mut next_wake_time,
-                            &mut is_initial_sent,
-                        )
+                        if tuple_index != 0 {
+                            match self.prepare_path_control_packet(
+                                &mut *path_ptr,
+                                tuple_index,
+                                &mut packet,
+                                current_time,
+                                &mut send_buffer[packet_buffer_start..packet_buffer_end],
+                                &mut next_wake_time,
+                            ) {
+                                Ok(written) => {
+                                    segment_length = written;
+                                    0
+                                }
+                                Err(_) => crate::errors::InternalError::FrameBufferTooSmall as i32,
+                            }
+                        } else {
+                            self.prepare_segment(
+                                &mut *path_ptr,
+                                &mut packet,
+                                current_time,
+                                &mut send_buffer[packet_buffer_start..packet_buffer_end],
+                                available,
+                                &mut segment_length,
+                                &mut next_wake_time,
+                                &mut is_initial_sent,
+                            )
+                        }
                     };
 
                     if ret == 0 {
@@ -3989,7 +4018,7 @@ impl Connection {
         v_stream_ctx: Option<Box<dyn core::any::Any>>,
     ) -> Result<(), Error> {
         let stream_token = self.find_stream_for_writing(stream_id)?;
-        let has_callback = self.callback_fn.is_some();
+        let has_callback = self.has_stream_data_callback();
         let mut should_enqueue = false;
 
         {
@@ -4901,7 +4930,7 @@ impl Connection {
             fn callback(
                 &mut self,
                 _connection: &Connection,
-                _path: &mut InternalPath,
+                _path: Option<&mut InternalPath>,
                 _op_code: i32,
                 _current_time: Instant,
             ) {
@@ -6248,10 +6277,7 @@ impl Quic {
         if cnx.connection_state <= State::Ready {
             cnx.remote_error = InternalError::StatelessReset as u64;
         }
-        if let Some(mut callback) = cnx.callback_fn.take() {
-            let _ = callback.callback(cnx, 0, &[], CallbackEvent::StatelessReset, None);
-            cnx.callback_fn = Some(callback);
-        }
+        let _ = cnx.call_stream_data_callback(0, &[], CallbackEvent::StatelessReset, None);
         cnx.connection_disconnect();
         InternalError::AeadCheck as i32
     }
@@ -6288,10 +6314,7 @@ impl Quic {
         }
         if supported {
             cnx.connection_state = State::ClientRenegotiate;
-            if let Some(mut callback) = cnx.callback_fn.take() {
-                let _ = callback.callback(cnx, 0, &[], CallbackEvent::VersionNegotiation, None);
-                cnx.callback_fn = Some(callback);
-            }
+            let _ = cnx.call_stream_data_callback(0, &[], CallbackEvent::VersionNegotiation, None);
             InternalError::VersionNegotiation as i32
         } else {
             InternalError::VersionNotSupported as i32
@@ -7532,10 +7555,8 @@ impl crate::internal::Path {
     /// port stores tuples in a plain `Vec`, so splicing is `Vec::remove`.
     ///
     /// C: `picoquic_unchain_tuple` (quicctx.c:1733).
-    pub fn unchain_tuple(&mut self, index: usize) {
-        if index < self.tuples.len() {
-            self.tuples.remove(index);
-        }
+    pub fn unchain_tuple(&mut self, index: usize) -> Option<crate::internal::Tuple> {
+        (index < self.tuples.len()).then(|| self.tuples.remove(index))
     }
 }
 

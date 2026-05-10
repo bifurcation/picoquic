@@ -848,7 +848,7 @@ impl Log for Connection {
 
         if let Some(mut memlog) = self.memlog_call_back.take() {
             if let Some(path0) = paths.first_mut() {
-                memlog.callback(self, path0, 0, current_time);
+                memlog.callback(self, Some(path0), 0, current_time);
             }
             self.memlog_call_back = Some(memlog);
         }

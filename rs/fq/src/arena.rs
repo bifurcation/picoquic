@@ -219,6 +219,24 @@ impl<T> Arena<T> {
         })
     }
 
+    /// Iterate over tokens and shared references to all live values.
+    pub fn iter_tokens(&self) -> impl Iterator<Item = (Token<T>, &T)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, slot)| match slot {
+                Slot::Filled { generation, value } => Some((
+                    Token {
+                        idx: idx as u32,
+                        generation: *generation,
+                        _phantom: PhantomData,
+                    },
+                    value,
+                )),
+                Slot::Free { .. } => None,
+            })
+    }
+
     /// Iterate over mutable references to all live values.
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.slots.iter_mut().filter_map(|slot| match slot {
