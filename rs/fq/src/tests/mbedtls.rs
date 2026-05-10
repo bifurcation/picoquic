@@ -16,8 +16,8 @@
 #![allow(non_snake_case)]
 
 use super::util::{
-    TestApiStreamDesc, test_api_init_send_recv_scenario, test_random_bytes,
-    tls_api_connection_loop, tls_api_data_sending_loop, tls_api_init_ctx_ex2,
+    TEST_ALPN, TEST_SNI, TestApiStreamDesc, test_api_init_send_recv_scenario, test_random_bytes,
+    tls_api_connection_loop, tls_api_data_sending_loop, tls_api_init_ctx_ex2_ecdsa,
     tls_api_one_scenario_body_verify,
 };
 use crate::internal::Version;
@@ -58,6 +58,232 @@ fn pem_contains(path_ref: &str, needle: &str) -> crate::Result<Vec<u8>> {
         Ok(bytes)
     } else {
         Err(crate::Error::InvalidFile)
+    }
+}
+
+fn base64_decode_pem(input: &str) -> crate::Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut accum: u32 = 0;
+    let mut nbits = 0u32;
+
+    for c in input.bytes() {
+        let value = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            b'=' => break,
+            b'\n' | b'\r' | b' ' | b'\t' => continue,
+            _ => return Err(crate::Error::InvalidFile),
+        };
+
+        accum = (accum << 6) | u32::from(value);
+        nbits += 6;
+        if nbits >= 8 {
+            nbits -= 8;
+            out.push((accum >> nbits) as u8);
+            accum &= if nbits == 0 { 0 } else { (1u32 << nbits) - 1 };
+        }
+    }
+
+    if out.is_empty() {
+        Err(crate::Error::InvalidFile)
+    } else {
+        Ok(out)
+    }
+}
+
+fn pem_section_der(path_ref: &str, label: &str) -> crate::Result<Vec<u8>> {
+    let bytes = read_fixture(path_ref)?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| crate::Error::InvalidFile)?;
+    let begin = format!("-----BEGIN {label}-----");
+    let end = format!("-----END {label}-----");
+    let body_start = text
+        .find(&begin)
+        .map(|pos| pos + begin.len())
+        .ok_or(crate::Error::InvalidFile)?;
+    let body_end = text[body_start..]
+        .find(&end)
+        .map(|pos| body_start + pos)
+        .ok_or(crate::Error::InvalidFile)?;
+    base64_decode_pem(&text[body_start..body_end])
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DerTlv {
+    start: usize,
+    value_start: usize,
+    value_end: usize,
+    end: usize,
+}
+
+fn der_tlv(bytes: &[u8], limit: usize, pos: usize, expected_tag: u8) -> crate::Result<DerTlv> {
+    if limit > bytes.len() || pos >= limit || bytes[pos] != expected_tag {
+        return Err(crate::Error::InvalidFile);
+    }
+    let len_pos = pos + 1;
+    if len_pos >= limit {
+        return Err(crate::Error::InvalidFile);
+    }
+
+    let first_len = bytes[len_pos];
+    let (length, value_start) = if first_len < 0x80 {
+        (usize::from(first_len), len_pos + 1)
+    } else {
+        let len_len = usize::from(first_len & 0x7f);
+        if len_len == 0 || len_pos + len_len >= limit {
+            return Err(crate::Error::InvalidFile);
+        }
+        let mut length = 0usize;
+        for &b in &bytes[len_pos + 1..=len_pos + len_len] {
+            length = length
+                .checked_shl(8)
+                .and_then(|v| v.checked_add(usize::from(b)))
+                .ok_or(crate::Error::InvalidFile)?;
+        }
+        (length, len_pos + 1 + len_len)
+    };
+
+    let value_end = value_start
+        .checked_add(length)
+        .ok_or(crate::Error::InvalidFile)?;
+    if value_end > limit {
+        return Err(crate::Error::InvalidFile);
+    }
+
+    Ok(DerTlv {
+        start: pos,
+        value_start,
+        value_end,
+        end: value_end,
+    })
+}
+
+fn der_push_length(out: &mut Vec<u8>, len: usize) {
+    if len < 0x80 {
+        out.push(len as u8);
+    } else {
+        let bytes = len.to_be_bytes();
+        let first = bytes
+            .iter()
+            .position(|&b| b != 0)
+            .unwrap_or(bytes.len() - 1);
+        out.push(0x80 | (bytes.len() - first) as u8);
+        out.extend_from_slice(&bytes[first..]);
+    }
+}
+
+fn der_wrap(tag: u8, value: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(value.len() + 5);
+    out.push(tag);
+    der_push_length(&mut out, value.len());
+    out.extend_from_slice(value);
+    out
+}
+
+fn certificate_subject_public_key_info(cert_der: &[u8]) -> crate::Result<&[u8]> {
+    let cert = der_tlv(cert_der, cert_der.len(), 0, 0x30)?;
+    if cert.end != cert_der.len() {
+        return Err(crate::Error::InvalidFile);
+    }
+
+    let tbs = der_tlv(cert_der, cert.value_end, cert.value_start, 0x30)?;
+    let mut pos = tbs.value_start;
+    if pos < tbs.value_end && cert_der[pos] == 0xa0 {
+        pos = der_tlv(cert_der, tbs.value_end, pos, 0xa0)?.end;
+    }
+
+    for tag in [0x02, 0x30, 0x30, 0x30, 0x30] {
+        pos = der_tlv(cert_der, tbs.value_end, pos, tag)?.end;
+    }
+
+    let spki = der_tlv(cert_der, tbs.value_end, pos, 0x30)?;
+    Ok(&cert_der[spki.start..spki.end])
+}
+
+fn certificate_public_key_bits(cert_path_ref: &str) -> crate::Result<Vec<u8>> {
+    let cert_der = pem_section_der(cert_path_ref, "CERTIFICATE")?;
+    let spki = certificate_subject_public_key_info(&cert_der)?;
+    let parsed = crate::ech::parse_public_key_asn1(spki).map_err(|_| crate::Error::InvalidFile)?;
+    if parsed.bit_string.len() <= 1 || parsed.bit_string[0] != 0 {
+        return Err(crate::Error::InvalidFile);
+    }
+    Ok(parsed.bit_string[1..].to_vec())
+}
+
+fn rsa_public_key_from_private_der(key_der: &[u8]) -> crate::Result<Vec<u8>> {
+    let key = der_tlv(key_der, key_der.len(), 0, 0x30)?;
+    if key.end != key_der.len() {
+        return Err(crate::Error::InvalidFile);
+    }
+    let version = der_tlv(key_der, key.value_end, key.value_start, 0x02)?;
+    if key_der[version.value_start..version.value_end] != [0] {
+        return Err(crate::Error::InvalidFile);
+    }
+    let modulus = der_tlv(key_der, key.value_end, version.end, 0x02)?;
+    let public_exponent = der_tlv(key_der, key.value_end, modulus.end, 0x02)?;
+
+    let mut value = Vec::new();
+    value.extend_from_slice(&key_der[modulus.start..modulus.end]);
+    value.extend_from_slice(&key_der[public_exponent.start..public_exponent.end]);
+    Ok(der_wrap(0x30, &value))
+}
+
+fn ec_public_key_from_private_der(key_der: &[u8]) -> crate::Result<Vec<u8>> {
+    let key = der_tlv(key_der, key_der.len(), 0, 0x30)?;
+    if key.end != key_der.len() {
+        return Err(crate::Error::InvalidFile);
+    }
+    let version = der_tlv(key_der, key.value_end, key.value_start, 0x02)?;
+    if key_der[version.value_start..version.value_end] != [1] {
+        return Err(crate::Error::InvalidFile);
+    }
+    let private_key = der_tlv(key_der, key.value_end, version.end, 0x04)?;
+    let mut pos = private_key.end;
+    while pos < key.value_end {
+        let tag = key_der[pos];
+        let field = der_tlv(key_der, key.value_end, pos, tag)?;
+        if tag == 0xa1 {
+            let public_key = der_tlv(key_der, field.value_end, field.value_start, 0x03)?;
+            if public_key.end != field.value_end {
+                return Err(crate::Error::InvalidFile);
+            }
+            let bits = &key_der[public_key.value_start..public_key.value_end];
+            if bits.len() <= 1 || bits[0] != 0 {
+                return Err(crate::Error::InvalidFile);
+            }
+            return Ok(bits[1..].to_vec());
+        }
+        pos = field.end;
+    }
+    Err(crate::Error::InvalidFile)
+}
+
+fn private_key_public_bits(key_path_ref: &str) -> crate::Result<Vec<u8>> {
+    let bytes = read_fixture(key_path_ref)?;
+    let text = core::str::from_utf8(&bytes).map_err(|_| crate::Error::InvalidFile)?;
+    if text.contains("-----BEGIN RSA PRIVATE KEY-----") {
+        rsa_public_key_from_private_der(&pem_section_der(key_path_ref, "RSA PRIVATE KEY")?)
+    } else if text.contains("-----BEGIN EC PRIVATE KEY-----") {
+        ec_public_key_from_private_der(&pem_section_der(key_path_ref, "EC PRIVATE KEY")?)
+    } else {
+        Err(crate::Error::InvalidFile)
+    }
+}
+
+struct TlsApiResetGuard;
+
+impl TlsApiResetGuard {
+    fn mbedtls_only() -> Self {
+        reset_tls_api(TLS_API_INIT_FLAGS_NO_OPENSSL | TLS_API_INIT_FLAGS_NO_FUSION);
+        Self
+    }
+}
+
+impl Drop for TlsApiResetGuard {
+    fn drop(&mut self) {
+        reset_tls_api(0);
     }
 }
 
@@ -321,19 +547,9 @@ fn mbedtls_test_load_key_fail_cases() -> crate::Result<()> {
 /// Extract the public key from a certificate and compare to the private key.
 /// C: `test_retrieve_pubkey_one(key_path_ref, cert_path_ref)`.
 fn mbedtls_test_retrieve_pubkey_one(key_path_ref: &str, cert_path_ref: &str) -> crate::Result<()> {
-    let key = pem_contains(key_path_ref, "PRIVATE KEY-----")?;
-    let cert = pem_contains(cert_path_ref, "CERTIFICATE-----")?;
-    let key_family = key_path_ref
-        .split('/')
-        .nth(1)
-        .ok_or(crate::Error::InvalidFile)?;
-    let cert_family = cert_path_ref
-        .split('/')
-        .nth(1)
-        .ok_or(crate::Error::InvalidFile)?;
-    let key_digest = sha256_bytes(&[key_family.as_bytes(), &key]);
-    let cert_digest = sha256_bytes(&[cert_family.as_bytes(), &cert]);
-    if key_family == cert_family && key_digest != cert_digest {
+    let private_public_key = private_key_public_bits(key_path_ref)?;
+    let certificate_public_key = certificate_public_key_bits(cert_path_ref)?;
+    if private_public_key == certificate_public_key {
         Ok(())
     } else {
         Err(crate::Error::Generic)
@@ -384,11 +600,11 @@ fn mbedtls() {
     let initial_cid = crate::ConnectionId::clone_from_slice(&[0x99, 0xbe, 0xd7, 0x15, 0, 0, 0, 0])
         .expect("8-byte CID");
 
-    let mut test_ctx = tls_api_init_ctx_ex2(
+    let mut test_ctx = tls_api_init_ctx_ex2_ecdsa(
         &mut simulated_time,
         Version::InternalTest1 as u32,
-        None,
-        None,
+        Some(TEST_SNI),
+        Some(TEST_ALPN),
         None,
         Some(&initial_cid),
     )
@@ -426,6 +642,7 @@ fn mbedtls_crypto() {
 /// C: `mbedtls_load_key_test` (inside `#ifdef PICOQUIC_WITH_MBEDTLS`).
 #[test]
 fn mbedtls_load_key() {
+    let _tls_api_reset = TlsApiResetGuard::mbedtls_only();
     mbedtls_test_load_one_der_key("certs/rsa/key.pem").expect("rsa key");
     mbedtls_test_load_one_der_key("certs/secp256r1/key.pem").expect("secp256r1 key");
     mbedtls_test_load_one_der_key("certs/secp384r1/key.pem").expect("secp384r1 key");
@@ -438,6 +655,7 @@ fn mbedtls_load_key() {
 /// C: `mbedtls_load_key_fail_test` (inside `#ifdef PICOQUIC_WITH_MBEDTLS`).
 #[test]
 fn mbedtls_load_key_fail() {
+    let _tls_api_reset = TlsApiResetGuard::mbedtls_only();
     mbedtls_test_load_key_fail_cases().expect("load_key_fail_cases");
 }
 
@@ -445,6 +663,7 @@ fn mbedtls_load_key_fail() {
 /// C: `mbedtls_retrieve_pubkey_test` (inside `#ifdef PICOQUIC_WITH_MBEDTLS`).
 #[test]
 fn mbedtls_retrieve_pubkey() {
+    let _tls_api_reset = TlsApiResetGuard::mbedtls_only();
     mbedtls_test_retrieve_pubkey_one("certs/rsa/key.pem", "certs/rsa/cert.pem")
         .expect("rsa pubkey");
     mbedtls_test_retrieve_pubkey_one("certs/secp256r1/key.pem", "certs/secp256r1/cert.pem")

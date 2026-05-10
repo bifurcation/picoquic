@@ -8,7 +8,7 @@
 
 use super::util::{
     TestApiStreamDesc, test_api_init_send_recv_scenario, tls_api_connection_loop,
-    tls_api_data_sending_loop, tls_api_init_ctx_ex2, tls_api_one_scenario_body_verify,
+    tls_api_data_sending_loop, tls_api_init_ctx_ex2_ecdsa, tls_api_one_scenario_body_verify,
 };
 use crate::internal::Version;
 use crate::{
@@ -39,7 +39,7 @@ fn minicrypto() {
         crate::ConnectionId::clone_from_slice(&[0x81, 0x81, 0xc8, 0x19, 0x40, 0, 6, 7])
             .expect("8-byte CID");
 
-    let mut test_ctx = tls_api_init_ctx_ex2(
+    let mut test_ctx = tls_api_init_ctx_ex2_ecdsa(
         &mut simulated_time,
         Version::InternalTest1 as u32,
         None,

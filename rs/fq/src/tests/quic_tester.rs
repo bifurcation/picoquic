@@ -3,14 +3,12 @@
 #![allow(non_snake_case)]
 
 use super::util::{
-    TestTlsApiCtx, tester_push_frame_packet, tester_simple_ack_frame, tester_wait_handshake_key,
+    TEST_ALPN as PICOQUIC_TEST_ALPN, TEST_SNI as PICOQUIC_TEST_SNI, TestTlsApiCtx,
+    tester_push_frame_packet, tester_simple_ack_frame, tester_wait_handshake_key,
     tls_api_connection_loop, tls_api_init_ctx_ex, tls_api_test_with_loss_final,
 };
 use crate::internal::{PacketType, Version};
 use crate::{ConnectionId, Instant};
-
-const PICOQUIC_TEST_SNI: &str = "test.example.com";
-const PICOQUIC_TEST_ALPN: &str = "picoquic_test";
 
 fn delete_ctx(ctx: Option<Box<TestTlsApiCtx>>) {
     drop(ctx);
@@ -97,6 +95,7 @@ fn initial_ping_ack() {
     tester_wait_handshake_key(&mut test_ctx, &mut simulated_time).expect("wait for handshake key");
 
     let ack_frame = tester_simple_ack_frame(1);
+    assert_eq!(ack_frame.as_slice(), &[0x02, 0x01, 0x00, 0x00, 0x00]);
     tester_push_frame_packet(
         &mut test_ctx,
         PacketType::Initial,

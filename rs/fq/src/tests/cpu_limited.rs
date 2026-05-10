@@ -35,6 +35,8 @@ struct LimitedTestConfig {
 
 /// Build a default limited-client config.  C: `limited_config_set_default`.
 fn limited_config_default(test_id: u8) -> LimitedTestConfig {
+    crate::register_all_congestion_control_algorithms();
+
     LimitedTestConfig {
         test_id,
         ccalgo: get_congestion_algorithm("newreno").expect("newreno algo"),

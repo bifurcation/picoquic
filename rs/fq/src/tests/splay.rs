@@ -4,6 +4,45 @@
 
 use crate::splay::SplayTree;
 
+fn assert_tree_sanity(
+    tree: &SplayTree<i32, ()>,
+    expected_count: usize,
+    phase: &str,
+    i: usize,
+    v: i32,
+) {
+    assert_eq!(tree.len(), expected_count, "{phase} v[{i}]={v}: len");
+    assert_eq!(
+        tree.is_empty(),
+        expected_count == 0,
+        "{phase} v[{i}]={v}: is_empty"
+    );
+
+    let mut count = 0;
+    let mut previous = None;
+    let mut token = tree.first();
+    while let Some(t) = token {
+        let (key, _) = tree.get_key_value(t).expect("live traversal token");
+        let key = *key;
+        if let Some(previous) = previous {
+            assert!(
+                previous < key,
+                "{phase} v[{i}]={v}: traversal order {previous} then {key}"
+            );
+        }
+
+        count += 1;
+        assert!(
+            count <= expected_count,
+            "{phase} v[{i}]={v}: traversal count exceeded expected {expected_count}"
+        );
+        previous = Some(key);
+        token = tree.next(t);
+    }
+
+    assert_eq!(count, expected_count, "{phase} v[{i}]={v}: traversal count");
+}
+
 /// C: `splay_test` in `picoquictest/splay_test.c`.
 ///
 /// Insert seven values, check the running min / max after every
@@ -29,6 +68,7 @@ fn splay() {
     for (i, &v) in values.iter().enumerate() {
         let (_token, prev) = tree.insert(v, ()).expect("insert under cap");
         assert!(prev.is_none(), "duplicate insert at i={i}, v={v}");
+        assert_tree_sanity(&tree, i + 1, "insert", i, v);
         let first = tree
             .first()
             .and_then(|t| tree.get_key_value(t))
@@ -74,6 +114,7 @@ fn splay() {
     // Deletion + running min / max after each delete.
     for (i, &v) in values.iter().enumerate() {
         tree.remove_by_key(&v).expect("delete present key");
+        assert_tree_sanity(&tree, 6 - i, "delete", i, v);
         if i < 6 {
             let first = tree
                 .first()
@@ -89,6 +130,8 @@ fn splay() {
     }
 
     // Tree should be empty.
+    assert_eq!(tree.len(), 0, "tree not empty after all deletes");
+    assert!(tree.is_empty(), "tree not empty after all deletes");
     assert!(tree.first().is_none(), "tree not empty after all deletes");
     assert!(tree.last().is_none(), "tree not empty after all deletes");
 }

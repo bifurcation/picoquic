@@ -2223,6 +2223,7 @@ fn tls_api_init_ctx_ex_named(
         false,
         false,
         true,
+        false,
     )
 }
 
@@ -2246,6 +2247,7 @@ fn tls_api_init_ctx_ex_named_with_start(
         false,
         false,
         start_client,
+        false,
     )
     .ok()
 }
@@ -2262,6 +2264,7 @@ fn tls_api_init_ctx_ex_named_with_flags(
     force_zero_share: bool,
     preserve_zero_version: bool,
     start_client: bool,
+    use_ecdsa: bool,
 ) -> crate::Result<Box<TestTlsApiCtx>> {
     const VERIFIER_ENCRYPT_KEY: [u8; RESET_SECRET_SIZE] = {
         let mut k = [0u8; RESET_SECRET_SIZE];
@@ -2281,6 +2284,11 @@ fn tls_api_init_ctx_ex_named_with_flags(
 
     let client_addr = SocketAddr::from(([10u8, 0, 0, 2], 1234u16));
     let server_addr = SocketAddr::from(([10u8, 0, 0, 1], 4321u16));
+    let (server_cert, server_key) = if use_ecdsa {
+        (TEST_FILE_SERVER_CERT_ECDSA, TEST_FILE_SERVER_KEY_ECDSA)
+    } else {
+        (TEST_FILE_SERVER_CERT, TEST_FILE_SERVER_KEY)
+    };
 
     let mut qclient = Quic::new(
         8,
@@ -2308,8 +2316,8 @@ fn tls_api_init_ctx_ex_named_with_flags(
 
     let mut qserver = Quic::new(
         8,
-        Some(TEST_FILE_SERVER_CERT),
-        Some(TEST_FILE_SERVER_KEY),
+        Some(server_cert),
+        Some(server_key),
         Some(TEST_FILE_CERT_STORE),
         alpn.or(Some(TEST_ALPN)),
         None,
@@ -2661,6 +2669,7 @@ pub fn tls_api_init_ctx_zero_share(simulated_time: &mut Instant) -> Option<Box<T
         true,
         true,
         true,
+        false,
     )
     .ok()
 }
@@ -2842,6 +2851,32 @@ pub fn tls_api_init_ctx_ex2(
         ticket_file,
         initial_cid,
         false,
+    )
+    .ok()
+}
+
+/// Create a TLS-API test context using the ECDSA server certificate/key pair.
+/// This maps the final `use_ecdsa` argument of C `tls_api_init_ctx_ex2`.
+pub fn tls_api_init_ctx_ex2_ecdsa(
+    simulated_time: &mut Instant,
+    proposed_version: u32,
+    sni: Option<&str>,
+    alpn: Option<&str>,
+    ticket_file: Option<&str>,
+    initial_cid: Option<&ConnectionId>,
+) -> Option<Box<TestTlsApiCtx>> {
+    tls_api_init_ctx_ex_named_with_flags(
+        simulated_time,
+        proposed_version,
+        sni.or(Some(TEST_SNI)),
+        alpn.or(Some(TEST_ALPN)),
+        ticket_file,
+        initial_cid,
+        false,
+        false,
+        false,
+        true,
+        true,
     )
     .ok()
 }
@@ -7661,123 +7696,14 @@ pub fn transport_param_log_test_one(_filename: &str) -> crate::Result<()> {
         v
     }
 
-    fn textlog_prefix_initial_cid64<W: std::io::Write>(
-        out: &mut W,
-        cnx_id: u64,
-    ) -> std::io::Result<()> {
-        if cnx_id != 0 {
-            write!(out, "{cnx_id:016x}: ")?;
-        }
-        Ok(())
-    }
-
-    fn textlog_transport_extension_content<W: std::io::Write>(
-        out: &mut W,
-        log_cnxid: bool,
-        cnx_id: u64,
-        bytes: &[u8],
-    ) -> std::io::Result<()> {
-        let mut ret = false;
-        let mut byte_index = 0usize;
-
-        if bytes.len() < 256 {
-            let extensions_end = bytes.len();
-            if log_cnxid {
-                textlog_prefix_initial_cid64(out, cnx_id)?;
-            }
-            writeln!(out, "    Extension list ({} bytes):", bytes.len())?;
-            while !ret && byte_index < extensions_end {
-                let mut extension_type = 0u64;
-                let mut extension_length = 0u64;
-                let ll_type = crate::internal::varint_decode(
-                    &bytes[byte_index..extensions_end],
-                    &mut extension_type,
-                );
-                byte_index += ll_type;
-                let ll_length = crate::internal::varint_decode(
-                    &bytes[byte_index..extensions_end],
-                    &mut extension_length,
-                );
-                byte_index += ll_length;
-
-                if ll_type == 0
-                    || ll_length == 0
-                    || byte_index + extension_length as usize > extensions_end
-                {
-                    if log_cnxid {
-                        textlog_prefix_initial_cid64(out, cnx_id)?;
-                    }
-                    writeln!(
-                        out,
-                        "        Malformed extension -- only {} bytes avaliable for type and length.",
-                        extensions_end - byte_index
-                    )?;
-                    ret = true;
-                } else {
-                    if log_cnxid {
-                        textlog_prefix_initial_cid64(out, cnx_id)?;
-                    }
-                    let name =
-                        crate::tp::TransportParameter::name(extension_type).unwrap_or("unknown");
-                    write!(
-                        out,
-                        "        Extension type: {extension_type} ({name}), length {}{}",
-                        extension_length,
-                        if extension_length == 0 { "" } else { ", " }
-                    )?;
-                    let end = byte_index + extension_length as usize;
-                    for b in &bytes[byte_index..end] {
-                        write!(out, "{b:02x}")?;
-                    }
-                    byte_index = end;
-                    writeln!(out)?;
-                }
-            }
-
-            if !ret && byte_index < bytes.len() {
-                if log_cnxid {
-                    textlog_prefix_initial_cid64(out, cnx_id)?;
-                }
-                writeln!(out, "    Remaining bytes ({})", bytes.len() - byte_index)?;
-            }
-        } else {
-            if log_cnxid {
-                textlog_prefix_initial_cid64(out, cnx_id)?;
-            }
-            writeln!(
-                out,
-                "Received transport parameter TLS extension ({} bytes):",
-                bytes.len()
-            )?;
-            if log_cnxid {
-                textlog_prefix_initial_cid64(out, cnx_id)?;
-            }
-            writeln!(out, "    First bytes ({}):", bytes.len() - byte_index)?;
-        }
-
-        if !ret {
-            while byte_index < bytes.len() && byte_index < 128 {
-                if log_cnxid {
-                    textlog_prefix_initial_cid64(out, cnx_id)?;
-                }
-                write!(out, "        ")?;
-                for _ in 0..32 {
-                    if byte_index >= bytes.len() || byte_index >= 128 {
-                        break;
-                    }
-                    write!(out, "{:02x}", bytes[byte_index])?;
-                    byte_index += 1;
-                }
-                writeln!(out)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn log_one<W: std::io::Write>(out: &mut W, bytes: &[u8]) -> std::io::Result<()> {
-        textlog_transport_extension_content(out, true, 0x0102_0304_0506_0708, bytes)?;
-        writeln!(out)
+    fn log_one<W: std::io::Write>(out: &mut W, bytes: &[u8]) -> crate::Result<()> {
+        crate::textlog::textlog_transport_extension_content(
+            out,
+            true,
+            0x0102_0304_0506_0708,
+            bytes,
+        )?;
+        writeln!(out).map_err(|_| crate::Error::Generic)
     }
 
     fn transport_param_log_fuzz_test(target: &[u8]) -> crate::Result<()> {
@@ -7801,13 +7727,12 @@ pub fn transport_param_log_test_one(_filename: &str) -> crate::Result<()> {
                 let mut file = std::io::BufWriter::new(file);
                 let mut dl = 0usize;
                 while dl < target.len() {
-                    textlog_transport_extension_content(
+                    crate::textlog::textlog_transport_extension_content(
                         &mut file,
                         true,
                         0x0102_0304_0506_0708,
                         &buffer[..target.len() - dl],
-                    )
-                    .map_err(|_| crate::Error::Generic)?;
+                    )?;
                     writeln!(file).map_err(|_| crate::Error::Generic)?;
                     dl += l + 6;
                 }
@@ -7836,7 +7761,7 @@ pub fn transport_param_log_test_one(_filename: &str) -> crate::Result<()> {
         client_param5.as_slice(),
         server_param3.as_slice(),
     ] {
-        log_one(&mut file, params).map_err(|_| crate::Error::Generic)?;
+        log_one(&mut file, params)?;
     }
 
     transport_param_log_fuzz_test(&client_param2)?;
