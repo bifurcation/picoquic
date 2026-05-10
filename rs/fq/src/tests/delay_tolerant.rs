@@ -42,6 +42,7 @@ struct DtnTestSpec {
 /// C: `dtn_set_basic_test_spec`.
 fn dtn_basic_spec() -> DtnTestSpec {
     const LATENCY: u64 = 60_000_000; // 60 seconds in µs
+    crate::register_all_congestion_control_algorithms();
     DtnTestSpec {
         latency: LATENCY,
         max_completion_time: 8 * LATENCY,

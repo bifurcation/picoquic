@@ -11,7 +11,7 @@
 #![allow(non_snake_case)]
 
 use crate::frames::FrameType;
-use crate::internal::{SackList, varint_decode, varint_skip};
+use crate::internal::{SackList, picoquic_sack_list_first_range, varint_decode, varint_skip};
 use crate::{ConnectionId, Duration, Instant, PacketContext, Quic, RESET_SECRET_SIZE};
 
 use super::util;
@@ -549,7 +549,8 @@ fn ack_sack() {
         assert_eq!(cnx.ack_ctx[pc as usize].sack_list.last(), 0);
         // C: picoquic_sack_list_last == 0 (max PN), == Rust first()
         assert_eq!(cnx.ack_ctx[pc as usize].sack_list.first(), 0);
-        assert!(cnx.ack_ctx[pc as usize].sack_list.first_range().is_none());
+        // C: no second range after the first ascending SACK range.
+        assert!(picoquic_sack_list_first_range(&cnx.ack_ctx[pc as usize].sack_list).is_none());
     }
 
     // Phase 2: fresh connection (mirrors picoquic_test_reset_minimal_cnx).
@@ -620,7 +621,8 @@ fn ack_sack() {
             cnx.ack_ctx[pc as usize].time_stamp_largest_received,
             highest_seen_time
         );
-        assert!(cnx.ack_ctx[pc as usize].sack_list.first_range().is_none());
+        // C: no second range after the first ascending SACK range.
+        assert!(picoquic_sack_list_first_range(&cnx.ack_ctx[pc as usize].sack_list).is_none());
     }
 }
 
@@ -738,7 +740,8 @@ fn ack_range() {
     assert_eq!(sack0.last(), 0);
     // C: picoquic_sack_list_last == 7500 (max) → Rust first()
     assert_eq!(sack0.first(), 7500);
-    assert!(sack0.first_range().is_none());
+    // C: no second range after the first ascending SACK range.
+    assert!(picoquic_sack_list_first_range(&sack0).is_none());
 
     sack0.free();
 }

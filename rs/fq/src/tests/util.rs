@@ -7068,7 +7068,10 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
     const WARPTEST_DURATION: u64 = 10_000_000;
     const WARPTEST_AUDIO_PERIOD: u64 = 20_000;
     const WARPTEST_VIDEO_PERIOD: u64 = 33_333;
+    const WARPTEST_HEADER_SIZE: usize = 21;
     const WARPTEST_DATA_FRAME_SIZE: usize = 0x4000;
+    const WARPTEST_TYPE_AUDIO: u8 = 1;
+    const WARPTEST_TYPE_VIDEO: u8 = 2;
 
     #[derive(Default, Clone, Copy)]
     struct MediaStats {
@@ -7100,18 +7103,414 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
         Ok(())
     }
 
+    fn format_media_frame(
+        message_type: u8,
+        message_size: usize,
+        frame_number: u64,
+        sent_time: u64,
+    ) -> Vec<u8> {
+        let mut frame = vec![message_type; message_size];
+        frame[0] = message_type;
+        frame[1..5].copy_from_slice(&(message_size as u32).to_be_bytes());
+        frame[5..13].copy_from_slice(&frame_number.to_be_bytes());
+        frame[13..21].copy_from_slice(&sent_time.to_be_bytes());
+        frame
+    }
+
+    fn queue_media_frame(
+        test_ctx: &mut TestTlsApiCtx,
+        message_type: u8,
+        message_size: usize,
+        frame_number: u64,
+        sent_time: u64,
+        priority: u8,
+    ) -> crate::Result<()> {
+        if message_size < WARPTEST_HEADER_SIZE {
+            return Err(crate::Error::Generic);
+        }
+        let stream_id = test_ctx.cnx_client().get_next_local_stream_id(true);
+        let frame = format_media_frame(message_type, message_size, frame_number, sent_time);
+        {
+            let cnx = test_ctx.cnx_client();
+            cnx.add_to_stream(stream_id, &frame, true)?;
+            cnx.set_stream_priority(stream_id, priority)?;
+            cnx.next_wake_time = Instant::from_ticks(sent_time);
+        }
+        Ok(())
+    }
+
+    fn complete_media_frame(
+        stream: &crate::internal::StreamHead,
+    ) -> crate::Result<Option<Vec<u8>>> {
+        if !stream.fin_received {
+            return Ok(None);
+        }
+
+        let mut bytes = Vec::new();
+        let mut next_offset = 0u64;
+        let mut node_token = stream.stream_data_tree.first();
+        while let Some(token) = node_token {
+            let data_token = *stream
+                .stream_data_tree
+                .get(token)
+                .ok_or(crate::Error::Generic)?;
+            let data = stream
+                .stream_data_nodes
+                .get(data_token)
+                .ok_or(crate::Error::Generic)?;
+            if data.offset > next_offset {
+                return Ok(None);
+            }
+            let start = next_offset.saturating_sub(data.offset) as usize;
+            if start < data.length {
+                bytes.extend_from_slice(&data.data[start..data.length]);
+                next_offset = data.offset + data.length as u64;
+            }
+            node_token = stream.stream_data_tree.next(token);
+        }
+
+        if bytes.len() < WARPTEST_HEADER_SIZE {
+            return Ok(None);
+        }
+        let message_size = u32::from_be_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]) as usize;
+        if message_size < WARPTEST_HEADER_SIZE || stream.fin_offset != message_size as u64 {
+            return Err(crate::Error::Generic);
+        }
+        if bytes.len() < message_size {
+            return Ok(None);
+        }
+        bytes.truncate(message_size);
+        Ok(Some(bytes))
+    }
+
+    fn collect_media_stats(
+        test_ctx: &mut TestTlsApiCtx,
+        current_time: u64,
+        processed_streams: &mut Vec<u64>,
+        audio_stats: &mut MediaStats,
+        video_stats: &mut MediaStats,
+    ) -> crate::Result<()> {
+        if !test_ctx.has_cnx_server() {
+            return Ok(());
+        }
+
+        let cnx = test_ctx.cnx_server();
+        for stream in cnx.streams.iter() {
+            let stream_id = stream.stream_id;
+            if processed_streams.contains(&stream_id) {
+                continue;
+            }
+            let Some(frame) = complete_media_frame(stream)? else {
+                continue;
+            };
+            let message_type = frame[0];
+            let frame_number = u64::from_be_bytes([
+                frame[5], frame[6], frame[7], frame[8], frame[9], frame[10], frame[11], frame[12],
+            ]);
+            let sent_time = u64::from_be_bytes([
+                frame[13], frame[14], frame[15], frame[16], frame[17], frame[18], frame[19],
+                frame[20],
+            ]);
+            let stats = if message_type == WARPTEST_TYPE_AUDIO {
+                &mut *audio_stats
+            } else if message_type == WARPTEST_TYPE_VIDEO {
+                &mut *video_stats
+            } else {
+                return Err(crate::Error::Generic);
+            };
+            if frame_number != stats.nb_frames {
+                return Err(crate::Error::Generic);
+            }
+            let delay = current_time.saturating_sub(sent_time);
+            stats.nb_frames += 1;
+            stats.sum_delays += delay;
+            stats.sum_square_delays += delay * delay;
+            stats.max_delay = stats.max_delay.max(delay);
+            processed_streams.push(stream_id);
+        }
+        Ok(())
+    }
+
+    fn rewind_tls_send_queues(cnx: &mut crate::Connection) {
+        for stream in &mut cnx.tls_stream {
+            if let Some(front) = stream.send_queue.front() {
+                let front_end = front.offset.saturating_add(front.bytes.len() as u64);
+                if stream.sent_offset >= front_end {
+                    stream.sent_offset = front.offset;
+                }
+            }
+        }
+    }
+
+    #[derive(Copy, Clone, PartialEq, Eq)]
+    enum WarptestAction {
+        ClientDeparture,
+        ServerDeparture,
+        ClientArrival,
+        ServerArrival,
+        ClientAdmission,
+        ServerAdmission,
+        MediaFrame,
+    }
+
+    fn run_media_step(
+        test_ctx: &mut TestTlsApiCtx,
+        simulated_time: &mut Instant,
+        next_audio_time: &mut u64,
+        next_video_time: &mut u64,
+        frames_sent_audio: &mut u64,
+        frames_sent_video: &mut u64,
+        frames_to_send_audio: u64,
+        frames_to_send_video: u64,
+        audio_stats: &mut MediaStats,
+        video_stats: &mut MediaStats,
+        processed_streams: &mut Vec<u64>,
+        is_active: &mut bool,
+    ) -> crate::Result<()> {
+        let mut next_time = simulated_time.ticks().saturating_add(120_000_000);
+        let mut next_action: Option<WarptestAction> = None;
+
+        let c_arrival = test_ctx
+            .s_to_c_link
+            .next_arrival(Instant::from_ticks(next_time));
+        if c_arrival < next_time {
+            next_time = c_arrival;
+            next_action = Some(WarptestAction::ClientArrival);
+        }
+        let s_arrival = test_ctx
+            .c_to_s_link
+            .next_arrival(Instant::from_ticks(next_time));
+        if s_arrival < next_time {
+            next_time = s_arrival;
+            next_action = Some(WarptestAction::ServerArrival);
+        }
+        let c_admission = test_ctx
+            .s_to_c_link
+            .next_admission(*simulated_time, Instant::from_ticks(next_time));
+        if c_admission < next_time {
+            next_time = c_admission;
+            next_action = Some(WarptestAction::ClientAdmission);
+        }
+        let s_admission = test_ctx
+            .c_to_s_link
+            .next_admission(*simulated_time, Instant::from_ticks(next_time));
+        if s_admission < next_time {
+            next_time = s_admission;
+            next_action = Some(WarptestAction::ServerAdmission);
+        }
+        if let Some(t) = test_ctx
+            .qclient
+            .first_cnx_mut()
+            .filter(|c| c.connection_state != crate::State::Disconnected)
+            .map(|c| c.next_wake_time.ticks())
+            && t < next_time
+        {
+            next_time = t;
+            next_action = Some(WarptestAction::ClientDeparture);
+        }
+        if let Some(t) = test_ctx
+            .qserver
+            .first_cnx_mut()
+            .filter(|c| c.connection_state != crate::State::Disconnected)
+            .map(|c| c.next_wake_time.ticks())
+            && t < next_time
+        {
+            next_time = t;
+            next_action = Some(WarptestAction::ServerDeparture);
+        }
+
+        if test_ctx.client_ready() {
+            let media_time = (*next_audio_time).min(*next_video_time);
+            if media_time < next_time {
+                next_time = media_time;
+                next_action = Some(WarptestAction::MediaFrame);
+            }
+        }
+
+        if next_time > simulated_time.ticks() {
+            *simulated_time = Instant::from_ticks(next_time);
+        }
+
+        match next_action {
+            Some(WarptestAction::MediaFrame) => {
+                let now = simulated_time.ticks();
+                if *frames_sent_audio < frames_to_send_audio && *next_audio_time <= now {
+                    queue_media_frame(
+                        test_ctx,
+                        WARPTEST_TYPE_AUDIO,
+                        32,
+                        *frames_sent_audio,
+                        *next_audio_time,
+                        3,
+                    )?;
+                    *frames_sent_audio += 1;
+                    *next_audio_time = if *frames_sent_audio >= frames_to_send_audio {
+                        u64::MAX
+                    } else {
+                        next_audio_time.saturating_add(WARPTEST_AUDIO_PERIOD)
+                    };
+                    *is_active = true;
+                }
+                if *frames_sent_video < frames_to_send_video && *next_video_time <= now {
+                    let message_size = if (*frames_sent_video % 100) == 0 {
+                        0x8000
+                    } else {
+                        0x800
+                    };
+                    queue_media_frame(
+                        test_ctx,
+                        WARPTEST_TYPE_VIDEO,
+                        message_size,
+                        *frames_sent_video,
+                        *next_video_time,
+                        5,
+                    )?;
+                    *frames_sent_video += 1;
+                    *next_video_time = if *frames_sent_video >= frames_to_send_video {
+                        u64::MAX
+                    } else {
+                        next_video_time.saturating_add(WARPTEST_VIDEO_PERIOD)
+                    };
+                    *is_active = true;
+                }
+            }
+            Some(WarptestAction::ClientArrival) => {
+                let t = *simulated_time;
+                if let Some(mut pkt) = test_ctx.s_to_c_link.dequeue(t) {
+                    let addr_from = pkt.addr_from.unwrap_or(test_ctx.server_addr);
+                    let addr_to = pkt.addr_to.unwrap_or(test_ctx.client_addr);
+                    let ecn = pkt.ecn_mark;
+                    test_ctx.qclient.incoming_packet(
+                        &mut pkt.bytes[..pkt.length],
+                        &addr_from,
+                        &addr_to,
+                        0,
+                        ecn,
+                        t,
+                    )?;
+                    *is_active = true;
+                }
+            }
+            Some(WarptestAction::ServerArrival) => {
+                let t = *simulated_time;
+                if let Some(mut pkt) = test_ctx.c_to_s_link.dequeue(t) {
+                    let addr_from = pkt.addr_from.unwrap_or(test_ctx.client_addr);
+                    let addr_to = pkt.addr_to.unwrap_or(test_ctx.server_addr);
+                    let ecn = pkt.ecn_mark;
+                    test_ctx.qserver.incoming_packet(
+                        &mut pkt.bytes[..pkt.length],
+                        &addr_from,
+                        &addr_to,
+                        0,
+                        ecn,
+                        t,
+                    )?;
+                    collect_media_stats(
+                        test_ctx,
+                        t.ticks(),
+                        processed_streams,
+                        audio_stats,
+                        video_stats,
+                    )?;
+                    *is_active = true;
+                }
+            }
+            Some(WarptestAction::ClientAdmission) => {
+                test_ctx.s_to_c_link.admit_pending(*simulated_time);
+            }
+            Some(WarptestAction::ServerAdmission) => {
+                test_ctx.c_to_s_link.admit_pending(*simulated_time);
+            }
+            Some(WarptestAction::ClientDeparture) => {
+                let mut buf = [0u8; MAX_PACKET_SIZE];
+                let prep = test_ctx.qclient.first_cnx_mut().and_then(|c| {
+                    rewind_tls_send_queues(c);
+                    c.prepare_packet(*simulated_time, &mut buf).ok()
+                });
+                if let Some(pp) = prep
+                    && pp.send_length > 0
+                {
+                    let mut pkt = TestSimPacket::create()?;
+                    pkt.addr_from = Some(if pp.addr_from.ip().is_unspecified() {
+                        test_ctx.client_addr
+                    } else {
+                        pp.addr_from
+                    });
+                    pkt.addr_to = Some(pp.addr_to);
+                    pkt.ecn_mark = test_ctx.packet_ecn_default;
+                    pkt.length = pp.send_length;
+                    pkt.bytes[..pp.send_length].copy_from_slice(&buf[..pp.send_length]);
+                    test_ctx.c_to_s_link.submit(pkt, *simulated_time);
+                    *is_active = true;
+                }
+            }
+            Some(WarptestAction::ServerDeparture) => {
+                let mut buf = [0u8; MAX_PACKET_SIZE];
+                let prep = test_ctx.qserver.first_cnx_mut().and_then(|c| {
+                    rewind_tls_send_queues(c);
+                    c.prepare_packet(*simulated_time, &mut buf).ok()
+                });
+                if let Some(pp) = prep
+                    && pp.send_length > 0
+                {
+                    let mut pkt = TestSimPacket::create()?;
+                    pkt.addr_from = Some(if pp.addr_from.ip().is_unspecified() {
+                        test_ctx.server_addr
+                    } else {
+                        pp.addr_from
+                    });
+                    pkt.addr_to = Some(pp.addr_to);
+                    pkt.ecn_mark = test_ctx.packet_ecn_default;
+                    pkt.length = pp.send_length;
+                    pkt.bytes[..pp.send_length].copy_from_slice(&buf[..pp.send_length]);
+                    test_ctx.s_to_c_link.submit(pkt, *simulated_time);
+                    *is_active = true;
+                }
+            }
+            None => {}
+        }
+
+        Ok(())
+    }
+
+    fn queue_datagram_load(
+        test_ctx: &mut TestTlsApiCtx,
+        simulated_time: Instant,
+        requested: usize,
+        sent: &mut usize,
+    ) -> crate::Result<()> {
+        while *sent < requested {
+            let max_payload = test_ctx
+                .cnx_client()
+                .paths
+                .first()
+                .map(|path| path.send_mtu.saturating_sub(64).max(1))
+                .unwrap_or(MAX_PACKET_SIZE.saturating_sub(64).max(1));
+            let chunk = (requested - *sent).min(max_payload);
+            let payload = vec![b'd'; chunk];
+            test_ctx.cnx_client().queue_datagram_frame(&payload)?;
+            *sent += chunk;
+        }
+        let cnx = test_ctx.cnx_client();
+        cnx.mark_datagram_ready(!cnx.datagrams.is_empty())?;
+        cnx.next_wake_time = simulated_time;
+        Ok(())
+    }
+
     let mut simulated_time = Instant::from_ticks(0);
     let initial_cid =
         ConnectionId::clone_from_slice(&[0xed, 0x1a, 0x1d, 0x18, _warptest_id as u8, 0, 0, 0])
             .ok_or(crate::Error::Generic)?;
-    let mut test_ctx = tls_api_one_scenario_init_ex(
+    let mut test_ctx = tls_api_init_ctx_ex_named(
         &mut simulated_time,
-        Version::InternalTest1,
-        None,
+        Version::InternalTest1 as u32,
+        Some(TEST_SNI),
+        Some("picoquic_mediatest"),
         None,
         Some(&initial_cid),
     )
     .ok_or(crate::Error::Generic)?;
+    crate::register_all_congestion_control_algorithms();
 
     if let Some(algo_id) = _spec.ccalgo_id {
         let algo = crate::get_congestion_algorithm(algo_id).ok_or(crate::Error::Generic)?;
@@ -7126,37 +7525,31 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
             .set_congestion_algorithm_ex(algo, None);
     }
 
-    let mut tp = TransportParameters {
-        max_idle_timeout: crate::Duration::from_ticks(30_000),
-        max_packet_size: MAX_PACKET_SIZE as u32,
-        ack_delay_exponent: 3,
-        active_connection_id_limit: 4,
-        max_ack_delay: 10_000,
-        enable_loss_bit: 2,
-        min_ack_delay: crate::Duration::from_ticks(1000),
-        enable_time_stamp: 0,
-        max_datagram_frame_size: MAX_PACKET_SIZE as u32,
-        ..TransportParameters::default()
+    let mut tp = TransportParameters::default();
+    crate::internal::init_transport_parameters(&mut tp);
+    tp.max_idle_timeout = crate::Duration::from_ticks(30_000);
+    tp.max_packet_size = MAX_PACKET_SIZE as u32;
+    tp.active_connection_id_limit = 4;
+    tp.max_ack_delay = 10_000;
+    tp.min_ack_delay = crate::Duration::from_ticks(1000);
+    tp.max_datagram_frame_size = MAX_PACKET_SIZE as u32;
+    tp.initial_max_stream_id_bidir = 512;
+    tp.initial_max_stream_id_unidir = if _spec.max_streams_client == 0 {
+        16
+    } else {
+        _spec.max_streams_client
     };
-    if _spec.max_streams_client > 0 {
-        tp.initial_max_stream_id_bidir = _spec.max_streams_client;
-        tp.initial_max_stream_id_unidir = _spec.max_streams_client;
-    }
-    if _spec.max_streams_server > 0 {
-        tp.initial_max_stream_id_bidir =
-            tp.initial_max_stream_id_bidir.max(_spec.max_streams_server);
-        tp.initial_max_stream_id_unidir = tp
-            .initial_max_stream_id_unidir
-            .max(_spec.max_streams_server);
-    }
-    if _spec.max_stream_data > 0 {
-        tp.initial_max_stream_data_bidi_local = _spec.max_stream_data;
-        tp.initial_max_stream_data_bidi_remote = _spec.max_stream_data;
-        tp.initial_max_stream_data_uni = _spec.max_stream_data;
-    }
+    tp.initial_max_stream_data_uni = if _spec.max_stream_data == 0 {
+        65_535
+    } else {
+        _spec.max_stream_data
+    };
     test_ctx.qclient.set_default_tp(&tp)?;
     test_ctx.qserver.set_default_tp(&tp)?;
     test_ctx.cnx_client().set_transport_parameters(&tp);
+    test_ctx
+        .cnx_client()
+        .initialize_tls_stream(simulated_time)?;
 
     let link_rate = if _spec.bandwidth > 0.0 {
         _spec.bandwidth
@@ -7166,8 +7559,46 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
     test_ctx.c_to_s_link.picosec_per_byte = (8000.0 / link_rate * 1.024 * 1.024) as u64;
     test_ctx.s_to_c_link.picosec_per_byte = test_ctx.c_to_s_link.picosec_per_byte;
 
-    let mut loss_mask = 0u64;
-    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+    let mut handshake_steps = 0;
+    let mut handshake_inactive = 0;
+    let mut handshake_audio_time = u64::MAX;
+    let mut handshake_video_time = u64::MAX;
+    let mut handshake_audio_sent = 0u64;
+    let mut handshake_video_sent = 0u64;
+    let mut handshake_audio_stats = MediaStats::default();
+    let mut handshake_video_stats = MediaStats::default();
+    let mut handshake_processed_streams = Vec::new();
+    while handshake_steps < 100_000
+        && handshake_inactive < 512
+        && simulated_time.ticks() < 30_000_000
+        && (!test_ctx.client_ready() || !test_ctx.server_ready())
+    {
+        handshake_steps += 1;
+        let mut is_active = false;
+        run_media_step(
+            &mut test_ctx,
+            &mut simulated_time,
+            &mut handshake_audio_time,
+            &mut handshake_video_time,
+            &mut handshake_audio_sent,
+            &mut handshake_video_sent,
+            0,
+            0,
+            &mut handshake_audio_stats,
+            &mut handshake_video_stats,
+            &mut handshake_processed_streams,
+            &mut is_active,
+        )?;
+
+        if is_active {
+            handshake_inactive = 0;
+        } else {
+            handshake_inactive += 1;
+        }
+    }
+    if !test_ctx.client_ready() || !test_ctx.server_ready() {
+        return Err(crate::Error::Generic);
+    }
 
     let frames_to_send_data = _spec.data_size as u64;
     let frames_to_send_audio = if _spec.do_audio {
@@ -7192,6 +7623,87 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
     let mut nb_inactive = 0;
     let mut next_audio_time = 0u64;
     let mut next_video_time = 0u64;
+
+    if frames_to_send_data == 0 {
+        if frames_to_send_audio == 0 {
+            next_audio_time = u64::MAX;
+        } else {
+            next_audio_time = simulated_time.ticks();
+        }
+        if frames_to_send_video == 0 {
+            next_video_time = u64::MAX;
+        } else {
+            next_video_time = simulated_time.ticks();
+        }
+        let mut processed_streams = Vec::new();
+
+        if _spec.datagram_data_size > 0 {
+            queue_datagram_load(
+                &mut test_ctx,
+                simulated_time,
+                _spec.datagram_data_size,
+                &mut datagram_sent,
+            )?;
+        }
+
+        while nb_steps < 100_000 && nb_inactive < 512 && simulated_time.ticks() < 30_000_000 {
+            nb_steps += 1;
+            let mut is_active = false;
+            run_media_step(
+                &mut test_ctx,
+                &mut simulated_time,
+                &mut next_audio_time,
+                &mut next_video_time,
+                &mut frames_sent_audio,
+                &mut frames_sent_video,
+                frames_to_send_audio,
+                frames_to_send_video,
+                &mut audio_stats,
+                &mut video_stats,
+                &mut processed_streams,
+                &mut is_active,
+            )?;
+
+            let datagram_done = if _spec.datagram_data_size == 0 {
+                true
+            } else {
+                datagram_sent >= _spec.datagram_data_size
+                    && test_ctx.cnx_client().datagrams.is_empty()
+            };
+            let done = frames_sent_audio == frames_to_send_audio
+                && frames_sent_video == frames_to_send_video
+                && audio_stats.nb_frames == frames_to_send_audio
+                && video_stats.nb_frames == frames_to_send_video
+                && datagram_done;
+            if done {
+                break;
+            }
+
+            if is_active {
+                nb_inactive = 0;
+            } else {
+                nb_inactive += 1;
+            }
+        }
+
+        if frames_sent_audio != frames_to_send_audio
+            || frames_sent_video != frames_to_send_video
+            || audio_stats.nb_frames != frames_to_send_audio
+            || video_stats.nb_frames != frames_to_send_video
+            || datagram_sent < _spec.datagram_data_size
+            || (_spec.datagram_data_size > 0 && !test_ctx.cnx_client().datagrams.is_empty())
+        {
+            return Err(crate::Error::Generic);
+        }
+        if _spec.do_audio {
+            check_stats(audio_stats, frames_to_send_audio)?;
+        }
+        if _spec.do_video {
+            check_stats(video_stats, frames_to_send_video)?;
+        }
+
+        return Ok(());
+    }
 
     while nb_steps < 100_000 && nb_inactive < 512 && simulated_time.ticks() < 30_000_000 {
         nb_steps += 1;

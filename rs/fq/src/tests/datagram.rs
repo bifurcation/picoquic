@@ -464,14 +464,6 @@ fn datagram_test_one_result(
     test_ctx
         .cnx_client()
         .set_transport_parameters(&client_parameters);
-    test_ctx
-        .cnx_client()
-        .local_parameters
-        .max_datagram_frame_size = dg_ctx.dg_max_size as u32;
-    test_ctx
-        .cnx_client()
-        .remote_parameters
-        .max_datagram_frame_size = MAX_PACKET_SIZE as u32;
 
     let queue_delay_max =
         2 * test_ctx.c_to_s_link.microsec_latency + if dg_ctx.test_wifi { 275_000 } else { 0 };
@@ -482,26 +474,20 @@ fn datagram_test_one_result(
         &mut simulated_time,
     )?;
 
-    if test_ctx
+    if !test_ctx.has_cnx_server() {
+        return Err(Error::Generic);
+    }
+    let client_remote_max = test_ctx
         .cnx_client()
         .remote_parameters
-        .max_datagram_frame_size
-        != MAX_PACKET_SIZE as u32
+        .max_datagram_frame_size;
+    let server_remote_max = test_ctx
+        .cnx_server()
+        .remote_parameters
+        .max_datagram_frame_size;
+    if client_remote_max != MAX_PACKET_SIZE as u32 || server_remote_max != dg_ctx.dg_max_size as u32
     {
-        test_ctx
-            .cnx_client()
-            .remote_parameters
-            .max_datagram_frame_size = MAX_PACKET_SIZE as u32;
-    }
-    if test_ctx.has_cnx_server() {
-        test_ctx
-            .cnx_server()
-            .remote_parameters
-            .max_datagram_frame_size = dg_ctx.dg_max_size as u32;
-        test_ctx
-            .cnx_server()
-            .local_parameters
-            .max_datagram_frame_size = MAX_PACKET_SIZE as u32;
+        return Err(Error::Generic);
     }
 
     if dg_ctx.test_too_long {
