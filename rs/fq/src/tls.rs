@@ -40,6 +40,7 @@
 extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::any::Any;
 
 use crate::Error;
 
@@ -100,11 +101,36 @@ pub trait Session: Send {
     /// Whether the server accepted the client's 0-RTT data.
     fn early_data_accepted(&self) -> Option<bool>;
 
+    /// Digest length of the hash used by the negotiated TLS cipher suite.
+    ///
+    /// C: `ptls_get_cipher(tls)->hash->digest_size`.
+    fn app_secret_size(&self) -> Option<usize> {
+        None
+    }
+
+    /// IANA ID of the negotiated TLS cipher suite.
+    ///
+    /// C: `ptls_get_cipher(tls)->id`.
+    fn cipher_suite_id(&self) -> Option<u16> {
+        None
+    }
+
     /// Decode the peer's QUIC transport parameters (TLS
     /// extension 57; RFC 9001 §8.2).  Returns the decoded
     /// transport parameters as raw bytes — picoquic parses
     /// them with its own decoder.
     fn transport_parameters(&self) -> Result<Option<Vec<u8>>, Error>;
+
+    /// Replace the local QUIC transport-parameter bytes that will be
+    /// emitted in the next handshake flight.
+    ///
+    /// Server-side sessions need this after parsing the client's
+    /// transport parameters, because picoquic may adjust local
+    /// parameters before composing the server extension.
+    fn set_transport_parameters(&mut self, transport_params: &[u8]) -> Result<(), Error> {
+        let _ = transport_params;
+        Ok(())
+    }
 
     /// HKDF-Expand-Label using the session's exporter master
     /// secret.  Used by QUIC for stateless-reset tokens etc.
@@ -223,11 +249,15 @@ pub trait DynClientConfig: Send {
         server_name: &str,
         transport_params: &[u8],
     ) -> Result<Box<dyn Session>, ConfigError>;
+
+    /// Expose the concrete config for APIs that mutate the translated
+    /// master TLS context after construction.
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl<T> DynClientConfig for T
 where
-    T: ClientConfig + Send,
+    T: ClientConfig + Send + 'static,
     T::Session: 'static,
 {
     fn start_session(
@@ -239,6 +269,10 @@ where
         ClientConfig::start_session(self, version, server_name, transport_params)
             .map(|s| Box::new(s) as Box<dyn Session>)
     }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// Dyn-compatible mirror of [`ServerConfig`].
@@ -248,11 +282,15 @@ pub trait DynServerConfig: Send {
         version: u32,
         transport_params: &[u8],
     ) -> Result<Box<dyn Session>, ConfigError>;
+
+    /// Expose the concrete config for APIs that mutate the translated
+    /// master TLS context after construction.
+    fn as_any(&self) -> &dyn Any;
 }
 
 impl<T> DynServerConfig for T
 where
-    T: ServerConfig + Send,
+    T: ServerConfig + Send + 'static,
     T::Session: 'static,
 {
     fn start_session(
@@ -262,6 +300,10 @@ where
     ) -> Result<Box<dyn Session>, ConfigError> {
         ServerConfig::start_session(self, version, transport_params)
             .map(|s| Box::new(s) as Box<dyn Session>)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
     }
 }
 

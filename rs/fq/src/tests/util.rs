@@ -956,7 +956,7 @@ impl TestTlsApiCtx {
     /// C: `picoquic_set_test_address(&test_ctx->client_addr, addr_be, port)`.
     pub fn set_client_addr(&mut self, addr_be: u32, port: u16) {
         use core::net::Ipv4Addr;
-        self.client_addr = SocketAddr::from((Ipv4Addr::from(addr_be.to_be_bytes()), port));
+        self.client_addr = SocketAddr::from((Ipv4Addr::from(addr_be.to_ne_bytes()), port.to_be()));
     }
 
     /// True when the client connection is in the Ready state.

@@ -531,7 +531,7 @@ impl From<crate::socks::SelectInfo> for PicoquicSelectInfo {
             addr_dest: info.addr_dest,
             dest_if: info.dest_if,
             received_ecn: info.received_ecn,
-            bytes_recv: info.bytes_recv,
+            bytes_recv: usize::try_from(info.bytes_recv).unwrap_or(0),
             current_time: info.current_time,
         }
     }
@@ -6223,6 +6223,10 @@ pub const TLS_API_INIT_FLAGS_NO_MINICRYPTO: u64 = 2;
 /// TLS API initialisation flag: exclude the fusion AES provider.
 /// C: `TLS_API_INIT_FLAGS_NO_FUSION`.
 pub const TLS_API_INIT_FLAGS_NO_FUSION: u64 = 4;
+
+/// TLS API initialisation flag: exclude the MbedTLS provider.
+/// C: `TLS_API_INIT_FLAGS_NO_MBEDTLS`.
+pub const TLS_API_INIT_FLAGS_NO_MBEDTLS: u64 = 8;
 
 /// Reset the TLS provider registry to the given configuration flags.
 /// `flags = 0` restores the default (all providers enabled).

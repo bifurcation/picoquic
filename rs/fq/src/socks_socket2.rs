@@ -62,9 +62,8 @@ impl Socket2Udp {
             libc::AF_INET
         };
         let mut udp = Socket2Udp(sock, af);
-        let _ = udp.set_pkt_info();
         let _ = udp.set_ecn_options();
-        let _ = udp.set_pmtud_options();
+        udp.set_pkt_info()?;
         let addr = if domain == socket2::Domain::IPV6 {
             SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port as u16, 0, 0))
         } else {
@@ -73,6 +72,7 @@ impl Socket2Udp {
         udp.0
             .bind(&socket2::SockAddr::from(addr))
             .map_err(|_| Error::Generic)?;
+        udp.set_pmtud_options()?;
         Ok(udp)
     }
 
@@ -91,36 +91,57 @@ impl Socket for Socket2Udp {
     }
 
     fn recv(&mut self, buffer: &mut [u8]) -> Result<RecvInfo, Error> {
-        let uninit_buffer = unsafe {
-            // SAFETY: `recv_from` writes at most `buffer.len()` initialized
-            // bytes into the same allocation, and `u8` has no invalid bit
-            // patterns. The initialized prefix remains readable through
-            // `buffer` after the call returns.
-            &mut *(buffer as *mut [u8] as *mut [core::mem::MaybeUninit<u8>])
-        };
-        let (bytes_recv, addr_from) = self
-            .0
-            .recv_from(uninit_buffer)
-            .map_err(|_| Error::Generic)?;
-        Ok(RecvInfo {
-            addr_from: addr_from.as_socket(),
-            bytes_recv,
-            ..RecvInfo::default()
-        })
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+
+            crate::socks::picoquic_recvmsg(self.0.as_raw_fd(), buffer)
+        }
+
+        #[cfg(not(unix))]
+        {
+            use std::io::Read;
+
+            let bytes_recv = self.0.read(buffer).map_err(|_| Error::Generic)?;
+            Ok(RecvInfo {
+                bytes_recv,
+                ..RecvInfo::default()
+            })
+        }
     }
 
     fn send(
         &mut self,
         addr_dest: &SocketAddr,
-        _addr_from: Option<&SocketAddr>,
-        _dest_if: i32,
+        addr_from: Option<&SocketAddr>,
+        dest_if: i32,
         bytes: &[u8],
-        _gso_size: i32,
+        gso_size: i32,
     ) -> Result<usize, OsError> {
-        let sa = socket2::SockAddr::from(*addr_dest);
-        self.0
-            .send_to(bytes, &sa)
-            .map_err(|e| OsError(e.raw_os_error().unwrap_or(-1)))
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::io::AsRawFd;
+
+            crate::socks::picoquic_sendmsg(
+                self.0.as_raw_fd(),
+                addr_dest,
+                addr_from,
+                dest_if,
+                bytes,
+                gso_size,
+            )
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = addr_from;
+            let _ = dest_if;
+            let _ = gso_size;
+            let sa = socket2::SockAddr::from(*addr_dest);
+            self.0
+                .send_to(bytes, &sa)
+                .map_err(|e| OsError(e.raw_os_error().unwrap_or(-1)))
+        }
     }
 
     fn open_udp(af: i32) -> Result<Self, Error> {
@@ -155,30 +176,14 @@ impl Socket for Socket2Udp {
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
-            let fd = self.0.as_raw_fd();
-            let val: libc::c_int = 1;
-            let vp = &val as *const libc::c_int as *const libc::c_void;
-            let vl = core::mem::size_of::<libc::c_int>() as libc::socklen_t;
-            // IPv6 path: IPV6_V6ONLY=1 then IPV6_RECVPKTINFO=1.
-            // setsockopt returns -1 on an AF_INET socket (wrong protocol),
-            // so the if-check naturally skips IPV6_RECVPKTINFO on IPv4 sockets.
-            let r6only =
-                unsafe { libc::setsockopt(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, vp, vl) };
-            if r6only == 0 {
-                unsafe { libc::setsockopt(fd, libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, vp, vl) };
-            }
-            // IPv4 path: IP_PKTINFO (Linux/Android) or IP_RECVDSTADDR (BSD/macOS).
-            // setsockopt returns -1 on an AF_INET6 socket; error is ignored.
-            #[cfg(any(target_os = "linux", target_os = "android"))]
-            unsafe {
-                libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_PKTINFO, vp, vl)
-            };
-            #[cfg(not(any(target_os = "linux", target_os = "android")))]
-            unsafe {
-                libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_RECVDSTADDR, vp, vl)
-            };
+
+            crate::socks::picoquic_socket_set_pkt_info(self.0.as_raw_fd(), self.1)
         }
-        Ok(())
+
+        #[cfg(not(unix))]
+        {
+            Ok(())
+        }
     }
 
     fn set_ecn_options(&mut self) -> Result<(bool, bool), Error> {
@@ -207,16 +212,14 @@ impl Socket for Socket2Udp {
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::io::AsRawFd;
-            let fd = self.0.as_raw_fd();
-            let val: libc::c_int = libc::IP_PMTUDISC_PROBE;
-            let vp = &val as *const libc::c_int as *const libc::c_void;
-            let vl = core::mem::size_of::<libc::c_int>() as libc::socklen_t;
-            // Apply to both families; the one that doesn't match the socket's
-            // AF will return -1 (ignored), matching the C af-branch behavior.
-            unsafe { libc::setsockopt(fd, libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER, vp, vl) };
-            unsafe { libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_MTU_DISCOVER, vp, vl) };
+
+            crate::socks::picoquic_socket_set_pmtud_options(self.0.as_raw_fd(), self.1)
         }
-        Ok(())
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok(())
+        }
     }
 
     fn open_server_v4(port: i32) -> Result<Self, Error> {

@@ -9056,7 +9056,6 @@ impl Quic {
                 return Ok(None);
             }
         }
-
         // Payload length (varint)
         let mut payload_length = 0u64;
         let Some(rest) = frames_varint_decode(&bytes[pos..], &mut payload_length) else {

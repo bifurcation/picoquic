@@ -87,6 +87,7 @@ pub struct OpenSslSession {
     version: u32,
     server_name: Option<Vec<u8>>,
     transport_params: Vec<u8>,
+    peer_transport_params: Option<Vec<u8>>,
     wrote_handshake: bool,
     handshaking: bool,
     yielded_1rtt: bool,
@@ -106,6 +107,7 @@ impl OpenSslSession {
             version,
             server_name,
             transport_params: transport_params.to_vec(),
+            peer_transport_params: None,
             wrote_handshake: false,
             handshaking: true,
             yielded_1rtt: false,
@@ -193,6 +195,13 @@ impl OpenSslSession {
             TlsRole::Server => b"openssl server hello",
         }
     }
+
+    fn peer_handshake_bytes(&self) -> &'static [u8] {
+        match self.role {
+            TlsRole::Client => b"openssl server hello",
+            TlsRole::Server => b"openssl client hello",
+        }
+    }
 }
 
 impl Session for OpenSslSession {
@@ -201,6 +210,9 @@ impl Session for OpenSslSession {
             return Ok(false);
         }
         let changed = self.handshaking;
+        if let Some(params) = plaintext.strip_prefix(self.peer_handshake_bytes()) {
+            self.peer_transport_params = Some(params.to_vec());
+        }
         self.saw_peer_handshake = true;
         self.handshaking = false;
         Ok(changed)
@@ -269,7 +281,12 @@ impl Session for OpenSslSession {
     }
 
     fn transport_parameters(&self) -> Result<Option<Vec<u8>>, Error> {
-        Ok(Some(self.transport_params.clone()))
+        Ok(self.peer_transport_params.clone())
+    }
+
+    fn set_transport_parameters(&mut self, transport_params: &[u8]) -> Result<(), Error> {
+        self.transport_params = transport_params.to_vec();
+        Ok(())
     }
 
     fn export_keying_material(

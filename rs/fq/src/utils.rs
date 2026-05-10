@@ -368,6 +368,36 @@ pub fn compare_connection_id(id1: &ConnectionId, id2: &ConnectionId) -> Ordering
 // ---------------------------------------------------------------------------
 // Address helpers.
 
+/// Owned bytes for an IPv4 or IPv6 address.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IpAddrBytes {
+    V4([u8; 4]),
+    V6([u8; 16]),
+}
+
+impl IpAddrBytes {
+    /// Number of address bytes in this value.
+    pub const fn len(&self) -> u8 {
+        match self {
+            Self::V4(_) => 4,
+            Self::V6(_) => 16,
+        }
+    }
+
+    /// Address byte values as a slice.
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::V4(bytes) => bytes.as_slice(),
+            Self::V6(bytes) => bytes.as_slice(),
+        }
+    }
+
+    /// IPv4 and IPv6 address byte values are never empty.
+    pub const fn is_empty(&self) -> bool {
+        false
+    }
+}
+
 /// Pack an IP-and-port into a stable, byte-form key suitable for
 /// hashing.  C: `size_t hash_addr_bytes(const struct
 /// sockaddr* addr, uint8_t* bytes)`.  Returns the populated prefix
@@ -380,7 +410,7 @@ pub fn hash_addr_bytes(addr: &SocketAddr, bytes: &mut [u8]) -> usize {
             let ip = a.ip().octets();
             bytes[l..l + 4].copy_from_slice(&ip);
             l += 4;
-            let port = addr.port().to_ne_bytes();
+            let port = addr.port().to_be_bytes();
             bytes[l..l + 2].copy_from_slice(&port);
             l += 2;
         }
@@ -388,7 +418,7 @@ pub fn hash_addr_bytes(addr: &SocketAddr, bytes: &mut [u8]) -> usize {
             let ip = a.ip().octets();
             bytes[l..l + 16].copy_from_slice(&ip);
             l += 16;
-            let port = addr.port().to_ne_bytes();
+            let port = addr.port().to_be_bytes();
             bytes[l..l + 2].copy_from_slice(&port);
             l += 2;
         }
@@ -536,14 +566,13 @@ pub fn store_addr(addr: Option<&SocketAddr>) -> Option<SocketAddr> {
 /// Return the IP-bytes (4 or 16) inside a sockaddr.  C:
 /// `void get_ip_addr(struct sockaddr* addr, uint8_t**
 /// ip_addr, uint8_t* ip_addr_len)` — both output parameters fold
-/// into the returned slice.  `None` matches the C path where
+/// into the returned bytes.  `None` matches the C path where
 /// `*ip_addr = NULL; *ip_addr_len = 0;` for unsupported families.
-pub fn get_ip_addr(_addr: &SocketAddr) -> Option<&[u8]> {
-    // `SocketAddr` exposes IP octets only by value (`IpAddr::octets()`),
-    // not by reference; safe Rust cannot produce the required borrow.
-    // Callers should use `addr.ip()` with `Ipv4Addr::octets()` /
-    // `Ipv6Addr::octets()` directly.
-    None
+pub fn get_ip_addr(addr: &SocketAddr) -> Option<IpAddrBytes> {
+    Some(match addr {
+        SocketAddr::V4(addr) => IpAddrBytes::V4(addr.ip().octets()),
+        SocketAddr::V6(addr) => IpAddrBytes::V6(addr.ip().octets()),
+    })
 }
 
 /// Parse `ip_address_text` (IPv4 or IPv6 textual form) and combine
@@ -934,10 +963,13 @@ pub fn frames_cid_encode<'a>(bytes: &'a mut [u8], cid: &ConnectionId) -> Option<
     frames_length_data_encode(bytes, cid.as_bytes())
 }
 
-/// Encode a NUL-terminated C string `s` as length-prefixed data
-/// (the NUL is *not* written).  C: `frames_charz_encode`.
-pub fn frames_charz_encode<'a>(bytes: &'a mut [u8], s: &str) -> Option<&'a mut [u8]> {
-    frames_length_data_encode(bytes, s.as_bytes())
+/// Encode an optional NUL-terminated C string `s` as length-prefixed data.
+/// `None` writes length 0; the NUL is *not* written. C: `frames_charz_encode`.
+pub fn frames_charz_encode<'a>(bytes: &'a mut [u8], s: Option<&str>) -> Option<&'a mut [u8]> {
+    match s {
+        None => frames_varlen_encode(bytes, 0),
+        Some(s) => frames_length_data_encode(bytes, s.as_bytes()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,4 +1101,52 @@ pub fn uint8_to_str<'a>(text: &'a mut [u8], data: &[u8]) -> &'a [u8] {
 // constants likewise moved over.
 
 #[cfg(test)]
-mod test {}
+mod test {
+    use super::{IpAddrBytes, frames_charz_encode, get_ip_addr};
+    use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+
+    #[test]
+    fn frames_charz_encode_none_writes_zero_length() {
+        let mut bytes = [0xaa; 4];
+        let remaining = {
+            let rest = frames_charz_encode(&mut bytes, None).expect("zero length fits");
+            rest.len()
+        };
+
+        assert_eq!(remaining, 3);
+        assert_eq!(bytes, [0, 0xaa, 0xaa, 0xaa]);
+    }
+
+    #[test]
+    fn frames_charz_encode_some_writes_length_data() {
+        let mut bytes = [0; 4];
+        let remaining = {
+            let rest = frames_charz_encode(&mut bytes, Some("abc")).expect("string fits");
+            rest.len()
+        };
+
+        assert_eq!(remaining, 0);
+        assert_eq!(bytes, [3, b'a', b'b', b'c']);
+    }
+
+    #[test]
+    fn get_ip_addr_returns_ipv4_octets() {
+        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 7), 4433));
+        let ip = get_ip_addr(&addr).expect("SocketAddr::V4 has IP bytes");
+
+        assert_eq!(ip, IpAddrBytes::V4([192, 0, 2, 7]));
+        assert_eq!(ip.len(), 4);
+        assert_eq!(ip.as_slice(), &[192, 0, 2, 7]);
+    }
+
+    #[test]
+    fn get_ip_addr_returns_ipv6_octets() {
+        let octets = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::from(octets), 4433, 0, 0));
+        let ip = get_ip_addr(&addr).expect("SocketAddr::V6 has IP bytes");
+
+        assert_eq!(ip, IpAddrBytes::V6(octets));
+        assert_eq!(ip.len(), 16);
+        assert_eq!(ip.as_slice(), octets.as_slice());
+    }
+}
