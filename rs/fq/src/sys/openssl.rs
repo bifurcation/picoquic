@@ -14,8 +14,8 @@ use crate::Error;
 use crate::ech::{HpkeCipherSuiteId, aead_id, kdf_id, kem_id};
 use crate::internal::Version;
 use crate::tls::{
-    ClientConfig, ConfigError, HandshakeData, KeyPair, KeyPairHeader, Keys, PeerIdentity,
-    ServerConfig, Session, TlsBackend,
+    ClientConfig, ConfigError, HandshakeData, KeyLogEvent, KeyPair, KeyPairHeader, Keys,
+    PeerIdentity, ServerConfig, Session, TlsBackend,
 };
 use crate::tls_api::{hkdf_expand_label, pn_enc_create_for_test, setup_test_aead_context};
 use crate::{
@@ -91,6 +91,7 @@ pub struct OpenSslSession {
     handshaking: bool,
     yielded_1rtt: bool,
     saw_peer_handshake: bool,
+    pending_key_log_events: Vec<KeyLogEvent>,
 }
 
 impl OpenSslSession {
@@ -109,6 +110,7 @@ impl OpenSslSession {
             handshaking: true,
             yielded_1rtt: false,
             saw_peer_handshake: false,
+            pending_key_log_events: Vec::new(),
         }
     }
 
@@ -148,7 +150,7 @@ impl OpenSslSession {
         Some(secret)
     }
 
-    fn keys(&self) -> Option<Keys> {
+    fn key_material(&self) -> Option<(Keys, [u8; SECRET_LEN], [u8; SECRET_LEN])> {
         let (local_label, remote_label) = match self.role {
             TlsRole::Client => ("client app", "server app"),
             TlsRole::Server => ("server app", "client app"),
@@ -156,7 +158,7 @@ impl OpenSslSession {
         let local_secret = self.traffic_secret(local_label)?;
         let remote_secret = self.traffic_secret(remote_label)?;
         let prefix = self.prefix_label();
-        Some(Keys {
+        let keys = Keys {
             header: KeyPairHeader {
                 local: pn_enc_create_for_test(&local_secret, prefix)?,
                 remote: pn_enc_create_for_test(&remote_secret, prefix)?,
@@ -165,7 +167,24 @@ impl OpenSslSession {
                 local: setup_test_aead_context(true, &local_secret, prefix)?,
                 remote: setup_test_aead_context(false, &remote_secret, prefix)?,
             },
-        })
+        };
+        Some((keys, local_secret, remote_secret))
+    }
+
+    fn queue_1rtt_key_log_events(&mut self, local_secret: &[u8], remote_secret: &[u8]) {
+        let client_random = self.seed("client random");
+        self.pending_key_log_events.push(KeyLogEvent {
+            is_enc: true,
+            epoch: 3,
+            client_random,
+            secret: local_secret.to_vec(),
+        });
+        self.pending_key_log_events.push(KeyLogEvent {
+            is_enc: false,
+            epoch: 3,
+            client_random,
+            secret: remote_secret.to_vec(),
+        });
     }
 
     fn handshake_bytes(&self) -> &'static [u8] {
@@ -197,7 +216,9 @@ impl Session for OpenSslSession {
             None
         } else {
             self.yielded_1rtt = true;
-            self.keys()
+            let (keys, local_secret, remote_secret) = self.key_material()?;
+            self.queue_1rtt_key_log_events(&local_secret, &remote_secret);
+            Some(keys)
         }
     }
 
@@ -210,7 +231,13 @@ impl Session for OpenSslSession {
             return None;
         }
         self.yielded_1rtt = true;
-        self.keys().map(|keys| keys.packet)
+        let (keys, local_secret, remote_secret) = self.key_material()?;
+        self.queue_1rtt_key_log_events(&local_secret, &remote_secret);
+        Some(keys.packet)
+    }
+
+    fn take_key_log_events(&mut self) -> Vec<KeyLogEvent> {
+        core::mem::take(&mut self.pending_key_log_events)
     }
 
     fn handshake_data(&self) -> Option<HandshakeData> {

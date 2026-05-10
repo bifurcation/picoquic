@@ -2112,6 +2112,17 @@ pub struct Quic {
     /// Server-side TLS configuration (set when this `Quic` is
     /// being used to accept inbound connections).
     pub tls_server_config: Option<Box<dyn crate::tls::DynServerConfig>>,
+    /// DER-encoded server certificate chain installed on the master
+    /// TLS context.  C: `ptls_context_t::certificates`.
+    pub tls_certificate_chain: Vec<Vec<u8>>,
+    /// Cipher suites currently installed in the master TLS context.
+    /// Mirrors `ptls_context_t::cipher_suites`: empty means no suite
+    /// is available after a failed restriction attempt.
+    pub tls_cipher_suites: Vec<u16>,
+    /// Key-exchange groups currently installed in the master TLS context.
+    /// Mirrors `ptls_context_t::key_exchanges`; failed restriction attempts
+    /// leave the previous list installed.
+    pub tls_key_exchanges: Vec<u16>,
     /// Application-supplied TLS callbacks (ALPN selection, ticket
     /// store, certificate verification).  Replaces the C-style
     /// `register_*` global function-pointer registry.
@@ -2323,6 +2334,12 @@ pub struct Quic {
 
     pub rtt_update_delta: Duration,
     pub pacing_rate_update_delta: u64,
+
+    /// Open SSLKEYLOGFILE sink, if key logging is installed on
+    /// this context.  C stores this behind `tls_master_ctx->log_event`;
+    /// it is deliberately separate from `f_log`, which is the text
+    /// packet-log sink.
+    pub key_log: Option<Box<dyn Write>>,
 
     /// Open text-log sink, if a textlog is installed on this
     /// context.  C: `FILE* F_log` plus the `should_close_log` flag
@@ -3395,13 +3412,27 @@ impl Quic {
         // Build a null path/tuple for the initial path.
         let default_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
         let peer_addr = addr_to.copied().unwrap_or(default_addr);
+        let initial_local_connection_id = if self.local_connection_id_length == 0 {
+            ConnectionId::default()
+        } else {
+            let mut selected = None;
+            for _ in 0..32 {
+                let mut generated = ConnectionId::default();
+                self.create_local_cnx_id(&mut generated, initial_cnx_id);
+                if self.connection_by_id.lookup(&generated).is_none() {
+                    selected = Some(generated);
+                    break;
+                }
+            }
+            selected.ok_or(crate::Error::Generic)?
+        };
         let mut local_connection_ids = Arena::new();
         let initial_lcid_token = local_connection_ids.insert(LocalConnectionId {
             connection_by_id_membership: None,
             path_id: 0,
             sequence: 0,
             create_time: start_time,
-            connection_id: initial_cnx_id,
+            connection_id: initial_local_connection_id,
             is_acked: false,
         })?;
         let mut initial_tuple = Tuple {
@@ -4116,12 +4147,13 @@ impl Quic {
         self.insert_cnx_in_list(token);
 
         {
-            let cid = self
-                .connections
-                .get(token)
-                .map(|c| c.initial_connection_id)
-                .unwrap_or(initial_cnx_id);
-            if !cid.is_empty() {
+            if self.local_connection_id_length > 0 {
+                let cid = self
+                    .connections
+                    .get(token)
+                    .and_then(|c| c.local_connection_ids.get(initial_lcid_token))
+                    .map(|l_cid| l_cid.connection_id)
+                    .unwrap_or(initial_local_connection_id);
                 if self.connection_by_id.lookup(&cid).is_some() {
                     self.delete_connection(token);
                     return Err(crate::Error::Generic);
@@ -20113,7 +20145,7 @@ pub fn format_misc_frames_in_context<'a>(
 }
 
 impl Connection {
-    fn reinsert_self_by_wake_time(&mut self, next_time: Instant) {
+    pub(crate) fn reinsert_self_by_wake_time(&mut self, next_time: Instant) {
         self.next_wake_time = next_time;
 
         let Some(token) = self.own_token else {

@@ -283,6 +283,14 @@ fn getter() {
 
     // is_handshake_error.
     assert!(
+        !is_handshake_error(InternalError::AeadCheck as u64),
+        "AEAD check is not a handshake error"
+    );
+    assert!(
+        is_handshake_error(transport_crypto_error(0) as u64),
+        "CRYPTO_ERROR codes are handshake errors"
+    );
+    assert!(
         is_handshake_error(TransportError::TlsHandshakeFailed as u64),
         "TLS handshake failure is a handshake error"
     );

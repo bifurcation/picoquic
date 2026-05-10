@@ -76,6 +76,16 @@ pub trait Session: Send {
     /// until a key update.
     fn next_1rtt_keys(&mut self) -> Option<KeyPair>;
 
+    /// Drain traffic-key updates produced since the last call.
+    ///
+    /// Backends call this side channel when their QUIC traffic-key
+    /// callback fires.  The QUIC layer uses the events both to cache
+    /// application traffic secrets for key rotation and to emit
+    /// SSLKEYLOGFILE lines when key logging is configured.
+    fn take_key_log_events(&mut self) -> Vec<KeyLogEvent> {
+        Vec::new()
+    }
+
     /// Server-side handshake parameters (SNI, ALPN, etc.).
     /// Available after the first ClientHello.
     fn handshake_data(&self) -> Option<HandshakeData>;
@@ -118,6 +128,23 @@ pub trait Session: Send {
     fn retry_configs(&self) -> &[u8] {
         &[]
     }
+}
+
+/// One TLS traffic-secret update.
+///
+/// C: `picoquic_update_traffic_key_callback` receives `is_enc`,
+/// `epoch`, the raw traffic secret, and reads the TLS ClientHello
+/// random from picotls for SSLKEYLOGFILE output.
+pub struct KeyLogEvent {
+    /// `true` for the local/encrypt direction, `false` for
+    /// remote/decrypt.
+    pub is_enc: bool,
+    /// QUIC crypto epoch: 1 = 0-RTT, 2 = handshake, 3 = 1-RTT.
+    pub epoch: usize,
+    /// TLS client random associated with this connection.
+    pub client_random: [u8; 32],
+    /// Raw traffic secret for this direction and epoch.
+    pub secret: Vec<u8>,
 }
 
 // ---------------------------------------------------------------------------

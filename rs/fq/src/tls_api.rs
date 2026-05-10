@@ -723,31 +723,107 @@ fn queue_tls_bytes(cnx: &mut Connection, epoch: usize, bytes: &[u8]) -> Result<(
 struct LocalSession {
     is_client: bool,
     prefix_label: &'static str,
+    cipher_suites: Vec<u16>,
+    key_exchanges: Vec<u16>,
+    certificate_chain: Vec<Vec<u8>>,
     wrote_initial: bool,
     yielded_1rtt: bool,
     handshaking: bool,
+    client_random: [u8; SHA256_SIZE],
+    pending_key_log_events: Vec<crate::tls::KeyLogEvent>,
 }
 
 impl LocalSession {
-    fn new(is_client: bool, prefix_label: &'static str) -> Self {
+    fn new(
+        is_client: bool,
+        prefix_label: &'static str,
+        cipher_suites: &[u16],
+        key_exchanges: &[u16],
+        certificate_chain: &[Vec<u8>],
+    ) -> Self {
         Self {
             is_client,
             prefix_label,
+            cipher_suites: cipher_suites.to_vec(),
+            key_exchanges: key_exchanges.to_vec(),
+            certificate_chain: certificate_chain.to_vec(),
             wrote_initial: false,
             yielded_1rtt: false,
             handshaking: true,
+            client_random: Self::client_random_for(prefix_label, cipher_suites, key_exchanges),
+            pending_key_log_events: Vec::new(),
         }
     }
 
-    fn keys(&self) -> Option<crate::tls::Keys> {
-        const CLIENT_APP_SECRET: [u8; SHA256_SIZE] = [0x11; SHA256_SIZE];
-        const SERVER_APP_SECRET: [u8; SHA256_SIZE] = [0x22; SHA256_SIZE];
-        let (local, remote) = if self.is_client {
-            (&CLIENT_APP_SECRET[..], &SERVER_APP_SECRET[..])
+    fn mix_u16_list(secret: &mut [u8; SHA256_SIZE], values: &[u16], salt: u8) {
+        for (i, value) in values.iter().enumerate() {
+            let bytes = value.to_be_bytes();
+            let slot = (2 * i) % secret.len();
+            secret[slot] ^= bytes[0].wrapping_add(salt);
+            secret[(slot + 1) % secret.len()] ^= bytes[1].wrapping_add(i as u8);
+        }
+    }
+
+    fn client_random_for(
+        prefix_label: &str,
+        cipher_suites: &[u16],
+        key_exchanges: &[u16],
+    ) -> [u8; SHA256_SIZE] {
+        let mut random = [0u8; SHA256_SIZE];
+        for (i, b) in prefix_label.as_bytes().iter().enumerate() {
+            let slot = i % random.len();
+            random[slot] = random[slot].wrapping_add(*b).rotate_left((i % 8) as u32) ^ (i as u8);
+        }
+        Self::mix_u16_list(&mut random, cipher_suites, 0xc5);
+        Self::mix_u16_list(&mut random, key_exchanges, 0xe5);
+        random
+    }
+
+    fn app_secrets(&self) -> ([u8; SHA256_SIZE], [u8; SHA256_SIZE]) {
+        let mut client = [0x11; SHA256_SIZE];
+        let mut server = [0x22; SHA256_SIZE];
+        Self::mix_u16_list(&mut client, &self.cipher_suites, 0x11);
+        Self::mix_u16_list(&mut server, &self.cipher_suites, 0x22);
+        Self::mix_u16_list(&mut client, &self.key_exchanges, 0x51);
+        Self::mix_u16_list(&mut server, &self.key_exchanges, 0x62);
+        if self.is_client {
+            (client, server)
         } else {
-            (&SERVER_APP_SECRET[..], &CLIENT_APP_SECRET[..])
-        };
-        build_key_pair(local, remote, self.prefix_label).ok()
+            (server, client)
+        }
+    }
+
+    fn queue_1rtt_key_log_events(&mut self) {
+        let (local, remote) = self.app_secrets();
+        self.pending_key_log_events.push(crate::tls::KeyLogEvent {
+            is_enc: true,
+            epoch: 3,
+            client_random: self.client_random,
+            secret: local.to_vec(),
+        });
+        self.pending_key_log_events.push(crate::tls::KeyLogEvent {
+            is_enc: false,
+            epoch: 3,
+            client_random: self.client_random,
+            secret: remote.to_vec(),
+        });
+    }
+
+    fn keys(&self) -> Option<crate::tls::Keys> {
+        let (local, remote) = self.app_secrets();
+        build_key_pair(&local, &remote, self.prefix_label).ok()
+    }
+
+    fn write_certificate_chain(&self, buf: &mut Vec<u8>) {
+        if self.is_client || self.certificate_chain.is_empty() {
+            return;
+        }
+
+        buf.extend_from_slice(&(self.certificate_chain.len() as u64).to_be_bytes());
+        for cert in &self.certificate_chain {
+            buf.extend_from_slice(&(cert.len() as u64).to_be_bytes());
+            buf.extend_from_slice(cert);
+        }
     }
 }
 
@@ -769,9 +845,11 @@ impl crate::tls::Session for LocalSession {
             } else {
                 b"picoquic server hello"
             });
+            self.write_certificate_chain(buf);
         }
         if !self.yielded_1rtt {
             self.yielded_1rtt = true;
+            self.queue_1rtt_key_log_events();
             return self.keys();
         }
         None
@@ -783,6 +861,10 @@ impl crate::tls::Session for LocalSession {
 
     fn next_1rtt_keys(&mut self) -> Option<crate::tls::KeyPair> {
         None
+    }
+
+    fn take_key_log_events(&mut self) -> Vec<crate::tls::KeyLogEvent> {
+        core::mem::take(&mut self.pending_key_log_events)
     }
 
     fn handshake_data(&self) -> Option<crate::tls::HandshakeData> {
@@ -949,6 +1031,8 @@ impl Quic {
             }
         }
 
+        self.set_key_exchange(0)?;
+        self.set_cipher_suite(0)?;
         install_ticket_aead_contexts(self, ticket_key)
     }
 
@@ -969,6 +1053,8 @@ impl Quic {
     pub fn free_master_tls_context(&mut self) {
         self.tls_client_config = None;
         self.tls_server_config = None;
+        self.tls_cipher_suites.clear();
+        self.tls_key_exchanges.clear();
     }
 }
 
@@ -985,6 +1071,10 @@ impl Connection {
     /// `ERROR_TLS_SERVER_CON_WITHOUT_CERT` / `ERROR_MEMORY` / -1 on
     /// failure.
     pub fn create_tls_context(&mut self, quic: &mut Quic) -> Result<(), Error> {
+        if quic.tls_cipher_suites.is_empty() {
+            return Err(Error::Tls);
+        }
+
         let version = connection_version(self);
         let transport_params = Vec::new();
         let session: Box<dyn crate::tls::Session> = if self.client_mode {
@@ -997,6 +1087,9 @@ impl Connection {
                 Box::new(LocalSession::new(
                     true,
                     version.parameters().tls_prefix_label,
+                    &quic.tls_cipher_suites,
+                    &quic.tls_key_exchanges,
+                    &[],
                 ))
             }
         } else if let Some(config) = quic.tls_server_config.as_ref() {
@@ -1012,6 +1105,9 @@ impl Connection {
             Box::new(LocalSession::new(
                 false,
                 version.parameters().tls_prefix_label,
+                &quic.tls_cipher_suites,
+                &quic.tls_key_exchanges,
+                &quic.tls_certificate_chain,
             ))
         };
 
@@ -1092,14 +1188,18 @@ impl Connection {
         }
 
         for chunk in &chunks {
-            if session.read_handshake(chunk)?
-                && let Some(keys) = session.write_handshake(&mut self.tls_sendbuf)
-            {
-                install_key_pair(&mut self.crypto_context[3], keys);
+            if session.read_handshake(chunk)? {
+                let keys = session.write_handshake(&mut self.tls_sendbuf);
+                self.consume_tls_key_log_events(session.as_mut());
+                if let Some(keys) = keys {
+                    install_key_pair(&mut self.crypto_context[3], keys);
+                }
             }
         }
 
-        if let Some(keys) = session.write_handshake(&mut self.tls_sendbuf) {
+        let keys = session.write_handshake(&mut self.tls_sendbuf);
+        self.consume_tls_key_log_events(session.as_mut());
+        if let Some(keys) = keys {
             install_key_pair(&mut self.crypto_context[3], keys);
         }
 
@@ -1127,7 +1227,9 @@ impl Connection {
     /// `initialize_tls_stream`.
     pub fn initialize_tls_stream(&mut self, current_time: Instant) -> Result<(), Error> {
         let mut session = self.tls_ctx.take().ok_or(Error::InvalidState)?;
-        if let Some(keys) = session.write_handshake(&mut self.tls_sendbuf) {
+        let keys = session.write_handshake(&mut self.tls_sendbuf);
+        self.consume_tls_key_log_events(session.as_mut());
+        if let Some(keys) = keys {
             install_key_pair(&mut self.crypto_context[3], keys);
         }
         let out = core::mem::take(&mut self.tls_sendbuf);
@@ -2306,6 +2408,7 @@ struct TlsApiState {
     key_exchange_secp256r1: Option<CryptoProvider>,
     crypto_random_provider: Option<CryptoProvider>,
     private_key_provider: Option<CryptoProvider>,
+    verify_certificate_provider: Option<CryptoProvider>,
 }
 
 impl TlsApiState {
@@ -2318,6 +2421,7 @@ impl TlsApiState {
             key_exchange_secp256r1: None,
             crypto_random_provider: None,
             private_key_provider: None,
+            verify_certificate_provider: None,
         }
     }
 
@@ -2329,6 +2433,7 @@ impl TlsApiState {
         self.key_exchange_secp256r1 = None;
         self.crypto_random_provider = None;
         self.private_key_provider = None;
+        self.verify_certificate_provider = None;
     }
 
     /// Register or replace a TLS cipher suite.  The first matching slot by
@@ -2380,6 +2485,13 @@ impl TlsApiState {
         self.private_key_provider = Some(provider);
     }
 
+    /// Register the certificate-verification callback family.
+    /// C: `picoquic_register_verify_certificate_provider_fn`.
+    #[cfg(feature = "sys-openssl")]
+    fn register_verify_certificate_provider(&mut self, provider: CryptoProvider) {
+        self.verify_certificate_provider = Some(provider);
+    }
+
     fn cipher_suite_provider(&self, suite_id: u16, use_low_memory: bool) -> Option<CryptoProvider> {
         self.cipher_suites
             .iter()
@@ -2429,6 +2541,7 @@ fn ptls_openssl_load_locked(state: &mut TlsApiState, unload: i32) {
         }
         state.register_crypto_random_provider(CryptoProvider::OpenSsl);
         state.register_tls_key_provider(CryptoProvider::OpenSsl);
+        state.register_verify_certificate_provider(CryptoProvider::OpenSsl);
     }
 }
 
@@ -2540,14 +2653,15 @@ pub fn is_minicrypto_aes128gcm_sha256(use_low_memory: bool) -> bool {
         == Some(CryptoProvider::Minicrypto)
 }
 
-/// Return the first registered cipher-suite ID matching `cipher_suite_id`.
-/// Passing `0` selects the first registered suite in provider order.
+/// Return the registered cipher-suite IDs matching `cipher_suite_id`.
+/// Passing `0` selects the default registered suite list in provider order.
 ///
-/// C: `picoquic/tls_api.c:picoquic_get_cipher_suite_by_id`.
-pub fn picoquic_get_cipher_suite_by_id(cipher_suite_id: i32, use_low_memory: bool) -> Option<u16> {
+/// C: `picoquic/tls_api.c:picoquic_set_cipher_suite_list`.
+pub fn picoquic_cipher_suite_list(cipher_suite_id: i32, use_low_memory: bool) -> Vec<u16> {
     let state = tls_api_state();
+    let mut suites = Vec::new();
     for slot in state.cipher_suites {
-        if slot.high_memory_suite.is_none() {
+        if slot.high_memory_suite.is_none() || suites.len() >= 4 {
             break;
         }
         if cipher_suite_id != 0 && cipher_suite_id != i32::from(slot.id) {
@@ -2559,10 +2673,42 @@ pub fn picoquic_get_cipher_suite_by_id(cipher_suite_id: i32, use_low_memory: boo
             slot.high_memory_suite
         };
         if provider.is_some() {
-            return Some(slot.id);
+            suites.push(slot.id);
         }
     }
-    None
+    suites
+}
+
+/// Return the key-exchange group IDs matching `key_exchange_id`.
+/// Passing `0` selects all registered groups in provider order; passing
+/// [`GROUP_SECP256R1`] selects only P-256 and fails if no provider registered
+/// that group.
+///
+/// C: `picoquic/tls_api.c:picoquic_set_key_exchange_in_ctx`.
+pub fn picoquic_key_exchange_list(key_exchange_id: i32) -> crate::Result<Vec<u16>> {
+    let state = tls_api_state();
+    match key_exchange_id {
+        0 => Ok(state
+            .key_exchanges
+            .iter()
+            .take_while(|slot| slot.provider.is_some())
+            .map(|slot| slot.id)
+            .collect()),
+        id if id == i32::from(GROUP_SECP256R1) && state.key_exchange_secp256r1.is_some() => {
+            Ok(vec![GROUP_SECP256R1])
+        }
+        _ => Err(Error::InvalidArgument),
+    }
+}
+
+/// Return the first registered cipher-suite ID matching `cipher_suite_id`.
+/// Passing `0` selects the first registered suite in provider order.
+///
+/// C: `picoquic/tls_api.c:picoquic_get_cipher_suite_by_id`.
+pub fn picoquic_get_cipher_suite_by_id(cipher_suite_id: i32, use_low_memory: bool) -> Option<u16> {
+    picoquic_cipher_suite_list(cipher_suite_id, use_low_memory)
+        .first()
+        .copied()
 }
 
 /// Get the AES-128-GCM-SHA-256 TLS cipher suite required for Initial packets.
@@ -2601,6 +2747,12 @@ pub fn picoquic_get_aes128gcm_v(use_low_memory: bool) -> Option<AeadSuiteId> {
 pub fn is_minicrypto_key_loader() -> bool {
     let state = tls_api_state();
     state.private_key_provider == Some(CryptoProvider::Minicrypto)
+}
+
+#[cfg(feature = "sys-openssl")]
+pub(crate) fn is_openssl_verify_certificate_provider() -> bool {
+    let state = tls_api_state();
+    state.verify_certificate_provider == Some(CryptoProvider::OpenSsl)
 }
 
 /// Initialize the minicrypto provider.  In the current C implementation
