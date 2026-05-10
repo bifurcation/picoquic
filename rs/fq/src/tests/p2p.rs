@@ -6,8 +6,9 @@
 #![allow(non_snake_case)]
 
 use super::util::{
-    TestApiStreamDesc, test_api_init_send_recv_scenario, tls_api_connection_loop,
-    tls_api_data_sending_loop, tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex,
+    TEST_ALPN, TEST_SNI, TestApiStreamDesc, test_api_init_send_recv_scenario,
+    tls_api_connection_loop, tls_api_data_sending_loop, tls_api_one_scenario_body_verify,
+    tls_api_one_scenario_init_ex,
 };
 use crate::ConnectionId;
 use crate::internal::Version;
@@ -50,11 +51,26 @@ fn address_discovery() {
 
     // Delete the initial client connection and re-create it so the new
     // transport parameters are picked up.
+    let client_token = test_ctx
+        .cnx_client()
+        .own_token
+        .expect("client connection token");
+    test_ctx.qclient.delete_connection(client_token);
     {
-        let cnx = test_ctx.cnx_client();
-        // The C code calls picoquic_delete_cnx then picoquic_create_cnx.
-        // In Rust, the full re-creation is handled through the test context;
-        // for now, just start the client connection.
+        let server_addr = test_ctx.server_addr;
+        let cnx = test_ctx
+            .qclient
+            .create_connection(
+                initial_cid,
+                ConnectionId::default(),
+                Some(&server_addr),
+                simulated_time,
+                0,
+                Some(TEST_SNI),
+                Some(TEST_ALPN),
+                true,
+            )
+            .expect("create client connection");
         cnx.start_client().expect("start client");
     }
 

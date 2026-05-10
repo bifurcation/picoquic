@@ -5,13 +5,35 @@
 
 #![allow(non_snake_case)]
 
-use crate::errors::InternalError;
-use crate::internal::Version;
+use crate::errors::{InternalError, TransportError, transport_crypto_error};
+use crate::internal::{Connection, DEFAULT_CRYPTO_EPOCH_LENGTH, LocalConnectionId, Version};
 use crate::tests::util::{TEST_ALPN, TEST_SNI, tls_api_connection_loop, tls_api_init_ctx_ex2};
 use crate::{
-    ConnectionId, Error, Instant, PacketContext, SpinbitVersion, get_congestion_algorithm,
-    is_handshake_error, register_all_congestion_control_algorithms,
+    ConnectionId, Duration, Error, Instant, PacketContext, SpinbitVersion,
+    get_congestion_algorithm, is_handshake_error, register_all_congestion_control_algorithms,
 };
+
+fn first_path_local_cid(cnx: &Connection) -> ConnectionId {
+    let path = cnx.paths.first().expect("path 0");
+    let tuple = path.tuples.first().expect("path 0 tuple 0");
+    let token = tuple.local_connection_id.expect("path 0 local CID");
+    cnx.local_connection_ids
+        .get(token)
+        .expect("registered local CID")
+        .connection_id
+}
+
+fn first_path_remote_cid(cnx: &Connection) -> ConnectionId {
+    let path = cnx.paths.first().expect("path 0");
+    let tuple = path.tuples.first().expect("path 0 tuple 0");
+    let cid_index = tuple.remote_connection_id_index.unwrap_or(0);
+    cnx.remote_connection_id_stashes
+        .iter()
+        .find(|stash| stash.unique_path_id == path.unique_path_id)
+        .and_then(|stash| stash.connection_ids.get(cid_index))
+        .expect("path 0 remote CID")
+        .connection_id
+}
 
 /// C: `getter_test` in `picoquictest/getter_test.c`.
 #[test]
@@ -51,15 +73,17 @@ fn getter() {
     );
 
     // default_connection_id_ttl getter.
-    let ttl = test_ctx.qserver.default_connection_id_ttl();
     assert_eq!(
         test_ctx.qserver.default_connection_id_ttl(),
-        ttl,
-        "default_connection_id_ttl getter is stable"
+        test_ctx.qserver.local_connection_id_ttl,
+        "default_connection_id_ttl should expose quic.local_connection_id_ttl"
     );
 
     // default_tp getter.
-    let _tp = test_ctx.qserver.default_tp();
+    assert!(
+        core::ptr::eq(test_ctx.qserver.default_tp(), &test_ctx.qserver.default_tp),
+        "default_tp should borrow quic.default_tp"
+    );
 
     // set_cwin_max(0) should saturate to u64::MAX; restore afterwards.
     {
@@ -100,8 +124,9 @@ fn getter() {
         let _ = test_ctx.cnx_client().set_local_addr(&zero);
     }
 
-    // queue_misc_frame: SIZE_MAX invalid (skip — usize::MAX slice impossible in safe Rust);
-    // valid frame queues, then purge_misc_frames_after_ready empties the list.
+    // queue_misc_frame: the Rust slice API cannot express the C SIZE_MAX
+    // invalid-length case without an explicit test hook. The valid queue,
+    // purge, delete-last, and singleton cases still mirror the C test.
     {
         let mf = [crate::frames::FrameType::MaxStreamsBidir as u8, 0x41, 0];
         assert!(
@@ -148,24 +173,85 @@ fn getter() {
         .expect("connection loop");
 
     // local_if_index.
-    let _if_idx = test_ctx.cnx_client().local_if_index();
+    {
+        let cnx = test_ctx.cnx_client();
+        let expected_if_index = cnx.paths[0].tuples[0].if_index as u32;
+        assert_eq!(
+            cnx.local_if_index(),
+            expected_if_index,
+            "local_if_index should expose path[0].tuple[0].if_index"
+        );
+    }
 
     // local_connection_id, remote_connection_id, initial_connection_id.
-    let local_cid = test_ctx.cnx_client().local_connection_id();
-    let remote_cid = test_ctx.cnx_client().remote_connection_id();
-    let initial_cid2 = test_ctx.cnx_client().initial_connection_id();
-    assert!(!local_cid.is_empty());
-    assert!(!remote_cid.is_empty());
-    assert!(!initial_cid2.is_empty());
+    let (client_local_cid, client_remote_cid) = {
+        let cnx = test_ctx.cnx_client();
+        let local_cid = first_path_local_cid(cnx);
+        let remote_cid = first_path_remote_cid(cnx);
+        assert_eq!(
+            cnx.local_cnxid().as_bytes(),
+            local_cid.as_bytes(),
+            "local_cnxid should match path[0].tuple[0].local_connection_id"
+        );
+        assert_eq!(
+            cnx.remote_connection_id().as_bytes(),
+            remote_cid.as_bytes(),
+            "remote_connection_id should match path[0].tuple[0].remote_connection_id"
+        );
+        assert_eq!(
+            cnx.initial_connection_id().as_bytes(),
+            cnx.initial_connection_id.as_bytes(),
+            "initial_connection_id should expose cnx.initial_connection_id"
+        );
+        (local_cid, remote_cid)
+    };
 
-    // client_connection_id matches on both sides.
-    let client_cid = test_ctx.cnx_client().client_connection_id();
-    let client_cid_s = test_ctx.cnx_server().client_connection_id();
+    // client_connection_id matches the client CID on both sides.
+    let client_cid = {
+        let cnx = test_ctx.cnx_client();
+        let cid = cnx.client_connection_id();
+        assert_eq!(
+            cid.as_bytes(),
+            client_local_cid.as_bytes(),
+            "client_connection_id on client should match its local path CID"
+        );
+        cid
+    };
+    let client_cid_s = {
+        let cnx_s = test_ctx.cnx_server();
+        let server_remote_cid = first_path_remote_cid(cnx_s);
+        let cid = cnx_s.client_connection_id();
+        assert_eq!(
+            cid.as_bytes(),
+            server_remote_cid.as_bytes(),
+            "client_connection_id on server should match its remote path CID"
+        );
+        cid
+    };
     assert_eq!(client_cid.as_bytes(), client_cid_s.as_bytes());
 
-    // server_connection_id matches on both sides.
-    let server_cid = test_ctx.cnx_client().server_connection_id();
-    let server_cid_s = test_ctx.cnx_server().server_connection_id();
+    // server_connection_id matches the server CID on both sides.
+    let server_cid = {
+        let cnx = test_ctx.cnx_client();
+        let cid = cnx.server_connection_id();
+        assert_eq!(
+            cid.as_bytes(),
+            client_remote_cid.as_bytes(),
+            "server_connection_id on client should match its remote path CID"
+        );
+        cid
+    };
+    let server_cid_s = {
+        let cnx_s = test_ctx.cnx_server();
+        let server_local_cid = first_path_local_cid(cnx_s);
+        let cid = cnx_s.server_connection_id();
+        assert_eq!(
+            cid.as_bytes(),
+            server_local_cid.as_bytes(),
+            "server_connection_id on server should match its local path CID"
+        );
+        cid
+    };
     assert_eq!(server_cid.as_bytes(), server_cid_s.as_bytes());
 
     // set/get padding policy.
@@ -189,67 +275,118 @@ fn getter() {
     }
 
     // is_sslkeylog_enabled getter.
-    let _ssl = test_ctx.qclient.is_sslkeylog_enabled();
+    assert_eq!(
+        test_ctx.qclient.is_sslkeylog_enabled(),
+        test_ctx.qclient.enable_sslkeylog,
+        "is_sslkeylog_enabled should expose qclient.enable_sslkeylog"
+    );
 
     // is_handshake_error.
     assert!(
-        is_handshake_error(crate::errors::InternalError::AeadCheck as u64),
-        "AEAD check is a handshake error"
+        is_handshake_error(TransportError::TlsHandshakeFailed as u64),
+        "TLS handshake failure is a handshake error"
     );
-    // A transport-frame error is not a handshake error.
     assert!(
-        !is_handshake_error(crate::errors::InternalError::InvalidFrame as u64),
+        is_handshake_error(transport_crypto_error(123) as u64),
+        "CRYPTO_ERROR alert is a handshake error"
+    );
+    assert!(
+        !is_handshake_error(TransportError::FrameFormatError as u64),
         "frame-format error is not a handshake error"
     );
 
     // Congestion-algorithm registry.
     register_all_congestion_control_algorithms();
     {
-        let alg_names = ["reno", "cubic", "dcubic", "fast", "bbr", "prague", "bbr1"];
-        for name in alg_names {
-            assert!(
-                get_congestion_algorithm(name).is_some(),
-                "algorithm '{name}' should be registered"
-            );
+        let alg_cases = [
+            ("reno", Some(("reno", 1))),
+            ("cubic", Some(("cubic", 2))),
+            ("dcubic", Some(("dcubic", 3))),
+            ("fast", Some(("fast", 4))),
+            ("bbr", Some(("bbr", 5))),
+            ("prague", Some(("prague", 6))),
+            ("bbr1", Some(("bbr1", 7))),
+            ("wuovipfwds", None),
+        ];
+        for (name, expected) in alg_cases {
+            match expected {
+                Some((expected_id, expected_number)) => {
+                    let alg = get_congestion_algorithm(name).expect("registered algorithm");
+                    assert_eq!(alg.congestion_algorithm_id, expected_id);
+                    assert_eq!(alg.congestion_algorithm_number, expected_number);
+                }
+                None => {
+                    assert!(
+                        get_congestion_algorithm(name).is_none(),
+                        "bogus name should not be registered"
+                    );
+                }
+            }
         }
-        assert!(
-            get_congestion_algorithm("wuovipfwds").is_none(),
-            "bogus name should not be registered"
-        );
     }
 
     // set_default_congestion_algorithm_by_name.
     {
         let dcubic = get_congestion_algorithm("dcubic").expect("dcubic");
-        let _ = test_ctx
+        test_ctx
             .qclient
-            .set_default_congestion_algorithm_by_name("dcubic");
-        let _ = dcubic;
+            .set_default_congestion_algorithm_by_name("dcubic")
+            .expect("set dcubic as default congestion algorithm");
+        let selected = test_ctx
+            .qclient
+            .default_congestion_alg
+            .expect("default congestion algorithm");
+        assert!(
+            core::ptr::eq(selected, dcubic),
+            "default congestion algorithm should be dcubic"
+        );
     }
 
     // enable_keep_alive / disable_keep_alive.
     {
         let l_timer = 10_000_000u64;
-        test_ctx.cnx_client().enable_keep_alive(
-            crate::Duration::from_ticks(0), // 0 → auto-compute from retransmit_timer
+        let cnx = test_ctx.cnx_client();
+        let r_timer = cnx.paths[0].retransmit_timer;
+        cnx.idle_timeout = Duration::from_ticks(0);
+        cnx.local_parameters.max_idle_timeout = Duration::from_ticks(r_timer.ticks() / 500);
+        cnx.enable_keep_alive(Duration::from_ticks(0));
+        assert_ne!(
+            cnx.keep_alive_interval.ticks(),
+            0,
+            "zero keep-alive should auto-compute a nonzero interval"
         );
-        test_ctx
-            .cnx_client()
-            .enable_keep_alive(crate::Duration::from_ticks(l_timer));
-        test_ctx.cnx_client().disable_keep_alive();
+        assert!(
+            cnx.keep_alive_interval.ticks() < 3 * r_timer.ticks(),
+            "auto-computed keep-alive should be below 3*rto"
+        );
+        cnx.enable_keep_alive(Duration::from_ticks(l_timer));
+        assert_eq!(cnx.keep_alive_interval.ticks(), l_timer);
+        cnx.disable_keep_alive();
+        assert_eq!(cnx.keep_alive_interval.ticks(), 0);
     }
 
     // application_error getter.
     {
         let app_error = 0x12345678abcdefu64;
-        test_ctx.cnx_client().set_stream_remote_error(u64::MAX, 0); // noop for nonexistent stream
-        let _ = test_ctx.cnx_client().remote_stream_error(u32::MAX as u64);
-        // Queue data on stream 0 then inject remote error.
-        let data = [1u8, 2, 3, 4];
-        let _ = test_ctx.cnx_client().add_to_stream(0, &data, false);
-        test_ctx.cnx_client().set_stream_remote_error(0, app_error);
+        let cnx = test_ctx.cnx_client();
+        cnx.remote_application_error = app_error;
         assert_eq!(
-            test_ctx.cnx_client().remote_stream_error(0),
+            cnx.remote_application_error(),
+            app_error,
+            "remote_application_error should expose cnx.remote_application_error"
+        );
+        cnx.remote_application_error = 0;
+        assert_eq!(
+            cnx.remote_stream_error(u32::MAX as u64),
+            0,
+            "missing stream should report no remote stream error"
+        );
+
+        let data = [1u8, 2, 3, 4];
+        cnx.add_to_stream(0, &data, false).expect("add stream data");
+        cnx.set_stream_remote_error(0, app_error);
+        assert_eq!(
+            cnx.remote_stream_error(0),
             app_error,
             "remote_stream_error round-trip"
         );
@@ -260,18 +397,41 @@ fn getter() {
         .qserver
         .adjust_max_connections(4)
         .expect("adjust_max_connections");
+    assert_eq!(test_ctx.qserver.tentative_max_number_connections, 4);
     assert_eq!(test_ctx.qserver.current_number_connections(), 1);
 
     // default_crypto_epoch_length / set_crypto_epoch_length.
-    let _epoch = test_ctx.qserver.default_crypto_epoch_length();
-    test_ctx.cnx_client().set_crypto_epoch_length(0);
-    let _ = test_ctx.cnx_client().crypto_epoch_length();
+    assert_eq!(
+        test_ctx.qserver.default_crypto_epoch_length(),
+        test_ctx.qserver.crypto_epoch_length_max
+    );
+    {
+        let cnx = test_ctx.cnx_client();
+        cnx.set_crypto_epoch_length(0);
+        assert_eq!(
+            cnx.crypto_epoch_length_max, DEFAULT_CRYPTO_EPOCH_LENGTH,
+            "zero crypto epoch length should reset to the default"
+        );
+        assert_eq!(
+            cnx.crypto_epoch_length(),
+            DEFAULT_CRYPTO_EPOCH_LENGTH,
+            "crypto_epoch_length getter should expose the reset default"
+        );
+    }
 
     // local_cid_length / is_local_cid.
-    let _lcl = test_ctx.qserver.local_cid_length();
+    assert_eq!(
+        test_ctx.qserver.local_cid_length(),
+        test_ctx.qserver.local_connection_id_length
+    );
     {
         let fake = ConnectionId::clone_from_slice(&[1u8, 2, 3]).expect("fake cid");
+        let real = first_path_local_cid(test_ctx.cnx_client());
         assert!(!test_ctx.qclient.is_local_cid(&fake));
+        assert!(
+            test_ctx.qclient.is_local_cid(&real),
+            "client path local CID should be registered in qclient"
+        );
     }
 
     // max_simultaneous_logs / set_max_simultaneous_logs.
@@ -282,21 +442,16 @@ fn getter() {
     test_ctx.qserver.set_max_half_open_retry_threshold(17);
     assert_eq!(test_ctx.qserver.max_half_open_retry_threshold(), 17);
 
-    // register_cnx_id: re-registering an already-registered CID should fail.
-    {
-        let local_cid_registered = test_ctx.cnx_client().local_connection_id();
-        // Create a LocalConnectionId wrapper and attempt re-register.
-        // In C: picoquic_register_cnx_id(qclient, cnx, cnx->path[0]->...) == 0 → failure expected.
-        // In Rust: just assert that registering an existing CID returns an error.
-        let _ = local_cid_registered; // Phase 4: wire register_cnx_id
-    }
-
     // register_net_icid: re-registration should fail.
     {
-        let ret = test_ctx.cnx_client().register_net_icid();
-        // Second call should fail; first might succeed or fail depending on state.
-        // C: first call to register_net_icid on a non-registered ICID succeeds.
-        let _ = ret;
+        let was_unregistered =
+            crate::socket_addr_is_unspecified(&test_ctx.cnx_client().registered_icid_addr);
+        if was_unregistered {
+            assert!(
+                test_ctx.cnx_client().register_net_icid().is_ok(),
+                "first register_net_icid should succeed when the ICID is unregistered"
+            );
+        }
         assert!(
             test_ctx.cnx_client().register_net_icid().is_err(),
             "second register_net_icid should fail"
@@ -331,4 +486,43 @@ fn getter() {
             "wake_delay capped"
         );
     }
+
+    // register_cnx_id: re-registering an already-registered CID should fail.
+    {
+        let token = test_ctx.cnx_client().own_token.expect("client token");
+        let mut cnx = test_ctx
+            .qclient
+            .connections
+            .remove(token)
+            .expect("client connection");
+        let local_cid_token = cnx.paths[0].tuples[0]
+            .local_connection_id
+            .expect("path 0 local CID token");
+        let local_cid = cnx
+            .local_connection_ids
+            .get(local_cid_token)
+            .expect("path 0 local CID");
+        let mut duplicate_lcid = LocalConnectionId {
+            connection_by_id_membership: local_cid.connection_by_id_membership,
+            path_id: local_cid.path_id,
+            sequence: local_cid.sequence,
+            create_time: local_cid.create_time,
+            connection_id: local_cid.connection_id,
+            is_acked: local_cid.is_acked,
+        };
+        assert!(
+            test_ctx
+                .qclient
+                .register_cnx_id(&mut cnx, &mut duplicate_lcid)
+                .is_err(),
+            "register_cnx_id should fail for an already registered local CID"
+        );
+    }
+
+    // get_quic_ctx(NULL): Rust maps the nullable C connection pointer to Option.
+    let null_cnx: Option<&mut Connection> = None;
+    assert!(
+        null_cnx.is_none(),
+        "get_quic_ctx(NULL) maps to None in the Rust API"
+    );
 }

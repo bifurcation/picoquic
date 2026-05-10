@@ -6,15 +6,23 @@
 
 #![allow(non_snake_case)]
 
-use super::util::{tls_api_one_scenario_body, tls_api_one_scenario_init_ex};
+use super::util::{tls_api_one_scenario_body_ex, tls_api_one_scenario_init_ex};
 use crate::binlog::Binlog as _;
 use crate::internal::{Version, init_transport_parameters};
 use crate::tp::TransportParameters;
-use crate::{CongestionAlgorithm, ConnectionId, Duration, Instant, get_congestion_algorithm};
+use crate::{
+    CongestionAlgorithm, ConnectionId, Duration, Instant, get_congestion_algorithm,
+    register_all_congestion_control_algorithms,
+};
 
 // ---------------------------------------------------------------------------
 // Core helper.
 // C: `satellite_test_one` in `picoquictest/satellite_test.c`.
+
+fn satellite_ccalgo(name: &str) -> &'static CongestionAlgorithm {
+    register_all_congestion_control_algorithms();
+    get_congestion_algorithm(name).unwrap_or_else(|| panic!("cc algo not found: {name}"))
+}
 
 #[allow(clippy::too_many_arguments)]
 fn satellite_test_one(
@@ -139,15 +147,16 @@ fn satellite_test_one(
     test_ctx.qclient.use_long_log = true;
     test_ctx.cnx_client().new_connection();
 
-    tls_api_one_scenario_body(
+    tls_api_one_scenario_body_ex(
         &mut test_ctx,
         &mut simulated_time,
         &[],
+        data_size,
         if has_loss { 0x1000_0000u64 } else { 0 },
-        data_size as i32,
         0,
         2 * latency,
         max_completion_time,
+        &[],
     )
     .expect("scenario completed");
 
@@ -188,7 +197,7 @@ fn satellite_test_one(
 /// C: `satellite_basic_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_basic() {
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = satellite_ccalgo("bbr");
     satellite_test_one(
         bbr,
         100_000_000,
@@ -207,7 +216,7 @@ fn satellite_basic() {
 /// C: `satellite_seeded_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_seeded() {
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = satellite_ccalgo("bbr");
     satellite_test_one(
         bbr,
         100_000_000,
@@ -226,7 +235,7 @@ fn satellite_seeded() {
 /// C: `satellite_seeded_bbr1_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_seeded_bbr1() {
-    let bbr1 = get_congestion_algorithm("bbr1").expect("bbr1");
+    let bbr1 = satellite_ccalgo("bbr1");
     satellite_test_one(
         bbr1,
         100_000_000,
@@ -245,7 +254,7 @@ fn satellite_seeded_bbr1() {
 /// C: `satellite_loss_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_loss() {
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = satellite_ccalgo("bbr");
     satellite_test_one(
         bbr,
         100_000_000,
@@ -264,7 +273,7 @@ fn satellite_loss() {
 /// C: `satellite_loss_fc_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_loss_fc() {
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = satellite_ccalgo("bbr");
     satellite_test_one(
         bbr,
         100_000_000,
@@ -283,7 +292,7 @@ fn satellite_loss_fc() {
 /// C: `satellite_preemptive_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_preemptive() {
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = satellite_ccalgo("bbr");
     satellite_test_one(
         bbr,
         100_000_000,
@@ -302,7 +311,7 @@ fn satellite_preemptive() {
 /// C: `satellite_jitter_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_jitter() {
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = satellite_ccalgo("bbr");
     satellite_test_one(
         bbr,
         100_000_000,
@@ -321,7 +330,7 @@ fn satellite_jitter() {
 /// C: `satellite_medium_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_medium() {
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = satellite_ccalgo("bbr");
     satellite_test_one(
         bbr,
         100_000_000,
@@ -340,7 +349,7 @@ fn satellite_medium() {
 /// C: `satellite_small_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_small() {
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = satellite_ccalgo("bbr");
     satellite_test_one(
         bbr,
         100_000_000,
@@ -359,7 +368,7 @@ fn satellite_small() {
 /// C: `satellite_small_up_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_small_up() {
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = satellite_ccalgo("bbr");
     satellite_test_one(
         bbr,
         100_000_000,
@@ -378,7 +387,7 @@ fn satellite_small_up() {
 /// C: `satellite_bbr1_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_bbr1() {
-    let bbr1 = get_congestion_algorithm("bbr1").expect("bbr1");
+    let bbr1 = satellite_ccalgo("bbr1");
     satellite_test_one(
         bbr1,
         100_000_000,
@@ -397,7 +406,7 @@ fn satellite_bbr1() {
 /// C: `satellite_cubic_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_cubic() {
-    let cubic = get_congestion_algorithm("cubic").expect("cubic");
+    let cubic = satellite_ccalgo("cubic");
     satellite_test_one(
         cubic,
         100_000_000,
@@ -416,7 +425,7 @@ fn satellite_cubic() {
 /// C: `satellite_cubic_seeded_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_cubic_seeded() {
-    let cubic = get_congestion_algorithm("cubic").expect("cubic");
+    let cubic = satellite_ccalgo("cubic");
     satellite_test_one(
         cubic,
         100_000_000,
@@ -435,7 +444,7 @@ fn satellite_cubic_seeded() {
 /// C: `satellite_cubic_loss_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_cubic_loss() {
-    let cubic = get_congestion_algorithm("cubic").expect("cubic");
+    let cubic = satellite_ccalgo("cubic");
     satellite_test_one(
         cubic,
         100_000_000,
@@ -454,7 +463,7 @@ fn satellite_cubic_loss() {
 /// C: `satellite_dcubic_seeded_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_dcubic_seeded() {
-    let dcubic = get_congestion_algorithm("dcubic").expect("dcubic");
+    let dcubic = satellite_ccalgo("dcubic");
     satellite_test_one(
         dcubic,
         100_000_000,
@@ -473,7 +482,7 @@ fn satellite_dcubic_seeded() {
 /// C: `satellite_prague_seeded_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_prague_seeded() {
-    let prague = get_congestion_algorithm("prague").expect("prague");
+    let prague = satellite_ccalgo("prague");
     satellite_test_one(
         prague,
         100_000_000,
@@ -492,7 +501,7 @@ fn satellite_prague_seeded() {
 /// C: `satellite_preemptive_fc_test` in `picoquictest/satellite_test.c`.
 #[test]
 fn satellite_preemptive_fc() {
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = satellite_ccalgo("bbr");
     satellite_test_one(
         bbr, 10_000_000, 20_000_000, 20, 2, 0, true, true, false, true, false,
     );

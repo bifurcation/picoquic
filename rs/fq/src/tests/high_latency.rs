@@ -5,10 +5,17 @@
 
 #![allow(non_snake_case)]
 
-use super::util::{TestApiStreamDesc, tls_api_one_scenario_body, tls_api_one_scenario_init_ex};
+use super::util::{
+    TestApiStreamDesc, test_api_init_send_recv_scenario, tls_api_connection_loop,
+    tls_api_data_sending_loop, tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex,
+    wait_client_connection_ready,
+};
 use crate::internal::{Version, init_transport_parameters};
 use crate::tp::TransportParameters;
-use crate::{CongestionAlgorithm, ConnectionId, Duration, Instant, get_congestion_algorithm};
+use crate::{
+    CongestionAlgorithm, ConnectionId, Duration, Instant, get_congestion_algorithm,
+    register_all_congestion_control_algorithms,
+};
 
 // ---------------------------------------------------------------------------
 // Shared large scenario: 100 × 1 MB streams.
@@ -127,6 +134,11 @@ const HILAT_SCENARIO_100MB: &[TestApiStreamDesc] = &{
     ]
 };
 
+fn high_latency_ccalgo(name: &str) -> &'static CongestionAlgorithm {
+    register_all_congestion_control_algorithms();
+    get_congestion_algorithm(name).unwrap_or_else(|| panic!("cc algo not found: {name}"))
+}
+
 // ---------------------------------------------------------------------------
 // Core helper.
 // C: `high_latency_one` in `picoquictest/high_latency_test.c`.
@@ -196,6 +208,7 @@ fn high_latency_one(
     .expect("test context");
 
     test_ctx.qserver.set_default_congestion_algorithm(ccalgo);
+    test_ctx.cnx_client().set_congestion_algorithm(ccalgo);
     test_ctx.cnx_client().set_preemptive_repeat(do_preemptive);
     test_ctx.qserver.set_preemptive_repeat_policy(do_preemptive);
 
@@ -224,18 +237,20 @@ fn high_latency_one(
     let _ = test_ctx.qserver.set_qlog(".");
     let _ = test_ctx.qclient.set_qlog(".");
 
-    let loss_mask: u64 = if has_loss { 0x1000_0000 } else { 0 };
-    tls_api_one_scenario_body(
+    let mut loss_mask: u64 = if has_loss { 0x1000_0000 } else { 0 };
+    tls_api_connection_loop(
         &mut test_ctx,
-        &mut simulated_time,
-        scenario,
-        loss_mask,
-        0,
-        0,
+        &mut loss_mask,
         2 * latency,
-        max_completion_time,
+        &mut simulated_time,
     )
-    .expect("scenario completed");
+    .expect("connection loop");
+    wait_client_connection_ready(&mut test_ctx, &mut simulated_time).expect("client ready");
+    test_api_init_send_recv_scenario(&mut test_ctx, scenario).expect("scenario init");
+    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)
+        .expect("data loop");
+    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, max_completion_time)
+        .expect("scenario verify");
 
     if do_preemptive {
         assert!(
@@ -252,7 +267,7 @@ fn high_latency_one(
 #[test]
 fn high_latency_basic() {
     let latency = 5_000_000u64;
-    let newreno = get_congestion_algorithm("reno").expect("newreno");
+    let newreno = high_latency_ccalgo("newreno");
     high_latency_one(
         0xba,
         newreno,
@@ -277,7 +292,7 @@ fn high_latency_basic() {
 #[test]
 fn high_latency_bbr() {
     let latency = 5_000_000u64;
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = high_latency_ccalgo("bbr");
     high_latency_one(
         0xbb,
         bbr,
@@ -297,7 +312,7 @@ fn high_latency_bbr() {
 #[test]
 fn high_latency_cubic() {
     let latency = 5_000_000u64;
-    let cubic = get_congestion_algorithm("cubic").expect("cubic");
+    let cubic = high_latency_ccalgo("cubic");
     high_latency_one(
         0xcb,
         cubic,
@@ -317,7 +332,7 @@ fn high_latency_cubic() {
 #[test]
 fn high_latency_probertt() {
     let latency = 5_000_000u64;
-    let bbr = get_congestion_algorithm("bbr").expect("bbr");
+    let bbr = high_latency_ccalgo("bbr");
     high_latency_one(
         0xf1,
         bbr,
