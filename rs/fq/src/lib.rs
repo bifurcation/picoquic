@@ -5284,14 +5284,16 @@ fn decrypt_packet_payload(
         return InternalError::AeadNotReady as i32;
     }
 
-    let pn_length = ((packet[0] & 0x03) + 1) as usize;
-    let header_end = ph.packet_number_offset.saturating_add(pn_length);
-    let cipher_end = ph.packet_number_offset.saturating_add(ph.payload_length);
-    if header_end > cipher_end || cipher_end > packet.len() {
+    let header_end = ph.offset;
+    let cipher_end = ph.offset.saturating_add(ph.payload_length);
+    if header_end > cipher_end
+        || cipher_end > packet.len()
+        || header_end > decrypted_data.data.len()
+    {
         return InternalError::PacketHeaderParsing as i32;
     }
 
-    let header = packet[..header_end].to_vec();
+    let header = decrypted_data.data[..header_end].to_vec();
     let mut payload = packet[header_end..cipher_end].to_vec();
     if aead
         .decrypt(ph.packet_number_full, &header, &mut payload)
@@ -5300,12 +5302,14 @@ fn decrypt_packet_payload(
         return InternalError::AeadCheck as i32;
     }
 
-    let len = payload.len().min(decrypted_data.data.len());
+    if header_end + payload.len() > decrypted_data.data.len() {
+        return InternalError::PacketHeaderParsing as i32;
+    }
     decrypted_data.stream_data_membership = None;
     decrypted_data.offset = 0;
-    decrypted_data.length = len;
-    decrypted_data.data[..len].copy_from_slice(&payload[..len]);
-    ph.payload_length = len;
+    decrypted_data.length = header_end + payload.len();
+    decrypted_data.data[header_end..header_end + payload.len()].copy_from_slice(&payload);
+    ph.payload_length = payload.len();
     0
 }
 

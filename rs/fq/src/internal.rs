@@ -436,7 +436,7 @@ impl Version {
                 version_retry_key: V1_RETRY_KEY,
                 tls_prefix_label: V1_PREFIX,
                 tls_traffic_update_label: V1_KU,
-                packet_type_version: self as u32,
+                packet_type_version: 0x0000_0001,
                 upgrade_from: &[],
             },
             Version::SeventeenthInterop | Version::EighteenthInterop => VersionParameters {
@@ -926,6 +926,7 @@ struct PacketRetransmitSnapshot {
     send_path: Option<PathToken>,
     sequence_number: u64,
     send_time: Instant,
+    delivered_prior: u64,
     length: usize,
     checksum_overhead: usize,
     offset: usize,
@@ -938,6 +939,7 @@ struct PacketRetransmitSnapshot {
     is_ack_trap: bool,
     is_preemptive_repeat: bool,
     was_preemptively_repeated: bool,
+    is_queued_for_retransmit: bool,
     bytes: [u8; MAX_PACKET_SIZE],
 }
 
@@ -947,6 +949,7 @@ impl From<&Packet> for PacketRetransmitSnapshot {
             send_path: packet.send_path,
             sequence_number: packet.sequence_number,
             send_time: packet.send_time,
+            delivered_prior: packet.delivered_prior,
             length: packet.length,
             checksum_overhead: packet.checksum_overhead,
             offset: packet.offset,
@@ -959,6 +962,7 @@ impl From<&Packet> for PacketRetransmitSnapshot {
             is_ack_trap: packet.is_ack_trap,
             is_preemptive_repeat: packet.is_preemptive_repeat,
             was_preemptively_repeated: packet.was_preemptively_repeated,
+            is_queued_for_retransmit: packet.is_queued_for_retransmit,
             bytes: packet.bytes,
         }
     }
@@ -2640,6 +2644,7 @@ pub struct Pacing {
     pub bandwidth_pause: i32,
     pub bucket_nanosec: i64,
     pub packet_time_nanosec: i64,
+    pub update_is_signalled: bool,
 }
 
 pub struct Tuple {
@@ -4225,6 +4230,40 @@ impl Quic {
 }
 
 impl Connection {
+    fn refresh_registered_net_secret(
+        &mut self,
+        peer_addr: SocketAddr,
+        reset_secret: [u8; RESET_SECRET_SIZE],
+    ) -> Result<(), crate::Error> {
+        if crate::socket_addr_is_unspecified(&peer_addr) {
+            return Ok(());
+        }
+
+        let old_membership = self.connection_by_secret_membership.take();
+        let connection_token = self.own_token;
+        self.registered_secret_addr = crate::unspecified_socket_addr();
+        self.registered_reset_secret = [0u8; RESET_SECRET_SIZE];
+        self.registered_secret_addr = peer_addr;
+        self.registered_reset_secret = reset_secret;
+
+        let mut new_membership = None;
+        if let Some(quic) = self.quic_mut() {
+            if let Some(membership) = old_membership {
+                quic.connection_by_secret.remove(membership);
+            }
+            let connection_token = connection_token.ok_or(crate::Error::InvalidState)?;
+            let key = (reset_secret, peer_addr);
+            if quic.connection_by_secret.lookup(&key).is_some() {
+                return Err(crate::Error::Generic);
+            }
+            let (membership, _) = quic.connection_by_secret.insert(key, connection_token)?;
+            new_membership = Some(membership);
+        }
+
+        self.connection_by_secret_membership = new_membership;
+        Ok(())
+    }
+
     /// Insert this connection's reset-secret hash entry into the
     /// QUIC context's lookup table.
     /// C: `picoquic_register_net_secret` (picoquic/quicctx.c:1374-1392).
@@ -6111,6 +6150,100 @@ impl Connection {
     ) -> Result<(), crate::Error> {
         self.assign_peer_connection_id_to_tuple_by_path_id(path_x.unique_path_id, tuple)
     }
+
+    fn assign_peer_connection_id_to_tuple_by_index(
+        &mut self,
+        path_index: usize,
+        tuple_index: usize,
+    ) -> Result<(), crate::Error> {
+        let path_unique_id = self
+            .paths
+            .get(path_index)
+            .map(|path| path.unique_path_id)
+            .ok_or(crate::Error::InvalidArgument)?;
+        let (stash_idx, cid_idx) = self
+            .obtain_stashed_connection_id(path_unique_id)
+            .ok_or(crate::Error::Generic)?;
+
+        let tuple = self
+            .paths
+            .get_mut(path_index)
+            .and_then(|path| path.tuples.get_mut(tuple_index))
+            .ok_or(crate::Error::InvalidArgument)?;
+        tuple.remote_connection_id_index = Some(cid_idx);
+        tuple.unique_path_id = path_unique_id;
+
+        let stash = self
+            .remote_connection_id_stashes
+            .get_mut(stash_idx)
+            .ok_or(crate::Error::Generic)?;
+        let cid = stash
+            .connection_ids
+            .get_mut(cid_idx)
+            .ok_or(crate::Error::Generic)?;
+        cid.nb_path_references += 1;
+        stash.is_in_use = true;
+
+        Ok(())
+    }
+
+    fn probe_new_tuple_by_index(
+        &mut self,
+        path_index: usize,
+        addr_peer: SocketAddr,
+        addr_local: Option<SocketAddr>,
+        if_index: i32,
+        current_time: Instant,
+        to_preferred_address: bool,
+    ) -> Result<(), crate::Error> {
+        let path_unique_id = self
+            .paths
+            .get(path_index)
+            .map(|path| path.unique_path_id)
+            .ok_or(crate::Error::InvalidArgument)?;
+        if self.obtain_stashed_connection_id(path_unique_id).is_none() {
+            return Err(crate::Error::Generic);
+        }
+        let mut addr_local = addr_local;
+        let mut if_index = if_index;
+        if addr_local.is_none()
+            && let Some(tuple) = self
+                .paths
+                .iter()
+                .filter_map(|path| path.tuples.first())
+                .find(|tuple| {
+                    !crate::socket_addr_is_unspecified(&tuple.local_addr)
+                        && tuple.local_addr.is_ipv4() == addr_peer.is_ipv4()
+                })
+        {
+            addr_local = Some(tuple.local_addr);
+            if_index = tuple.if_index as i32;
+        }
+
+        let tuple_idx = {
+            let path = self
+                .paths
+                .get_mut(path_index)
+                .ok_or(crate::Error::InvalidArgument)?;
+            path.create_tuple(addr_local.as_ref(), Some(&addr_peer), if_index)?
+        };
+        self.assign_peer_connection_id_to_tuple_by_index(path_index, tuple_idx)?;
+
+        let use_constant_challenges = self
+            .quic_ref()
+            .map(|quic| i32::from(quic.use_constant_challenges))
+            .unwrap_or(0);
+        let tuple = self
+            .paths
+            .get_mut(path_index)
+            .and_then(|path| path.tuples.get_mut(tuple_idx))
+            .ok_or(crate::Error::InvalidArgument)?;
+        set_tuple_challenge(tuple, current_time, use_constant_challenges);
+        tuple.challenge_required = true;
+        tuple.to_preferred_address = to_preferred_address;
+
+        Ok(())
+    }
 }
 
 impl Path {
@@ -6223,10 +6356,12 @@ impl Connection {
             ecn_ce_total_remote: 0,
             ack_of_ack_requested: false,
         };
+        let mut reset_secret = [0u8; RESET_SECRET_SIZE];
+        public_random(&mut reset_secret);
         let initial_rcid = RemoteConnectionId {
             sequence: 0,
             connection_id: crate::ConnectionId::default(),
-            reset_secret: [0u8; RESET_SECRET_SIZE],
+            reset_secret,
             nb_path_references: 1,
             needs_removal: false,
             retire_sent: false,
@@ -6259,20 +6394,19 @@ impl Connection {
         secret_bytes: &[u8],
     ) -> StashResult {
         // C: picoquic_add_remote_cnxid_to_stash
-        // C transport error codes: 0x1=INTERNAL, 0x7=FRAME_FORMAT, 0xA=PROTOCOL_VIOLATION
+        // C transport error codes: 0x1=INTERNAL, 0x7=FRAME_FORMAT,
+        // 0x9=CONNECTION_ID_LIMIT, 0xA=PROTOCOL_VIOLATION
         const INTERNAL_ERROR: u64 = 0x1;
         const FRAME_FORMAT_ERROR: u64 = 0x7;
+        const CONNECTION_ID_LIMIT_ERROR: u64 = 0x9;
         const PROTOCOL_VIOLATION: u64 = 0xA;
 
-        let stash = match self.remote_connection_id_stashes.get_mut(stash_index) {
-            Some(s) => s,
-            None => {
-                return StashResult {
-                    status: INTERNAL_ERROR,
-                    stashed_index: None,
-                };
-            }
-        };
+        if stash_index >= self.remote_connection_id_stashes.len() {
+            return StashResult {
+                status: INTERNAL_ERROR,
+                stashed_index: None,
+            };
+        }
 
         let cnx_id = match crate::ConnectionId::clone_from_slice(connection_id_bytes) {
             Some(id) => id,
@@ -6284,9 +6418,28 @@ impl Connection {
             }
         };
 
-        // Ensure retire_connection_id_before moves forward.
-        if retire_before_next > stash.retire_connection_id_before {
-            stash.retire_connection_id_before = retire_before_next;
+        let active_peer_cid_is_empty = self
+            .paths
+            .first()
+            .and_then(|path| {
+                let tuple = path.tuples.first()?;
+                let unique_path_id = if self.is_multipath_enabled {
+                    path.unique_path_id
+                } else {
+                    0
+                };
+                let cid_index = tuple.remote_connection_id_index.unwrap_or(0);
+                self.remote_connection_id_stashes
+                    .iter()
+                    .find(|stash| stash.unique_path_id == unique_path_id)
+                    .and_then(|stash| stash.connection_ids.get(cid_index))
+            })
+            .is_none_or(|remote_cid| remote_cid.connection_id.is_empty());
+        if active_peer_cid_is_empty {
+            return StashResult {
+                status: PROTOCOL_VIOLATION,
+                stashed_index: None,
+            };
         }
 
         // Check for duplicates / sequence collision.
@@ -6294,14 +6447,17 @@ impl Connection {
         let slen = secret_bytes.len().min(RESET_SECRET_SIZE);
         secret_arr[..slen].copy_from_slice(&secret_bytes[..slen]);
 
+        let retire_before = retire_before_next
+            .max(self.remote_connection_id_stashes[stash_index].retire_connection_id_before);
+        let mut duplicate_index = None;
+        let mut nb_cid_received = 0usize;
+        let mut nb_cid_retired_before = 0usize;
+        let stash = &self.remote_connection_id_stashes[stash_index];
         for (idx, r) in stash.connection_ids.iter().enumerate() {
             if r.connection_id == cnx_id {
                 if r.sequence == sequence && r.reset_secret == secret_arr {
-                    // Duplicate — not an error, just no-op.
-                    return StashResult {
-                        status: 0,
-                        stashed_index: Some(idx),
-                    };
+                    duplicate_index = Some(idx);
+                    break;
                 } else {
                     return StashResult {
                         status: PROTOCOL_VIOLATION,
@@ -6313,7 +6469,33 @@ impl Connection {
                     status: PROTOCOL_VIOLATION,
                     stashed_index: None,
                 };
+            } else {
+                if r.sequence < retire_before || r.retire_sent {
+                    nb_cid_retired_before += 1;
+                }
+                nb_cid_received += 1;
             }
+        }
+
+        if duplicate_index.is_some() {
+            let stash = &mut self.remote_connection_id_stashes[stash_index];
+            if retire_before_next > stash.retire_connection_id_before {
+                stash.retire_connection_id_before = retire_before_next;
+            }
+            return StashResult {
+                status: 0,
+                stashed_index: None,
+            };
+        }
+
+        let active_connection_id_limit = self.local_parameters.active_connection_id_limit as usize;
+        if nb_cid_received >= active_connection_id_limit.saturating_add(nb_cid_retired_before)
+            || nb_cid_received >= active_connection_id_limit.saturating_mul(2)
+        {
+            return StashResult {
+                status: CONNECTION_ID_LIMIT_ERROR,
+                stashed_index: None,
+            };
         }
 
         let zero_pkt_ctx = PacketContextState {
@@ -6345,6 +6527,9 @@ impl Connection {
         };
         stash.connection_ids.push(new_rcid);
         let stashed_index = stash.connection_ids.len() - 1;
+        if retire_before_next > stash.retire_connection_id_before {
+            stash.retire_connection_id_before = retire_before_next;
+        }
         StashResult {
             status: 0,
             stashed_index: Some(stashed_index),
@@ -6382,46 +6567,77 @@ impl Connection {
 }
 
 impl Connection {
+    fn adjust_remote_connection_id_indices_after_removal(
+        &mut self,
+        stash_unique_path_id: u64,
+        removed_index: usize,
+    ) {
+        let is_multipath_enabled = self.is_multipath_enabled;
+        for path in &mut self.paths {
+            if is_multipath_enabled && path.unique_path_id != stash_unique_path_id {
+                continue;
+            }
+            for tuple in &mut path.tuples {
+                match tuple.remote_connection_id_index {
+                    Some(index) if index == removed_index => {
+                        tuple.remote_connection_id_index = None;
+                    }
+                    Some(index) if index > removed_index => {
+                        tuple.remote_connection_id_index = Some(index - 1);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     /// Remove the CID at `removed_index` from
-    /// `connection.remote_connection_id_stashes[stash_index].connection_ids`.  Returns the
-    /// next index that is still live, if any (matches the C "return
-    /// the chain successor" pattern).
+    /// `connection.remote_connection_id_stashes[stash_index].connection_ids`.
+    /// `previous_index`, when supplied, is accepted only if it still points to
+    /// the element immediately before `removed_index`; otherwise the CID is
+    /// searched from the stash head like the C fallback.
+    ///
+    /// Returns the next index that is still live, if any.  Because Rust stores
+    /// the stash as a `Vec`, tuple-held CID indices after the removed entry are
+    /// shifted back to preserve their existing identity.
+    ///
+    /// C: `picoquic_remove_cnxid_from_stash`.
     pub fn remove_connection_id_from_stash(
         &mut self,
         stash_index: usize,
         removed_index: usize,
+        previous_index: Option<usize>,
     ) -> Option<usize> {
-        let (unique_path_id, next_live) = {
+        let (stash_unique_path_id, removed_index, next_index) = {
             let stash = self.remote_connection_id_stashes.get_mut(stash_index)?;
-            if removed_index >= stash.connection_ids.len() {
+            let len = stash.connection_ids.len();
+            if len == 0 || removed_index >= len {
                 return None;
             }
-            let unique_path_id = stash.unique_path_id;
-            stash.connection_ids.remove(removed_index);
-            let next_live = (removed_index < stash.connection_ids.len()).then_some(removed_index);
-            (unique_path_id, next_live)
-        };
-        let is_multipath_enabled = self.is_multipath_enabled;
-        for path in &mut self.paths {
-            let path_stash_id = if is_multipath_enabled {
-                path.unique_path_id
+
+            let previous_is_valid = previous_index.is_some_and(|candidate_previous| {
+                candidate_previous < len && candidate_previous.checked_add(1) == Some(removed_index)
+            });
+            let removed = if previous_is_valid {
+                removed_index
             } else {
-                0
-            };
-            if path_stash_id != unique_path_id {
-                continue;
-            }
-            for tuple in &mut path.tuples {
-                if let Some(cid_index) = tuple.remote_connection_id_index {
-                    if cid_index == removed_index {
-                        tuple.remote_connection_id_index = None;
-                    } else if cid_index > removed_index {
-                        tuple.remote_connection_id_index = Some(cid_index - 1);
-                    }
+                let mut stashed = 0;
+                while stashed < len && stashed != removed_index {
+                    stashed += 1;
                 }
-            }
-        }
-        next_live
+                if stashed >= len {
+                    return None;
+                }
+                stashed
+            };
+
+            stash.connection_ids.remove(removed);
+            let next_index = (removed < stash.connection_ids.len()).then_some(removed);
+            (stash.unique_path_id, removed, next_index)
+        };
+
+        self.adjust_remote_connection_id_indices_after_removal(stash_unique_path_id, removed_index);
+        next_index
     }
 }
 
@@ -6442,7 +6658,7 @@ impl Connection {
             .remote_connection_id_stashes
             .iter()
             .position(|s| s.unique_path_id == eff_path_id)?;
-        self.remove_connection_id_from_stash(stash_idx, removed_index)
+        self.remove_connection_id_from_stash(stash_idx, removed_index, None)
     }
 }
 
@@ -6555,6 +6771,8 @@ impl Connection {
             } else {
                 cid.nb_path_references -= 1;
             }
+        } else {
+            return;
         }
 
         if let Some(sequence) = retire_sequence
@@ -6568,29 +6786,266 @@ impl Connection {
             cid.retire_sent = true;
         }
         if remove_cid {
-            let _ = self.remove_connection_id_from_stash(stash_idx, cid_idx);
+            let _ = self.remove_connection_id_from_stash(stash_idx, cid_idx, None);
         }
     }
 }
 
 impl Connection {
+    fn cid_retire_error_code(error: crate::Error) -> u64 {
+        match error {
+            crate::Error::Protocol(code) => code,
+            crate::Error::Memory => crate::errors::InternalError::Memory as u64,
+            crate::Error::BufferTooSmall => {
+                crate::errors::InternalError::FrameBufferTooSmall as u64
+            }
+            crate::Error::Disconnected => crate::errors::InternalError::Disconnected as u64,
+            crate::Error::InvalidFrame => crate::errors::InternalError::InvalidFrame as u64,
+            crate::Error::InvalidState => crate::errors::InternalError::UnexpectedState as u64,
+            crate::Error::NoSuchFile => crate::errors::InternalError::NoSuchFile as u64,
+            crate::Error::InvalidFile => crate::errors::InternalError::InvalidFile as u64,
+            crate::Error::Generic | crate::Error::InvalidArgument => u64::MAX,
+            _ => crate::errors::InternalError::UnexpectedError as u64,
+        }
+    }
+
+    fn path_needs_connection_id_renewal(
+        &self,
+        path_index: usize,
+        connection_id_stash: &RemoteConnectionIdStash,
+        not_before: u64,
+    ) -> bool {
+        let Some(path) = self.paths.get(path_index) else {
+            return false;
+        };
+        if path.path_is_demoted {
+            return false;
+        }
+        let Some(cid_index) = path
+            .tuples
+            .first()
+            .and_then(|tuple| tuple.remote_connection_id_index)
+        else {
+            return false;
+        };
+        connection_id_stash
+            .connection_ids
+            .get(cid_index)
+            .is_some_and(|cid| cid.sequence < not_before && !cid.connection_id.is_empty())
+    }
+
+    fn register_net_secret_from_stash(
+        &mut self,
+        connection_id_stash: &RemoteConnectionIdStash,
+        cid_index: usize,
+    ) -> Result<(), crate::Error> {
+        let peer_addr = self
+            .paths
+            .first()
+            .and_then(|path| path.tuples.first())
+            .map(|tuple| tuple.peer_addr)
+            .ok_or(crate::Error::InvalidArgument)?;
+        if crate::socket_addr_is_unspecified(&peer_addr) {
+            return Ok(());
+        }
+        let reset_secret = connection_id_stash
+            .connection_ids
+            .get(cid_index)
+            .map(|cid| cid.reset_secret)
+            .ok_or(crate::Error::InvalidArgument)?;
+
+        self.refresh_registered_net_secret(peer_addr, reset_secret)
+    }
+
+    fn renew_connection_id_from_stash(
+        &mut self,
+        path_index: usize,
+        connection_id_stash: &mut RemoteConnectionIdStash,
+    ) -> Result<(), crate::Error> {
+        if path_index >= self.paths.len() {
+            return Err(crate::Error::InvalidArgument);
+        }
+
+        let old_cid_index = self.paths[path_index]
+            .tuples
+            .first()
+            .and_then(|tuple| tuple.remote_connection_id_index);
+        let old_sequence = old_cid_index
+            .and_then(|cid_index| connection_id_stash.connection_ids.get(cid_index))
+            .map(|cid| cid.sequence);
+        if (self.remote_parameters.migration_disabled
+            && old_sequence.is_some_and(|sequence| {
+                sequence >= connection_id_stash.retire_connection_id_before
+            }))
+            || self.local_parameters.migration_disabled
+        {
+            return Err(crate::Error::Protocol(
+                crate::errors::InternalError::MigrationDisabled as u64,
+            ));
+        }
+
+        let mut new_cid_index =
+            connection_id_stash
+                .get_connection_id_from_stash()
+                .ok_or(crate::Error::Protocol(
+                    crate::errors::InternalError::CnxidNotAvailable as u64,
+                ))?;
+        if old_sequence.is_some_and(|sequence| {
+            connection_id_stash
+                .connection_ids
+                .get(new_cid_index)
+                .is_some_and(|cid| cid.sequence == sequence)
+        }) {
+            return Err(crate::Error::Protocol(
+                crate::errors::InternalError::CnxidNotAvailable as u64,
+            ));
+        }
+
+        if let Some(old_cid_index) = old_cid_index
+            && old_cid_index < connection_id_stash.connection_ids.len()
+        {
+            let mut retire_sequence = None;
+            let mut remove_old = false;
+            {
+                let old_cid = &mut connection_id_stash.connection_ids[old_cid_index];
+                if old_cid.nb_path_references <= 1 {
+                    if !old_cid.retire_sent {
+                        retire_sequence = Some(old_cid.sequence);
+                    }
+                    remove_old = old_cid.retire_acked;
+                } else {
+                    old_cid.nb_path_references -= 1;
+                }
+            }
+            if let Some(sequence) = retire_sequence
+                && self
+                    .queue_retire_connection_id_frame(connection_id_stash.unique_path_id, sequence)
+                    .is_ok()
+                && let Some(old_cid) = connection_id_stash.connection_ids.get_mut(old_cid_index)
+            {
+                old_cid.retire_sent = true;
+            }
+            if remove_old {
+                connection_id_stash.connection_ids.remove(old_cid_index);
+                self.adjust_remote_connection_id_indices_after_removal(
+                    connection_id_stash.unique_path_id,
+                    old_cid_index,
+                );
+                if old_cid_index < new_cid_index {
+                    new_cid_index -= 1;
+                }
+            }
+        }
+
+        if let Some(tuple) = self.paths[path_index].tuples.first_mut() {
+            tuple.remote_connection_id_index = Some(new_cid_index);
+        } else {
+            return Err(crate::Error::InvalidArgument);
+        }
+        if let Some(new_cid) = connection_id_stash.connection_ids.get_mut(new_cid_index) {
+            new_cid.nb_path_references += 1;
+        } else {
+            return Err(crate::Error::InvalidArgument);
+        }
+        if path_index == 0 {
+            self.register_net_secret_from_stash(connection_id_stash, new_cid_index)?;
+        }
+        Ok(())
+    }
+
     pub fn remove_not_before_from_stash(
         &mut self,
         connection_id_stash: &mut RemoteConnectionIdStash,
         not_before: u64,
-        _current_time: Instant,
+        current_time: Instant,
     ) -> u64 {
-        // Remove all CIDs whose sequence < not_before.
-        let mut removed = 0u64;
-        connection_id_stash.connection_ids.retain(|r| {
-            if r.sequence < not_before {
-                removed += 1;
-                false
+        // C: picoquic_remove_not_before_from_stash
+        let mut ret = 0;
+        let mut next_stash = 0usize;
+        while ret == 0 && next_stash < connection_id_stash.connection_ids.len() {
+            let needs_removal = {
+                let cid = &mut connection_id_stash.connection_ids[next_stash];
+                cid.needs_removal |= cid.sequence < not_before;
+                cid.needs_removal && cid.nb_path_references == 0
+            };
+            if needs_removal {
+                let retire_sent = connection_id_stash.connection_ids[next_stash].retire_sent;
+                if !retire_sent {
+                    let sequence = connection_id_stash.connection_ids[next_stash].sequence;
+                    match self.queue_retire_connection_id_frame(
+                        connection_id_stash.unique_path_id,
+                        sequence,
+                    ) {
+                        Ok(()) => {
+                            if let Some(cid) =
+                                connection_id_stash.connection_ids.get_mut(next_stash)
+                            {
+                                cid.retire_sent = true;
+                            }
+                        }
+                        Err(error) => {
+                            ret = Self::cid_retire_error_code(error);
+                        }
+                    }
+                }
+                if ret == 0 && connection_id_stash.connection_ids[next_stash].retire_acked {
+                    connection_id_stash.connection_ids.remove(next_stash);
+                    self.adjust_remote_connection_id_indices_after_removal(
+                        connection_id_stash.unique_path_id,
+                        next_stash,
+                    );
+                } else {
+                    next_stash += 1;
+                }
             } else {
-                true
+                next_stash += 1;
             }
-        });
-        removed
+        }
+
+        if self.is_multipath_enabled {
+            let path_id = self.find_path_by_unique_id(connection_id_stash.unique_path_id);
+            if path_id >= 0 {
+                let path_index = path_id as usize;
+                if self.path_needs_connection_id_renewal(
+                    path_index,
+                    connection_id_stash,
+                    not_before,
+                ) {
+                    ret = if self
+                        .renew_connection_id_from_stash(path_index, connection_id_stash)
+                        .is_ok()
+                    {
+                        0
+                    } else if path_id == 0 {
+                        crate::errors::TransportError::ProtocolViolation as u64
+                    } else {
+                        self.demote_path(path_id, current_time, 0);
+                        0
+                    };
+                }
+            }
+        } else {
+            let mut path_index = 0usize;
+            while ret == 0 && path_index < self.paths.len() {
+                if self.path_needs_connection_id_renewal(
+                    path_index,
+                    connection_id_stash,
+                    not_before,
+                ) && self
+                    .renew_connection_id_from_stash(path_index, connection_id_stash)
+                    .is_err()
+                {
+                    if path_index == 0 {
+                        ret = crate::errors::TransportError::ProtocolViolation as u64;
+                    } else {
+                        self.demote_path(path_index as i32, current_time, 0);
+                    }
+                }
+                path_index += 1;
+            }
+        }
+
+        ret
     }
 }
 
@@ -6631,9 +7086,9 @@ impl Connection {
                     is_in_use: false,
                 },
             );
-            let removed = self.remove_not_before_from_stash(&mut stash, not_before, current_time);
+            let ret = self.remove_not_before_from_stash(&mut stash, not_before, current_time);
             self.remote_connection_id_stashes[stash_idx] = stash;
-            removed
+            ret
         } else {
             0
         }
@@ -6641,24 +7096,139 @@ impl Connection {
 }
 
 impl Connection {
-    /// Force a CID rotation on `path_x` (allocate a new local CID
-    /// and retire the previous one).
+    /// Start using a stashed peer CID on `path_x`.
+    /// C: `picoquic_renew_path_connection_id`.
     pub fn renew_path_connection_id(&mut self, path_x: &mut Path) -> Result<(), crate::Error> {
-        let old_sequence = path_x
+        let cid_path_id = if self.is_multipath_enabled {
+            path_x.unique_path_id
+        } else {
+            0
+        };
+        let stash_idx = self
+            .find_or_create_remote_connection_id_stash(cid_path_id, false)
+            .ok_or(crate::Error::Protocol(
+                crate::errors::InternalError::CnxidNotAvailable as u64,
+            ))?;
+        let old_cid_index = path_x
             .tuples
             .first()
-            .and_then(|tuple| tuple.local_connection_id)
-            .and_then(|tok| self.local_connection_ids.get(tok))
-            .map(|lcid| lcid.sequence);
-        let token =
-            self.create_local_connection_id(path_x.unique_path_id, None, self.start_time)?;
-        if let Some(tuple) = path_x.tuples.first_mut() {
-            tuple.local_connection_id = Some(token);
+            .ok_or(crate::Error::InvalidArgument)?
+            .remote_connection_id_index;
+        let old_sequence = old_cid_index
+            .and_then(|cid_index| {
+                self.remote_connection_id_stashes[stash_idx]
+                    .connection_ids
+                    .get(cid_index)
+            })
+            .map(|cid| cid.sequence);
+        let retire_before =
+            self.remote_connection_id_stashes[stash_idx].retire_connection_id_before;
+
+        if (self.remote_parameters.migration_disabled
+            && old_sequence.is_some_and(|sequence| sequence >= retire_before))
+            || self.local_parameters.migration_disabled
+        {
+            return Err(crate::Error::Protocol(
+                crate::errors::InternalError::MigrationDisabled as u64,
+            ));
         }
-        path_x.path_cid_rotated = true;
-        if let Some(sequence) = old_sequence {
-            self.queue_retire_connection_id_frame(path_x.unique_path_id, sequence)?;
+
+        let mut new_cid_index = self.remote_connection_id_stashes[stash_idx]
+            .get_connection_id_from_stash()
+            .ok_or(crate::Error::Protocol(
+                crate::errors::InternalError::CnxidNotAvailable as u64,
+            ))?;
+        if old_sequence.is_some_and(|sequence| {
+            self.remote_connection_id_stashes[stash_idx]
+                .connection_ids
+                .get(new_cid_index)
+                .is_some_and(|cid| cid.sequence == sequence)
+        }) {
+            return Err(crate::Error::Protocol(
+                crate::errors::InternalError::CnxidNotAvailable as u64,
+            ));
         }
+
+        if let Some(old_cid_index) = old_cid_index
+            && old_cid_index
+                < self.remote_connection_id_stashes[stash_idx]
+                    .connection_ids
+                    .len()
+        {
+            let mut retire_sequence = None;
+            let mut remove_old = false;
+            {
+                let old_cid =
+                    &mut self.remote_connection_id_stashes[stash_idx].connection_ids[old_cid_index];
+                if old_cid.nb_path_references <= 1 {
+                    if !old_cid.retire_sent {
+                        retire_sequence = Some(old_cid.sequence);
+                    }
+                    remove_old = old_cid.retire_acked;
+                } else {
+                    old_cid.nb_path_references -= 1;
+                }
+            }
+            if let Some(sequence) = retire_sequence
+                && self
+                    .queue_retire_connection_id_frame(cid_path_id, sequence)
+                    .is_ok()
+                && let Some(old_cid) = self.remote_connection_id_stashes[stash_idx]
+                    .connection_ids
+                    .get_mut(old_cid_index)
+            {
+                old_cid.retire_sent = true;
+            }
+            if remove_old {
+                self.remote_connection_id_stashes[stash_idx]
+                    .connection_ids
+                    .remove(old_cid_index);
+                self.adjust_remote_connection_id_indices_after_removal(cid_path_id, old_cid_index);
+                for tuple in &mut path_x.tuples {
+                    match tuple.remote_connection_id_index {
+                        Some(index) if index == old_cid_index => {
+                            tuple.remote_connection_id_index = None;
+                        }
+                        Some(index) if index > old_cid_index => {
+                            tuple.remote_connection_id_index = Some(index - 1);
+                        }
+                        _ => {}
+                    }
+                }
+                if old_cid_index < new_cid_index {
+                    new_cid_index -= 1;
+                }
+            }
+        }
+
+        let tuple = path_x
+            .tuples
+            .first_mut()
+            .ok_or(crate::Error::InvalidArgument)?;
+        tuple.remote_connection_id_index = Some(new_cid_index);
+        let reset_secret = if let Some(new_cid) = self.remote_connection_id_stashes[stash_idx]
+            .connection_ids
+            .get_mut(new_cid_index)
+        {
+            new_cid.nb_path_references += 1;
+            new_cid.reset_secret
+        } else {
+            return Err(crate::Error::InvalidArgument);
+        };
+
+        let is_default_path = self.paths.first().is_some_and(|default_path| {
+            core::ptr::eq(default_path, &*path_x)
+                || default_path.unique_path_id == path_x.unique_path_id
+        });
+        if is_default_path {
+            let peer_addr = path_x
+                .tuples
+                .first()
+                .map(|tuple| tuple.peer_addr)
+                .ok_or(crate::Error::InvalidArgument)?;
+            self.refresh_registered_net_secret(peer_addr, reset_secret)?;
+        }
+
         Ok(())
     }
 }
@@ -6752,6 +7322,33 @@ impl Connection {
         }
     }
 
+    fn queue_data_repeat_packet_token(&mut self, packet: PacketToken) {
+        let Some(pkt) = self.queued_packets.get(packet) else {
+            return;
+        };
+        if pkt.is_queued_for_data_repeat {
+            return;
+        }
+        if let Some(pkt) = self.queued_packets.get_mut(packet) {
+            pkt.data_repeat_frame = pkt.offset;
+            pkt.data_repeat_index = pkt.offset;
+        } else {
+            return;
+        }
+
+        if picoquic_queue_data_repeat_adjust_token(self, packet) != 0 {
+            return;
+        }
+
+        if self
+            .queued_packets
+            .get(packet)
+            .is_some_and(|pkt| pkt.data_repeat_frame < pkt.length)
+        {
+            self.queue_data_repeat_token(packet);
+        }
+    }
+
     fn account_dequeued_packet(&mut self, packet: &PacketRetransmitSnapshot) {
         if packet.is_ack_trap {
             return;
@@ -6792,7 +7389,9 @@ impl Connection {
 
         {
             let pkt_ctx = self.packet_context_state_mut(selection);
-            pkt_ctx.pending.remove(&sequence);
+            if snapshot.is_queued_for_retransmit {
+                pkt_ctx.pending.remove(&sequence);
+            }
             if pkt_ctx.preemptive_repeat_seq == Some(sequence) {
                 pkt_ctx.preemptive_repeat_seq = next_sequence;
             }
@@ -6802,7 +7401,7 @@ impl Connection {
 
         if should_free || snapshot.is_ack_trap {
             if add_to_data_repeat_queue {
-                self.queue_data_repeat_token(packet);
+                self.queue_data_repeat_packet_token(packet);
                 if let Some(pkt) = self.queued_packets.get_mut(packet) {
                     pkt.is_queued_for_retransmit = false;
                 }
@@ -6821,7 +7420,7 @@ impl Connection {
                 pkt.is_queued_for_spurious_detection = true;
             }
             if add_to_data_repeat_queue {
-                self.queue_data_repeat_token(packet);
+                self.queue_data_repeat_packet_token(packet);
             }
         }
 
@@ -6844,13 +7443,16 @@ impl Connection {
         packet.is_queued_to_path = false;
         let pc = packet.packet_context as usize;
         let sequence = packet.sequence_number;
+        let use_path_context =
+            packet.packet_type == PacketType::OneRttProtected && self.is_multipath_enabled;
+        let is_ack_trap = packet.is_ack_trap;
         if let Ok(token) = self.queued_packets.insert(packet.clone()) {
-            if packet.packet_type == PacketType::OneRttProtected && self.is_multipath_enabled {
+            if use_path_context {
                 path_x.pkt_ctx.pending.insert(sequence, token);
             } else {
                 self.pkt_ctx[pc].pending.insert(sequence, token);
             }
-            if !packet.is_ack_trap {
+            if !is_ack_trap {
                 path_x.bytes_in_transit = path_x.bytes_in_transit.saturating_add(length as u64);
                 path_x.is_cc_data_updated = true;
                 path_x.update_pacing_after_send(length, current_time);
@@ -6860,10 +7462,12 @@ impl Connection {
 }
 
 impl Connection {
-    /// Remove the in-flight packet at `token` from `pkt_ctx.pending`.
-    /// Returns the next packet token (sequence-wise successor) for the
-    /// caller to chain onto.  C: `dequeue_retransmit_packet` returning
-    /// the next pointer.
+    /// Remove the in-flight packet at `token` from `pkt_ctx.pending`, update
+    /// congestion accounting, and either recycle it, queue it for data repeat,
+    /// or move it to spurious-detection state.
+    ///
+    /// Returns the packet token when the packet is retained, or `None` when it
+    /// is recycled.  C: `picoquic_dequeue_retransmit_packet`.
     pub fn dequeue_retransmit_packet(
         &mut self,
         pkt_ctx: &mut PacketContextState,
@@ -6871,31 +7475,52 @@ impl Connection {
         should_free: bool,
         add_to_data_repeat_queue: bool,
     ) -> Option<PacketToken> {
-        let sequence = self
+        let snapshot = self
             .queued_packets
             .get(packet)
-            .map(|p| p.sequence_number)
-            .or_else(|| {
-                pkt_ctx
-                    .pending
-                    .iter()
-                    .find_map(|(seq, tok)| (*tok == packet).then_some(*seq))
-            })?;
+            .map(PacketRetransmitSnapshot::from)?;
+        let sequence = snapshot.sequence_number;
         let next = pkt_ctx
             .pending
-            .range((sequence + 1)..)
+            .range(sequence.saturating_add(1)..)
             .next()
             .map(|(_, tok)| *tok);
-        pkt_ctx.pending.remove(&sequence);
-        if add_to_data_repeat_queue && let Some(pkt) = self.queued_packets.get_mut(packet) {
-            pkt.is_queued_for_data_repeat = true;
+        let next_sequence = next
+            .and_then(|token| self.queued_packets.get(token))
+            .map(|next_packet| next_packet.sequence_number);
+
+        if snapshot.is_queued_for_retransmit {
+            pkt_ctx.pending.remove(&sequence);
         }
-        if should_free {
-            self.queued_packets.remove(packet);
-        } else if let Some(pkt) = self.queued_packets.get_mut(packet) {
-            pkt.is_queued_for_retransmit = false;
+        if pkt_ctx.preemptive_repeat_seq == Some(sequence) {
+            pkt_ctx.preemptive_repeat_seq = next_sequence;
         }
-        next
+
+        self.account_dequeued_packet(&snapshot);
+
+        if should_free || snapshot.is_ack_trap {
+            if add_to_data_repeat_queue {
+                self.queue_data_repeat_packet_token(packet);
+                if let Some(pkt) = self.queued_packets.get_mut(packet) {
+                    pkt.is_queued_for_retransmit = false;
+                }
+            } else {
+                self.queued_packets.remove(packet);
+                return None;
+            }
+        } else {
+            pkt_ctx.retransmitted.insert(sequence, packet);
+            pkt_ctx.retransmitted_queue_size = pkt_ctx.retransmitted.len() as u64;
+            if let Some(pkt) = self.queued_packets.get_mut(packet) {
+                pkt.is_queued_for_retransmit = false;
+                pkt.is_queued_for_spurious_detection = true;
+            }
+            if add_to_data_repeat_queue {
+                self.queue_data_repeat_packet_token(packet);
+            }
+        }
+
+        self.queued_packets.contains(packet).then_some(packet)
     }
 }
 
@@ -6919,8 +7544,14 @@ impl Connection {
             pkt_ctx.retransmitted.remove(&sequence);
         }
         pkt_ctx.retransmitted_queue_size = pkt_ctx.retransmitted.len() as u64;
-        if let Some(pkt) = self.queued_packets.get_mut(packet) {
+        let should_recycle = if let Some(pkt) = self.queued_packets.get_mut(packet) {
             pkt.is_queued_for_spurious_detection = false;
+            !pkt.is_queued_for_data_repeat
+        } else {
+            false
+        };
+        if should_recycle {
+            self.queued_packets.remove(packet);
         }
     }
 }
@@ -6936,12 +7567,23 @@ impl Connection {
     /// disturbing the rest of the connection.
     pub fn reset_packet_context(&mut self, pkt_ctx: &mut PacketContextState) {
         // C: picoquic_reset_packet_context
-        pkt_ctx.pending.clear();
-        pkt_ctx.retransmitted.clear();
-        pkt_ctx.send_sequence = 0;
-        pkt_ctx.retransmit_sequence = 0;
-        pkt_ctx.next_sequence_hole = 0;
+        while let Some(packet) = pkt_ctx.pending.iter().next_back().map(|(_, token)| *token) {
+            let _ = self.dequeue_retransmit_packet(pkt_ctx, packet, true, false);
+        }
+
+        while let Some(packet) = pkt_ctx
+            .retransmitted
+            .iter()
+            .next_back()
+            .map(|(_, token)| *token)
+        {
+            self.dequeue_retransmitted_packet(pkt_ctx, packet);
+        }
+
         pkt_ctx.retransmitted_queue_size = 0;
+        pkt_ctx.ecn_ect0_total_remote = 0;
+        pkt_ctx.ecn_ect1_total_remote = 0;
+        pkt_ctx.ecn_ce_total_remote = 0;
     }
 
     /// Return the `queue_data_repeat_tree` membership token for the given
@@ -6975,8 +7617,8 @@ impl Connection {
 
     /// Mark this connection as having hit a transport error so the
     /// next outgoing packet emits CONNECTION_CLOSE.  The returned
-    /// value mirrors the C convention (the error code itself) so
-    /// callers can write `return connection.connection_error(…);`.
+    /// value mirrors the C convention (`PICOQUIC_ERROR_DETECTED`) so
+    /// callers can write `return connection.connection_error(...);`.
     pub fn connection_error(&mut self, local_error: u64, frame_type: u64) -> i32 {
         self.connection_error_ex(local_error, frame_type, None)
     }
@@ -6990,14 +7632,41 @@ impl Connection {
         local_reason: Option<&str>,
     ) -> i32 {
         // C: picoquic_connection_error_ex
-        self.local_error = local_error;
-        self.offending_frame_type = frame_type;
-        self.local_error_reason = local_reason.map(|s| s.to_owned());
-        // Move to disconnecting state if not already past that.
-        if (self.connection_state as u32) < crate::State::Disconnecting as u32 {
-            self.connection_state = crate::State::Disconnecting;
+        let local_error = if local_error > crate::errors::ERROR_CLASS {
+            crate::errors::TransportError::InternalError as u64
+        } else {
+            local_error
+        };
+
+        if matches!(
+            self.connection_state,
+            State::Ready | State::ClientReadyStart | State::ServerFalseStart
+        ) {
+            self.local_error = local_error;
+            self.local_error_reason = local_reason.map(str::to_owned);
+            self.connection_state = State::Disconnecting;
+        } else if self.connection_state < State::ServerFalseStart
+            && !matches!(
+                self.connection_state,
+                State::HandshakeFailure | State::HandshakeFailureResend
+            )
+        {
+            self.local_error = local_error;
+            self.local_error_reason = local_reason.map(str::to_owned);
+            self.connection_state = State::HandshakeFailure;
         }
-        local_error as i32
+
+        self.offending_frame_type = frame_type;
+        crate::logger::Log::app_message(
+            self,
+            format_args!(
+                "Protocol error 0x{:x}, frame {}, reason: {}",
+                local_error,
+                frame_type,
+                local_reason.unwrap_or("?")
+            ),
+        );
+        crate::errors::InternalError::Detected as i32
     }
 
     /// Close the connection with an application error and optional reason.
@@ -7163,6 +7832,7 @@ impl Pacing {
         self.bucket_max = 16;
         self.packet_time_nanosec = 1;
         self.packet_time_microsec = crate::Duration::from_ticks(1);
+        self.update_is_signalled = false;
     }
 
     /// Update the leaky bucket.  C: `picoquic_update_pacing_bucket`.
@@ -7228,7 +7898,7 @@ impl Pacing {
         quantum: u64,
         send_mtu: usize,
         smoothed_rtt: Duration,
-        _signalled_path: Option<PathToken>,
+        signalled_path: Option<PathToken>,
     ) {
         // C: picoquic_update_pacing_parameters
         let rtt_nanosec = smoothed_rtt.ticks().saturating_mul(1000);
@@ -7265,6 +7935,9 @@ impl Pacing {
             if self.bucket_nanosec > self.bucket_max {
                 self.bucket_nanosec = self.bucket_max;
             }
+        }
+        if signalled_path.is_some() {
+            self.update_is_signalled = true;
         }
     }
 
@@ -7333,12 +8006,16 @@ impl Path {
     /// Recompute the pacer's bucket / target rate from the current
     /// CWIN and RTT.  C: `update_pacing_data`.
     pub fn update_pacing_data(&mut self, slow_start: i32) {
+        let signalled_path = Some(PathToken::synthetic(
+            self.unique_path_id as u32,
+            self.unique_path_id as u32,
+        ));
         self.pacing.update_window(
             slow_start,
             self.cwin,
             self.send_mtu,
             self.smoothed_rtt,
-            None,
+            signalled_path,
         );
     }
 
@@ -7352,8 +8029,17 @@ impl Path {
     /// Force the pacer to a specific target `rate` and bucket
     /// `quantum`.  C: `update_pacing_rate`.
     pub fn update_pacing_rate(&mut self, pacing_rate: f64, quantum: u64) {
-        self.pacing
-            .update_parameters(pacing_rate, quantum, self.send_mtu, self.smoothed_rtt, None);
+        let signalled_path = Some(PathToken::synthetic(
+            self.unique_path_id as u32,
+            self.unique_path_id as u32,
+        ));
+        self.pacing.update_parameters(
+            pacing_rate,
+            quantum,
+            self.send_mtu,
+            self.smoothed_rtt,
+            signalled_path,
+        );
     }
 
     /// Recompute the path-quality notification thresholds from the
@@ -7446,6 +8132,11 @@ impl Connection {
         path_x: &mut Path,
         is_primary_path: bool,
     ) {
+        if !path_x.pacing.update_is_signalled {
+            return;
+        }
+        let is_primary_path = is_primary_path || self.is_primary_path_for_report(path_x);
+        path_x.pacing.update_is_signalled = false;
         let pacing_rate = path_x.pacing.rate;
         let pacing_changed = self.is_pacing_update_requested
             && is_primary_path
@@ -7486,6 +8177,31 @@ impl Connection {
         }
     }
 
+    fn is_primary_path_for_report(&self, path_x: &Path) -> bool {
+        path_x.unique_path_id == 0
+            || self
+                .paths
+                .first()
+                .is_some_and(|path| path.unique_path_id == path_x.unique_path_id)
+    }
+
+    fn report_pending_pacing_update_for_path(&mut self, path_x: &mut Path) {
+        if path_x.pacing.update_is_signalled {
+            let is_primary_path = self.is_primary_path_for_report(path_x);
+            self.report_pacing_update_for_path(path_x, is_primary_path);
+        }
+    }
+
+    fn report_pending_pacing_update(&mut self, path_index: usize) {
+        if self
+            .paths
+            .get(path_index)
+            .is_some_and(|path| path.pacing.update_is_signalled)
+        {
+            self.report_pacing_update(path_index);
+        }
+    }
+
     /// Indexed wrapper for [`Self::report_pacing_update_for_path`].
     ///
     /// C: `picoquic_report_pacing_update` (picoquic/pacing.c:107-135).
@@ -7520,25 +8236,29 @@ impl Connection {
     /// the change crosses any subscribed threshold.  C:
     /// `issue_path_quality_update`.
     pub fn issue_path_quality_update(&mut self, path_x: &mut Path) -> i32 {
-        let rtt = if path_x.smoothed_rtt.ticks() > 0 {
-            path_x.smoothed_rtt
-        } else {
-            path_x.rtt_sample
-        };
-        let pacing_rate = path_x.pacing.rate.max(path_x.bandwidth_estimate);
-        let receive_rate = path_x.receive_rate_estimate;
-        let changed = rtt < path_x.rtt_threshold_low
-            || rtt > path_x.rtt_threshold_high
-            || pacing_rate < path_x.pacing_rate_threshold_low
-            || pacing_rate > path_x.pacing_rate_threshold_high
-            || receive_rate < path_x.receive_rate_threshold_low
-            || receive_rate > path_x.receive_rate_threshold_high
-            || path_x.is_cc_data_updated;
+        let changed = (path_x.rtt_update_delta.ticks() > 0
+            && (path_x.smoothed_rtt < path_x.rtt_threshold_low
+                || path_x.smoothed_rtt > path_x.rtt_threshold_high))
+            || (path_x.pacing_rate_update_delta > 0
+                && (path_x.pacing.rate < path_x.pacing_rate_threshold_low
+                    || path_x.pacing.rate > path_x.pacing_rate_threshold_high
+                    || path_x.receive_rate_estimate < path_x.receive_rate_threshold_low
+                    || path_x.receive_rate_estimate > path_x.receive_rate_threshold_high));
         if changed {
             path_x.refresh_quality_thresholds();
-            path_x.is_cc_data_updated = false;
-            self.is_lost_feedback_notification_required = false;
-            1
+            if let Some(mut callback) = self.callback_fn.take() {
+                let ret = callback.callback(
+                    self,
+                    path_x.unique_path_id,
+                    &[],
+                    CallbackEvent::PathQualityChanged,
+                    None,
+                );
+                self.callback_fn = Some(callback);
+                ret
+            } else {
+                0
+            }
         } else {
             0
         }
@@ -7547,14 +8267,15 @@ impl Connection {
 
 impl Quic {
     /// Re-position `connection` in the wake-time queue using the
-    /// supplied next firing time.  C: `reinsert_by_wake_time`.
+    /// supplied next firing time.  C: `picoquic_reinsert_by_wake_time`.
     pub fn reinsert_by_wake_time(&mut self, connection: &mut Connection, next_time: Instant) {
+        if let Some(old_membership) = connection.connection_wake_membership.take() {
+            self.connection_wake_tree.remove(old_membership);
+        }
         connection.next_wake_time = next_time;
-        let token = self
-            .connections
-            .iter()
-            .position(|c| c.initial_connection_id == connection.initial_connection_id)
-            .map(|idx| ConnectionToken::synthetic(idx as u32, idx as u32));
+        let token = connection
+            .own_token
+            .filter(|token| self.connections.contains(*token));
         if let Some(token) = token
             && let Ok((tree_token, old)) =
                 self.connection_wake_tree.insert(next_time.ticks(), token)
@@ -7849,7 +8570,7 @@ impl Quic {
         let is_long_header = (bytes[0] & 0x80) == 0x80;
         let conn_tok = if is_long_header {
             // Long header
-            self.parse_long_packet_header_inner(bytes, addr_from, ph)
+            self.parse_long_packet_header_inner(bytes, addr_from, ph)?
         } else {
             // Short header
             self.parse_short_packet_header_inner(bytes, addr_from, ph, receiving)
@@ -7862,16 +8583,58 @@ impl Quic {
         Ok(conn_tok)
     }
 
+    fn lookup_long_header_connection(
+        &mut self,
+        ph: &mut PacketHeader,
+        dcid_len: usize,
+        addr_from: Option<&SocketAddr>,
+        allow_initial_cid: bool,
+    ) -> Option<ConnectionToken> {
+        if self.local_connection_id_length == 0 {
+            return self.connection_by_net(addr_from);
+        }
+
+        let mut conn_tok = None;
+        if dcid_len == self.local_connection_id_length as usize
+            && let Some((tok, local_cid)) = self.connection_by_id(ph.dest_connection_id)
+        {
+            ph.local_connection_id = Some(local_cid);
+            conn_tok = Some(tok);
+        }
+
+        if conn_tok.is_none() && allow_initial_cid {
+            conn_tok = self.connection_by_icid(&ph.dest_connection_id, addr_from);
+        }
+
+        conn_tok
+    }
+
+    fn reject_long_header_missing_quic_bit(
+        &self,
+        ph: &mut PacketHeader,
+        conn_tok: Option<ConnectionToken>,
+    ) {
+        if ph.quic_bit_is_zero
+            && let Some(tok) = conn_tok
+            && self
+                .connections
+                .get(tok)
+                .is_some_and(|cnx| !cnx.local_parameters.do_grease_quic_bit)
+        {
+            ph.packet_type = PacketType::Error;
+        }
+    }
+
     fn parse_long_packet_header_inner(
         &mut self,
         bytes: &[u8],
         addr_from: Option<&SocketAddr>,
         ph: &mut PacketHeader,
-    ) -> Option<ConnectionToken> {
+    ) -> Result<Option<ConnectionToken>, crate::Error> {
         let mut pos = 0usize;
         if bytes.len() < 5 {
             ph.packet_type = PacketType::Error;
-            return None;
+            return Ok(None);
         }
         let flags = bytes[pos];
         pos += 1;
@@ -7883,31 +8646,39 @@ impl Quic {
         // Decode DCID
         if pos >= bytes.len() {
             ph.packet_type = PacketType::Error;
-            return None;
+            return Ok(None);
         }
         let dcid_len = bytes[pos] as usize;
         pos += 1;
         if pos + dcid_len > bytes.len() {
             ph.packet_type = PacketType::Error;
-            return None;
+            return Ok(None);
         }
-        ph.dest_connection_id =
-            ConnectionId::clone_from_slice(&bytes[pos..pos + dcid_len]).unwrap_or_default();
+        let Some(dest_connection_id) = ConnectionId::clone_from_slice(&bytes[pos..pos + dcid_len])
+        else {
+            ph.packet_type = PacketType::Error;
+            return Ok(None);
+        };
+        ph.dest_connection_id = dest_connection_id;
         pos += dcid_len;
 
         // Decode SCID
         if pos >= bytes.len() {
             ph.packet_type = PacketType::Error;
-            return None;
+            return Ok(None);
         }
         let scid_len = bytes[pos] as usize;
         pos += 1;
         if pos + scid_len > bytes.len() {
             ph.packet_type = PacketType::Error;
-            return None;
+            return Ok(None);
         }
-        ph.src_connection_id =
-            ConnectionId::clone_from_slice(&bytes[pos..pos + scid_len]).unwrap_or_default();
+        let Some(src_connection_id) = ConnectionId::clone_from_slice(&bytes[pos..pos + scid_len])
+        else {
+            ph.packet_type = PacketType::Error;
+            return Ok(None);
+        };
+        ph.src_connection_id = src_connection_id;
         pos += scid_len;
 
         ph.offset = pos;
@@ -7920,21 +8691,21 @@ impl Quic {
             ph.payload_length = bytes.len().saturating_sub(pos);
             ph.payload_length_value = ph.payload_length;
             // Connection lookup
-            if self.local_connection_id_length == 0 {
-                return self.connection_by_net(addr_from);
-            } else if dcid_len == self.local_connection_id_length as usize {
-                let cid = ph.dest_connection_id;
-                return self.connection_by_id_for_header(cid, ph);
-            }
-            return None;
+            return Ok(self.lookup_long_header_connection(ph, dcid_len, addr_from, false));
         }
 
-        ph.version_index = get_version_index(version);
-        if ph.version_index < 0 {
+        let Some(version_index) = SUPPORTED_VERSIONS
+            .iter()
+            .position(|supported| *supported as u32 == version)
+            .map(|index| index as i32)
+        else {
             ph.packet_type = PacketType::Error;
-            ph.packet_context = PacketContext::Initial;
-            return None;
-        }
+            ph.packet_context = PacketContext::Application;
+            return Err(crate::Error::Protocol(
+                crate::errors::InternalError::VersionNotSupported as u64,
+            ));
+        };
+        ph.version_index = version_index;
 
         ph.quic_bit_is_zero = (flags & 0x40) == 0;
         ph.packet_type = parse_long_packet_type(flags, ph.version_index);
@@ -7945,10 +8716,27 @@ impl Quic {
                 ph.packet_context = PacketContext::Initial;
                 // Token
                 let mut tok_len = 0u64;
-                let rest = frames_varint_decode(&bytes[pos..], &mut tok_len)?;
-                pos = bytes.len() - rest.len();
-                ph.token_bytes = bytes[pos..pos + tok_len as usize].to_vec();
-                pos += tok_len as usize;
+                let Some(rest) = frames_varint_decode(&bytes[pos..], &mut tok_len) else {
+                    ph.packet_type = PacketType::Error;
+                    ph.packet_context = PacketContext::Application;
+                    ph.offset = bytes.len();
+                    return Ok(self.lookup_long_header_connection(ph, dcid_len, addr_from, false));
+                };
+                let token_start = bytes.len() - rest.len();
+                let Ok(tok_len) = usize::try_from(tok_len) else {
+                    ph.packet_type = PacketType::Error;
+                    ph.packet_context = PacketContext::Application;
+                    ph.offset = bytes.len();
+                    return Ok(self.lookup_long_header_connection(ph, dcid_len, addr_from, false));
+                };
+                if rest.len() < tok_len {
+                    ph.packet_type = PacketType::Error;
+                    ph.packet_context = PacketContext::Application;
+                    ph.offset = bytes.len();
+                    return Ok(self.lookup_long_header_connection(ph, dcid_len, addr_from, false));
+                }
+                ph.token_bytes = rest[..tok_len].to_vec();
+                pos = token_start + tok_len;
                 ph.offset = pos;
             }
             PacketType::ZeroRttProtected => {
@@ -7965,48 +8753,59 @@ impl Quic {
                 ph.payload_length = bytes.len().saturating_sub(pos);
                 ph.payload_length_value = ph.payload_length;
                 ph.packet_number_offset = pos;
-                return None; // no PN in retry
+                if bytes.len() <= ph.offset {
+                    ph.packet_type = PacketType::Error;
+                    return Ok(self.lookup_long_header_connection(ph, dcid_len, addr_from, false));
+                }
+                let conn_tok = self.lookup_long_header_connection(ph, dcid_len, addr_from, false);
+                self.reject_long_header_missing_quic_bit(ph, conn_tok);
+                return Ok(conn_tok); // no PN in retry
             }
             _ => {
                 ph.packet_type = PacketType::Error;
-                return None;
+                return Ok(None);
             }
         }
 
         // Payload length (varint)
         let mut payload_length = 0u64;
-        let rest = frames_varint_decode(&bytes[pos..], &mut payload_length)?;
-        pos = bytes.len() - rest.len();
-        ph.payload_length = payload_length as usize;
+        let Some(rest) = frames_varint_decode(&bytes[pos..], &mut payload_length) else {
+            ph.packet_type = PacketType::Error;
+            ph.payload_length = bytes.len().saturating_sub(ph.offset);
+            ph.payload_length_value = ph.payload_length;
+            return Ok(self.lookup_long_header_connection(ph, dcid_len, addr_from, false));
+        };
+        let payload_length_start = bytes.len() - rest.len();
+        let Ok(payload_length) = usize::try_from(payload_length) else {
+            ph.packet_type = PacketType::Error;
+            ph.payload_length = bytes.len().saturating_sub(ph.offset);
+            ph.payload_length_value = ph.payload_length;
+            return Ok(self.lookup_long_header_connection(ph, dcid_len, addr_from, false));
+        };
+        if rest.len() < payload_length {
+            ph.packet_type = PacketType::Error;
+            ph.payload_length = bytes.len().saturating_sub(ph.offset);
+            ph.payload_length_value = ph.payload_length;
+            return Ok(self.lookup_long_header_connection(ph, dcid_len, addr_from, false));
+        }
+        pos = payload_length_start;
+        ph.payload_length = payload_length;
         ph.payload_length_value = ph.payload_length;
         ph.offset = pos;
         ph.packet_number_offset = pos;
 
         // Connection lookup
-        if self.local_connection_id_length == 0 {
-            self.connection_by_net(addr_from)
-        } else if dcid_len == self.local_connection_id_length as usize {
-            let cid = ph.dest_connection_id;
-            if let Some(connection) = self.connection_by_id_for_header(cid, ph) {
-                Some(connection)
-            } else if matches!(
+        let conn_tok = self.lookup_long_header_connection(
+            ph,
+            dcid_len,
+            addr_from,
+            matches!(
                 ph.packet_type,
                 PacketType::Initial | PacketType::ZeroRttProtected
-            ) {
-                let dest_cid = ph.dest_connection_id;
-                self.connection_by_icid(&dest_cid, addr_from)
-            } else {
-                None
-            }
-        } else if matches!(
-            ph.packet_type,
-            PacketType::Initial | PacketType::ZeroRttProtected
-        ) {
-            let dest_cid = ph.dest_connection_id;
-            self.connection_by_icid(&dest_cid, addr_from)
-        } else {
-            None
-        }
+            ),
+        );
+        self.reject_long_header_missing_quic_bit(ph, conn_tok);
+        Ok(conn_tok)
     }
 
     fn parse_short_packet_header_inner(
@@ -8095,9 +8894,9 @@ pub fn create_long_header(
     packet_type: PacketType,
     dest_cnx_id: &ConnectionId,
     srce_cnx_id: &ConnectionId,
-    _do_grease_quic_bit: bool,
+    do_grease_quic_bit: bool,
     version: u32,
-    _version_index: i32,
+    version_index: i32,
     sequence_number: u64,
     retry_token: &[u8],
     bytes: &mut [u8],
@@ -8105,19 +8904,10 @@ pub fn create_long_header(
     pn_length: &mut usize,
 ) -> usize {
     // C: picoquic_create_long_header — encode a QUIC long header into `bytes`.
-    let is_v2 = version == Version::V2 as u32 || version == Version::V2Draft as u32;
-    let first_byte: u8 = match (packet_type, is_v2) {
-        (PacketType::Initial, false) => 0xC3,
-        (PacketType::ZeroRttProtected, false) => 0xD3,
-        (PacketType::Handshake, false) => 0xE3,
-        (PacketType::Retry, false) => 0xF0,
-        (PacketType::Initial, true) => 0xD3,
-        (PacketType::ZeroRttProtected, true) => 0xE3,
-        (PacketType::Handshake, true) => 0xF3,
-        (PacketType::Retry, true) => 0xC0,
-        _ => 0xFF,
-    };
-    bytes[0] = first_byte;
+    bytes[0] = create_long_packet_type(packet_type, version_index);
+    if do_grease_quic_bit {
+        bytes[0] &= 0xBF;
+    }
     let mut length = 1;
     let ver_bytes = version.to_be_bytes();
     bytes[length..length + 4].copy_from_slice(&ver_bytes);
@@ -8157,6 +8947,73 @@ pub fn create_long_header(
 }
 
 impl Connection {
+    fn remote_connection_id_from_stash(
+        &self,
+        unique_path_id: u64,
+        cid_index: usize,
+    ) -> Option<ConnectionId> {
+        self.remote_connection_id_stashes
+            .iter()
+            .find(|stash| stash.unique_path_id == unique_path_id)
+            .and_then(|stash| stash.connection_ids.get(cid_index))
+            .map(|remote| remote.connection_id)
+    }
+
+    fn remote_connection_id_for_tuple(&self, tuple: &Tuple) -> ConnectionId {
+        let cid_index = tuple.remote_connection_id_index.unwrap_or(0);
+        self.remote_connection_id_from_stash(tuple.unique_path_id, cid_index)
+            .or_else(|| {
+                if tuple.unique_path_id != 0 {
+                    self.remote_connection_id_from_stash(0, cid_index)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
+    }
+
+    fn default_local_connection_id(&self) -> ConnectionId {
+        ConnectionId::with_size(self.local_cid_length as usize).unwrap_or_default()
+    }
+
+    fn local_connection_id_for_tuple(&self, tuple: &Tuple) -> ConnectionId {
+        tuple
+            .local_connection_id
+            .and_then(|token| self.local_connection_ids.get(token))
+            .map(|local| local.connection_id)
+            .unwrap_or_else(|| self.default_local_connection_id())
+    }
+
+    fn long_header_version(&self, packet_type: PacketType) -> u32 {
+        if matches!(
+            self.connection_state,
+            State::ClientInit | State::ClientInitSent
+        ) && packet_type == PacketType::Initial
+        {
+            return self.proposed_version;
+        }
+
+        usize::try_from(self.version_index)
+            .ok()
+            .and_then(|index| SUPPORTED_VERSIONS.get(index))
+            .map(|version| *version as u32)
+            .unwrap_or(self.proposed_version)
+    }
+
+    fn short_header_flags(&mut self) -> u8 {
+        let k = if self.key_phase_enc { 0x04u8 } else { 0 };
+        let mut c = 0x40u8;
+        if self.do_grease_quic_bit {
+            c &= crate::public_random_64() as u8;
+            self.quic_bit_greased |= c == 0;
+        }
+        let spin_policy = SPIN_FUNCTION_TABLE
+            .get(self.spin_policy as usize)
+            .copied()
+            .unwrap_or(SPIN_FUNCTION_TABLE[0]);
+        k | c | spin_policy.outgoing(self)
+    }
+
     pub fn create_packet_header(
         &mut self,
         packet_type: PacketType,
@@ -8270,31 +9127,75 @@ impl Connection {
 }
 
 impl Connection {
+    fn predict_packet_header_length_from_context_state(
+        &self,
+        packet_type: PacketType,
+        pkt_ctx: &PacketContextState,
+    ) -> usize {
+        let send_sequence = pkt_ctx.send_sequence;
+        let first_pending_seq = pkt_ctx.pending.keys().next().copied();
+
+        let (remote_cid_len, local_cid_len) = self
+            .paths
+            .first()
+            .and_then(|p| p.tuples.first())
+            .map(|tuple| {
+                (
+                    self.remote_connection_id_for_tuple(tuple).len(),
+                    self.local_connection_id_for_tuple(tuple).len(),
+                )
+            })
+            .unwrap_or_else(|| {
+                let remote_cid_len = self
+                    .remote_connection_id_stashes
+                    .first()
+                    .and_then(|s| s.connection_ids.first())
+                    .map(|r| r.connection_id.len())
+                    .unwrap_or(8);
+                (remote_cid_len, self.local_cid_length as usize)
+            });
+
+        if packet_type == PacketType::OneRttProtected {
+            let delta = if let Some(first) = first_pending_seq {
+                send_sequence.saturating_sub(first) as i64
+            } else {
+                send_sequence as i64
+            };
+            let pn_l = if delta >= 262144 {
+                4usize
+            } else if send_sequence >= 1024 {
+                3
+            } else if send_sequence >= 16 {
+                2
+            } else {
+                1
+            };
+            1 + remote_cid_len + pn_l
+        } else {
+            let dest_cid_len = if self.client_mode
+                && (packet_type == PacketType::Initial
+                    || packet_type == PacketType::ZeroRttProtected)
+                && remote_cid_len == 0
+            {
+                self.initial_connection_id.len()
+            } else {
+                remote_cid_len
+            };
+            let mut header_length = 1 + 4 + 2 + dest_cid_len + local_cid_len + 2 + 4;
+            if packet_type == PacketType::Initial {
+                let token_len = self.retry_token.len();
+                header_length += encode_varint_length(token_len as u64) + token_len;
+            }
+            header_length
+        }
+    }
+
     pub fn predict_packet_header_length(
         &mut self,
         packet_type: PacketType,
         pkt_ctx: &mut PacketContextState,
     ) -> usize {
-        // Delegate to the PacketContext-based version.
-        // Determine which PacketContext this pkt_ctx corresponds to.
-        // We can identify it by pointer equality via index.
-        let pc = {
-            let addr = pkt_ctx as *const PacketContextState;
-            let mut found = PacketContext::Application;
-            for i in 0..self.pkt_ctx.len() {
-                if std::ptr::eq(&self.pkt_ctx[i], addr) {
-                    found = match i {
-                        0 => PacketContext::Application,
-                        1 => PacketContext::Handshake,
-                        2 => PacketContext::Initial,
-                        _ => PacketContext::Application,
-                    };
-                    break;
-                }
-            }
-            found
-        };
-        self.predict_packet_header_length_for_pc(packet_type, pc)
+        self.predict_packet_header_length_from_context_state(packet_type, pkt_ctx)
     }
 }
 
@@ -8349,6 +9250,8 @@ pub fn protect_packet_header(
 }
 
 impl Connection {
+    /// C: `picoquic/sender.c:picoquic_protect_packet`.
+    #[allow(clippy::too_many_arguments)]
     pub fn protect_packet(
         &mut self,
         ptype: PacketType,
@@ -8364,11 +9267,16 @@ impl Connection {
         tuple: &mut Tuple,
         current_time: Instant,
     ) -> usize {
+        let send_buffer_max = send_buffer_max.min(send_buffer.len());
         if header_length > length || length > bytes.len() || header_length > send_buffer_max {
             return 0;
         }
-        let mut pn_offset = 0;
-        let mut pn_length = 0;
+
+        let mut pn_offset = 0usize;
+        let mut pn_length = 0usize;
+        let aead_checksum_length = crate::tls_api::aead_get_checksum_length(aead_context);
+        let pn_iv_size = crate::tls_api::pn_iv_size(pn_enc);
+        let mut first_mask = 0x0fu8;
         let h_length = self.create_packet_header(
             ptype,
             sequence_number,
@@ -8379,73 +9287,144 @@ impl Connection {
             &mut pn_offset,
             &mut pn_length,
         );
-        if h_length > send_buffer_max || h_length > send_buffer.len() {
+        if h_length == 0 || h_length > send_buffer_max || pn_offset > h_length {
             return 0;
         }
 
-        let tag_len = aead_context.tag_len();
-        let pn_sample_end = pn_offset.saturating_add(4).saturating_add(16);
-        let target = pn_sample_end.saturating_sub(tag_len).min(bytes.len());
-        length = pad_to_target_length(bytes, length, target);
+        if h_length != header_length {
+            crate::logger::Log::app_message(
+                self,
+                format_args!(
+                    "BUFFER OVERFLOW? Packet header prediction fails, {} instead of {}\n",
+                    h_length, header_length
+                ),
+            );
+        }
 
-        if length > bytes.len() || length.saturating_add(tag_len) > send_buffer_max {
+        let pn_sample_end = pn_offset.saturating_add(4).saturating_add(pn_iv_size);
+        let sample_target = pn_sample_end.saturating_sub(aead_checksum_length);
+        if sample_target > bytes.len() {
             return 0;
+        }
+        length = pad_to_target_length(bytes, length, sample_target);
+        if length < header_length || length > bytes.len() {
+            return 0;
+        }
+
+        if ptype == PacketType::OneRttProtected {
+            if self.is_loss_bit_enabled_outgoing {
+                first_mask = 0x07;
+                path_x.q_square = path_x.q_square.saturating_add(1);
+                if (path_x.q_square & LOSS_BIT_Q_HALF_PERIOD) != 0 {
+                    send_buffer[0] |= 0x10;
+                }
+                if path_x.nb_losses_found > path_x.nb_losses_reported {
+                    send_buffer[0] |= 0x08;
+                    path_x.nb_losses_reported = path_x.nb_losses_reported.saturating_add(1);
+                }
+            } else {
+                first_mask = 0x1f;
+            }
         }
         update_payload_length(
             send_buffer,
             pn_offset,
             h_length.saturating_sub(pn_length),
-            length.saturating_add(tag_len),
+            length.saturating_add(aead_checksum_length),
         );
-        let header = send_buffer[..h_length].to_vec();
+
+        let mut fuzzer = self.quic_mut().and_then(|quic| quic.fuzz_fn.take());
+        if let Some(mut fuzz_fn) = fuzzer.take() {
+            let fuzz_limit = send_buffer_max
+                .saturating_sub(aead_checksum_length)
+                .min(bytes.len());
+            if length > fuzz_limit || header_length > fuzz_limit {
+                if let Some(quic) = self.quic_mut() {
+                    quic.fuzz_fn = Some(fuzz_fn);
+                }
+                return 0;
+            }
+            if h_length == header_length {
+                bytes[..header_length].copy_from_slice(&send_buffer[..header_length]);
+            }
+            let fuzzed_length =
+                fuzz_fn.fuzz(self, &mut bytes[..fuzz_limit], length, header_length) as usize;
+            if let Some(quic) = self.quic_mut() {
+                quic.fuzz_fn = Some(fuzz_fn);
+            }
+            if fuzzed_length < header_length || fuzzed_length > fuzz_limit {
+                return 0;
+            }
+            length = fuzzed_length;
+            if h_length == header_length {
+                send_buffer[..header_length].copy_from_slice(&bytes[..header_length]);
+            }
+        }
         let mut payload = bytes[header_length..length].to_vec();
         if self.is_multipath_enabled && ptype == PacketType::OneRttProtected {
             aead_context.encrypt_mp(
                 path_x.unique_path_id,
                 sequence_number,
-                &header,
+                &send_buffer[..h_length],
                 &mut payload,
             );
         } else {
-            aead_context.encrypt(sequence_number, &header, &mut payload);
+            aead_context.encrypt(sequence_number, &send_buffer[..h_length], &mut payload);
         }
-        let packet_length = h_length + payload.len();
-        if packet_length > send_buffer_max || packet_length > send_buffer.len() {
+
+        let send_length = h_length.saturating_add(payload.len());
+        if send_length > send_buffer_max {
             return 0;
         }
-        send_buffer[..h_length].copy_from_slice(&header);
-        send_buffer[h_length..packet_length].copy_from_slice(&payload);
-        let first_mask = if (send_buffer[0] & 0x80) != 0 {
-            0x0f
-        } else {
-            0x1f
-        };
+        send_buffer[h_length..send_length].copy_from_slice(&payload);
+
+        crate::logger::Log::outgoing_packet(
+            self,
+            path_x,
+            &bytes[..length],
+            sequence_number,
+            pn_length,
+            &send_buffer[..send_length],
+            current_time,
+        );
         protect_packet_header(
-            &mut send_buffer[..packet_length],
+            &mut send_buffer[..send_length],
             pn_offset,
             first_mask,
             pn_enc,
         );
-        let _ = current_time;
-        packet_length
+        send_length
     }
 }
 
 pub fn get_packet_number64(highest: u64, mask: u64, pn: u32) -> u64 {
     // C: picoquic_get_packet_number64 — reconstruct full 64-bit PN from truncated `pn`
-    // using `highest` (last seen full PN) and `mask` (which bits are carried).
-    // The truncated PN has (mask+1) possible values; pick the one closest to highest.
-    let candidate_base = highest & !mask;
-    let candidate = candidate_base | (pn as u64 & mask);
-    // Adjust if candidate is too far from highest.
-    let half_window = (mask + 1).div_ceil(2);
-    if candidate + half_window < highest {
-        candidate + mask + 1
-    } else if candidate > highest + half_window && candidate > mask {
-        candidate - (mask + 1)
+    // using `highest` (last seen full PN) and `mask` (the preserved high bits).
+    let expected = highest.wrapping_add(1);
+    let not_mask_plus_one = (!mask).wrapping_add(1);
+    let mut pn64 = (expected & mask) | pn as u64;
+
+    if pn64 < expected {
+        let delta1 = expected - pn64;
+        let delta2 = not_mask_plus_one.wrapping_sub(delta1);
+        if delta2 < delta1 {
+            pn64 = pn64.wrapping_add(not_mask_plus_one);
+        }
     } else {
-        candidate
+        let delta1 = pn64 - expected;
+        let delta2 = not_mask_plus_one.wrapping_sub(delta1);
+        if delta2 <= delta1 && (pn64 & mask) > 0 {
+            pn64 = pn64.wrapping_sub(not_mask_plus_one);
+        }
     }
+
+    pn64
+}
+
+fn set_header_protection_short_sample_sentinel(ph: &mut PacketHeader) {
+    ph.packet_number_truncated = 0xffff_ffff;
+    ph.packet_number_mask = 0xffff_ffff_0000_0000;
+    ph.offset = ph.packet_number_offset;
 }
 
 pub fn remove_header_protection_inner(
@@ -8458,18 +9437,45 @@ pub fn remove_header_protection_inner(
     sack_list_last: u64,
 ) -> i32 {
     let length = length.min(bytes.len());
-    if ph.packet_number_offset >= length {
+    let Some(sample_offset) = ph.packet_number_offset.checked_add(4) else {
+        set_header_protection_short_sample_sentinel(ph);
+        return 0;
+    };
+    let Some(sample_end) = sample_offset.checked_add(16) else {
+        set_header_protection_short_sample_sentinel(ph);
+        return 0;
+    };
+    if sample_end > length {
+        set_header_protection_short_sample_sentinel(ph);
+        return 0;
+    }
+    if ph.packet_number_offset > decrypted_bytes.len() || decrypted_bytes.is_empty() {
         return -1;
     }
-    let sample_offset = ph.packet_number_offset.saturating_add(4);
-    if sample_offset + 16 > length {
-        return -1;
-    }
+
     let mut sample = [0u8; 16];
-    sample.copy_from_slice(&bytes[sample_offset..sample_offset + 16]);
+    sample.copy_from_slice(&bytes[sample_offset..sample_end]);
     let mask = pn_enc.mask(sample);
-    let first_mask = if (bytes[0] & 0x80) != 0 { 0x0f } else { 0x1f };
-    bytes[0] ^= mask[0] & first_mask;
+    let first_byte = bytes[0];
+    let first_mask = if (first_byte & 0x80) != 0 {
+        0x0f
+    } else if is_loss_bit_enabled_incoming {
+        0x07
+    } else {
+        0x1f
+    };
+    let first_byte = first_byte ^ (mask[0] & first_mask);
+    let pn_length = ((first_byte & 0x03) + 1) as usize;
+    let pn_start = ph.offset;
+    let Some(header_end) = pn_start.checked_add(pn_length) else {
+        return -1;
+    };
+    if header_end > length || header_end > decrypted_bytes.len() {
+        return -1;
+    }
+
+    decrypted_bytes[..ph.packet_number_offset].copy_from_slice(&bytes[..ph.packet_number_offset]);
+    decrypted_bytes[0] = first_byte;
 
     if is_loss_bit_enabled_incoming && (bytes[0] & 0x80) == 0 {
         ph.has_loss_bits = true;
@@ -8477,33 +9483,34 @@ pub fn remove_header_protection_inner(
         ph.loss_bit_q = (bytes[0] & 0x10) != 0;
     }
 
-    let pn_length = ((bytes[0] & 0x03) + 1) as usize;
-    if ph.packet_number_offset + pn_length > length {
-        return -1;
-    }
     let mut truncated = 0u32;
-    for i in 0..pn_length {
-        let b = bytes[ph.packet_number_offset + i] ^ mask[i + 1];
-        bytes[ph.packet_number_offset + i] = b;
+    ph.packet_number_mask = u64::MAX;
+    for mask_byte in mask.iter().take(pn_length + 1).skip(1) {
+        let b = bytes[ph.offset] ^ *mask_byte;
+        decrypted_bytes[ph.offset] = b;
+        ph.offset += 1;
+        ph.packet_number_mask <<= 8;
         truncated = (truncated << 8) | b as u32;
     }
     ph.packet_number_truncated = truncated;
-    ph.packet_number_mask = if pn_length == 4 {
-        u32::MAX as u64
-    } else {
-        (1u64 << (8 * pn_length)) - 1
-    };
+    ph.payload_length = ph.payload_length.saturating_sub(pn_length);
+    if ph.packet_type == PacketType::OneRttProtected {
+        ph.key_phase = ((first_byte >> 2) & 1) != 0;
+    }
     ph.packet_number_full = get_packet_number64(sack_list_last, ph.packet_number_mask, truncated);
-    let copy_len = length.min(decrypted_bytes.len());
-    decrypted_bytes[..copy_len].copy_from_slice(&bytes[..copy_len]);
+    if (first_byte & 0x80) == 0 {
+        ph.has_reserved_bit_set = !is_loss_bit_enabled_incoming && (first_byte & 0x18) != 0;
+    } else {
+        ph.has_reserved_bit_set = (first_byte & 0x0c) != 0;
+    }
     0
 }
 
 /// C: `picoquic_remove_header_protection` (picoquic/packet.c:617)
 ///
 /// Select the inbound header-protection key for `ph.epoch`, derive the SACK
-/// reference packet number from the connection ACK context, and remove QUIC
-/// header protection in place.
+/// reference packet number from the connection context selected by packet
+/// context and local CID, and remove QUIC header protection in place.
 pub fn picoquic_remove_header_protection(
     connection: &mut Connection,
     bytes: &mut [u8],
@@ -8511,6 +9518,10 @@ pub fn picoquic_remove_header_protection(
     ph: &mut PacketHeader,
 ) -> i32 {
     let length = ph.offset.saturating_add(ph.payload_length);
+    let sack_list_last = connection
+        .sack_list_from_cnx_context(ph.packet_context, ph.local_connection_id)
+        .map(|sack_list| picoquic_sack_list_last(sack_list))
+        .unwrap_or(0);
     let epoch = ph.epoch as usize;
     let Some(pn_dec) = connection.crypto_context[epoch].pn_dec.as_deref() else {
         ph.packet_number_truncated = 0xffff_ffff;
@@ -8519,9 +9530,6 @@ pub fn picoquic_remove_header_protection(
         ph.packet_number_full = u64::MAX;
         return crate::errors::InternalError::AeadNotReady as i32;
     };
-    let sack_list_last = connection.ack_ctx[ph.packet_context as usize]
-        .sack_list
-        .first();
     remove_header_protection_inner(
         bytes,
         length,
@@ -8806,6 +9814,48 @@ pub fn pad_to_target_length(bytes: &mut [u8], length: usize, target: usize) -> u
 }
 
 impl Connection {
+    fn protect_packet_with_epoch(
+        &mut self,
+        epoch: Epoch,
+        packet_type: PacketType,
+        packet_bytes: &mut [u8],
+        sequence_number: u64,
+        length: usize,
+        header_length: usize,
+        send_buffer: &mut [u8],
+        send_buffer_max: usize,
+        path_x: &mut Path,
+        tuple: &mut Tuple,
+        current_time: Instant,
+    ) -> usize {
+        let epoch = epoch as usize;
+        let Some(aead) = self.crypto_context[epoch].aead_encrypt.take() else {
+            return 0;
+        };
+        let Some(pn_enc) = self.crypto_context[epoch].pn_enc.take() else {
+            self.crypto_context[epoch].aead_encrypt = Some(aead);
+            return 0;
+        };
+
+        let protected = self.protect_packet(
+            packet_type,
+            packet_bytes,
+            sequence_number,
+            length,
+            header_length,
+            send_buffer,
+            send_buffer_max,
+            &*aead,
+            &*pn_enc,
+            path_x,
+            tuple,
+            current_time,
+        );
+        self.crypto_context[epoch].aead_encrypt = Some(aead);
+        self.crypto_context[epoch].pn_enc = Some(pn_enc);
+        protected
+    }
+
     pub fn finalize_and_protect_packet_tuple(
         &mut self,
         packet: &mut Packet,
@@ -8824,6 +9874,7 @@ impl Connection {
         if length != 0 && length < header_length {
             length = 0;
         }
+
         if ret != 0 || length == 0 || length > packet.bytes.len() {
             return;
         }
@@ -8833,10 +9884,11 @@ impl Connection {
             packet.sequence_number = path_x.pkt_ctx.send_sequence;
             path_x.pkt_ctx.send_sequence = path_x.pkt_ctx.send_sequence.saturating_add(1);
         } else {
-            let pc = packet.packet_context as usize;
-            packet.sequence_number = self.pkt_ctx[pc].send_sequence;
-            self.pkt_ctx[pc].send_sequence = self.pkt_ctx[pc].send_sequence.saturating_add(1);
+            let pkt_ctx = &mut self.pkt_ctx[packet.packet_context as usize];
+            packet.sequence_number = pkt_ctx.send_sequence;
+            pkt_ctx.send_sequence = pkt_ctx.send_sequence.saturating_add(1);
         }
+
         path_x.latest_sent_time = current_time;
         path_x.path_cid_rotated = false;
         packet.delivered_prior = path_x.delivered_last;
@@ -8849,82 +9901,75 @@ impl Connection {
         packet.sent_cwin_limited =
             path_x.bytes_in_transit >= path_x.cwin && self.connection_state == State::Ready;
 
-        let epoch = match packet.packet_type {
-            PacketType::Initial => Epoch::Initial,
-            PacketType::Handshake => Epoch::Handshake,
-            PacketType::ZeroRttProtected => Epoch::ZeroRtt,
-            PacketType::OneRttProtected => Epoch::OneRtt,
-            _ => Epoch::OneRtt,
-        } as usize;
-        let Some(aead) = self.crypto_context[epoch].aead_encrypt.take() else {
-            if length <= send_buffer_max && length <= send_buffer.len() {
-                let mut pn_offset = 0;
-                let mut pn_length = 0;
-                self.create_packet_header(
-                    packet.packet_type,
-                    packet.sequence_number,
-                    path_x,
-                    tuple,
-                    header_length,
-                    &mut packet.bytes,
-                    &mut pn_offset,
-                    &mut pn_length,
-                );
+        length = match packet.packet_type {
+            PacketType::VersionNegotiation if length <= send_buffer_max.min(send_buffer.len()) => {
                 send_buffer[..length].copy_from_slice(&packet.bytes[..length]);
-                *send_length = length;
-                packet.checksum_overhead = 0;
-                self.queue_for_retransmit(path_x, packet, length, current_time);
-                path_x.last_sent_time = current_time;
-                path_x.bytes_sent = path_x.bytes_sent.saturating_add(length as u64);
+                length
             }
-            return;
+            PacketType::VersionNegotiation => 0,
+            PacketType::Initial => self.protect_packet_with_epoch(
+                Epoch::Initial,
+                packet.packet_type,
+                &mut packet.bytes,
+                packet.sequence_number,
+                length,
+                header_length,
+                send_buffer,
+                send_buffer_max,
+                path_x,
+                tuple,
+                current_time,
+            ),
+            PacketType::Handshake => self.protect_packet_with_epoch(
+                Epoch::Handshake,
+                packet.packet_type,
+                &mut packet.bytes,
+                packet.sequence_number,
+                length,
+                header_length,
+                send_buffer,
+                send_buffer_max,
+                path_x,
+                tuple,
+                current_time,
+            ),
+            PacketType::Retry | PacketType::ZeroRttProtected => self.protect_packet_with_epoch(
+                Epoch::ZeroRtt,
+                packet.packet_type,
+                &mut packet.bytes,
+                packet.sequence_number,
+                length,
+                header_length,
+                send_buffer,
+                send_buffer_max,
+                path_x,
+                tuple,
+                current_time,
+            ),
+            PacketType::OneRttProtected => self.protect_packet_with_epoch(
+                Epoch::OneRtt,
+                packet.packet_type,
+                &mut packet.bytes,
+                packet.sequence_number,
+                length,
+                header_length,
+                send_buffer,
+                send_buffer_max,
+                path_x,
+                tuple,
+                current_time,
+            ),
+            _ => 0,
         };
-        let Some(pn_enc) = self.crypto_context[epoch].pn_enc.take() else {
-            self.crypto_context[epoch].aead_encrypt = Some(aead);
-            if length <= send_buffer_max && length <= send_buffer.len() {
-                let mut pn_offset = 0;
-                let mut pn_length = 0;
-                self.create_packet_header(
-                    packet.packet_type,
-                    packet.sequence_number,
-                    path_x,
-                    tuple,
-                    header_length,
-                    &mut packet.bytes,
-                    &mut pn_offset,
-                    &mut pn_length,
-                );
-                send_buffer[..length].copy_from_slice(&packet.bytes[..length]);
-                *send_length = length;
-                packet.checksum_overhead = 0;
-                self.queue_for_retransmit(path_x, packet, length, current_time);
-                path_x.last_sent_time = current_time;
-                path_x.bytes_sent = path_x.bytes_sent.saturating_add(length as u64);
-            }
-            return;
-        };
-        packet.checksum_overhead = checksum_overhead;
-        let protected = self.protect_packet(
-            packet.packet_type,
-            &mut packet.bytes,
-            packet.sequence_number,
-            length,
-            header_length,
-            send_buffer,
-            send_buffer_max,
-            &*aead,
-            &*pn_enc,
-            path_x,
-            tuple,
-            current_time,
-        );
-        self.crypto_context[epoch].aead_encrypt = Some(aead);
-        self.crypto_context[epoch].pn_enc = Some(pn_enc);
-        *send_length = protected;
-        if protected > 0 {
-            self.queue_for_retransmit(path_x, packet, protected, current_time);
+
+        *send_length = length;
+        if length > 0 {
+            packet.checksum_overhead = checksum_overhead;
+            self.queue_for_retransmit(path_x, packet, length, current_time);
             path_x.last_sent_time = current_time;
-            path_x.bytes_sent = path_x.bytes_sent.saturating_add(protected as u64);
+            path_x.bytes_sent = path_x.bytes_sent.saturating_add(length as u64);
+        } else {
+            *send_length = 0;
         }
     }
 }
@@ -9012,11 +10057,64 @@ impl Connection {
 }
 
 impl Connection {
-    pub fn implicit_handshake_ack(&mut self, pc: PacketContext, _current_time: Instant) {
-        let pkt_ctx = &mut self.pkt_ctx[pc as usize];
-        pkt_ctx.pending.clear();
-        pkt_ctx.retransmitted.clear();
-        pkt_ctx.retransmitted_queue_size = 0;
+    /// Empty the handshake repeat queue when packets are implicitly
+    /// acknowledged by the handshake transition.
+    ///
+    /// C: `picoquic_implicit_handshake_ack` (picoquic/sender.c:1835-1866).
+    pub fn implicit_handshake_ack(&mut self, pc: PacketContext, current_time: Instant) {
+        let selection = PacketContextSelection::Connection(pc);
+
+        while let Some(packet_token) = self.pending_first_token(selection) {
+            let Some(snapshot) = self
+                .queued_packets
+                .get(packet_token)
+                .map(PacketRetransmitSnapshot::from)
+            else {
+                break;
+            };
+
+            if let Some(send_path) = snapshot.send_path
+                && let Some(cc_alg) = self.congestion_alg
+                && snapshot.send_time.ticks()
+                    < self.start_time.ticks().saturating_add(INITIAL_RTT.ticks())
+                && let Some(path_idx) = self.path_index_from_token(send_path)
+            {
+                let acknowledged = snapshot.length as u64;
+                let path_ptr: *mut Path = &raw mut self.paths[path_idx];
+                // SAFETY: `path_ptr` points into `self.paths[path_idx]`.
+                // Congestion-control callbacks receive both the connection and
+                // the selected path, matching the C API.  Callback
+                // implementations must mutate this path through `path_x`
+                // rather than reborrowing the same element through
+                // `connection.paths`.
+                let ack_state = unsafe {
+                    let path = &mut *path_ptr;
+                    path.delivered = path.delivered.saturating_add(acknowledged);
+                    PerAckState {
+                        pc: pc as i32,
+                        rtt_measurement: path.rtt_sample,
+                        nb_bytes_acknowledged: acknowledged,
+                        nb_bytes_delivered_since_packet_sent: path
+                            .delivered
+                            .saturating_sub(snapshot.delivered_prior),
+                        is_app_limited: true,
+                        ..PerAckState::default()
+                    }
+                };
+                // SAFETY: same invariant as above; the callback gets the same
+                // path pointer used to compute `ack_state`.
+                cc_alg.algorithm.alg_notify(
+                    self,
+                    unsafe { &mut *path_ptr },
+                    CongestionNotification::Acknowledgement,
+                    &ack_state,
+                    current_time,
+                );
+                self.report_pending_pacing_update(path_idx);
+            }
+
+            let _ = self.dequeue_retransmit_packet_in_context(selection, packet_token, true, false);
+        }
     }
 }
 
@@ -9027,11 +10125,12 @@ impl Connection {
     /// (picoquic/sender.c:1868-1930).
     pub fn picoquic_prepare_server_address_migration(&mut self) -> i32 {
         let preferred = self.remote_parameters.preferred_address;
-        let ipv4_received = preferred.v4.is_some();
-        let ipv6_received = preferred.v6.is_some();
-        if !ipv4_received && !ipv6_received {
+        let preferred_defined = preferred.v4.is_some() || preferred.v6.is_some();
+        if !preferred_defined {
             return 0;
         }
+        let ipv4_received = preferred.v4.is_some_and(|addr| addr.port() != 0);
+        let ipv6_received = preferred.v6.is_some_and(|addr| addr.port() != 0);
 
         let unique_path_id = if self.is_multipath_enabled { 1 } else { 0 };
         let transport_error = self
@@ -9049,12 +10148,19 @@ impl Connection {
                 crate::frames::FrameType::NewConnectionId as u64,
             );
         }
+        if !ipv4_received && !ipv6_received {
+            return 0;
+        }
 
         let Some(first_tuple) = self.paths.first().and_then(|path| path.tuples.first()) else {
             return 0;
         };
         let use_v6 = ipv6_received && !(ipv4_received && first_tuple.peer_addr.is_ipv4());
-        let dest_addr = if use_v6 { preferred.v6 } else { preferred.v4 };
+        let dest_addr = if use_v6 {
+            preferred.v6.filter(|addr| addr.port() != 0)
+        } else {
+            preferred.v4.filter(|addr| addr.port() != 0)
+        };
         let Some(dest_addr) = dest_addr else {
             return 0;
         };
@@ -9081,36 +10187,7 @@ impl Connection {
                 .map(|quic| quic.time())
                 .unwrap_or_else(crate::current_time),
         );
-        let use_constant_challenges = self
-            .quic_ref()
-            .map(|quic| i32::from(quic.use_constant_challenges))
-            .unwrap_or(0);
-        let path_unique_id = self
-            .paths
-            .first()
-            .map(|path| path.unique_path_id)
-            .unwrap_or(0);
-        let Some((stash_idx, cid_idx)) = self.obtain_stashed_connection_id(path_unique_id) else {
-            return 0;
-        };
-        if let Some(cid) = self.remote_connection_id_stashes[stash_idx]
-            .connection_ids
-            .get_mut(cid_idx)
-        {
-            cid.nb_path_references += 1;
-        }
-        if let Some(path) = self.paths.first_mut()
-            && let Ok(tuple_idx) = path.create_tuple(local_addr.as_ref(), Some(&dest_addr), 0)
-        {
-            let path_unique_id = path.unique_path_id;
-            if let Some(tuple) = path.tuples.get_mut(tuple_idx) {
-                tuple.remote_connection_id_index = Some(cid_idx);
-                tuple.unique_path_id = path_unique_id;
-                set_tuple_challenge(tuple, current_time, use_constant_challenges);
-                tuple.challenge_required = true;
-                tuple.to_preferred_address = true;
-            }
-        }
+        let _ = self.probe_new_tuple_by_index(0, dest_addr, local_addr, 0, current_time, true);
 
         0
     }
@@ -9238,26 +10315,26 @@ impl Quic {
         {
             return Err(crate::Error::Tls);
         }
-        let pn_length = ((packet[0] & 0x03) + 1) as usize;
-        let header_end = ph.packet_number_offset.saturating_add(pn_length);
-        let cipher_end = if ph.payload_length > 0 {
-            ph.packet_number_offset
-                .saturating_add(ph.payload_length)
-                .min(packet_length)
-        } else {
-            packet_length
-        };
-        if header_end > cipher_end || cipher_end > packet.len() {
+        let header_end = ph.offset;
+        let cipher_end = ph
+            .offset
+            .saturating_add(ph.payload_length)
+            .min(packet_length);
+        if header_end > cipher_end || cipher_end > packet.len() || header_end > header_copy.len() {
             return Err(crate::Error::InvalidArgument);
         }
-        let header = packet[..header_end].to_vec();
+        let header = header_copy[..header_end].to_vec();
         let mut payload = packet[header_end..cipher_end].to_vec();
         aead.decrypt(ph.packet_number_full, &header, &mut payload)?;
-        let len = payload.len().min(decrypted_data.data.len());
+        if header_end + payload.len() > decrypted_data.data.len() {
+            return Err(crate::Error::BufferTooSmall);
+        }
         decrypted_data.stream_data_membership = None;
         decrypted_data.offset = 0;
-        decrypted_data.length = len;
-        decrypted_data.data[..len].copy_from_slice(&payload[..len]);
+        decrypted_data.length = header_end + payload.len();
+        decrypted_data.data[..header_end].copy_from_slice(&header);
+        decrypted_data.data[header_end..header_end + payload.len()].copy_from_slice(&payload);
+        ph.payload_length = payload.len();
         *consumed = cipher_end;
         Ok((Some(conn_tok), false))
     }
@@ -10612,6 +11689,7 @@ impl Connection {
                 &ack_state,
                 current_time,
             );
+            self.report_pending_pacing_update_for_path(path_x);
         }
     }
 
@@ -13624,7 +14702,7 @@ impl Connection {
             }
             self.paths.insert(idx, path);
             if cc_notified {
-                self.report_pacing_update(idx);
+                self.report_pending_pacing_update(idx);
             }
         } else if timer_based_retransmit < 2 {
             crate::logger::Log::app_message(
@@ -18266,67 +19344,7 @@ impl Connection {
         pc: PacketContext,
     ) -> usize {
         let pkt_ctx = &self.pkt_ctx[pc as usize];
-        let send_sequence = pkt_ctx.send_sequence;
-        let first_pending_seq = pkt_ctx.pending.keys().next().copied();
-
-        // Remote CID length: get from path 0, stash for path 0, first CID.
-        let remote_cid_len = self
-            .remote_connection_id_stashes
-            .first()
-            .and_then(|s| s.connection_ids.first())
-            .map(|r| r.connection_id.len())
-            .unwrap_or(8);
-
-        // Local CID length: get from path 0 tuple 0's local CID token.
-        let local_cid_len = self
-            .paths
-            .first()
-            .and_then(|p| p.tuples.first())
-            .and_then(|t| t.local_connection_id)
-            .and_then(|tok| self.local_connection_ids.get(tok))
-            .map(|l| l.connection_id.len())
-            .unwrap_or(self.local_cid_length as usize);
-
-        if packet_type == PacketType::OneRttProtected {
-            // Short header: 1 byte flags + remote CID + PN
-            let delta = if let Some(first) = first_pending_seq {
-                send_sequence.saturating_sub(first) as i64
-            } else {
-                send_sequence as i64
-            };
-            let pn_l = if delta >= 262144 {
-                4usize
-            } else if send_sequence >= 1024 {
-                3
-            } else if send_sequence >= 16 {
-                2
-            } else {
-                1
-            };
-            1 + remote_cid_len + pn_l
-        } else {
-            // Long header: 1 byte + 4 version + 2 CID lengths + dest CID + src CID + 2 payload len + 4 PN
-            let dest_cid_len = if self.client_mode
-                && (packet_type == PacketType::Initial
-                    || packet_type == PacketType::ZeroRttProtected)
-                && remote_cid_len == 0
-            {
-                self.initial_connection_id.len()
-            } else {
-                remote_cid_len
-            };
-
-            let mut header_length = 1 + 4 + 2 + dest_cid_len + local_cid_len + 2 + 4;
-
-            // Token length for initial packets.
-            if packet_type == PacketType::Initial {
-                let token_len = self.retry_token.len();
-                let vlen = encode_varint_length(token_len as u64);
-                header_length += vlen + token_len;
-            }
-
-            header_length
-        }
+        self.predict_packet_header_length_from_context_state(packet_type, pkt_ctx)
     }
 
     /// Like [`create_packet_header`] but addresses the path and tuple by index
@@ -18390,11 +19408,9 @@ impl Connection {
         pn_length: &mut usize,
     ) -> usize {
         if packet_type == PacketType::OneRttProtected {
-            // Short header.
-            let k = if self.key_phase_enc { 0x04u8 } else { 0u8 };
-            let c = 0x40u8; // QUIC bit
+            let (remote_cid, _) = selected_tuple_cids;
             let mut pn_l = 4usize;
-            bytes[0] = k | c; // spin bit = 0
+            bytes[0] = self.short_header_flags();
             let mut length = 1;
             length += write_cid(&mut bytes[length..], remote_cid);
             *pn_offset = length;
@@ -18407,31 +19423,7 @@ impl Connection {
             length += pn_l;
             length
         } else {
-            // Long header.
-            // Determine first byte based on version and packet type.
-            let version = self.proposed_version;
-            // Use V1 encoding for all versions unless it's V2.
-            let is_v2 = version == Version::V2 as u32 || version == Version::V2Draft as u32;
-            let first_byte: u8 = match (packet_type, is_v2) {
-                (PacketType::Initial, false) => 0xC3,
-                (PacketType::ZeroRttProtected, false) => 0xD3,
-                (PacketType::Handshake, false) => 0xE3,
-                (PacketType::Retry, false) => 0xF0,
-                (PacketType::Initial, true) => 0xD3,
-                (PacketType::ZeroRttProtected, true) => 0xE3,
-                (PacketType::Handshake, true) => 0xF3,
-                (PacketType::Retry, true) => 0xC0,
-                _ => 0xFF,
-            };
-            bytes[0] = first_byte;
-            let mut length = 1;
-
-            // Version
-            let ver_bytes = version.to_be_bytes();
-            bytes[length..length + 4].copy_from_slice(&ver_bytes);
-            length += 4;
-
-            // Dest CID
+            let (remote_cid, srce_cnx_id) = first_tuple_cids;
             let dest_cid = if self.client_mode
                 && (packet_type == PacketType::Initial
                     || packet_type == PacketType::ZeroRttProtected)
@@ -18441,42 +19433,20 @@ impl Connection {
             } else {
                 remote_cid
             };
-            bytes[length] = dest_cid.len() as u8;
-            length += 1;
-            length += write_cid(&mut bytes[length..], dest_cid);
-
-            // Src CID
-            bytes[length] = local_cid.len() as u8;
-            length += 1;
-            length += write_cid(&mut bytes[length..], local_cid);
-
-            // Token for initial packets
-            if packet_type == PacketType::Initial {
-                let token_len = self.retry_token.len() as u64;
-                length += varint_encode(&mut bytes[length..], token_len);
-                if !self.retry_token.is_empty() {
-                    let rlen = self.retry_token.len();
-                    bytes[length..length + rlen].copy_from_slice(&self.retry_token);
-                    length += rlen;
-                }
-            }
-
-            if packet_type == PacketType::Retry {
-                *pn_offset = 0;
-                *pn_length = 0;
-            } else {
-                // Reserve the two-byte payload-length varint; protection
-                // updates it once the final packet length is known.
-                bytes[length] = 0;
-                bytes[length + 1] = 0;
-                length += 2;
-                *pn_offset = length;
-                *pn_length = 4;
-                let pn32 = sequence_number as u32;
-                bytes[length..length + 4].copy_from_slice(&pn32.to_be_bytes());
-                length += 4;
-            }
-            length
+            let version = self.long_header_version(packet_type);
+            create_long_header(
+                packet_type,
+                &dest_cid,
+                &srce_cnx_id,
+                self.do_grease_quic_bit,
+                version,
+                self.version_index,
+                sequence_number,
+                &self.retry_token,
+                bytes,
+                pn_offset,
+                pn_length,
+            )
         }
     }
 
@@ -19207,6 +20177,7 @@ impl Connection {
                     &PerAckState::default(),
                     current_time,
                 );
+                self.report_pending_pacing_update(i);
             } else if lost_feedback_time < *next_wake_time {
                 *next_wake_time = lost_feedback_time;
             }
@@ -21314,12 +22285,20 @@ impl Connection {
         }
 
         if length == 0 && self.connection_state != State::Disconnected {
-            let pkt_send_sequence = if self.is_multipath_enabled {
-                path_x.pkt_ctx.send_sequence
+            let (pkt_send_sequence, predicted_header_length) = if self.is_multipath_enabled {
+                let pkt_ctx = &path_x.pkt_ctx;
+                (
+                    pkt_ctx.send_sequence,
+                    self.predict_packet_header_length_from_context_state(packet_type, pkt_ctx),
+                )
             } else {
-                self.pkt_ctx[pc as usize].send_sequence
+                let pkt_ctx = &self.pkt_ctx[pc as usize];
+                (
+                    pkt_ctx.send_sequence,
+                    self.predict_packet_header_length_from_context_state(packet_type, pkt_ctx),
+                )
             };
-            length = self.predict_packet_header_length_for_pc(packet_type, pc);
+            length = predicted_header_length;
             header_length = length;
             packet.packet_type = packet_type;
             packet.offset = length;
@@ -21516,6 +22495,7 @@ impl Connection {
                                     &ack_state,
                                     current_time,
                                 );
+                                self.report_pending_pacing_update_for_path(path_x);
                             }
                         } else if ret == 0 {
                             let pmtu_discovery_needed = self.is_mtu_probe_needed(path_x);
@@ -21746,16 +22726,32 @@ impl Connection {
                     .ticks()
                     .saturating_add(self.keep_alive_interval.ticks());
                 if keep_alive_time <= current_time.ticks() && length == 0 {
-                    length = self.predict_packet_header_length_for_pc(packet_type, pc);
+                    let (pkt_send_sequence, predicted_header_length) = if self.is_multipath_enabled
+                    {
+                        let pkt_ctx = &path_x.pkt_ctx;
+                        (
+                            pkt_ctx.send_sequence,
+                            self.predict_packet_header_length_from_context_state(
+                                packet_type,
+                                pkt_ctx,
+                            ),
+                        )
+                    } else {
+                        let pkt_ctx = &self.pkt_ctx[pc as usize];
+                        (
+                            pkt_ctx.send_sequence,
+                            self.predict_packet_header_length_from_context_state(
+                                packet_type,
+                                pkt_ctx,
+                            ),
+                        )
+                    };
+                    length = predicted_header_length;
                     header_length = length;
                     packet.packet_type = packet_type;
                     packet.packet_context = pc;
                     packet.offset = length;
-                    packet.sequence_number = if self.is_multipath_enabled {
-                        path_x.pkt_ctx.send_sequence
-                    } else {
-                        self.pkt_ctx[pc as usize].send_sequence
-                    };
+                    packet.sequence_number = pkt_send_sequence;
                     packet.send_path = Some(Self::path_token_for_path(path_x));
                     packet.send_time = current_time;
                     if length + 1 < packet.bytes.len() {

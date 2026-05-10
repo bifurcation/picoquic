@@ -781,6 +781,7 @@ fn pacing_repeat() {
         bandwidth_pause: 0,
         bucket_nanosec: 0,
         packet_time_nanosec: 0,
+        update_is_signalled: false,
     };
 
     for (i, ev) in PACING_EVENTS.iter().enumerate() {
