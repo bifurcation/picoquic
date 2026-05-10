@@ -1748,6 +1748,7 @@ impl Quic {
             default_congestion_alg: Some(&NEWRENO_ALGORITHM),
             default_congestion_alg_option_string: None,
             connections: crate::arena::Arena::new(),
+            connection_list: std::collections::VecDeque::new(),
             connection_wake_tree: crate::splay::SplayTree::default(),
             connection_in_progress: None,
             connection_by_id: table_cnx_by_id,
@@ -2582,15 +2583,24 @@ impl Quic {
     /// Remove a connection from the context's live-connection list.
     ///
     /// The C intrusive `cnx_list`/`cnx_last` links are represented by
-    /// the Rust arena, so this helper performs the C-visible side
-    /// effects: unregister ICID/reset-secret indexes and decrement the
-    /// live-connection count.
+    /// `connection_list`, so this helper unlinks that token, unregisters
+    /// ICID/reset-secret indexes, and decrements the live-connection count.
     ///
     /// C: `picoquic_remove_cnx_from_list` (picoquic/quicctx.c:1450-1469).
     pub(crate) fn remove_cnx_from_list(&mut self, connection: ConnectionToken) {
+        let was_listed = if let Some(pos) = self
+            .connection_list
+            .iter()
+            .position(|token| *token == connection)
+        {
+            self.connection_list.remove(pos);
+            true
+        } else {
+            false
+        };
         self.unregister_net_icid(connection);
         self.unregister_net_secret(connection);
-        if self.current_number_connections > 0 {
+        if was_listed && self.current_number_connections > 0 {
             self.current_number_connections -= 1;
         }
     }
@@ -3839,15 +3849,26 @@ impl Connection {
         None
     }
 
+    /// Wall-clock time at which this connection next needs attention.
+    /// C: `picoquic_get_wake_time` (picoquic/quicctx.c:1579-1591).
+    fn wake_time(&self, current_time: Instant) -> u64 {
+        if self
+            .quic_ref()
+            .map(|quic| !quic.pending_stateless_packets.is_empty())
+            .unwrap_or(false)
+        {
+            current_time.ticks()
+        } else {
+            self.next_wake_time.ticks()
+        }
+    }
+
     /// Compute the number of microseconds until this connection
     /// next needs attention, capped at `delay_max`.
     /// C: `picoquic_get_wake_delay` (picoquic/quicctx.c:1593-1612).
     pub fn wake_delay(&self, current_time: Instant, delay_max: i64) -> i64 {
         let now = current_time.ticks();
-        let next = match self.quic_ref() {
-            Some(quic) if !quic.pending_stateless_packets.is_empty() => now,
-            _ => self.next_wake_time.ticks(),
-        };
+        let next = self.wake_time(current_time);
 
         if next <= now {
             0
@@ -4009,6 +4030,12 @@ impl Connection {
         self.find_local_connection_id(unique_path_id, connection_id)
     }
 
+    /// Delete a local connection ID token from this connection.
+    /// C: `picoquic_delete_local_cnxid` (picoquic/quicctx.c:3927-3932).
+    pub fn delete_local_cnxid(&mut self, local_cnxid: crate::internal::LocalConnectionIdToken) {
+        self.delete_local_connection_id(local_cnxid);
+    }
+
     /// Retire a local connection ID by path ID and sequence number.
     /// C: `picoquic_retire_local_cnxid` (picoquic/quicctx.c:3965-3985).
     pub fn retire_local_cnxid(&mut self, unique_path_id: u64, sequence: u64) {
@@ -4075,9 +4102,10 @@ impl Connection {
     }
 
     /// Remote connection ID currently in use.
+    /// C: `picoquic_get_remote_cnxid` — `cnx->path[0]->first_tuple->p_remote_cnxid->cnx_id`.
     pub fn remote_connection_id(&self) -> ConnectionId {
-        // Return the initial connection ID as a proxy; full CID rotation is Phase 3.
-        self.initial_connection_id
+        self.path_remote_connection_id(0)
+            .unwrap_or(self.initial_connection_id)
     }
 
     /// Initial connection ID picked at handshake start.
@@ -4085,23 +4113,29 @@ impl Connection {
         self.initial_connection_id
     }
 
-    /// Client-side initial connection ID (mirrors C
-    /// `get_client_connection_id`).
+    /// Client connection ID registered on the first path's first tuple.
+    /// C: `picoquic_get_client_cnxid` — local CID in client mode,
+    /// remote CID in server mode.
     pub fn client_connection_id(&self) -> ConnectionId {
         if self.client_mode {
-            self.initial_connection_id
+            self.path_local_connection_id(0)
+                .unwrap_or(self.initial_connection_id)
         } else {
-            self.original_connection_id
+            self.path_remote_connection_id(0)
+                .unwrap_or(self.initial_connection_id)
         }
     }
 
-    /// Server-side initial connection ID (mirrors C
-    /// `get_server_connection_id`).
+    /// Server connection ID registered on the first path's first tuple.
+    /// C: `picoquic_get_server_cnxid` — remote CID in client mode,
+    /// local CID in server mode.
     pub fn server_connection_id(&self) -> ConnectionId {
         if self.client_mode {
-            self.original_connection_id
+            self.path_remote_connection_id(0)
+                .unwrap_or(self.initial_connection_id)
         } else {
-            self.initial_connection_id
+            self.path_local_connection_id(0)
+                .unwrap_or(self.initial_connection_id)
         }
     }
 
@@ -4117,7 +4151,9 @@ impl Connection {
 
     /// Whether 0-RTT data may be sent on this connection.
     pub fn is_0rtt_available(&self) -> bool {
-        self.zero_rtt_data_accepted
+        self.crypto_context[crate::internal::Epoch::ZeroRtt as usize]
+            .aead_encrypt
+            .is_some()
     }
 
     /// Whether the connection has any outstanding data still queued
@@ -4169,8 +4205,26 @@ impl Connection {
     }
 
     /// Queue a datagram frame for transmission.
+    ///
+    /// C: `picoquic_queue_datagram_frame` (picoquic/frames.c:5307-5335).
+    ///
+    /// The payload is kept raw in the datagram queue; the send path formats
+    /// the DATAGRAM frame when preparing a packet.
     pub fn queue_datagram_frame(&mut self, bytes: &[u8]) -> Result<(), Error> {
         use crate::internal::MiscFrameHeader;
+        let length = bytes.len();
+        if length > DATAGRAM_QUEUE_CAUTIOUS_LENGTH {
+            let send_mtu = self.paths.first().map(|path| path.send_mtu).unwrap_or(0);
+            let packet_length = length
+                .checked_add(21)
+                .and_then(|length| length.checked_add(self.local_cid_length as usize));
+            if length > self.local_parameters.max_datagram_frame_size as usize
+                || length > self.remote_parameters.max_datagram_frame_size as usize
+                || packet_length.is_none_or(|length| length > send_mtu)
+            {
+                return Err(Error::Protocol(InternalError::DatagramTooLong as u64));
+            }
+        }
         self.datagrams.push_back(MiscFrameHeader {
             bytes: bytes.to_vec(),
             packet_context: PacketContext::Application,
@@ -4208,18 +4262,23 @@ impl Connection {
 impl Quic {
     /// Borrow the first connection registered with this context.
     pub fn first_connection(&mut self) -> Option<&mut Connection> {
-        self.connections.iter_mut().next()
+        let token = self
+            .connection_list
+            .iter()
+            .copied()
+            .find(|token| self.connections.contains(*token))?;
+        self.connections.get_mut(token)
     }
 
     /// Return the connection that follows the one identified by `current_token`
-    /// in arena insertion order, or `None` when `current_token` is the last
-    /// live connection.
+    /// in the context's live-connection list, or `None` when `current_token`
+    /// is the last live connection.
     ///
     /// C: `picoquic_get_next_cnx` — `cnx->next_in_table`.
     ///
     /// The C intrusive linked list (`next_in_table` / `previous_in_table`) is
-    /// replaced by an arena; this method scans forward from the slot after
-    /// `current_token.idx` to find the next occupied slot.  Typical usage:
+    /// represented by `connection_list`, a newest-first token list that is
+    /// independent of arena slot reuse.  Typical usage:
     ///
     /// ```ignore
     /// let mut tok = quic.first_connection().and_then(|c| c.own_token);
@@ -4230,45 +4289,58 @@ impl Quic {
     /// }
     /// ```
     pub fn next_cnx(&mut self, current_token: ConnectionToken) -> Option<&mut Connection> {
-        let next_idx = current_token.slot_idx() + 1;
-        self.connections.next_after_idx(next_idx)
+        let mut after_current = false;
+        let next_token = self.connection_list.iter().copied().find(|token| {
+            if *token == current_token {
+                after_current = true;
+                false
+            } else {
+                after_current && self.connections.contains(*token)
+            }
+        })?;
+        self.connections.get_mut(next_token)
     }
 
     /// Compute the number of microseconds until *any* connection on
     /// this context next needs attention, capped at `delay_max`.
     pub fn next_wake_delay(&self, current_time: Instant, delay_max: i64) -> i64 {
         let now = current_time.ticks();
-        // Find the minimum next_wake_time across all connections.
-        let earliest = self
-            .connections
-            .iter()
-            .map(|c| c.next_wake_time.ticks())
-            .min();
-        match earliest {
-            None => delay_max,
-            Some(t) if t <= now => 0,
-            Some(t) => ((t - now) as i64).min(delay_max),
+        let next_wake_time = self.next_wake_time(current_time);
+
+        if next_wake_time <= now || delay_max <= 0 {
+            return 0;
+        }
+
+        let delta_m = now.saturating_add(delay_max as u64);
+        if next_wake_time >= delta_m {
+            delay_max
+        } else {
+            (next_wake_time - now) as i64
         }
     }
 
     /// Wall-clock time at which the next event is scheduled.
     pub fn next_wake_time(&self, current_time: Instant) -> u64 {
         let now = current_time.ticks();
+        if !self.pending_stateless_packets.is_empty() {
+            return now;
+        }
+
         self.connections
             .iter()
             .map(|c| c.next_wake_time.ticks())
             .min()
-            .unwrap_or(now)
+            .unwrap_or(u64::MAX)
     }
 
-    /// Return the earliest connection that wakes before `wake_time`,
-    /// or `None` if none qualify.
+    /// Return the earliest connection that wakes at or before `wake_time`,
+    /// or the earliest connection without a threshold when `wake_time` is zero.
     /// C: `picoquic_get_earliest_cnx_to_wake`.
     pub fn earliest_cnx_to_wake(&mut self, wake_time: Instant) -> Option<&mut Connection> {
         let threshold = wake_time.ticks();
         self.connections
             .iter_mut()
-            .filter(|c| c.next_wake_time.ticks() <= threshold)
+            .filter(|c| threshold == 0 || c.next_wake_time.ticks() <= threshold)
             .min_by_key(|c| c.next_wake_time.ticks())
     }
 
@@ -4430,6 +4502,45 @@ impl Quic {
         }
     }
 
+    fn log_and_flush_disconnected_connection(&mut self, token: ConnectionToken) {
+        if let Some(cnx) = self.connections.get_mut(token) {
+            let (max_reorder_gap, max_spurious_rtt) = cnx
+                .paths
+                .first()
+                .map(|path| {
+                    (
+                        path.max_reorder_gap as i32,
+                        path.max_spurious_rtt.ticks() as i32,
+                    )
+                })
+                .unwrap_or((0, 0));
+            let dg_coal = if cnx.nb_trains_sent > 0 {
+                cnx.nb_packets_sent as f64 / cnx.nb_trains_sent as f64
+            } else {
+                0.0
+            };
+            let message = format!(
+                "Closed. Retrans= {}, spurious= {}, max sp gap = {}, max sp delay = {}, dg-coal: {:.6}",
+                cnx.nb_retransmission_total as i32,
+                cnx.nb_spurious as i32,
+                max_reorder_gap,
+                max_spurious_rtt,
+                dg_coal
+            );
+            cnx.log_app_message(&message);
+        }
+
+        if let Some(f_log) = self.f_log.as_mut() {
+            let _ = std::io::Write::flush(f_log);
+        }
+
+        if let Some(cnx) = self.connections.get_mut(token)
+            && let Some(f_binlog) = cnx.f_binlog.as_mut()
+        {
+            let _ = std::io::Write::flush(f_binlog);
+        }
+    }
+
     /// Drive the next packet onto the wire.  Folds the seven
     /// out-parameters of the C signature into a [`PreparedPacket`].
     ///
@@ -4501,6 +4612,7 @@ impl Quic {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(Error::Disconnected) => {
+                self.log_and_flush_disconnected_connection(token);
                 let is_client = self
                     .connections
                     .get(token)
@@ -7748,25 +7860,41 @@ impl Quic {
         {
             return InternalError::Detected as i32;
         }
-        let mut supported = false;
-        for chunk in bytes.get(ph.offset..).unwrap_or(&[]).chunks_exact(4) {
+        let Some(version_bytes) = bytes.get(ph.offset..) else {
+            return InternalError::Detected as i32;
+        };
+        if !version_bytes.len().is_multiple_of(4) {
+            return InternalError::Detected as i32;
+        }
+
+        let mut supported_count = 0;
+        for chunk in version_bytes.chunks_exact(4) {
             let version = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            if version == cnx.proposed_version {
-                return InternalError::VersionNegotiationSpoofed as i32;
+            if version == cnx.proposed_version || version == 0 {
+                return InternalError::Detected as i32;
             }
             if crate::internal::Version::try_from_wire(version).is_some() {
-                cnx.desired_version = version;
-                supported = true;
-                break;
+                supported_count += 1;
             }
         }
-        if supported {
-            cnx.connection_state = State::ClientRenegotiate;
-            let _ = cnx.call_stream_data_callback(0, &[], CallbackEvent::VersionNegotiation, None);
-            InternalError::VersionNegotiation as i32
-        } else {
-            InternalError::VersionNotSupported as i32
+
+        if supported_count == 0 {
+            return InternalError::Detected as i32;
         }
+
+        if let Some(mut callback) = cnx.callback_fn.take() {
+            let _ = callback.callback(
+                cnx,
+                0,
+                version_bytes,
+                CallbackEvent::VersionNegotiation,
+                None,
+            );
+            cnx.callback_fn = Some(callback);
+        }
+        cnx.remote_error = TransportError::VersionNegotiationError as u64;
+        cnx.connection_disconnect();
+        0
     }
 
     fn is_silent_drop_status(ret: i32) -> bool {
@@ -8355,7 +8483,34 @@ impl Quic {
             None,
             None,
         )?;
-        let cnx = self.connections.remove(token).ok_or(Error::Generic)?;
+        let (initial_cid, local_cid_memberships) = {
+            let cnx = self.connections.get(token).ok_or(Error::Generic)?;
+            let memberships = cnx
+                .local_connection_id_lists
+                .iter()
+                .flat_map(|list| list.connection_ids.iter().copied())
+                .filter_map(|tok| {
+                    cnx.local_connection_ids
+                        .get(tok)
+                        .and_then(|l_cid| l_cid.connection_by_id_membership)
+                })
+                .collect::<Vec<_>>();
+            (cnx.initial_connection_id, memberships)
+        };
+        for membership in local_cid_memberships {
+            self.connection_by_id.remove(membership);
+        }
+        if !initial_cid.is_empty()
+            && let Some(ht) = self.connection_by_id.lookup(&initial_cid)
+            && self.connection_by_id.get(ht).copied() == Some(token)
+        {
+            self.connection_by_id.remove(ht);
+        }
+        self.remove_cnx_from_list(token);
+        self.remove_cnx_from_wake_list(token);
+        let mut cnx = self.connections.remove(token).ok_or(Error::Generic)?;
+        cnx.own_token = None;
+        cnx.quic_ptr = core::ptr::null_mut();
         Ok(Box::new(cnx))
     }
 }

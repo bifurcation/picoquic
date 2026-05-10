@@ -2279,11 +2279,13 @@ pub struct Quic {
 
     /// Owning arena for every live [`Connection`] on this `Quic`.
     /// Every C `*mut picoquic_cnx_t` becomes a [`ConnectionToken`]
-    /// indexing into here; the C `connection_list` / `connection_last` /
-    /// `next_in_table` / `previous_in_table` doubly-linked list is
-    /// gone — iterate the arena and sort on demand if order
-    /// matters.
+    /// indexing into here.
     pub connections: Arena<Connection>,
+    /// Newest-first live-connection order.  Mirrors the C
+    /// `cnx_list` / `cnx_last` plus each connection's
+    /// `next_in_table` / `previous_in_table` links without making
+    /// [`Connection`] intrusive.
+    pub connection_list: VecDeque<ConnectionToken>,
 
     /// Per-connection wake-up scheduler keyed by `(next_wake_time, slot)`.
     /// Splay-tree access locality matters here — the next-to-fire
@@ -3238,8 +3240,7 @@ pub struct Connection {
     pub qlog_ctx: Option<Box<dyn Any>>,
     /// Arena token for this connection's slot in `Quic::connections`.
     /// Populated immediately after `Arena::insert` in `create_cnx_internal`
-    /// so that `Quic::next_cnx` can perform O(n) arena traversal without
-    /// an intrusive linked list.
+    /// so context-level lists and indexes can refer back to this connection.
     pub own_token: Option<ConnectionToken>,
     /// Raw back-pointer to the owning [`Quic`].  Set at connection
     /// creation by `create_cnx_internal`; valid for the lifetime of
@@ -4273,11 +4274,11 @@ impl Quic {
     ///
     /// In C, `picoquic_insert_cnx_in_list` (quicctx.c:1436) prepended `cnx`
     /// to the `quic->cnx_list` / `cnx_last` intrusive doubly-linked list and
-    /// incremented `current_number_connections`.  In Rust the arena replaces
-    /// the linked list; this function performs only the counter update.
-    /// `_token` is accepted for symmetry with the C signature but unused.
+    /// incremented `current_number_connections`.  Rust stores the same order
+    /// as connection tokens alongside the owning arena.
     /// C: `picoquic_insert_cnx_in_list` (quicctx.c:1436).
-    fn insert_cnx_in_list(&mut self, _token: ConnectionToken) {
+    fn insert_cnx_in_list(&mut self, token: ConnectionToken) {
+        self.connection_list.push_front(token);
         self.current_number_connections += 1;
     }
 
