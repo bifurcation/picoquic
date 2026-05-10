@@ -90,9 +90,9 @@ pub type PathToken = Token<Path>;
 use crate::logger::LoggerRef;
 use crate::{
     AlpnSelect, CallbackEvent, CongestionAlgorithm, CongestionNotification, ConnectionId,
-    ConnectionIdCallback, Fuzz, LossbitVersion, PacketContext, PathStatus, PerAckState,
-    PmtudPolicy, RESET_SECRET_SIZE, SpinbitVersion, State, StreamDataCallback, StreamDirectReceive,
-    TransportParameters,
+    ConnectionIdCallback, DatagramActive, Fuzz, LossbitVersion, PacketContext, PathStatus,
+    PerAckState, PmtudPolicy, RESET_SECRET_SIZE, SpinbitVersion, State, StreamDataCallback,
+    StreamDirectReceive, TransportParameters,
 };
 
 // ---------------------------------------------------------------------------
@@ -1273,11 +1273,24 @@ const STORED_TICKET_TIME_VALID_UNTIL_C_OFFSET: usize = 120;
 const STORED_TICKET_LOAD_RECORD_MAX: usize =
     STORED_TICKET_LOAD_BUFFER_SIZE - STORED_TICKET_TIME_VALID_UNTIL_C_OFFSET;
 
+fn ip_addr_wire_bytes(ip_addr: core::net::IpAddr) -> ([u8; 16], usize) {
+    let mut bytes = [0u8; 16];
+    let len = match ip_addr {
+        core::net::IpAddr::V4(addr) => {
+            bytes[..4].copy_from_slice(&addr.octets());
+            4
+        }
+        core::net::IpAddr::V6(addr) => {
+            bytes.copy_from_slice(&addr.octets());
+            16
+        }
+    };
+    (bytes, len)
+}
+
 fn stored_ip_bytes(ip_addr: core::net::IpAddr) -> Vec<u8> {
-    match ip_addr {
-        core::net::IpAddr::V4(addr) => addr.octets().to_vec(),
-        core::net::IpAddr::V6(addr) => addr.octets().to_vec(),
-    }
+    let (bytes, len) = ip_addr_wire_bytes(ip_addr);
+    bytes[..len].to_vec()
 }
 
 fn stored_ip_from_bytes(bytes: &[u8]) -> Result<core::net::IpAddr, crate::Error> {
@@ -2271,6 +2284,10 @@ pub struct Quic {
     pub nb_packets_allocated: i32,
     pub nb_packets_allocated_max: i32,
 
+    /// Free-list of received-data scratch nodes.
+    ///
+    /// C: `picoquic_quic_t::p_first_data_node`.
+    pub stream_data_node_pool: Vec<StreamDataNode>,
     pub nb_data_nodes_allocated: i32,
     pub nb_data_nodes_allocated_max: i32,
 
@@ -3228,6 +3245,35 @@ pub struct PacketData {
     pub last_ack_delay: Duration,
     pub nb_path_ack: i32,
     pub path_ack: [PacketDataPathAck; NB_PATH_TARGET],
+}
+
+impl Default for PacketDataPathAck {
+    fn default() -> Self {
+        Self {
+            acked_path: None,
+            largest_sent_time: Instant::from_ticks(0),
+            delivered_prior: 0,
+            delivered_time_prior: Instant::from_ticks(0),
+            delivered_sent_prior: 0,
+            lost_prior: 0,
+            inflight_prior: 0,
+            rs_is_path_limited: false,
+            rs_is_cwnd_limited: false,
+            is_set: false,
+            data_acked: 0,
+        }
+    }
+}
+
+impl Default for PacketData {
+    fn default() -> Self {
+        Self {
+            last_time_stamp_received: Instant::from_ticks(0),
+            last_ack_delay: Duration::from_ticks(0),
+            nb_path_ack: 0,
+            path_ack: core::array::from_fn(|_| PacketDataPathAck::default()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5118,6 +5164,7 @@ impl Connection {
                         &mut tuple,
                         current_time,
                         next_wake_time,
+                        &mut self.observed_number,
                         &mut more_data,
                         &mut is_pure_ack,
                     )
@@ -6161,7 +6208,6 @@ impl Connection {
                 );
             }
         }
-
         if self
             .paths
             .get(idx)
@@ -6490,12 +6536,11 @@ impl Connection {
         secret_bytes: &[u8],
     ) -> StashResult {
         // C: picoquic_add_remote_cnxid_to_stash
-        // C transport error codes: 0x1=INTERNAL, 0x7=FRAME_FORMAT,
-        // 0x9=CONNECTION_ID_LIMIT, 0xA=PROTOCOL_VIOLATION
-        const INTERNAL_ERROR: u64 = 0x1;
-        const FRAME_FORMAT_ERROR: u64 = 0x7;
-        const CONNECTION_ID_LIMIT_ERROR: u64 = 0x9;
-        const PROTOCOL_VIOLATION: u64 = 0xA;
+        const INTERNAL_ERROR: u64 = crate::errors::TransportError::InternalError as u64;
+        const FRAME_FORMAT_ERROR: u64 = crate::errors::TransportError::FrameFormatError as u64;
+        const CONNECTION_ID_LIMIT_ERROR: u64 =
+            crate::errors::TransportError::ConnectionIdLimitError as u64;
+        const PROTOCOL_VIOLATION: u64 = crate::errors::TransportError::ProtocolViolation as u64;
 
         if stash_index >= self.remote_connection_id_stashes.len() {
             return StashResult {
@@ -6505,8 +6550,14 @@ impl Connection {
         }
 
         let cnx_id = match crate::ConnectionId::clone_from_slice(connection_id_bytes) {
-            Some(id) => id,
+            Some(id) if !id.is_empty() => id,
             None => {
+                return StashResult {
+                    status: FRAME_FORMAT_ERROR,
+                    stashed_index: None,
+                };
+            }
+            Some(_) => {
                 return StashResult {
                     status: FRAME_FORMAT_ERROR,
                     stashed_index: None,
@@ -6539,9 +6590,14 @@ impl Connection {
         }
 
         // Check for duplicates / sequence collision.
+        if secret_bytes.len() < RESET_SECRET_SIZE {
+            return StashResult {
+                status: FRAME_FORMAT_ERROR,
+                stashed_index: None,
+            };
+        }
         let mut secret_arr = [0u8; RESET_SECRET_SIZE];
-        let slen = secret_bytes.len().min(RESET_SECRET_SIZE);
-        secret_arr[..slen].copy_from_slice(&secret_bytes[..slen]);
+        secret_arr.copy_from_slice(&secret_bytes[..RESET_SECRET_SIZE]);
 
         let retire_before = retire_before_next
             .max(self.remote_connection_id_stashes[stash_index].retire_connection_id_before);
@@ -6611,6 +6667,12 @@ impl Connection {
             ack_of_ack_requested: false,
         };
         let stash = &mut self.remote_connection_id_stashes[stash_index];
+        if stash.connection_ids.try_reserve(1).is_err() {
+            return StashResult {
+                status: INTERNAL_ERROR,
+                stashed_index: None,
+            };
+        }
         let new_rcid = RemoteConnectionId {
             sequence,
             connection_id: cnx_id,
@@ -6777,7 +6839,7 @@ impl Connection {
     /// Reserve a stashed CID for use on `unique_path_id`.  Returns the
     /// stash index and CID index of the chosen CID, or `None` when none are
     /// available.
-    pub fn obtain_stashed_connection_id(&mut self, unique_path_id: u64) -> Option<(usize, usize)> {
+    pub fn obtain_stashed_connection_id(&self, unique_path_id: u64) -> Option<(usize, usize)> {
         // C: picoquic_obtain_stashed_cnxid — find the stash, then get first usable CID.
         let stash_idx = self
             .remote_connection_id_stashes
@@ -17732,6 +17794,110 @@ pub struct StreamDataBufferArgument<'a> {
     pub app_buffer: &'a [u8],
 }
 
+/// Callback context supplied for `CallbackEvent::PrepareDatagram`.
+pub struct DatagramBufferArgument {
+    pub allowed_space: usize,
+    pub length: usize,
+    pub is_active: i32,
+    pub is_old_api: i32,
+    pub was_called: i32,
+    pub connection_is_datagram_ready: bool,
+    pub path_is_datagram_ready: bool,
+    payload: Vec<u8>,
+}
+
+impl DatagramBufferArgument {
+    fn new(
+        allowed_space: usize,
+        connection_is_datagram_ready: bool,
+        path_is_datagram_ready: bool,
+    ) -> Self {
+        Self {
+            allowed_space,
+            length: 0,
+            is_active: 0,
+            is_old_api: 0,
+            was_called: 0,
+            connection_is_datagram_ready,
+            path_is_datagram_ready,
+            payload: Vec::new(),
+        }
+    }
+
+    pub fn provide_buffer(&mut self, length: usize) -> Option<&mut [u8]> {
+        self.provide_buffer_ex(length, DatagramActive::NotActive)
+    }
+
+    pub fn provide_buffer_ex(
+        &mut self,
+        length: usize,
+        is_active: DatagramActive,
+    ) -> Option<&mut [u8]> {
+        let active_bits = is_active as u8;
+        self.is_active = i32::from((active_bits & 1) != 0);
+        self.was_called = 1;
+
+        if self.is_old_api == 0 {
+            self.connection_is_datagram_ready = (active_bits & 1) != 0;
+            self.path_is_datagram_ready = (active_bits >> 1) != 0;
+        }
+
+        self.length = 0;
+        if length == 0 || length > self.allowed_space {
+            self.payload.clear();
+            return None;
+        }
+
+        if self.payload.len() < length {
+            self.payload.try_reserve(length - self.payload.len()).ok()?;
+        }
+        self.payload.resize(length, 0);
+        self.length = length;
+        Some(&mut self.payload[..length])
+    }
+
+    fn format_into<'a>(
+        &self,
+        bytes: &'a mut [u8],
+        datagram_l_header_len: usize,
+    ) -> Option<&'a mut [u8]> {
+        let length = self.length;
+        if length == 0 || length > self.allowed_space {
+            return Some(bytes);
+        }
+
+        let length_len = varint_encode(&mut bytes[datagram_l_header_len..], length as u64);
+        if length_len != 0 && bytes.len() >= datagram_l_header_len + length_len + length {
+            let payload_offset = datagram_l_header_len + length_len;
+            bytes[payload_offset..payload_offset + length].copy_from_slice(&self.payload[..length]);
+            return Some(&mut bytes[payload_offset + length..]);
+        }
+
+        let datagram_header_len = varint_encode(bytes, crate::frames::FrameType::Datagram as u64);
+        if datagram_header_len == 0 || bytes.len() < datagram_header_len + length {
+            return None;
+        }
+
+        let mut payload_offset = datagram_header_len;
+        let tail = payload_offset + length;
+        if tail < bytes.len() {
+            let padding = bytes.len() - tail;
+            bytes[..padding].fill(crate::frames::FrameType::Padding as u8);
+            let encoded = varint_encode(
+                &mut bytes[padding..],
+                crate::frames::FrameType::Datagram as u64,
+            );
+            if encoded == 0 || bytes.len() < padding + encoded + length {
+                return None;
+            }
+            payload_offset = padding + encoded;
+        }
+
+        bytes[payload_offset..payload_offset + length].copy_from_slice(&self.payload[..length]);
+        Some(&mut bytes[payload_offset + length..])
+    }
+}
+
 fn encode_varint_at(bytes: &mut [u8], off: &mut usize, value: u64) -> bool {
     let encoded = varint_encode(&mut bytes[*off..], value);
     if encoded == 0 {
@@ -17765,6 +17931,27 @@ fn encode_misc_frame(
         packet_context: pc,
         is_pure_ack: if is_pure_ack { 1 } else { 0 },
     });
+}
+
+fn queue_misc_frame(
+    connection: &mut Connection,
+    bytes: &[u8],
+    is_pure_ack: bool,
+    pc: PacketContext,
+) -> Result<(), crate::Error> {
+    let misc_frame = create_misc_frame(bytes, is_pure_ack, pc)?;
+    connection
+        .misc_frames
+        .try_reserve(1)
+        .map_err(|_| crate::Error::Memory)?;
+    connection.misc_frames.push_back(misc_frame);
+    if let Some(wake_time) = connection
+        .quic_ref()
+        .map(|quic| Instant::from_ticks(quic.time()))
+    {
+        connection.reinsert_self_by_wake_time(wake_time);
+    }
+    Ok(())
 }
 
 fn encode_varint_vec(out: &mut Vec<u8>, value: u64) -> bool {
@@ -18631,45 +18818,73 @@ pub fn format_application_close_frame<'a>(
     Some(&mut bytes[off..])
 }
 
+fn stream_needs_max_stream_data_update(stream: &StreamHead) -> bool {
+    !stream.fin_received
+        && !stream.reset_received
+        && stream.consumed_offset.saturating_mul(2) > stream.maxdata_local
+}
+
 pub fn format_required_max_stream_data_frames<'a>(
     connection: &mut Connection,
     mut bytes: &'a mut [u8],
     more_data: &mut i32,
     is_pure_ack: &mut i32,
 ) -> Option<&'a mut [u8]> {
-    let tokens: Vec<_> = connection
-        .streams
-        .iter()
-        .filter_map(|stream| {
-            stream
-                .max_stream_updated
-                .then_some(stream.stream_tree_membership)
-                .flatten()
-                .and_then(|st| connection.stream_tree.get(st).copied())
-        })
-        .collect();
+    let mut tokens = Vec::new();
+    let mut stream_token = connection.first_stream();
+    while let Some(tok) = stream_token {
+        tokens.push(tok);
+        stream_token = connection.next_stream(tok);
+    }
+
+    let mut completed_scan = true;
     for tok in tokens {
-        let Some(stream) = connection.streams.get_mut(tok) else {
+        let Some((maxdata_local, should_send)) = connection.streams.get(tok).map(|stream| {
+            (
+                stream.maxdata_local,
+                !stream.fin_received
+                    && !stream.use_app_flow_control
+                    && stream_needs_max_stream_data_update(stream),
+            )
+        }) else {
             continue;
         };
-        if !stream.max_stream_updated {
+        if !should_send {
             continue;
         }
-        let mut off = 0;
-        if !encode_varint_at(
-            bytes,
-            &mut off,
-            crate::frames::FrameType::MaxStreamData as u64,
-        ) || !encode_varint_at(bytes, &mut off, stream.stream_id)
-            || !encode_varint_at(bytes, &mut off, stream.maxdata_local)
+
+        let new_window = connection.cc_increased_window(maxdata_local);
+        let new_max_data = maxdata_local.saturating_add(new_window);
+        let Some(stream_id) = connection.streams.get(tok).map(|stream| stream.stream_id) else {
+            continue;
+        };
+
+        if bytes.is_empty() {
+            *more_data = 1;
+            completed_scan = false;
+            break;
+        }
+
+        bytes[0] = crate::frames::FrameType::MaxStreamData as u8;
+        let mut off = 1;
+        if !encode_varint_at(bytes, &mut off, stream_id)
+            || !encode_varint_at(bytes, &mut off, new_max_data)
         {
             *more_data = 1;
-            return Some(bytes);
+            completed_scan = false;
+            break;
         }
-        stream.maxdata_local_acked = stream.maxdata_local;
-        stream.max_stream_updated = false;
+
+        if let Some(stream) = connection.streams.get_mut(tok) {
+            stream.maxdata_local = new_max_data;
+        }
+        connection.max_stream_data_local = connection.max_stream_data_local.max(new_max_data);
         *is_pure_ack = 0;
         bytes = &mut bytes[off..];
+    }
+
+    if completed_scan {
+        connection.max_stream_data_needed = false;
     }
     Some(bytes)
 }
@@ -18752,24 +18967,28 @@ pub fn format_max_streams_frame_if_needed<'a>(
     is_pure_ack: &mut i32,
 ) -> Option<&'a mut [u8]> {
     let mut off = 0;
+    let mut committed_off = 0;
     if connection.max_stream_id_bidir_local_computed
         + 2 * connection.local_parameters.initial_max_stream_id_bidir
         > connection.max_stream_id_bidir_local
     {
         let new_bidir = connection.max_stream_id_bidir_local
             + 4 * connection.local_parameters.initial_max_stream_id_bidir;
-        if bytes.len() <= off {
-            *more_data = 1;
-            return Some(bytes);
+        let mut encoded = false;
+        if bytes.len() > off {
+            bytes[off] = crate::frames::FrameType::MaxStreamsBidir as u8;
+            off += 1;
+            encoded = encode_varint_at(bytes, &mut off, crate::stream::StreamId(new_bidir).rank());
         }
-        bytes[off] = crate::frames::FrameType::MaxStreamsBidir as u8;
-        off += 1;
-        if !encode_varint_at(bytes, &mut off, crate::stream::StreamId(new_bidir).rank()) {
+
+        if encoded {
+            connection.max_stream_id_bidir_local = new_bidir;
+            *is_pure_ack = 0;
+            committed_off = off;
+        } else {
             *more_data = 1;
-            return Some(bytes);
+            off = committed_off;
         }
-        connection.max_stream_id_bidir_local = new_bidir;
-        *is_pure_ack = 0;
     }
 
     if connection.max_stream_id_unidir_local_computed
@@ -18778,18 +18997,20 @@ pub fn format_max_streams_frame_if_needed<'a>(
     {
         let new_unidir = connection.max_stream_id_unidir_local
             + 4 * connection.local_parameters.initial_max_stream_id_unidir;
-        if bytes.len() <= off {
-            *more_data = 1;
-            return Some(bytes);
+        let mut encoded = false;
+        if bytes.len() > off {
+            bytes[off] = crate::frames::FrameType::MaxStreamsUnidir as u8;
+            off += 1;
+            encoded = encode_varint_at(bytes, &mut off, crate::stream::StreamId(new_unidir).rank());
         }
-        bytes[off] = crate::frames::FrameType::MaxStreamsUnidir as u8;
-        off += 1;
-        if !encode_varint_at(bytes, &mut off, crate::stream::StreamId(new_unidir).rank()) {
+
+        if encoded {
+            connection.max_stream_id_unidir_local = new_unidir;
+            *is_pure_ack = 0;
+        } else {
             *more_data = 1;
-            return Some(bytes);
+            off = committed_off;
         }
-        connection.max_stream_id_unidir_local = new_unidir;
-        *is_pure_ack = 0;
     }
 
     Some(&mut bytes[off..])
@@ -18805,9 +19026,31 @@ impl StreamDataNode {
 }
 
 impl Quic {
+    /// Recycle a checked-out stream data node.
+    ///
+    /// C: `picoquic_stream_data_node_recycle`.
+    pub fn stream_data_node_recycle(&mut self, mut stream_data: StreamDataNode) {
+        stream_data.stream_data_node_recycle();
+        if self.stream_data_node_pool.len() < MAX_PACKETS_IN_POOL as usize {
+            self.stream_data_node_pool.push(stream_data);
+        } else {
+            self.nb_data_nodes_allocated = self.nb_data_nodes_allocated.saturating_sub(1);
+        }
+    }
+
+    /// Allocate a stream data node and update allocation accounting.
+    ///
+    /// C: `picoquic_stream_data_node_alloc`.
     pub fn stream_data_node_alloc(&mut self) -> Result<StreamDataNode, crate::Error> {
-        // Allocate a fresh StreamDataNode.  In C a free-list is maintained;
-        // in Rust we simply allocate on the heap.
+        if let Some(mut stream_data) = self.stream_data_node_pool.pop() {
+            stream_data.stream_data_node_recycle();
+            return Ok(stream_data);
+        }
+
+        self.nb_data_nodes_allocated = self.nb_data_nodes_allocated.saturating_add(1);
+        self.nb_data_nodes_allocated_max = self
+            .nb_data_nodes_allocated_max
+            .max(self.nb_data_nodes_allocated);
         Ok(StreamDataNode {
             stream_data_membership: None,
             offset: 0,
@@ -18818,57 +19061,14 @@ impl Quic {
 }
 
 impl StreamHead {
-    /// Reset all stream state to defaults, keeping the stream_id.
+    /// Clear queued stream data and SACK state.
     /// C: `picoquic_clear_stream`.
     pub fn clear_stream(&mut self) {
-        let stream_id = self.stream_id;
-        *self = StreamHead {
-            stream_tree_membership: None,
-            stream_id,
-            affinity_path: None,
-            consumed_offset: 0,
-            fin_offset: 0,
-            reset_offset: 0,
-            maxdata_local: 0,
-            maxdata_local_acked: 0,
-            maxdata_remote: 0,
-            local_error: 0,
-            remote_error: 0,
-            local_stop_error: 0,
-            remote_stop_error: 0,
-            last_time_data_sent: crate::Instant::from_ticks(0),
-            stream_data_tree: crate::splay::SplayTree::default(),
-            stream_data_nodes: crate::arena::Arena::new(),
-            sent_offset: 0,
-            reliable_size: 0,
-            send_queue: std::collections::VecDeque::new(),
-            app_stream_ctx: None,
-            direct_receive_fn: None,
-            direct_receive_ctx: None,
-            sack_list: SackList::new(),
-            stream_priority: 0,
-            is_active: false,
-            fin_requested: false,
-            fin_sent: false,
-            fin_received: false,
-            fin_signalled: false,
-            reset_requested: false,
-            reset_sent: false,
-            reset_acked: false,
-            reset_received: false,
-            reset_signalled: false,
-            stop_sending_requested: false,
-            stop_sending_sent: false,
-            stop_sending_received: false,
-            stop_sending_signalled: false,
-            max_stream_updated: false,
-            stream_data_blocked_sent: false,
-            is_output_stream: false,
-            is_closed: false,
-            is_discarded: false,
-            use_app_flow_control: false,
-            is_not_coalesced: false,
-        };
+        self.send_queue.clear();
+        self.is_output_stream = false;
+        self.stream_data_tree.clear();
+        self.stream_data_nodes.clear();
+        self.sack_list.free();
     }
 }
 
@@ -18896,14 +19096,39 @@ impl Connection {
 impl Connection {
     /// Find the local-CID list for `unique_path_id` (the index into
     /// `connection.local_connection_id_lists`), optionally creating one when absent.
+    ///
+    /// C: `picoquic_find_or_create_local_cnxid_list`.
     pub fn find_or_create_local_connection_id_list(
-        &self,
+        &mut self,
         unique_path_id: u64,
-        _do_create: bool,
+        do_create: bool,
     ) -> Option<usize> {
-        self.local_connection_id_lists
+        if let Some(index) = self
+            .local_connection_id_lists
             .iter()
             .position(|l| l.unique_path_id == unique_path_id)
+        {
+            return Some(index);
+        }
+
+        if !do_create {
+            return None;
+        }
+
+        self.local_connection_id_lists.push(LocalConnectionIdList {
+            unique_path_id,
+            local_connection_id_sequence_next: 0,
+            local_connection_id_retire_before: 0,
+            local_connection_id_oldest_created: 0,
+            nb_local_connection_id_expired: 0,
+            is_demoted: false,
+            demotion_time: crate::Instant::from_ticks(0),
+            connection_ids: Vec::new(),
+        });
+        if unique_path_id >= self.next_path_id_in_lists {
+            self.next_path_id_in_lists = unique_path_id.wrapping_add(1);
+        }
+        Some(self.local_connection_id_lists.len() - 1)
     }
 }
 
@@ -18933,26 +19158,9 @@ impl Connection {
         current_time: Instant,
     ) -> Result<LocalConnectionIdToken, crate::Error> {
         // Find or create the per-path list.
-        let list_idx = match self
-            .local_connection_id_lists
-            .iter()
-            .position(|l| l.unique_path_id == unique_path_id)
-        {
-            Some(i) => i,
-            None => {
-                self.local_connection_id_lists.push(LocalConnectionIdList {
-                    unique_path_id,
-                    local_connection_id_sequence_next: 0,
-                    local_connection_id_retire_before: 0,
-                    local_connection_id_oldest_created: current_time.ticks(),
-                    nb_local_connection_id_expired: 0,
-                    is_demoted: false,
-                    demotion_time: crate::Instant::from_ticks(u64::MAX),
-                    connection_ids: Vec::new(),
-                });
-                self.local_connection_id_lists.len() - 1
-            }
-        };
+        let list_idx = self
+            .find_or_create_local_connection_id_list(unique_path_id, true)
+            .ok_or(crate::Error::Memory)?;
 
         let connection_id = if self.local_cid_length == 0 {
             ConnectionId::default()
@@ -19009,62 +19217,138 @@ impl Connection {
 }
 
 impl Connection {
-    pub fn demote_local_connection_id_list(&mut self, unique_path_id: u64, _reason: u64) -> i32 {
-        if let Some(list) = self
-            .local_connection_id_lists
-            .iter_mut()
-            .find(|l| l.unique_path_id == unique_path_id)
-            && !list.is_demoted
-        {
-            list.is_demoted = true;
-            return 1;
+    /// C: `picoquic_demote_local_cnxid_list`.
+    pub fn demote_local_connection_id_list(&mut self, unique_path_id: u64, reason: u64) -> i32 {
+        let Some(list_idx) = self.find_or_create_local_connection_id_list(unique_path_id, false)
+        else {
+            return 0;
+        };
+        if self.local_connection_id_lists[list_idx].is_demoted {
+            return 0;
         }
+        if self
+            .queue_path_abandon_frame(unique_path_id, reason)
+            .is_err()
+        {
+            return -1;
+        }
+        if let Some(stash_idx) =
+            self.find_or_create_remote_connection_id_stash(unique_path_id, false)
+        {
+            self.delete_remote_connection_id_stash(stash_idx);
+        }
+        self.local_connection_id_lists[list_idx].is_demoted = true;
         0
     }
 }
 
 impl Connection {
-    pub fn delete_local_connection_id(&mut self, l_cid: LocalConnectionIdToken) {
-        // Remove from the backing arena.
-        let removed = self.local_connection_ids.remove(l_cid);
-        if removed.is_none() {
-            // Stale token — no-op.
-            return;
-        }
-        // Remove the token from whichever list holds it.
-        for list in &mut self.local_connection_id_lists {
-            if let Some(pos) = list.connection_ids.iter().position(|t| *t == l_cid) {
-                list.connection_ids.swap_remove(pos);
-                break;
+    fn delete_local_connection_id_listed(
+        &mut self,
+        list_index: Option<usize>,
+        l_cid: LocalConnectionIdToken,
+    ) -> bool {
+        let Some((path_id, sequence, membership)) =
+            self.local_connection_ids.get_mut(l_cid).map(|local_cid| {
+                (
+                    local_cid.path_id,
+                    local_cid.sequence,
+                    local_cid.connection_by_id_membership.take(),
+                )
+            })
+        else {
+            if let Some(list_index) = list_index
+                && let Some(list) = self.local_connection_id_lists.get_mut(list_index)
+                && let Some(pos) = list.connection_ids.iter().position(|t| *t == l_cid)
+            {
+                list.connection_ids.remove(pos);
+            }
+            return false;
+        };
+
+        if let Some(path) = self
+            .paths
+            .iter_mut()
+            .find(|path| path.unique_path_id == path_id)
+        {
+            for tuple in &mut path.tuples {
+                if tuple.local_connection_id == Some(l_cid) {
+                    tuple.local_connection_id = None;
+                }
             }
         }
+
+        if let Some(membership) = membership
+            && let Some(quic) = self.quic_mut()
+        {
+            let _ = quic.connection_by_id.remove(membership);
+        }
+
+        if let Some(list_index) = list_index {
+            if let Some(list) = self.local_connection_id_lists.get_mut(list_index)
+                && let Some(pos) = list.connection_ids.iter().position(|t| *t == l_cid)
+            {
+                list.connection_ids.remove(pos);
+                if sequence < list.local_connection_id_retire_before
+                    && list.nb_local_connection_id_expired > 0
+                {
+                    list.nb_local_connection_id_expired -= 1;
+                }
+            }
+        } else {
+            for list in &mut self.local_connection_id_lists {
+                if let Some(pos) = list.connection_ids.iter().position(|t| *t == l_cid) {
+                    list.connection_ids.remove(pos);
+                    if sequence < list.local_connection_id_retire_before
+                        && list.nb_local_connection_id_expired > 0
+                    {
+                        list.nb_local_connection_id_expired -= 1;
+                    }
+                    break;
+                }
+            }
+        }
+
+        let _ = self.local_connection_ids.remove(l_cid);
+        true
+    }
+
+    pub fn delete_local_connection_id(&mut self, l_cid: LocalConnectionIdToken) {
+        let list_index = self.local_connection_ids.get(l_cid).and_then(|local_cid| {
+            self.local_connection_id_lists
+                .iter()
+                .position(|list| list.unique_path_id == local_cid.path_id)
+        });
+        self.delete_local_connection_id_listed(list_index, l_cid);
     }
 }
 
 impl Connection {
     /// Remove `connection.local_connection_id_lists[list_index]`.
+    /// C: `picoquic_delete_local_cnxid_list`.
     pub fn delete_local_connection_id_list(&mut self, list_index: usize) {
         if list_index >= self.local_connection_id_lists.len() {
             return;
         }
-        // Remove all CIDs in this list from the arena.
-        let tokens: Vec<LocalConnectionIdToken> = self.local_connection_id_lists[list_index]
-            .connection_ids
-            .clone();
-        for tok in tokens {
-            self.local_connection_ids.remove(tok);
+
+        while let Some(token) = self
+            .local_connection_id_lists
+            .get(list_index)
+            .and_then(|list| list.connection_ids.first().copied())
+        {
+            self.delete_local_connection_id_listed(Some(list_index), token);
         }
-        self.local_connection_id_lists.swap_remove(list_index);
+
+        if list_index < self.local_connection_id_lists.len() {
+            self.local_connection_id_lists.remove(list_index);
+        }
     }
 }
 
 impl Connection {
     pub fn delete_local_connection_id_lists(&mut self) {
-        // Drain all lists, removing all CIDs from the arena.
-        for list in self.local_connection_id_lists.drain(..) {
-            for tok in list.connection_ids {
-                self.local_connection_ids.remove(tok);
-            }
+        while !self.local_connection_id_lists.is_empty() {
+            self.delete_local_connection_id_list(0);
         }
     }
 }
@@ -19224,8 +19508,26 @@ pub fn format_new_connection_id_frame<'a>(
     is_pure_ack: &mut i32,
     l_cid: Option<LocalConnectionIdToken>,
 ) -> Option<&'a mut [u8]> {
-    let token = l_cid.or_else(|| local_connection_id_list.connection_ids.first().copied())?;
-    let cid = connection.local_connection_ids.get(token)?;
+    let Some(token) = l_cid else {
+        return Some(bytes);
+    };
+    let Some((path_id, sequence, connection_id)) = connection
+        .local_connection_ids
+        .get(token)
+        .map(|cid| (cid.path_id, cid.sequence, cid.connection_id))
+    else {
+        return Some(bytes);
+    };
+    if connection_id.is_empty() {
+        return Some(bytes);
+    }
+
+    let mut reset_secret = [0u8; RESET_SECRET_SIZE];
+    connection
+        .quic_mut()?
+        .create_connection_id_reset_secret(&connection_id, &mut reset_secret)
+        .ok()?;
+
     let frame_type = if connection.is_multipath_enabled {
         crate::frames::FrameType::PathNewConnectionId as u64
     } else {
@@ -19233,24 +19535,23 @@ pub fn format_new_connection_id_frame<'a>(
     };
     let mut off = 0;
     if !encode_varint_at(bytes, &mut off, frame_type)
-        || (connection.is_multipath_enabled
-            && !encode_varint_at(bytes, &mut off, local_connection_id_list.unique_path_id))
-        || !encode_varint_at(bytes, &mut off, cid.sequence)
+        || (connection.is_multipath_enabled && !encode_varint_at(bytes, &mut off, path_id))
+        || !encode_varint_at(bytes, &mut off, sequence)
         || !encode_varint_at(
             bytes,
             &mut off,
             local_connection_id_list.local_connection_id_retire_before,
         )
-        || bytes.len() < off + 1 + cid.connection_id.len() + RESET_SECRET_SIZE
+        || bytes.len() < off + 1 + connection_id.len() + RESET_SECRET_SIZE
     {
         *more_data = 1;
         return Some(bytes);
     }
-    bytes[off] = cid.connection_id.len() as u8;
+    bytes[off] = connection_id.len() as u8;
     off += 1;
-    bytes[off..off + cid.connection_id.len()].copy_from_slice(cid.connection_id.as_bytes());
-    off += cid.connection_id.len();
-    bytes[off..off + RESET_SECRET_SIZE].copy_from_slice(&connection.registered_reset_secret);
+    bytes[off..off + connection_id.len()].copy_from_slice(connection_id.as_bytes());
+    off += connection_id.len();
+    bytes[off..off + RESET_SECRET_SIZE].copy_from_slice(&reset_secret);
     off += RESET_SECRET_SIZE;
     *is_pure_ack = 0;
     Some(&mut bytes[off..])
@@ -19346,13 +19647,29 @@ pub fn format_data_blocked_frame<'a>(
 
 pub fn format_blocked_frames<'a>(
     connection: &mut Connection,
-    bytes: &'a mut [u8],
+    mut bytes: &'a mut [u8],
     more_data: &mut i32,
     is_pure_ack: &mut i32,
 ) -> Option<&'a mut [u8]> {
-    if connection.maxdata_remote <= connection.data_sent && !connection.sent_blocked_frame {
-        return format_data_blocked_frame(connection, bytes, more_data, is_pure_ack);
+    let mut stream_token = connection.first_stream();
+    let hi_pri_stream = if connection.high_priority_stream_id != u64::MAX {
+        connection.find_stream(connection.high_priority_stream_id)
+    } else {
+        None
+    };
+
+    while let Some(tok) = stream_token {
+        if hi_pri_stream.is_none() || hi_pri_stream == Some(tok) {
+            bytes =
+                format_one_blocked_frame_for_token(connection, bytes, more_data, is_pure_ack, tok)?;
+            if *more_data != 0 {
+                break;
+            }
+        }
+
+        stream_token = connection.next_stream(tok);
     }
+
     Some(bytes)
 }
 
@@ -19423,20 +19740,25 @@ pub fn format_new_token_frame<'a>(
 }
 
 impl Connection {
+    /// C: `picoquic_queue_new_token_frame` (`frames.c:1029-1043`)
+    ///
     /// Enqueue a NEW_TOKEN frame carrying `token`.
     pub fn queue_new_token_frame(&mut self, token: &[u8]) -> Result<(), crate::Error> {
-        let capacity = 1 + encode_varint_length(token.len() as u64) + token.len();
-        let mut frame = vec![0u8; capacity];
+        let mut frame = [0u8; 258];
         let mut more_data = 0;
         let mut is_pure_ack = 1;
-        let tail_len = format_new_token_frame(&mut frame, &mut more_data, &mut is_pure_ack, token)
-            .map(|tail| tail.len())
-            .ok_or(crate::Error::BufferTooSmall)?;
-        if more_data != 0 {
-            return Err(crate::Error::BufferTooSmall);
+        let frame_len = frame.len();
+        let consumed = format_new_token_frame(&mut frame, &mut more_data, &mut is_pure_ack, token)
+            .map(|tail| frame_len - tail.len())
+            .unwrap_or(0);
+        if consumed > 0 {
+            encode_misc_frame(
+                self,
+                frame[..consumed].to_vec(),
+                true,
+                PacketContext::Application,
+            );
         }
-        frame.truncate(capacity - tail_len);
-        encode_misc_frame(self, frame, true, PacketContext::Application);
         Ok(())
     }
 }
@@ -19484,6 +19806,24 @@ pub fn format_stream_data_blocked_frame<'a>(
     is_pure_ack: &mut i32,
     stream: &mut StreamHead,
 ) -> Option<&'a mut [u8]> {
+    format_stream_data_blocked_frame_values(
+        bytes,
+        more_data,
+        is_pure_ack,
+        stream.stream_id,
+        stream.maxdata_remote,
+        &mut stream.stream_data_blocked_sent,
+    )
+}
+
+fn format_stream_data_blocked_frame_values<'a>(
+    bytes: &'a mut [u8],
+    more_data: &mut i32,
+    is_pure_ack: &mut i32,
+    stream_id: u64,
+    maxdata_remote: u64,
+    stream_data_blocked_sent: &mut bool,
+) -> Option<&'a mut [u8]> {
     let mut off = 0;
     if bytes.is_empty() {
         *more_data = 1;
@@ -19492,14 +19832,14 @@ pub fn format_stream_data_blocked_frame<'a>(
 
     bytes[off] = crate::frames::FrameType::StreamDataBlocked as u8;
     off += 1;
-    if !encode_varint_at(bytes, &mut off, stream.stream_id)
-        || !encode_varint_at(bytes, &mut off, stream.maxdata_remote)
+    if !encode_varint_at(bytes, &mut off, stream_id)
+        || !encode_varint_at(bytes, &mut off, maxdata_remote)
     {
         *more_data = 1;
         Some(bytes)
     } else {
         *is_pure_ack = 0;
-        stream.stream_data_blocked_sent = true;
+        *stream_data_blocked_sent = true;
         Some(&mut bytes[off..])
     }
 }
@@ -19512,7 +19852,23 @@ pub fn format_stream_blocked_frame<'a>(
     is_pure_ack: &mut i32,
     stream: &StreamHead,
 ) -> Option<&'a mut [u8]> {
-    let stream_id = crate::stream::StreamId(stream.stream_id);
+    format_stream_blocked_frame_for_stream_id(
+        connection,
+        bytes,
+        more_data,
+        is_pure_ack,
+        stream.stream_id,
+    )
+}
+
+fn format_stream_blocked_frame_for_stream_id<'a>(
+    connection: &mut Connection,
+    bytes: &'a mut [u8],
+    more_data: &mut i32,
+    is_pure_ack: &mut i32,
+    stream_id: u64,
+) -> Option<&'a mut [u8]> {
+    let stream_id = crate::stream::StreamId(stream_id);
     let (frame_type, stream_limit, should_not_send) = if stream_id.is_bidir() {
         (
             crate::frames::FrameType::StreamsBlockedBidir as u8,
@@ -19553,12 +19909,42 @@ pub fn format_stream_blocked_frame<'a>(
     }
 }
 
-pub fn format_one_blocked_frame<'a>(
+struct BlockedStreamState {
+    stream_id: u64,
+    has_data: bool,
+    sent_offset: u64,
+    maxdata_remote: u64,
+    stream_data_blocked_sent: bool,
+}
+
+impl BlockedStreamState {
+    fn from_stream(stream: &StreamHead) -> Self {
+        let has_data = stream.is_active
+            || stream
+                .send_queue
+                .front()
+                .map(|q| (q.offset as usize) < q.bytes.len())
+                .unwrap_or(false);
+        Self {
+            stream_id: stream.stream_id,
+            has_data,
+            sent_offset: stream.sent_offset,
+            maxdata_remote: stream.maxdata_remote,
+            stream_data_blocked_sent: stream.stream_data_blocked_sent,
+        }
+    }
+
+    fn apply_to_stream(&self, stream: &mut StreamHead) {
+        stream.stream_data_blocked_sent = self.stream_data_blocked_sent;
+    }
+}
+
+fn format_one_blocked_frame_from_state<'a>(
     connection: &mut Connection,
-    bytes: &'a mut [u8],
+    mut bytes: &'a mut [u8],
     more_data: &mut i32,
     is_pure_ack: &mut i32,
-    stream: &mut StreamHead,
+    stream: &mut BlockedStreamState,
 ) -> Option<&'a mut [u8]> {
     let sid = crate::stream::StreamId(stream.stream_id);
     let local_role = if connection.client_mode {
@@ -19566,13 +19952,7 @@ pub fn format_one_blocked_frame<'a>(
     } else {
         crate::stream::Role::Server
     };
-    let has_data = stream.is_active
-        || stream
-            .send_queue
-            .front()
-            .map(|q| (q.offset as usize) < q.bytes.len())
-            .unwrap_or(false);
-    if !has_data {
+    if !stream.has_data {
         return Some(bytes);
     }
 
@@ -19584,40 +19964,109 @@ pub fn format_one_blocked_frame<'a>(
                 connection.max_stream_id_unidir_remote
             }
     {
-        return format_stream_blocked_frame(connection, bytes, more_data, is_pure_ack, stream);
+        return format_stream_blocked_frame_for_stream_id(
+            connection,
+            bytes,
+            more_data,
+            is_pure_ack,
+            stream.stream_id,
+        );
     }
 
     if connection.maxdata_remote <= connection.data_sent && !connection.sent_blocked_frame {
-        return format_data_blocked_frame(connection, bytes, more_data, is_pure_ack);
+        bytes = format_data_blocked_frame(connection, bytes, more_data, is_pure_ack)?;
     }
 
     if stream.sent_offset >= stream.maxdata_remote && !stream.stream_data_blocked_sent {
-        return format_stream_data_blocked_frame(bytes, more_data, is_pure_ack, stream);
+        bytes = format_stream_data_blocked_frame_values(
+            bytes,
+            more_data,
+            is_pure_ack,
+            stream.stream_id,
+            stream.maxdata_remote,
+            &mut stream.stream_data_blocked_sent,
+        )?;
     }
     Some(bytes)
 }
 
-/// Pop the head of a misc/datagram queue, encode it into `bytes`,
-/// and return the remaining write tail.  Replaces the C "splice
-/// the head out of a doubly-linked list" pattern -- the queue is
-/// now a `VecDeque` and the front element is consumed by value.
+fn format_one_blocked_frame_for_token<'a>(
+    connection: &mut Connection,
+    bytes: &'a mut [u8],
+    more_data: &mut i32,
+    is_pure_ack: &mut i32,
+    stream_token: StreamToken,
+) -> Option<&'a mut [u8]> {
+    let Some(mut stream_state) = connection
+        .streams
+        .get(stream_token)
+        .map(BlockedStreamState::from_stream)
+    else {
+        return Some(bytes);
+    };
+
+    let tail = format_one_blocked_frame_from_state(
+        connection,
+        bytes,
+        more_data,
+        is_pure_ack,
+        &mut stream_state,
+    );
+    if let Some(stream) = connection.streams.get_mut(stream_token) {
+        stream_state.apply_to_stream(stream);
+    }
+    tail
+}
+
+pub fn format_one_blocked_frame<'a>(
+    connection: &mut Connection,
+    bytes: &'a mut [u8],
+    more_data: &mut i32,
+    is_pure_ack: &mut i32,
+    stream: &mut StreamHead,
+) -> Option<&'a mut [u8]> {
+    let mut stream_state = BlockedStreamState::from_stream(stream);
+    let tail = format_one_blocked_frame_from_state(
+        connection,
+        bytes,
+        more_data,
+        is_pure_ack,
+        &mut stream_state,
+    );
+    stream_state.apply_to_stream(stream);
+    tail
+}
+
+fn format_misc_or_dg_frame_at<'a>(
+    bytes: &'a mut [u8],
+    more_data: &mut i32,
+    is_pure_ack: &mut i32,
+    queue: &mut VecDeque<MiscFrameHeader>,
+    index: usize,
+) -> Option<&'a mut [u8]> {
+    let frame = queue.get(index)?;
+    let len = frame.bytes.len();
+    if bytes.len() < len {
+        *more_data = 1;
+        return Some(bytes);
+    }
+
+    bytes[..len].copy_from_slice(&frame.bytes);
+    *is_pure_ack &= frame.is_pure_ack;
+    queue.remove(index);
+    Some(&mut bytes[len..])
+}
+
+/// Format the head of a misc/datagram queue into `bytes` and return the
+/// remaining write tail.  Replaces the C "splice the node out of a
+/// doubly-linked list" pattern with removal from a `VecDeque`.
 pub fn format_first_misc_or_dg_frame<'a>(
     bytes: &'a mut [u8],
-    _more_data: &mut i32,
-    _is_pure_ack: &mut i32,
+    more_data: &mut i32,
+    is_pure_ack: &mut i32,
     queue: &mut VecDeque<MiscFrameHeader>,
 ) -> Option<&'a mut [u8]> {
-    // Consume the head of the queue and copy its bytes into the output buffer.
-    let frame = queue.pop_front()?;
-    let len = frame.bytes.len();
-    if bytes.len() >= len {
-        bytes[..len].copy_from_slice(&frame.bytes);
-        Some(&mut bytes[len..])
-    } else {
-        // Frame doesn't fit — put it back and return None.
-        queue.push_front(frame);
-        None
-    }
+    format_misc_or_dg_frame_at(bytes, more_data, is_pure_ack, queue, 0)
 }
 
 impl Connection {
@@ -19640,31 +20089,67 @@ pub fn format_misc_frames_in_context<'a>(
     is_pure_ack: &mut i32,
     pc: PacketContext,
 ) -> Option<&'a mut [u8]> {
-    // Drain all misc frames whose packet_context matches pc into bytes.
     let mut remaining = bytes;
-    loop {
-        let front_matches = connection
-            .misc_frames
-            .front()
-            .map(|f| f.packet_context == pc)
-            .unwrap_or(false);
-        if !front_matches {
-            break;
-        }
-        remaining = format_first_misc_or_dg_frame(
+    while let Some(index) = connection
+        .misc_frames
+        .iter()
+        .position(|frame| frame.packet_context == pc)
+    {
+        let before = remaining.len();
+        let frame_is_pure_ack = connection.misc_frames[index].is_pure_ack;
+        remaining = format_misc_or_dg_frame_at(
             remaining,
             more_data,
             is_pure_ack,
             &mut connection.misc_frames,
+            index,
         )?;
+        if remaining.len() >= before {
+            break;
+        }
+        *is_pure_ack &= frame_is_pure_ack;
     }
     Some(remaining)
 }
 
 impl Connection {
+    fn reinsert_self_by_wake_time(&mut self, next_time: Instant) {
+        self.next_wake_time = next_time;
+
+        let Some(token) = self.own_token else {
+            return;
+        };
+        let old_membership = self.connection_wake_membership.take();
+        let mut next_membership = old_membership;
+
+        if let Some(quic) = self.quic_mut()
+            && quic.connections.contains(token)
+        {
+            if let Some(old_membership) = old_membership {
+                quic.connection_wake_tree.remove(old_membership);
+            }
+            next_membership = None;
+            if let Ok((tree_token, old_token)) =
+                quic.connection_wake_tree.insert(next_time.ticks(), token)
+            {
+                next_membership = Some(tree_token);
+                if let Some(old_token) = old_token
+                    && old_token != token
+                    && let Some(old_connection) = quic.connections.get_mut(old_token)
+                {
+                    old_connection.connection_wake_membership = None;
+                }
+            }
+        }
+
+        self.connection_wake_membership = next_membership;
+    }
+
     /// Push a fresh misc/datagram frame onto `queue`.  C took two
     /// `*mut *mut MiscFrameHeader` head/tail out-pointers; the Rust
     /// shape just takes the queue and pushes at the back.
+    ///
+    /// C: `picoquic_queue_misc_or_dg_frame` (`quicctx.c:4818-4842`).
     pub fn queue_misc_or_dg_frame(
         &mut self,
         queue: &mut VecDeque<MiscFrameHeader>,
@@ -19672,21 +20157,20 @@ impl Connection {
         is_pure_ack: bool,
         pc: PacketContext,
     ) -> Result<(), crate::Error> {
-        queue.push_back(MiscFrameHeader {
-            bytes: bytes.to_vec(),
-            packet_context: pc,
-            is_pure_ack: if is_pure_ack { 1 } else { 0 },
-        });
+        let misc_frame = create_misc_frame(bytes, is_pure_ack, pc)?;
+        queue.try_reserve(1).map_err(|_| crate::Error::Memory)?;
+        queue.push_back(misc_frame);
+        if let Some(wake_time) = self.quic_ref().map(|quic| Instant::from_ticks(quic.time())) {
+            self.reinsert_self_by_wake_time(wake_time);
+        }
         Ok(())
     }
 }
 
 impl Connection {
     pub fn purge_misc_frames_after_ready(&mut self) {
-        if self.connection_state == State::Ready {
-            self.misc_frames
-                .retain(|frame| frame.packet_context == PacketContext::Application);
-        }
+        self.misc_frames
+            .retain(|frame| frame.packet_context == PacketContext::Application);
     }
 }
 
@@ -19697,24 +20181,9 @@ pub fn delete_misc_or_dg(queue: &mut VecDeque<MiscFrameHeader>, index: usize) {
 }
 
 impl AckContext {
-    /// Reset to an all-zero initial state.  C: `picoquic_clear_ack_ctx`.
+    /// Clear stored ACK ranges.  C: `picoquic_clear_ack_ctx`.
     pub fn clear_ack_ctx(&mut self) {
         self.sack_list.free();
-        self.time_stamp_largest_received = crate::Instant::from_ticks(0);
-        self.crypto_rotation_sequence = 0;
-        self.ecn_ect0_total_local = 0;
-        self.ecn_ect1_total_local = 0;
-        self.ecn_ce_total_local = 0;
-        self.sending_ecn_ack = false;
-        for act in &mut self.act {
-            act.highest_ack_sent = 0;
-            act.highest_ack_sent_time = crate::Instant::from_ticks(0);
-            act.time_oldest_unack_packet_received = crate::Instant::from_ticks(0);
-            act.ack_needed = false;
-            act.ack_after_fin = false;
-            act.out_of_order_received = false;
-            act.is_immediate_ack_required = false;
-        }
     }
 }
 
@@ -19722,6 +20191,10 @@ impl AckContext {
     /// Reset to ready-to-receive state.  C: `picoquic_reset_ack_context`.
     pub fn reset_ack_context(&mut self) {
         self.clear_ack_ctx();
+        self.sack_list.init();
+        self.ecn_ect0_total_local = 0;
+        self.ecn_ect1_total_local = 0;
+        self.ecn_ce_total_local = 0;
     }
 }
 
@@ -19761,41 +20234,97 @@ pub fn format_datagram_frame<'a>(
     Some(&mut bytes[off..])
 }
 
+fn format_first_datagram_frame_from_queue<'a>(
+    queue: &mut VecDeque<MiscFrameHeader>,
+    bytes: &'a mut [u8],
+    is_first_in_packet: i32,
+    more_data: &mut i32,
+    is_pure_ack: &mut i32,
+) -> Option<(&'a mut [u8], Option<usize>)> {
+    let frame_length = queue.front()?.bytes.len();
+    if bytes.len() >= frame_length {
+        let frame_is_pure_ack = {
+            let frame = queue.front()?;
+            bytes[..frame_length].copy_from_slice(&frame.bytes);
+            frame.is_pure_ack
+        };
+        *is_pure_ack &= frame_is_pure_ack;
+        queue.pop_front();
+        return Some((&mut bytes[frame_length..], None));
+    }
+
+    let is_sent = {
+        let frame = queue.front()?;
+        if frame.bytes.first().copied() == Some(crate::frames::FrameType::DatagramL as u8) {
+            let header_length = 1 + varint_skip(&frame.bytes[1..]);
+            if header_length <= frame.bytes.len() {
+                let data_length = frame.bytes.len() - header_length;
+                let min_length = data_length + 1;
+                if bytes.len() >= min_length {
+                    let padding_length = bytes.len() - min_length;
+                    bytes[..padding_length].fill(crate::frames::FrameType::Padding as u8);
+                    bytes[padding_length] = crate::frames::FrameType::Datagram as u8;
+                    bytes[padding_length + 1..].copy_from_slice(&frame.bytes[header_length..]);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    if is_sent {
+        queue.pop_front();
+        *more_data |= i32::from(!queue.is_empty());
+        let used = bytes.len();
+        return Some((&mut bytes[used..], None));
+    }
+
+    let dropped_length = if is_first_in_packet != 0 {
+        let dropped_length = queue.front().map(|frame| frame.bytes.len());
+        queue.pop_front();
+        dropped_length
+    } else {
+        None
+    };
+
+    *more_data |= i32::from(!queue.is_empty());
+    Some((bytes, dropped_length))
+}
+
 pub fn format_first_datagram_frame<'a>(
     connection: &mut Connection,
     bytes: &'a mut [u8],
-    _is_first_in_packet: i32,
+    is_first_in_packet: i32,
     more_data: &mut i32,
     is_pure_ack: &mut i32,
 ) -> Option<&'a mut [u8]> {
-    let frame = connection.datagrams.pop_front()?;
-    if frame.bytes.first().is_some_and(|b| {
-        *b == crate::frames::FrameType::Datagram as u8
-            || *b == crate::frames::FrameType::DatagramL as u8
-    }) {
-        let len = frame.bytes.len();
-        if bytes.len() < len {
-            connection.datagrams.push_front(frame);
-            *more_data = 1;
-            return Some(bytes);
-        }
-        bytes[..len].copy_from_slice(&frame.bytes);
-        *is_pure_ack = 0;
-        return Some(&mut bytes[len..]);
+    let available = bytes.len();
+    let (tail, dropped_length) = format_first_datagram_frame_from_queue(
+        &mut connection.datagrams,
+        bytes,
+        is_first_in_packet,
+        more_data,
+        is_pure_ack,
+    )?;
+    if let Some(dropped_length) = dropped_length {
+        let send_mtu = connection
+            .paths
+            .first()
+            .map(|path| path.send_mtu)
+            .unwrap_or(0);
+        crate::logger::Log::app_message(
+            connection,
+            format_args!(
+                "Deleting datagram length {}, larger than {}, MTU {}",
+                dropped_length, available, send_mtu
+            ),
+        );
     }
-    let mut off = 0;
-    if !encode_varint_at(bytes, &mut off, crate::frames::FrameType::DatagramL as u64)
-        || !encode_varint_at(bytes, &mut off, frame.bytes.len() as u64)
-        || bytes.len() < off + frame.bytes.len()
-    {
-        connection.datagrams.push_front(frame);
-        *more_data = 1;
-        return Some(bytes);
-    }
-    bytes[off..off + frame.bytes.len()].copy_from_slice(&frame.bytes);
-    off += frame.bytes.len();
-    *is_pure_ack = 0;
-    Some(&mut bytes[off..])
+    Some(tail)
 }
 
 pub fn format_ready_datagram_frame<'a>(
@@ -19807,20 +20336,90 @@ pub fn format_ready_datagram_frame<'a>(
     ret: &mut i32,
 ) -> Option<&'a mut [u8]> {
     *ret = 0;
-    if !connection.is_datagram_ready && !path_x.is_datagram_ready && connection.datagrams.is_empty()
+
+    let mut header_len = 0;
+    if !encode_varint_at(
+        bytes,
+        &mut header_len,
+        crate::frames::FrameType::DatagramL as u64,
+    ) || bytes.len().saturating_sub(header_len) < 16
     {
+        *more_data = 1;
         return Some(bytes);
     }
-    if connection.datagrams.is_empty() {
-        connection.is_datagram_ready = false;
-        path_x.is_datagram_ready = false;
+
+    let allowed_space = bytes
+        .len()
+        .saturating_sub(header_len)
+        .min(connection.remote_parameters.max_datagram_frame_size as usize);
+    let callback_stream_id = if connection.are_path_callbacks_enabled {
+        path_x.unique_path_id
+    } else {
+        0
+    };
+    let connection_datagram_ready_before_callback = connection.is_datagram_ready;
+    let path_datagram_ready_before_callback = path_x.is_datagram_ready;
+    let mut datagram_context = DatagramBufferArgument::new(
+        allowed_space,
+        connection_datagram_ready_before_callback,
+        path_datagram_ready_before_callback,
+    );
+    let callback_bytes = vec![0u8; allowed_space];
+
+    let callback_ret = if let Some(mut callback) = connection.callback_fn.take() {
+        let ret = callback.callback(
+            connection,
+            callback_stream_id,
+            &callback_bytes,
+            CallbackEvent::PrepareDatagram,
+            Some(&mut datagram_context),
+        );
+        connection.callback_fn = Some(callback);
+        ret
+    } else {
+        0
+    };
+
+    if datagram_context.was_called != 0 && datagram_context.is_old_api == 0 {
+        // C updates these flags inside picoquic_provide_datagram_buffer_ex().
+        // The safe Rust callback shape carries the buffer context separately,
+        // so apply the provider result after the callback without clobbering
+        // explicit readiness changes the callback made later.
+        if connection.is_datagram_ready == connection_datagram_ready_before_callback {
+            connection.is_datagram_ready = datagram_context.connection_is_datagram_ready;
+        }
+        if path_x.is_datagram_ready == path_datagram_ready_before_callback {
+            path_x.is_datagram_ready = datagram_context.path_is_datagram_ready;
+        }
+    }
+
+    if callback_ret != 0 {
+        crate::logger::Log::app_message(
+            connection,
+            format_args!(
+                "Prepare datagram returns error 0x{:x}",
+                crate::errors::TransportError::InternalError as u64
+            ),
+        );
+        *ret = connection.connection_error(crate::errors::TransportError::InternalError as u64, 0);
         return Some(bytes);
     }
-    let tail = format_first_datagram_frame(connection, bytes, 0, more_data, is_pure_ack)?;
-    if connection.datagrams.is_empty() {
-        connection.is_datagram_ready = false;
-        path_x.is_datagram_ready = false;
+
+    let sent_length = datagram_context.length;
+    let use_connection_readiness =
+        datagram_context.is_old_api != 0 || datagram_context.was_called == 0;
+    let more_data_flag = if use_connection_readiness {
+        connection.is_datagram_ready
+    } else {
+        datagram_context.is_active != 0
+    };
+    let tail = datagram_context.format_into(bytes, header_len)?;
+
+    if sent_length > 0 {
+        *is_pure_ack = 0;
     }
+    *more_data |= i32::from(more_data_flag);
+
     Some(tail)
 }
 
@@ -19969,27 +20568,52 @@ impl Connection {
 }
 
 pub fn format_bdp_frame<'a>(
-    _connection: &mut Connection,
+    connection: &mut Connection,
     bytes: &'a mut [u8],
     path_x: &mut Path,
     more_data: &mut i32,
     is_pure_ack: &mut i32,
 ) -> Option<&'a mut [u8]> {
-    let recon_bytes_in_flight = if path_x.cwin_remote > 0 {
-        path_x.cwin_remote
+    let mut recon_bytes_in_flight = 0;
+    let mut recon_min_rtt = 0;
+    let mut ip_addr = [0u8; 16];
+    let mut ip_len = 0usize;
+
+    if !connection.client_mode {
+        let issued_ticket_id = connection.issued_ticket_id;
+        if path_x.is_ticket_seeded
+            && !path_x.is_bdp_sent
+            && let Some(server_ticket) = connection
+                .quic_mut()
+                .and_then(|quic| quic.retrieve_issued_ticket(issued_ticket_id))
+            && server_ticket.cwin > 0
+        {
+            recon_bytes_in_flight = server_ticket.cwin;
+            recon_min_rtt = server_ticket.rtt.ticks();
+            (ip_addr, ip_len) = ip_addr_wire_bytes(server_ticket.ip_addr);
+        }
     } else {
-        path_x.cwin
-    };
+        let sni = connection.sni.clone();
+        let alpn = connection.alpn.clone();
+        let version = supported_version_from_index(connection.version_index)
+            .map(|version| version as u32)
+            .unwrap_or(connection.proposed_version);
+
+        if let Some(stored_ticket) = connection.quic_mut().and_then(|quic| {
+            quic.get_stored_ticket(sni.as_deref(), alpn.as_deref(), version, true, 0)
+        }) {
+            use crate::tp::TransportParameter0RttKind::{CwinRemote, RttRemote};
+
+            recon_bytes_in_flight = stored_ticket.tp_0rtt[CwinRemote as usize];
+            recon_min_rtt = stored_ticket.tp_0rtt[RttRemote as usize];
+            (ip_addr, ip_len) = ip_addr_wire_bytes(stored_ticket.ip_addr_client);
+        }
+    }
+
     if recon_bytes_in_flight == 0 {
         return Some(bytes);
     }
-    let recon_min_rtt = if path_x.rtt_min_remote.ticks() > 0 {
-        path_x.rtt_min_remote.ticks()
-    } else {
-        path_x.rtt_min.ticks()
-    };
-    let ip_len = path_x.ip_client_remote_length as usize;
-    let lifetime = TOKEN_DELAY_LONG.ticks();
+    let lifetime = 24u64 * 3600 * 1_000_000;
     let mut off = 0;
     for value in [
         crate::frames::FrameType::Bdp as u64,
@@ -20007,7 +20631,7 @@ pub fn format_bdp_frame<'a>(
         *more_data = 1;
         return Some(bytes);
     }
-    bytes[off..off + ip_len].copy_from_slice(&path_x.ip_client_remote[..ip_len]);
+    bytes[off..off + ip_len].copy_from_slice(&ip_addr[..ip_len]);
     off += ip_len;
     *is_pure_ack = 0;
     path_x.is_bdp_sent = true;
@@ -20135,12 +20759,12 @@ pub fn picoquic_queue_path_cid_blocked_frame(
     )
     .ok_or(crate::Error::BufferTooSmall)?;
     let consumed = frame_len - bytes_next.len();
-    encode_misc_frame(
+    queue_misc_frame(
         connection,
-        frame_buffer[..consumed].to_vec(),
+        &frame_buffer[..consumed],
         false,
         PacketContext::Application,
-    );
+    )?;
     path_x.sending_path_cid_blocked_frame = true;
     Ok(())
 }
@@ -20171,7 +20795,1182 @@ impl Connection {
     }
 }
 
+#[derive(Copy, Clone)]
+enum DecodeAckSelection {
+    Connection(PacketContext),
+    CurrentPath,
+    StoredPath(usize),
+}
+
 impl Connection {
+    fn decode_frame_failure(&mut self, frame_type: u64) -> i32 {
+        if self.local_error != 0 {
+            self.local_error as i32
+        } else {
+            self.connection_error(
+                crate::errors::TransportError::FrameFormatError as u64,
+                frame_type,
+            )
+        }
+    }
+
+    fn stream_state_error(&mut self, frame_type: u64) -> Option<&'static [u8]> {
+        self.connection_error(
+            crate::errors::TransportError::StreamStateError as u64,
+            frame_type,
+        );
+        None
+    }
+
+    fn decode_reset_stream_frame<'a>(
+        &mut self,
+        frame_start: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        let mut stream_id = 0;
+        let mut error_code = 0;
+        let mut final_offset = 0;
+        let tail = Self::decode_varint_after_one_byte_type(frame_start, &mut stream_id)
+            .and_then(|tail| frames_varint_decode(tail, &mut error_code))
+            .and_then(|tail| frames_varint_decode(tail, &mut final_offset))?;
+        picoquic_apply_reset_stream_frame(
+            self,
+            tail,
+            error_code,
+            stream_id,
+            final_offset,
+            final_offset,
+        )
+        .or_else(|| {
+            if self.local_error == 0 {
+                self.connection_error(
+                    crate::errors::TransportError::FrameFormatError as u64,
+                    frame_type,
+                );
+            }
+            None
+        })
+    }
+
+    fn decode_reset_stream_at_frame<'a>(
+        &mut self,
+        frame_start: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.is_reset_stream_at_enabled && !self.remote_parameters.is_reset_stream_at_enabled {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut stream_id = 0;
+        let mut error_code = 0;
+        let mut final_offset = 0;
+        let mut reliable_size = 0;
+        let tail = Self::decode_varint_after_one_byte_type(frame_start, &mut stream_id)
+            .and_then(|tail| frames_varint_decode(tail, &mut error_code))
+            .and_then(|tail| frames_varint_decode(tail, &mut final_offset))
+            .and_then(|tail| frames_varint_decode(tail, &mut reliable_size))?;
+        if reliable_size > final_offset {
+            self.connection_error(
+                crate::errors::TransportError::FrameFormatError as u64,
+                frame_type,
+            );
+            return None;
+        }
+        picoquic_apply_reset_stream_frame(
+            self,
+            tail,
+            error_code,
+            stream_id,
+            final_offset,
+            reliable_size,
+        )
+    }
+
+    fn decode_stop_sending_frame<'a>(
+        &mut self,
+        frame_start: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        use crate::stream::{Role, StreamId};
+
+        let mut stream_id = 0;
+        let mut error_code = 0;
+        let tail = Self::decode_varint_after_one_byte_type(frame_start, &mut stream_id)
+            .and_then(|tail| frames_varint_decode(tail, &mut error_code))?;
+        let local_role = if self.client_mode {
+            Role::Client
+        } else {
+            Role::Server
+        };
+        let sid = StreamId(stream_id);
+        if !sid.is_bidir() && !sid.is_local(local_role) {
+            return self.stream_state_error(frame_type);
+        }
+        let stream_token = self
+            .find_stream(stream_id)
+            .map(Ok)
+            .unwrap_or_else(|| self.create_missing_streams(stream_id, true))
+            .ok()?;
+        let (should_callback, mut app_ctx) = {
+            let stream = self.streams.get_mut(stream_token)?;
+            stream.remote_stop_error = error_code;
+            stream.stop_sending_received = true;
+            (self.callback_fn.is_some(), stream.app_stream_ctx.take())
+        };
+        if should_callback && let Some(mut callback) = self.callback_fn.take() {
+            let ret = callback.callback(
+                self,
+                stream_id,
+                &[],
+                CallbackEvent::StopSending,
+                app_ctx.as_deref_mut(),
+            );
+            self.callback_fn = Some(callback);
+            if ret != 0 {
+                self.connection_error(
+                    crate::errors::TransportError::InternalError as u64,
+                    frame_type,
+                );
+                return None;
+            }
+        }
+        if let Some(stream) = self.streams.get_mut(stream_token) {
+            stream.app_stream_ctx = app_ctx;
+        }
+        Some(tail)
+    }
+
+    fn decode_max_data_frame<'a>(&mut self, frame_start: &'a [u8]) -> Option<&'a [u8]> {
+        let mut maxdata = 0;
+        let tail = Self::decode_varint_after_one_byte_type(frame_start, &mut maxdata)?;
+        if maxdata > self.maxdata_remote {
+            self.maxdata_remote = maxdata;
+            self.sent_blocked_frame = false;
+        }
+        Some(tail)
+    }
+
+    fn decode_max_stream_data_frame<'a>(
+        &mut self,
+        frame_start: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        use crate::stream::{Role, StreamId};
+
+        let mut stream_id = 0;
+        let mut maxdata = 0;
+        let tail = Self::decode_varint_after_one_byte_type(frame_start, &mut stream_id)
+            .and_then(|tail| frames_varint_decode(tail, &mut maxdata))?;
+        let local_role = if self.client_mode {
+            Role::Client
+        } else {
+            Role::Server
+        };
+        let sid = StreamId(stream_id);
+        if !sid.is_bidir() && !sid.is_local(local_role) {
+            return self.stream_state_error(frame_type);
+        }
+        let stream_token = self
+            .find_stream(stream_id)
+            .map(Ok)
+            .unwrap_or_else(|| self.create_missing_streams(stream_id, true))
+            .ok()?;
+        if let Some(stream) = self.streams.get_mut(stream_token)
+            && maxdata > stream.maxdata_remote
+        {
+            stream.maxdata_remote = maxdata;
+            self.max_stream_data_remote = self.max_stream_data_remote.max(maxdata);
+            stream.stream_data_blocked_sent = false;
+            if !stream.is_output_stream
+                && (!stream.send_queue.is_empty() || (stream.fin_requested && !stream.fin_sent))
+            {
+                stream.is_output_stream = true;
+                self.enqueue_output_stream_token(stream_token);
+            }
+        }
+        Some(tail)
+    }
+
+    fn decode_max_streams_frame<'a>(
+        &mut self,
+        frame_start: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        let mut rank = 0;
+        let tail = Self::decode_varint_after_one_byte_type(frame_start, &mut rank)?;
+        if rank == 0 || rank > (1u64 << 60) {
+            self.connection_error(
+                crate::errors::TransportError::FrameFormatError as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let is_unidir = frame_type == crate::frames::FrameType::MaxStreamsUnidir as u64;
+        let new_limit = self.stream_id_from_rank_for_local_role(rank, is_unidir);
+        if is_unidir {
+            if new_limit > self.max_stream_id_unidir_remote {
+                let old_limit = self.max_stream_id_unidir_remote;
+                self.max_stream_id_unidir_remote = new_limit;
+                self.stream_blocked_unidir_sent = false;
+                self.add_output_streams(old_limit, new_limit, true);
+            }
+        } else if new_limit > self.max_stream_id_bidir_remote {
+            let old_limit = self.max_stream_id_bidir_remote;
+            self.max_stream_id_bidir_remote = new_limit;
+            self.stream_blocked_bidir_sent = false;
+            self.add_output_streams(old_limit, new_limit, false);
+        }
+        Some(tail)
+    }
+
+    fn decode_blocked_frame<'a>(&mut self, frame_start: &'a [u8]) -> Option<&'a [u8]> {
+        let mut ignored = 0;
+        Self::decode_varint_after_one_byte_type(frame_start, &mut ignored)
+    }
+
+    fn decode_stream_blocked_frame<'a>(
+        &mut self,
+        frame_start: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        use crate::stream::{Role, StreamId};
+
+        let mut stream_id = 0;
+        let mut ignored = 0;
+        let tail = Self::decode_varint_after_one_byte_type(frame_start, &mut stream_id)
+            .and_then(|tail| frames_varint_decode(tail, &mut ignored))?;
+        let local_role = if self.client_mode {
+            Role::Client
+        } else {
+            Role::Server
+        };
+        let sid = StreamId(stream_id);
+        if !sid.is_bidir() && sid.is_local(local_role) {
+            return self.stream_state_error(frame_type);
+        }
+        Some(tail)
+    }
+
+    fn decode_streams_blocked_frame<'a>(
+        &mut self,
+        frame_start: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        let mut stream_limit = 0;
+        let tail = Self::decode_varint_after_one_byte_type(frame_start, &mut stream_limit)?;
+        let allowed = if frame_type == crate::frames::FrameType::StreamsBlockedUnidir as u64 {
+            crate::stream::StreamId(self.max_stream_id_unidir_remote).rank()
+        } else {
+            crate::stream::StreamId(self.max_stream_id_bidir_remote).rank()
+        };
+        if stream_limit > allowed {
+            self.connection_error(
+                crate::errors::TransportError::StreamLimitError as u64,
+                frame_type,
+            );
+            return None;
+        }
+        Some(tail)
+    }
+
+    fn decode_new_connection_id_frame<'a>(
+        &mut self,
+        frame_start: &'a [u8],
+        current_time: Instant,
+        is_mp: bool,
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if is_mp && !self.is_multipath_enabled {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut ignored_type = 0;
+        let mut tail = frames_varint_decode(frame_start, &mut ignored_type)?;
+        let mut unique_path_id = 0;
+        if is_mp {
+            tail = frames_varint_decode(tail, &mut unique_path_id)?;
+            if unique_path_id > self.max_path_id_local {
+                self.connection_error(
+                    crate::errors::TransportError::ProtocolViolation as u64,
+                    frame_type,
+                );
+                return None;
+            }
+        }
+        let mut sequence = 0;
+        let mut retire_before = 0;
+        tail = frames_varint_decode(tail, &mut sequence)?;
+        tail = frames_varint_decode(tail, &mut retire_before)?;
+        if retire_before > sequence {
+            self.connection_error(
+                crate::errors::TransportError::FrameFormatError as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let (&cid_len, after_len) = tail.split_first()?;
+        let cid_len = cid_len as usize;
+        if cid_len > crate::CONNECTION_ID_MAX_SIZE || after_len.len() < cid_len + RESET_SECRET_SIZE
+        {
+            self.connection_error(
+                crate::errors::TransportError::FrameFormatError as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let cid = &after_len[..cid_len];
+        let secret = &after_len[cid_len..cid_len + RESET_SECRET_SIZE];
+        let status = self
+            .stash_remote_connection_id(retire_before, unique_path_id, sequence, cid, secret)
+            .status;
+        if status != 0 {
+            self.connection_error(status, frame_type);
+            return None;
+        }
+        if let Some(stash_idx) =
+            self.find_or_create_remote_connection_id_stash(unique_path_id, false)
+            && self.remote_connection_id_stashes[stash_idx].retire_connection_id_before
+                < retire_before
+        {
+            self.remote_connection_id_stashes[stash_idx].retire_connection_id_before =
+                retire_before;
+            self.remove_not_before_cid(unique_path_id, retire_before, current_time);
+        }
+        Some(&after_len[cid_len + RESET_SECRET_SIZE..])
+    }
+
+    fn decode_retire_connection_id_frame<'a>(
+        &mut self,
+        frame_start: &'a [u8],
+        path_x: &mut Path,
+        is_mp: bool,
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if is_mp && !self.is_multipath_enabled {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut ignored_type = 0;
+        let mut tail = frames_varint_decode(frame_start, &mut ignored_type)?;
+        let mut unique_path_id = 0;
+        if is_mp {
+            tail = frames_varint_decode(tail, &mut unique_path_id)?;
+        }
+        let mut sequence = 0;
+        tail = frames_varint_decode(tail, &mut sequence)?;
+        let current_sequence = path_x
+            .tuples
+            .first()
+            .and_then(|tuple| tuple.local_connection_id)
+            .and_then(|tok| self.local_connection_ids.get(tok))
+            .map(|cid| cid.sequence);
+        if current_sequence == Some(sequence) && unique_path_id == path_x.unique_path_id {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        self.retire_local_cnxid(unique_path_id, sequence);
+        Some(tail)
+    }
+
+    fn decode_path_challenge_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        path_x: &mut Path,
+        path_is_not_allocated: i32,
+    ) -> Option<&'a [u8]> {
+        if after_type.len() < 8 {
+            return None;
+        }
+        if path_is_not_allocated == 0
+            && let Some(tuple) = path_x.tuples.first_mut()
+        {
+            tuple.challenge_response = parse_64(&after_type[..8]);
+            tuple.response_required = true;
+        }
+        Some(&after_type[8..])
+    }
+
+    fn decode_path_response_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        path_x: &mut Path,
+        path_is_not_allocated: i32,
+    ) -> Option<&'a [u8]> {
+        if after_type.len() < 8 {
+            return None;
+        }
+        if path_is_not_allocated == 0 {
+            let response = parse_64(&after_type[..8]);
+            for tuple in &mut path_x.tuples {
+                if tuple.challenge.contains(&response) {
+                    tuple.challenge_verified = true;
+                    tuple.challenge_required = false;
+                    tuple.challenge_failed = false;
+                }
+            }
+        }
+        Some(&after_type[8..])
+    }
+
+    fn decode_connection_close_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        is_application_close: bool,
+    ) -> Option<&'a [u8]> {
+        let mut error_code = 0;
+        let mut tail = frames_varint_decode(after_type, &mut error_code)?;
+        if !is_application_close {
+            let mut offending_frame = 0;
+            tail = frames_varint_decode(tail, &mut offending_frame)?;
+            self.offending_frame_type = offending_frame;
+        }
+        let mut reason_len = 0;
+        tail = frames_varint_decode(tail, &mut reason_len)?;
+        let reason_len = reason_len as usize;
+        if tail.len() < reason_len {
+            return None;
+        }
+        if is_application_close {
+            self.remote_application_error = error_code;
+        } else {
+            self.remote_error = error_code;
+        }
+        self.remote_error_reason = Some(String::from_utf8_lossy(&tail[..reason_len]).into_owned());
+        self.connection_state = State::ClosingReceived;
+        Some(&tail[reason_len..])
+    }
+
+    fn decode_new_token_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.client_mode {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut token_len = 0;
+        let tail = frames_varint_decode(after_type, &mut token_len)?;
+        let token_len = token_len as usize;
+        if tail.len() < token_len {
+            return None;
+        }
+        self.retry_token.clear();
+        self.retry_token.extend_from_slice(&tail[..token_len]);
+        Some(&tail[token_len..])
+    }
+
+    fn decode_handshake_done_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        current_time: Instant,
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.client_mode || self.connection_state < State::ClientReadyStart {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        if self.connection_state == State::ClientReadyStart {
+            self.ready_state_transition(current_time);
+        }
+        Some(after_type)
+    }
+
+    fn decode_datagram_frame<'a>(
+        &mut self,
+        path_x: &mut Path,
+        frame_start: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        let mut frame_id = 0;
+        let mut length = 0;
+        let payload = decode_datagram_frame_header(frame_start, &mut frame_id, &mut length)?;
+        let length = length as usize;
+        if self.local_parameters.max_datagram_frame_size == 0
+            || length > self.local_parameters.max_datagram_frame_size as usize
+        {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let content = &payload[..length];
+        let callback_stream_id = if self.are_path_callbacks_enabled {
+            path_x.unique_path_id
+        } else {
+            0
+        };
+        if let Some(mut callback) = self.callback_fn.take() {
+            let ret = callback.callback(
+                self,
+                callback_stream_id,
+                content,
+                CallbackEvent::Datagram,
+                None,
+            );
+            self.callback_fn = Some(callback);
+            if ret != 0 {
+                self.connection_error(
+                    crate::errors::TransportError::InternalError as u64,
+                    frame_type,
+                );
+                return None;
+            }
+        }
+        Some(&payload[length..])
+    }
+
+    fn decode_ack_frequency_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        let mut sequence = 0;
+        let mut packets = 0;
+        let mut microsec = 0;
+        let mut ignore_order = 0;
+        let mut reordering_threshold = 0;
+        let tail = parse_ack_frequency_frame(
+            after_type,
+            &mut sequence,
+            &mut packets,
+            &mut microsec,
+            &mut ignore_order,
+            &mut reordering_threshold,
+        )?;
+        if !self.is_ack_frequency_negotiated
+            || packets == 0
+            || microsec < self.local_parameters.min_ack_delay.ticks()
+        {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        if sequence > self.ack_frequency_sequence_remote {
+            self.ack_frequency_sequence_remote = sequence;
+            self.ack_gap_remote = packets;
+            self.ack_delay_remote = Duration::from_ticks(microsec);
+            self.ack_ignore_order_remote = ignore_order != 0;
+            self.ack_reordering_threshold_remote = reordering_threshold;
+            self.max_ack_gap_remote = self.max_ack_gap_remote.max(packets);
+            self.max_ack_delay_remote = self
+                .max_ack_delay_remote
+                .max(Duration::from_ticks(microsec));
+            self.min_ack_delay_remote = self
+                .min_ack_delay_remote
+                .min(Duration::from_ticks(microsec));
+        }
+        Some(tail)
+    }
+
+    fn decode_immediate_ack_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        path_x: &mut Path,
+        current_time: Instant,
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.is_ack_frequency_negotiated {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        self.is_immediate_ack_required = true;
+        self.set_ack_needed(current_time, PacketContext::Application, path_x, 1);
+        Some(after_type)
+    }
+
+    fn decode_time_stamp_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        packet_data: &mut PacketData,
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.is_time_stamp_enabled {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut time_stamp = 0;
+        let tail = frames_varint_decode(after_type, &mut time_stamp)?;
+        let shifted = time_stamp
+            .checked_shl(self.remote_parameters.ack_delay_exponent as u32)
+            .unwrap_or(0);
+        packet_data.last_time_stamp_received = Instant::from_ticks(shifted);
+        Some(tail)
+    }
+
+    fn decode_path_abandon_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        path_x: &mut Path,
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.is_multipath_enabled {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut path_id = 0;
+        let mut reason = 0;
+        let tail = frames_varint_decode(after_type, &mut path_id)
+            .and_then(|tail| frames_varint_decode(tail, &mut reason))?;
+        if path_id == path_x.unique_path_id {
+            path_x.path_abandon_received = true;
+        } else if let Some(path) = self
+            .paths
+            .iter_mut()
+            .find(|path| path.unique_path_id == path_id)
+        {
+            path.path_abandon_received = true;
+        }
+        let _ = reason;
+        Some(tail)
+    }
+
+    fn decode_path_available_or_backup_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        path_x: &mut Path,
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.is_multipath_enabled {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut path_id = 0;
+        let mut sequence = 0;
+        let tail = frames_varint_decode(after_type, &mut path_id)
+            .and_then(|tail| frames_varint_decode(tail, &mut sequence))?;
+        let is_backup = frame_type == crate::frames::FrameType::PathBackup as u64;
+        if path_id == path_x.unique_path_id {
+            if sequence >= path_x.status_sequence_to_receive_next {
+                path_x.status_sequence_to_receive_next = sequence.saturating_add(1);
+                path_x.path_is_backup = is_backup;
+            }
+        } else if let Some(path) = self
+            .paths
+            .iter_mut()
+            .find(|path| path.unique_path_id == path_id)
+            && sequence >= path.status_sequence_to_receive_next
+        {
+            path.status_sequence_to_receive_next = sequence.saturating_add(1);
+            path.path_is_backup = is_backup;
+        }
+        Some(tail)
+    }
+
+    fn decode_max_path_id_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.is_multipath_enabled {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut max_path_id = 0;
+        let tail = frames_varint_decode(after_type, &mut max_path_id)?;
+        if max_path_id > self.max_path_id_remote {
+            self.max_path_id_remote = max_path_id;
+        }
+        Some(tail)
+    }
+
+    fn decode_paths_blocked_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.is_multipath_enabled {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut ignored = 0;
+        frames_varint_decode(after_type, &mut ignored)
+    }
+
+    fn decode_path_cid_blocked_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.is_multipath_enabled {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut path_id = 0;
+        let mut sequence = 0;
+        let tail = frames_varint_decode(after_type, &mut path_id)
+            .and_then(|tail| frames_varint_decode(tail, &mut sequence))?;
+        let _ = (path_id, sequence);
+        Some(tail)
+    }
+
+    fn decode_bdp_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        path_x: &mut Path,
+        current_time: Instant,
+        addr_from: Option<&SocketAddr>,
+    ) -> Option<&'a [u8]> {
+        let mut lifetime = 0;
+        let mut cwin = 0;
+        let mut rtt = 0;
+        let mut ip_len = 0;
+        let mut tail = frames_varint_decode(after_type, &mut lifetime)?;
+        tail = frames_varint_decode(tail, &mut cwin)?;
+        tail = frames_varint_decode(tail, &mut rtt)?;
+        tail = frames_varint_decode(tail, &mut ip_len)?;
+        let ip_len = ip_len as usize;
+        if ip_len != 0 && ip_len != 4 && ip_len != 16 || tail.len() < ip_len {
+            return None;
+        }
+        if self.client_mode {
+            path_x.cwin_remote = cwin;
+            path_x.rtt_min_remote = Duration::from_ticks(rtt);
+            path_x.ip_client_remote_length = ip_len as u8;
+            path_x.ip_client_remote[..ip_len].copy_from_slice(&tail[..ip_len]);
+        } else if lifetime > current_time.ticks()
+            && let Ok(ip_addr) = stored_ip_from_bytes(&tail[..ip_len])
+            && addr_from.map(|addr| addr.ip()) == Some(ip_addr)
+        {
+            self.seed_bandwidth(Duration::from_ticks(rtt), cwin, ip_addr);
+        }
+        Some(&tail[ip_len..])
+    }
+
+    fn decode_observed_address_frame<'a>(
+        &mut self,
+        after_type: &'a [u8],
+        path_x: &mut Path,
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        if !self.is_address_discovery_receiver {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let (observed, tail) = parse_observed_address_frame(after_type, frame_type)?;
+        let ip_addr = match observed.addr.len() {
+            4 => core::net::IpAddr::V4(core::net::Ipv4Addr::new(
+                observed.addr[0],
+                observed.addr[1],
+                observed.addr[2],
+                observed.addr[3],
+            )),
+            16 => {
+                let mut octets = [0u8; 16];
+                octets.copy_from_slice(observed.addr);
+                core::net::IpAddr::V6(core::net::Ipv6Addr::from(octets))
+            }
+            _ => return None,
+        };
+        let socket = SocketAddr::new(ip_addr, observed.port);
+        path_x.observed_address_received = observed.sequence;
+        if let Some(tuple) = path_x.tuples.first_mut() {
+            tuple.observed_addr = socket;
+        }
+        if let Some(mut callback) = self.callback_fn.take() {
+            let ret = callback.callback(
+                self,
+                path_x.unique_path_id,
+                &[],
+                CallbackEvent::PathAddressObserved,
+                path_x.app_path_ctx.as_deref_mut(),
+            );
+            self.callback_fn = Some(callback);
+            if ret != 0 {
+                self.connection_error(
+                    crate::errors::TransportError::InternalError as u64,
+                    frame_type,
+                );
+                return None;
+            }
+        }
+        Some(tail)
+    }
+
+    fn ack_selection(
+        &mut self,
+        path_x: &Path,
+        path_id: u64,
+        pc: PacketContext,
+        is_path_ack: bool,
+        frame_type: u64,
+    ) -> Option<DecodeAckSelection> {
+        if !is_path_ack {
+            return Some(DecodeAckSelection::Connection(pc));
+        }
+        if !self.is_multipath_enabled {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        if path_id == path_x.unique_path_id {
+            Some(DecodeAckSelection::CurrentPath)
+        } else if let Some(index) = self
+            .paths
+            .iter()
+            .position(|path| path.unique_path_id == path_id)
+        {
+            Some(DecodeAckSelection::StoredPath(index))
+        } else {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            None
+        }
+    }
+
+    fn ack_send_sequence(&self, path_x: &Path, selection: DecodeAckSelection) -> u64 {
+        match selection {
+            DecodeAckSelection::Connection(pc) => self.pkt_ctx[pc as usize].send_sequence,
+            DecodeAckSelection::CurrentPath => path_x.pkt_ctx.send_sequence,
+            DecodeAckSelection::StoredPath(index) => self.paths[index].pkt_ctx.send_sequence,
+        }
+    }
+
+    fn update_ack_context(
+        &mut self,
+        path_x: &mut Path,
+        selection: DecodeAckSelection,
+        largest: u64,
+        current_time: Instant,
+    ) {
+        let ctx = match selection {
+            DecodeAckSelection::Connection(pc) => &mut self.pkt_ctx[pc as usize],
+            DecodeAckSelection::CurrentPath => &mut path_x.pkt_ctx,
+            DecodeAckSelection::StoredPath(index) => &mut self.paths[index].pkt_ctx,
+        };
+        if ctx.highest_acknowledged == u64::MAX || largest > ctx.highest_acknowledged {
+            ctx.highest_acknowledged = largest;
+            ctx.highest_acknowledged_time = current_time;
+            ctx.latest_time_acknowledged = current_time;
+            ctx.ack_of_ack_requested = true;
+        }
+    }
+
+    fn pending_ack_tokens(
+        &self,
+        path_x: &Path,
+        selection: DecodeAckSelection,
+        ranges: &[(u64, u64)],
+    ) -> Vec<PacketToken> {
+        let ctx = match selection {
+            DecodeAckSelection::Connection(pc) => &self.pkt_ctx[pc as usize],
+            DecodeAckSelection::CurrentPath => &path_x.pkt_ctx,
+            DecodeAckSelection::StoredPath(index) => &self.paths[index].pkt_ctx,
+        };
+        let mut tokens = Vec::new();
+        for &(start, end) in ranges {
+            tokens.extend(ctx.pending.range(start..=end).map(|(_, token)| *token));
+        }
+        tokens
+    }
+
+    fn remove_pending_sequence(
+        &mut self,
+        path_x: &mut Path,
+        selection: DecodeAckSelection,
+        sequence: u64,
+    ) {
+        match selection {
+            DecodeAckSelection::Connection(pc) => {
+                self.pkt_ctx[pc as usize].pending.remove(&sequence);
+            }
+            DecodeAckSelection::CurrentPath => {
+                path_x.pkt_ctx.pending.remove(&sequence);
+            }
+            DecodeAckSelection::StoredPath(index) => {
+                self.paths[index].pkt_ctx.pending.remove(&sequence);
+            }
+        }
+    }
+
+    fn account_ack_delivery(&mut self, path_x: &mut Path, packet: &PacketRetransmitSnapshot) {
+        let Some(send_path) = packet.send_path else {
+            return;
+        };
+        let delivered = (packet.length + packet.checksum_overhead) as u64;
+        if send_path.slot_idx() as u64 == path_x.unique_path_id {
+            path_x.delivered = path_x.delivered.saturating_add(delivered);
+            path_x.bytes_in_transit = path_x.bytes_in_transit.saturating_sub(delivered);
+            path_x.is_cc_data_updated = true;
+        } else if let Some(path_idx) = self.path_index_from_token(send_path)
+            && let Some(path) = self.paths.get_mut(path_idx)
+        {
+            path.delivered = path.delivered.saturating_add(delivered);
+            path.bytes_in_transit = path.bytes_in_transit.saturating_sub(delivered);
+            path.is_cc_data_updated = true;
+        }
+    }
+
+    fn remove_acked_packets(
+        &mut self,
+        path_x: &mut Path,
+        selection: DecodeAckSelection,
+        ranges: &[(u64, u64)],
+        packet_data: &mut PacketData,
+        frame_type: u64,
+    ) -> bool {
+        let tokens = self.pending_ack_tokens(path_x, selection, ranges);
+        for token in tokens {
+            let Some(snapshot) = self
+                .queued_packets
+                .get(token)
+                .map(PacketRetransmitSnapshot::from)
+            else {
+                continue;
+            };
+            if snapshot.is_ack_trap {
+                self.connection_error(
+                    crate::errors::TransportError::ProtocolViolation as u64,
+                    frame_type,
+                );
+                return false;
+            }
+            if let Some(packet) = self.queued_packets.get_mut(token) {
+                packet_data.record_ack_packet_data(packet);
+                packet.is_queued_for_retransmit = false;
+                packet.is_queued_for_spurious_detection = false;
+                packet.is_queued_for_data_repeat = false;
+                packet.queue_data_repeat_membership = None;
+            }
+            self.account_ack_delivery(path_x, &snapshot);
+            self.remove_pending_sequence(path_x, selection, snapshot.sequence_number);
+            self.queued_packets.remove(token);
+        }
+        true
+    }
+
+    fn decode_ack_frame<'a>(
+        &mut self,
+        path_x: &mut Path,
+        frame_start: &'a [u8],
+        current_time: Instant,
+        epoch: i32,
+        is_ecn: bool,
+        is_path_ack: bool,
+        packet_data: &mut PacketData,
+        frame_type: u64,
+    ) -> Option<&'a [u8]> {
+        let pc = context_from_epoch(epoch);
+        let mut num_block = 0;
+        let mut path_id = 0;
+        let mut largest = 0;
+        let mut ack_delay = 0;
+        let mut consumed = 0;
+        if parse_ack_header(
+            frame_start,
+            frame_start.len(),
+            &mut num_block,
+            &mut path_id,
+            &mut largest,
+            &mut ack_delay,
+            &mut consumed,
+            self.remote_parameters.ack_delay_exponent,
+        ) != 0
+        {
+            return None;
+        }
+        let selection = self.ack_selection(path_x, path_id, pc, is_path_ack, frame_type)?;
+        if largest >= self.ack_send_sequence(path_x, selection) {
+            self.connection_error(
+                crate::errors::TransportError::ProtocolViolation as u64,
+                frame_type,
+            );
+            return None;
+        }
+        let mut tail = &frame_start[consumed..];
+        let mut range = 0;
+        tail = frames_varint_decode(tail, &mut range)?;
+        if range > largest {
+            return None;
+        }
+        let mut ranges = Vec::with_capacity(num_block as usize + 1);
+        let mut range_low = largest - range;
+        ranges.push((range_low, largest));
+        for _ in 0..num_block {
+            let mut gap = 0;
+            let mut ack_range = 0;
+            tail = frames_varint_decode(tail, &mut gap)?;
+            tail = frames_varint_decode(tail, &mut ack_range)?;
+            let next_high = range_low.checked_sub(gap.saturating_add(2))?;
+            if ack_range > next_high {
+                return None;
+            }
+            range_low = next_high - ack_range;
+            ranges.push((range_low, next_high));
+        }
+        if is_ecn {
+            let mut ect0 = 0;
+            let mut ect1 = 0;
+            let mut ce = 0;
+            tail = frames_varint_decode(tail, &mut ect0)?;
+            tail = frames_varint_decode(tail, &mut ect1)?;
+            tail = frames_varint_decode(tail, &mut ce)?;
+            let ctx = match selection {
+                DecodeAckSelection::Connection(pc) => &mut self.pkt_ctx[pc as usize],
+                DecodeAckSelection::CurrentPath => &mut path_x.pkt_ctx,
+                DecodeAckSelection::StoredPath(index) => &mut self.paths[index].pkt_ctx,
+            };
+            ctx.ecn_ect0_total_remote = ect0;
+            ctx.ecn_ect1_total_remote = ect1;
+            ctx.ecn_ce_total_remote = ce;
+        }
+        packet_data.last_ack_delay = Duration::from_ticks(ack_delay);
+        self.update_ack_context(path_x, selection, largest, current_time);
+        if !self.remove_acked_packets(path_x, selection, &ranges, packet_data, frame_type) {
+            return None;
+        }
+        Some(tail)
+    }
+
+    fn process_decoded_packet_data(
+        &mut self,
+        path_x: &mut Path,
+        epoch: i32,
+        pc: PacketContext,
+        current_time: Instant,
+        packet_data: &PacketData,
+    ) {
+        for ack in packet_data
+            .path_ack
+            .iter()
+            .take(packet_data.nb_path_ack.max(0) as usize)
+        {
+            if !ack.is_set {
+                continue;
+            }
+            let ack_delay = packet_data.last_ack_delay.ticks();
+            let time_stamp = packet_data.last_time_stamp_received.ticks();
+            if ack.acked_path.map(|token| token.slot_idx() as u64) == Some(path_x.unique_path_id) {
+                self.update_path_rtt(
+                    path_x,
+                    epoch,
+                    ack.largest_sent_time,
+                    current_time,
+                    ack_delay,
+                    time_stamp,
+                );
+                picoquic_estimate_path_bandwidth(
+                    self,
+                    path_x,
+                    ack.largest_sent_time.ticks(),
+                    ack.delivered_prior,
+                    ack.delivered_time_prior.ticks(),
+                    ack.delivered_sent_prior,
+                    current_time.ticks(),
+                    ack.rs_is_path_limited,
+                );
+                if let Some(cc_alg) = self.congestion_alg {
+                    let ack_state = PerAckState {
+                        pc: pc as i32,
+                        nb_bytes_acknowledged: ack.data_acked,
+                        inflight_prior: ack.inflight_prior,
+                        is_app_limited: ack.rs_is_path_limited,
+                        is_cwnd_limited: ack.rs_is_cwnd_limited,
+                        ..PerAckState::default()
+                    };
+                    cc_alg.algorithm.alg_notify(
+                        self,
+                        path_x,
+                        CongestionNotification::Acknowledgement,
+                        &ack_state,
+                        current_time,
+                    );
+                }
+            } else if let Some(token) = ack.acked_path
+                && let Some(index) = self.path_index_from_token(token)
+                && index < self.paths.len()
+            {
+                let mut path = self.paths.remove(index);
+                self.update_path_rtt(
+                    &mut path,
+                    epoch,
+                    ack.largest_sent_time,
+                    current_time,
+                    ack_delay,
+                    time_stamp,
+                );
+                picoquic_estimate_path_bandwidth(
+                    self,
+                    &mut path,
+                    ack.largest_sent_time.ticks(),
+                    ack.delivered_prior,
+                    ack.delivered_time_prior.ticks(),
+                    ack.delivered_sent_prior,
+                    current_time.ticks(),
+                    ack.rs_is_path_limited,
+                );
+                if let Some(cc_alg) = self.congestion_alg {
+                    let ack_state = PerAckState {
+                        pc: pc as i32,
+                        nb_bytes_acknowledged: ack.data_acked,
+                        inflight_prior: ack.inflight_prior,
+                        is_app_limited: ack.rs_is_path_limited,
+                        is_cwnd_limited: ack.rs_is_cwnd_limited,
+                        ..PerAckState::default()
+                    };
+                    cc_alg.algorithm.alg_notify(
+                        self,
+                        &mut path,
+                        CongestionNotification::Acknowledgement,
+                        &ack_state,
+                        current_time,
+                    );
+                }
+                self.paths.insert(index, path);
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn decode_frames(
         &mut self,
         path_x: &mut Path,
@@ -20180,156 +21979,506 @@ impl Connection {
         received_data: &mut StreamDataNode,
         epoch: i32,
         addr_from: Option<&SocketAddr>,
-        _addr_to: Option<&SocketAddr>,
+        addr_to: Option<&SocketAddr>,
         pn64: u64,
-        _path_is_not_allocated: i32,
+        path_is_not_allocated: i32,
         current_time: Instant,
     ) -> i32 {
+        let pc = context_from_epoch(epoch);
+        let mut packet_data = PacketData::default();
+        let mut ack_needed = false;
+        let mut is_path_probing_packet = true;
         let mut tail = &bytes[..bytes_max.min(bytes.len())];
+
         while !tail.is_empty() {
             let frame_start = tail;
-            let mut frame_type = 0;
-            let Some(after_type) = frames_varint_decode(tail, &mut frame_type) else {
-                return self.connection_error(0x7, 0);
-            };
-            match frame_type {
-                x if x >= crate::frames::FrameType::StreamRangeMin as u64
-                    && x <= crate::frames::FrameType::StreamRangeMax as u64 =>
-                {
-                    let Some(rest) =
-                        decode_stream_frame(self, frame_start, received_data, current_time)
-                    else {
-                        if self.local_error != 0 {
-                            return self.local_error as i32;
+            let first_byte = frame_start[0];
+            let first_frame = u64::from(first_byte);
+            let after_one_byte = &frame_start[1..];
+            let mut is_path_probing_frame = false;
+
+            if first_byte >= crate::frames::FrameType::StreamRangeMin as u8
+                && first_byte <= crate::frames::FrameType::StreamRangeMax as u8
+            {
+                if epoch != Epoch::ZeroRtt as i32 && epoch != Epoch::OneRtt as i32 {
+                    return self.connection_error(
+                        crate::errors::TransportError::ProtocolViolation as u64,
+                        first_frame,
+                    );
+                }
+                let Some(rest) =
+                    decode_stream_frame(self, frame_start, received_data, current_time)
+                else {
+                    return self.decode_frame_failure(first_frame);
+                };
+                tail = rest;
+                ack_needed = true;
+            } else if first_byte == crate::frames::FrameType::Ack as u8 {
+                if epoch == Epoch::ZeroRtt as i32 {
+                    return self.connection_error(
+                        crate::errors::TransportError::ProtocolViolation as u64,
+                        first_frame,
+                    );
+                }
+                let Some(rest) = self.decode_ack_frame(
+                    path_x,
+                    frame_start,
+                    current_time,
+                    epoch,
+                    false,
+                    false,
+                    &mut packet_data,
+                    first_frame,
+                ) else {
+                    return self.decode_frame_failure(first_frame);
+                };
+                tail = rest;
+            } else if first_byte == crate::frames::FrameType::AckEcn as u8 {
+                if epoch == Epoch::ZeroRtt as i32 {
+                    return self.connection_error(
+                        crate::errors::TransportError::ProtocolViolation as u64,
+                        first_frame,
+                    );
+                }
+                let Some(rest) = self.decode_ack_frame(
+                    path_x,
+                    frame_start,
+                    current_time,
+                    epoch,
+                    true,
+                    false,
+                    &mut packet_data,
+                    first_frame,
+                ) else {
+                    return self.decode_frame_failure(first_frame);
+                };
+                tail = rest;
+            } else if (epoch != Epoch::ZeroRtt as i32
+                && epoch != Epoch::OneRtt as i32
+                && first_byte != crate::frames::FrameType::Padding as u8
+                && first_byte != crate::frames::FrameType::Ping as u8
+                && first_byte != crate::frames::FrameType::ConnectionClose as u8
+                && first_byte != crate::frames::FrameType::CryptoHs as u8)
+                || (epoch == Epoch::ZeroRtt as i32
+                    && (first_byte == crate::frames::FrameType::CryptoHs as u8
+                        || first_byte == crate::frames::FrameType::HandshakeDone as u8
+                        || first_byte == crate::frames::FrameType::NewToken as u8
+                        || first_byte == crate::frames::FrameType::PathResponse as u8
+                        || first_byte == crate::frames::FrameType::RetireConnectionId as u8))
+            {
+                return self.connection_error(
+                    crate::errors::TransportError::ProtocolViolation as u64,
+                    first_frame,
+                );
+            } else {
+                match first_byte {
+                    x if x == crate::frames::FrameType::Padding as u8 => {
+                        is_path_probing_frame = true;
+                        let mut offset = 1;
+                        while offset < frame_start.len()
+                            && frame_start[offset] == crate::frames::FrameType::Padding as u8
+                        {
+                            offset += 1;
                         }
-                        return self.connection_error(0x7, frame_type);
-                    };
-                    tail = rest;
-                }
-                x if x == crate::frames::FrameType::CryptoHs as u64 => {
-                    let Some(rest) =
-                        decode_crypto_hs_frame(self, frame_start, received_data, epoch)
-                    else {
-                        if self.local_error != 0 {
-                            return self.local_error as i32;
+                        tail = &frame_start[offset..];
+                    }
+                    x if x == crate::frames::FrameType::ResetStream as u8 => {
+                        let Some(rest) = self.decode_reset_stream_frame(frame_start, first_frame)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::ConnectionClose as u8 => {
+                        let Some(rest) = self.decode_connection_close_frame(after_one_byte, false)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = false;
+                    }
+                    x if x == crate::frames::FrameType::ApplicationClose as u8 => {
+                        let Some(rest) = self.decode_connection_close_frame(after_one_byte, true)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = false;
+                    }
+                    x if x == crate::frames::FrameType::MaxData as u8 => {
+                        let Some(rest) = self.decode_max_data_frame(frame_start) else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::MaxStreamData as u8 => {
+                        let Some(rest) =
+                            self.decode_max_stream_data_frame(frame_start, first_frame)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::MaxStreamsBidir as u8
+                        || x == crate::frames::FrameType::MaxStreamsUnidir as u8 =>
+                    {
+                        let Some(rest) = self.decode_max_streams_frame(frame_start, first_frame)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::Ping as u8 => {
+                        tail = after_one_byte;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::DataBlocked as u8 => {
+                        let Some(rest) = self.decode_blocked_frame(frame_start) else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::StreamDataBlocked as u8 => {
+                        let Some(rest) = self.decode_stream_blocked_frame(frame_start, first_frame)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::StreamsBlockedUnidir as u8
+                        || x == crate::frames::FrameType::StreamsBlockedBidir as u8 =>
+                    {
+                        let Some(rest) =
+                            self.decode_streams_blocked_frame(frame_start, first_frame)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::NewConnectionId as u8 => {
+                        is_path_probing_frame = true;
+                        let Some(rest) = self.decode_new_connection_id_frame(
+                            frame_start,
+                            current_time,
+                            false,
+                            first_frame,
+                        ) else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::StopSending as u8 => {
+                        let Some(rest) = self.decode_stop_sending_frame(frame_start, first_frame)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::PathChallenge as u8 => {
+                        is_path_probing_frame = true;
+                        let Some(rest) = self.decode_path_challenge_frame(
+                            after_one_byte,
+                            path_x,
+                            path_is_not_allocated,
+                        ) else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                    }
+                    x if x == crate::frames::FrameType::PathResponse as u8 => {
+                        is_path_probing_frame = true;
+                        let Some(rest) = self.decode_path_response_frame(
+                            after_one_byte,
+                            path_x,
+                            path_is_not_allocated,
+                        ) else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                    }
+                    x if x == crate::frames::FrameType::CryptoHs as u8 => {
+                        let Some(rest) =
+                            decode_crypto_hs_frame(self, frame_start, received_data, epoch)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::NewToken as u8 => {
+                        let Some(rest) = self.decode_new_token_frame(after_one_byte, first_frame)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::RetireConnectionId as u8 => {
+                        let Some(rest) = self.decode_retire_connection_id_frame(
+                            frame_start,
+                            path_x,
+                            false,
+                            first_frame,
+                        ) else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::HandshakeDone as u8 => {
+                        let Some(rest) = self.decode_handshake_done_frame(
+                            after_one_byte,
+                            current_time,
+                            first_frame,
+                        ) else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::Datagram as u8
+                        || x == crate::frames::FrameType::DatagramL as u8 =>
+                    {
+                        let Some(rest) =
+                            self.decode_datagram_frame(path_x, frame_start, first_frame)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    x if x == crate::frames::FrameType::ResetStreamAt as u8 => {
+                        let Some(rest) =
+                            self.decode_reset_stream_at_frame(frame_start, first_frame)
+                        else {
+                            return self.decode_frame_failure(first_frame);
+                        };
+                        tail = rest;
+                        ack_needed = true;
+                    }
+                    _ => {
+                        let mut frame_type = 0;
+                        let Some(after_type) = frames_varint_decode(frame_start, &mut frame_type)
+                        else {
+                            return self.decode_frame_failure(0);
+                        };
+                        if epoch == Epoch::ZeroRtt as i32
+                            && frame_type != crate::frames::FrameType::Bdp as u64
+                        {
+                            return self.connection_error(
+                                crate::errors::TransportError::ProtocolViolation as u64,
+                                first_frame,
+                            );
                         }
-                        return self.connection_error(0x7, frame_type);
-                    };
-                    tail = rest;
-                }
-                x if x == crate::frames::FrameType::Ack as u64
-                    || x == crate::frames::FrameType::AckEcn as u64
-                    || x == crate::frames::FrameType::PathAck as u64
-                    || x == crate::frames::FrameType::PathAckEcn as u64 =>
-                {
-                    let mut num_block = 0;
-                    let mut path_id = 0;
-                    let mut largest = 0;
-                    let mut ack_delay = 0;
-                    let mut consumed = 0;
-                    if parse_ack_header(
-                        frame_start,
-                        frame_start.len(),
-                        &mut num_block,
-                        &mut path_id,
-                        &mut largest,
-                        &mut ack_delay,
-                        &mut consumed,
-                        self.remote_parameters.ack_delay_exponent,
-                    ) != 0
-                    {
-                        return self.connection_error(0x7, frame_type);
-                    }
-                    let mut consumed_total = 0;
-                    let mut pure_ack = 0;
-                    if skip_frame(
-                        frame_start,
-                        frame_start.len(),
-                        &mut consumed_total,
-                        &mut pure_ack,
-                    ) != 0
-                    {
-                        return self.connection_error(0x7, frame_type);
-                    }
-                    tail = &frame_start[consumed_total..];
-                    let _ = path_id;
-                    let _ = ack_delay;
-                    let _ = largest;
-                    let _ = num_block;
-                }
-                x if x == crate::frames::FrameType::PathChallenge as u64 => {
-                    if after_type.len() < 8 {
-                        return self.connection_error(0x7, frame_type);
-                    }
-                    if let Some(tuple) = path_x.tuples.first_mut() {
-                        tuple.challenge_response = parse_64(&after_type[..8]);
-                        tuple.response_required = true;
-                    }
-                    tail = &after_type[8..];
-                }
-                x if x == crate::frames::FrameType::PathResponse as u64 => {
-                    if after_type.len() < 8 {
-                        return self.connection_error(0x7, frame_type);
-                    }
-                    let response = parse_64(&after_type[..8]);
-                    for tuple in &mut path_x.tuples {
-                        if tuple.challenge.contains(&response) {
-                            tuple.challenge_verified = true;
-                            tuple.challenge_required = false;
-                            tuple.challenge_failed = false;
+                        match frame_type {
+                            x if x == crate::frames::FrameType::AckFrequency as u64 => {
+                                let Some(rest) =
+                                    self.decode_ack_frequency_frame(after_type, frame_type)
+                                else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            x if x == crate::frames::FrameType::ImmediateAck as u64 => {
+                                let Some(rest) = self.decode_immediate_ack_frame(
+                                    after_type,
+                                    path_x,
+                                    current_time,
+                                    frame_type,
+                                ) else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            x if x == crate::frames::FrameType::TimeStamp as u64 => {
+                                let Some(rest) = self.decode_time_stamp_frame(
+                                    after_type,
+                                    &mut packet_data,
+                                    frame_type,
+                                ) else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                            }
+                            x if x == crate::frames::FrameType::PathAck as u64
+                                || x == crate::frames::FrameType::PathAckEcn as u64 =>
+                            {
+                                if epoch == Epoch::ZeroRtt as i32 {
+                                    return self.connection_error(
+                                        crate::errors::TransportError::ProtocolViolation as u64,
+                                        frame_type,
+                                    );
+                                }
+                                let Some(rest) = self.decode_ack_frame(
+                                    path_x,
+                                    frame_start,
+                                    current_time,
+                                    epoch,
+                                    frame_type == crate::frames::FrameType::PathAckEcn as u64,
+                                    true,
+                                    &mut packet_data,
+                                    frame_type,
+                                ) else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                            }
+                            x if x == crate::frames::FrameType::PathAbandon as u64 => {
+                                let Some(rest) =
+                                    self.decode_path_abandon_frame(after_type, path_x, frame_type)
+                                else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            x if x == crate::frames::FrameType::PathBackup as u64
+                                || x == crate::frames::FrameType::PathAvailable as u64 =>
+                            {
+                                let Some(rest) = self.decode_path_available_or_backup_frame(
+                                    after_type, path_x, frame_type,
+                                ) else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            x if x == crate::frames::FrameType::MaxPathId as u64 => {
+                                let Some(rest) =
+                                    self.decode_max_path_id_frame(after_type, frame_type)
+                                else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            x if x == crate::frames::FrameType::PathsBlocked as u64 => {
+                                let Some(rest) =
+                                    self.decode_paths_blocked_frame(after_type, frame_type)
+                                else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            x if x == crate::frames::FrameType::PathCidBlocked as u64 => {
+                                let Some(rest) =
+                                    self.decode_path_cid_blocked_frame(after_type, frame_type)
+                                else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            x if x == crate::frames::FrameType::PathNewConnectionId as u64 => {
+                                is_path_probing_frame = true;
+                                let Some(rest) = self.decode_new_connection_id_frame(
+                                    frame_start,
+                                    current_time,
+                                    true,
+                                    frame_type,
+                                ) else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            x if x == crate::frames::FrameType::PathRetireConnectionId as u64 => {
+                                let Some(rest) = self.decode_retire_connection_id_frame(
+                                    frame_start,
+                                    path_x,
+                                    true,
+                                    frame_type,
+                                ) else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            x if x == crate::frames::FrameType::Bdp as u64 => {
+                                if self.client_mode && epoch != Epoch::OneRtt as i32 {
+                                    return self.connection_error(
+                                        crate::errors::TransportError::ProtocolViolation as u64,
+                                        first_frame,
+                                    );
+                                }
+                                if !self.client_mode
+                                    && epoch != Epoch::ZeroRtt as i32
+                                    && epoch != Epoch::OneRtt as i32
+                                {
+                                    return self.connection_error(
+                                        crate::errors::TransportError::ProtocolViolation as u64,
+                                        first_frame,
+                                    );
+                                }
+                                if self.client_mode && !self.local_parameters.enable_bdp_frame {
+                                    return self.connection_error(
+                                        crate::errors::TransportError::ProtocolViolation as u64,
+                                        0,
+                                    );
+                                }
+                                let Some(rest) = self.decode_bdp_frame(
+                                    after_type,
+                                    path_x,
+                                    current_time,
+                                    addr_from,
+                                ) else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            x if x == crate::frames::FrameType::ObservedAddressV4 as u64
+                                || x == crate::frames::FrameType::ObservedAddressV6 as u64 =>
+                            {
+                                is_path_probing_frame = true;
+                                let Some(rest) = self
+                                    .decode_observed_address_frame(after_type, path_x, frame_type)
+                                else {
+                                    return self.decode_frame_failure(frame_type);
+                                };
+                                tail = rest;
+                                ack_needed = true;
+                            }
+                            _ => {
+                                return self.connection_error(
+                                    crate::errors::TransportError::ProtocolViolation as u64,
+                                    frame_type,
+                                );
+                            }
                         }
                     }
-                    tail = &after_type[8..];
-                }
-                x if x == crate::frames::FrameType::Datagram as u64
-                    || x == crate::frames::FrameType::DatagramL as u64 =>
-                {
-                    let mut frame_id = 0;
-                    let mut length = 0;
-                    let Some(payload) =
-                        decode_datagram_frame_header(frame_start, &mut frame_id, &mut length)
-                    else {
-                        return self.connection_error(0x7, frame_type);
-                    };
-                    tail = &payload[length as usize..];
-                    let _ = frame_id;
-                }
-                x if x == crate::frames::FrameType::NewConnectionId as u64
-                    || x == crate::frames::FrameType::PathNewConnectionId as u64 =>
-                {
-                    let mut consumed = 0;
-                    let mut pure_ack = 0;
-                    if skip_frame(frame_start, frame_start.len(), &mut consumed, &mut pure_ack) != 0
-                    {
-                        return self.connection_error(0x7, frame_type);
-                    }
-                    tail = &frame_start[consumed..];
-                }
-                x if x == crate::frames::FrameType::ConnectionClose as u64 => {
-                    self.remote_error = 1;
-                    self.connection_state = State::ClosingReceived;
-                    return 0;
-                }
-                x if x == crate::frames::FrameType::ApplicationClose as u64 => {
-                    self.remote_application_error = 1;
-                    self.connection_state = State::ClosingReceived;
-                    return 0;
-                }
-                _ => {
-                    let mut consumed = 0;
-                    let mut pure_ack = 0;
-                    if skip_frame(frame_start, frame_start.len(), &mut consumed, &mut pure_ack) != 0
-                        || consumed == 0
-                    {
-                        return self.connection_error(0x7, frame_type);
-                    }
-                    tail = &frame_start[consumed..];
                 }
             }
+            is_path_probing_packet &= is_path_probing_frame;
         }
-        path_x.last_non_path_probing_pn = pn64;
+
+        self.process_decoded_packet_data(path_x, epoch, pc, current_time, &packet_data);
+        if ack_needed {
+            self.latest_receive_time = current_time;
+            self.set_ack_needed(current_time, pc, path_x, 0);
+        }
+        if epoch == Epoch::OneRtt as i32
+            && !is_path_probing_packet
+            && pn64 > path_x.last_non_path_probing_pn
+        {
+            path_x.last_non_path_probing_pn = pn64;
+        }
         if let Some(addr) = addr_from {
             path_x.update_peer_addr(Some(addr));
+        } else if let Some(addr) = addr_to {
+            let _ = addr;
         }
         0
     }
@@ -20391,44 +22540,85 @@ pub fn format_observed_address_frame<'a>(
     Some(&mut bytes[off..])
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_observed_address_frame<'a>(
     bytes: &'a mut [u8],
-    _path_x: &mut Path,
+    path_x: &mut Path,
     tuple: &mut Tuple,
     current_time: Instant,
-    _next_wake_time: &mut Instant,
+    next_wake_time: &mut Instant,
+    observed_number: &mut u64,
     more_data: &mut i32,
     is_pure_ack: &mut i32,
 ) -> Option<&'a mut [u8]> {
-    let (ftype, addr_bytes) = match tuple.peer_addr.ip() {
-        core::net::IpAddr::V4(v4) => (
-            crate::frames::FrameType::ObservedAddressV4 as u64,
-            v4.octets().to_vec(),
-        ),
+    if path_x.observed_addr_acked
+        || tuple.nb_observed_repeat >= 4
+        || crate::socket_addr_is_unspecified(&tuple.peer_addr)
+    {
+        return Some(bytes);
+    }
+
+    let is_needed = if tuple.nb_observed_repeat == 0 {
+        path_x.observed_sequence_sent = *observed_number;
+        *observed_number = (*observed_number).wrapping_add(1);
+        true
+    } else {
+        let repeat_time = Instant::from_ticks(
+            tuple
+                .observed_time
+                .ticks()
+                .saturating_add(path_x.retransmit_timer.ticks()),
+        );
+        if repeat_time <= current_time {
+            true
+        } else {
+            if *next_wake_time > repeat_time {
+                *next_wake_time = repeat_time;
+            }
+            false
+        }
+    };
+
+    if !is_needed {
+        return Some(bytes);
+    }
+
+    let (ftype, addr_bytes, addr_len) = match tuple.peer_addr.ip() {
+        core::net::IpAddr::V4(v4) => {
+            let mut addr = [0u8; 16];
+            addr[..4].copy_from_slice(&v4.octets());
+            (crate::frames::FrameType::ObservedAddressV4 as u64, addr, 4)
+        }
         core::net::IpAddr::V6(v6) => (
             crate::frames::FrameType::ObservedAddressV6 as u64,
-            v6.octets().to_vec(),
+            v6.octets(),
+            16,
         ),
     };
-    tuple.observed_time = current_time;
-    tuple.nb_observed_repeat += 1;
-    format_observed_address_frame(
+    let bytes_start_len = bytes.len();
+    let next = format_observed_address_frame(
         bytes,
         ftype,
-        tuple.nb_observed_repeat as u64,
-        &addr_bytes,
+        path_x.observed_sequence_sent,
+        &addr_bytes[..addr_len],
         tuple.peer_addr.port(),
         more_data,
-    )
-    .inspect(|_| {
+    )?;
+    if next.len() < bytes_start_len {
         *is_pure_ack = 0;
-    })
+        tuple.nb_observed_repeat += 1;
+        tuple.observed_time = current_time;
+    }
+    Some(next)
 }
 
 impl Path {
+    /// C: `picoquic_update_peer_addr`.
     pub fn update_peer_addr(&mut self, peer_addr: Option<&SocketAddr>) {
-        if let Some(addr) = peer_addr {
-            self.registered_peer_addr = *addr;
+        if let (Some(addr), Some(tuple)) = (peer_addr, self.tuples.first_mut()) {
+            tuple.peer_addr = *addr;
+            self.observed_addr_acked = false;
+            tuple.nb_observed_repeat = 0;
         }
     }
 }
@@ -20753,6 +22943,21 @@ impl Connection {
         path_x: &mut Path,
         status: PathStatus,
     ) -> Result<(), crate::Error> {
+        let first_tuple = path_x.tuples.first().ok_or(crate::Error::Generic)?;
+        let remote_cid_path_id = if self.is_multipath_enabled {
+            path_x.unique_path_id
+        } else {
+            0
+        };
+        let remote_cid_index = first_tuple
+            .remote_connection_id_index
+            .ok_or(crate::Error::Generic)?;
+        let remote_cid = self
+            .remote_connection_id_stashes
+            .iter()
+            .find(|stash| stash.unique_path_id == remote_cid_path_id)
+            .and_then(|stash| stash.connection_ids.get(remote_cid_index))
+            .ok_or(crate::Error::Generic)?;
         let frame_type = if status == PathStatus::Available {
             crate::frames::FrameType::PathAvailable as u64
         } else {
@@ -20760,7 +22965,11 @@ impl Connection {
         };
         let sequence = self.status_sequence_to_send_next;
         self.status_sequence_to_send_next = self.status_sequence_to_send_next.saturating_add(1);
-        let path_id = path_x.unique_path_id;
+        let path_id = if self.is_multipath_enabled {
+            path_x.unique_path_id
+        } else {
+            remote_cid.sequence
+        };
         let mut frame = [0u8; 256];
         let frame_len = frame.len();
         let mut more_data = 0;
@@ -20776,13 +22985,8 @@ impl Connection {
             return Err(crate::Error::BufferTooSmall);
         }
         let used = frame_len - tail.len();
+        queue_misc_frame(self, &frame[..used], false, PacketContext::Application)?;
         path_x.status_sequence_sent_last = sequence;
-        encode_misc_frame(
-            self,
-            frame[..used].to_vec(),
-            false,
-            PacketContext::Application,
-        );
         Ok(())
     }
 }
@@ -20794,6 +22998,10 @@ impl Connection {
             && self.check_new_path_allowed(false).is_ok()
         {
             self.is_notified_that_path_is_allowed = true;
+            if let Some(mut callback) = self.callback_fn.take() {
+                let _ = callback.callback(self, 0, &[], CallbackEvent::NextPathAllowed, None);
+                self.callback_fn = Some(callback);
+            }
         }
     }
 }
@@ -20831,8 +23039,104 @@ pub fn decode_closing_frames(
 }
 
 impl Connection {
-    pub fn process_sooner_packets(&mut self, _current_time: Instant) {
-        self.sooner_stateless.clear();
+    pub fn process_sooner_packets(&mut self, current_time: Instant) {
+        self.recycle_sooner_needed = false;
+
+        let Some(token) = self.own_token else {
+            return;
+        };
+        if self.quic_ptr.is_null() {
+            return;
+        }
+
+        // SAFETY: `quic_ptr` is installed by `Quic::create_cnx_internal` and
+        // points to the owning context. The context helper owns the queue
+        // mutation while re-entering the packet input path.
+        unsafe {
+            (*self.quic_ptr).process_sooner_packets_for_connection(token, current_time);
+        }
+    }
+}
+
+fn sooner_packet_epoch(packet_type: PacketType) -> Option<Epoch> {
+    match packet_type {
+        PacketType::Handshake => Some(Epoch::Handshake),
+        PacketType::OneRttProtected => Some(Epoch::OneRtt),
+        _ => None,
+    }
+}
+
+impl Quic {
+    fn process_sooner_packets_for_connection(
+        &mut self,
+        connection: ConnectionToken,
+        current_time: Instant,
+    ) {
+        let Some(mut packets) = self.connections.get_mut(connection).map(|cnx| {
+            cnx.recycle_sooner_needed = false;
+            core::mem::take(&mut cnx.sooner_stateless)
+        }) else {
+            return;
+        };
+        let mut retained = VecDeque::new();
+
+        while let Some(mut packet) = packets.pop_front() {
+            let can_try_now = sooner_packet_epoch(packet.packet_type)
+                .and_then(|epoch| {
+                    self.connections.get(connection).map(|cnx| {
+                        let ctx = &cnx.crypto_context[epoch as usize];
+                        ctx.aead_decrypt.is_some() || ctx.pn_dec.is_some()
+                    })
+                })
+                .unwrap_or(false);
+
+            if can_try_now {
+                let packet_length = packet.length.min(packet.bytes.len());
+                let mut consumed_index = 0usize;
+                let mut ret = 0i32;
+                let mut previous_dest_id = ConnectionId::default();
+                let mut first_cnx = None;
+
+                while consumed_index < packet_length {
+                    let mut consumed = 0usize;
+                    ret = self.incoming_segment(
+                        &mut packet.bytes[consumed_index..packet_length],
+                        packet_length - consumed_index,
+                        packet_length,
+                        &mut consumed,
+                        &packet.addr_to,
+                        &packet.addr_local,
+                        packet.if_index_local,
+                        packet.received_ecn,
+                        current_time,
+                        packet.receive_time,
+                        &mut previous_dest_id,
+                        &mut first_cnx,
+                    );
+
+                    if ret == 0 && consumed > 0 {
+                        consumed_index = consumed_index.saturating_add(consumed);
+                    } else {
+                        break;
+                    }
+                }
+
+                if ret != 0 {
+                    log::debug!(
+                        "Processing sooner packet type {:?} returns {} (0x{:x})",
+                        packet.packet_type,
+                        ret,
+                        ret
+                    );
+                }
+            } else {
+                retained.push_back(packet);
+            }
+        }
+
+        if let Some(cnx) = self.connections.get_mut(connection) {
+            cnx.sooner_stateless.extend(retained);
+        }
     }
 }
 
@@ -20895,16 +23199,24 @@ pub fn picoquic_transport_param_varint_decode(
 /// Encode a varint-valued transport parameter.
 ///
 /// C: `picoquic/transport.c:picoquic_transport_param_type_varint_encode`.
+fn picoquic_transport_param_type_varint_encode_raw(
+    bytes: &mut [u8],
+    tp_type: u64,
+    n64: u64,
+) -> Option<&mut [u8]> {
+    let mut offset = 0;
+    if !encode_varint_at(bytes, &mut offset, tp_type) {
+        return None;
+    }
+    picoquic_transport_param_varint_encode(&mut bytes[offset..], n64)
+}
+
 pub fn picoquic_transport_param_type_varint_encode(
     bytes: &mut [u8],
     tp_type: crate::tp::TransportParameter,
     n64: u64,
 ) -> Option<&mut [u8]> {
-    let mut offset = 0;
-    if !encode_varint_at(bytes, &mut offset, tp_type as u64) {
-        return None;
-    }
-    picoquic_transport_param_varint_encode(&mut bytes[offset..], n64)
+    picoquic_transport_param_type_varint_encode_raw(bytes, tp_type as u64, n64)
 }
 
 /// Encode a flag transport parameter with a zero-length value.
@@ -20941,6 +23253,53 @@ pub fn picoquic_transport_param_cid_encode<'a>(
     bytes[offset..offset + cid.len()].copy_from_slice(cid.as_bytes());
     offset += cid.len();
     Some(&mut bytes[offset..])
+}
+
+fn picoquic_transport_param_stateless_reset_token_encode<'a>(
+    bytes: &'a mut [u8],
+    reset_secret: &[u8; RESET_SECRET_SIZE],
+) -> Option<&'a mut [u8]> {
+    let mut offset = 0;
+    if !encode_varint_at(
+        bytes,
+        &mut offset,
+        crate::tp::TransportParameter::StatelessResetToken as u64,
+    ) || !encode_varint_at(bytes, &mut offset, RESET_SECRET_SIZE as u64)
+        || bytes.len().saturating_sub(offset) <= RESET_SECRET_SIZE
+    {
+        return None;
+    }
+    bytes[offset..offset + RESET_SECRET_SIZE].copy_from_slice(reset_secret);
+    offset += RESET_SECRET_SIZE;
+    Some(&mut bytes[offset..])
+}
+
+fn picoquic_transport_param_test_padding_encode(
+    bytes: &mut [u8],
+    pad_length: usize,
+) -> Option<&mut [u8]> {
+    let mut offset = 0;
+    if !encode_varint_at(
+        bytes,
+        &mut offset,
+        crate::tp::TransportParameter::TestLargeChello as u64,
+    ) || !encode_varint_at(bytes, &mut offset, pad_length as u64)
+        || bytes.len().saturating_sub(offset) < pad_length
+    {
+        return None;
+    }
+    bytes[offset..offset + pad_length].fill(b'Q');
+    offset += pad_length;
+    Some(&mut bytes[offset..])
+}
+
+fn transport_tail_encode<'a, F>(tail: &mut Option<&'a mut [u8]>, encode: F)
+where
+    F: FnOnce(&'a mut [u8]) -> Option<&'a mut [u8]>,
+{
+    if let Some(current) = tail.take() {
+        *tail = encode(current);
+    }
 }
 
 /// Decode a connection-ID-valued transport parameter.
@@ -21136,31 +23495,40 @@ pub fn process_tp_version_negotiation<'a>(
     *negotiated_vn = 0;
     *negotiated_index = -1;
     *vn_error = 0;
-    if bytes.len() < 4 || !bytes.len().is_multiple_of(4) {
-        *vn_error = 0x7;
+
+    if bytes.len() < 4 {
+        *vn_error = crate::errors::TransportError::ParameterError as u64;
         return None;
     }
-    let current = u32::from_be_bytes(bytes[0..4].try_into().ok()?);
+
+    let current = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     if current != envelop_vn {
-        *vn_error = 0xA;
+        *vn_error = crate::errors::TransportError::VersionNegotiationError as u64;
         return None;
     }
-    if extension_mode == 0 {
-        for chunk in bytes[4..].chunks_exact(4) {
-            let proposed = u32::from_be_bytes(chunk.try_into().ok()?);
-            let this_rank = get_version_index(proposed);
-            if this_rank >= 0 {
-                *negotiated_vn = proposed;
-                *negotiated_index = this_rank;
-                break;
-            }
+
+    let mut tail = &bytes[4..];
+    while !tail.is_empty() {
+        if tail.len() < 4 {
+            *vn_error = crate::errors::TransportError::ParameterError as u64;
+            return None;
         }
-    } else {
-        for chunk in bytes[4..].chunks_exact(4) {
-            let _ = u32::from_be_bytes(chunk.try_into().ok()?);
+
+        let proposed = u32::from_be_bytes([tail[0], tail[1], tail[2], tail[3]]);
+        tail = &tail[4..];
+
+        if extension_mode == 0
+            && let Some(this_rank) = SUPPORTED_VERSIONS
+                .iter()
+                .position(|version| *version as u32 == proposed)
+        {
+            *negotiated_vn = proposed;
+            *negotiated_index = this_rank as i32;
+            break;
         }
     }
-    Some(&bytes[bytes.len()..])
+
+    Some(tail)
 }
 
 impl Connection {
@@ -21182,6 +23550,7 @@ impl Connection {
         0
     }
 
+    /// C: `picoquic/transport.c:picoquic_prepare_transport_extensions`.
     pub fn prepare_transport_extensions(
         &mut self,
         extension_mode: i32,
@@ -21189,136 +23558,343 @@ impl Connection {
         bytes_max: usize,
         consumed: &mut usize,
     ) -> i32 {
-        let tp = &self.local_parameters;
-        let mut out = Vec::new();
-        let ok = encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::InitialMaxData as u64,
-            tp.initial_max_data,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::InitialMaxStreamDataBidiLocal as u64,
-            tp.initial_max_stream_data_bidi_local,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::InitialMaxStreamDataBidiRemote as u64,
-            tp.initial_max_stream_data_bidi_remote,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::InitialMaxStreamDataUni as u64,
-            tp.initial_max_stream_data_uni,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::InitialMaxStreamsBidi as u64,
-            tp.initial_max_stream_id_bidir,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::InitialMaxStreamsUni as u64,
-            tp.initial_max_stream_id_unidir,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::IdleTimeout as u64,
-            tp.max_idle_timeout.ticks(),
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::MaxPacketSize as u64,
-            tp.max_packet_size as u64,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::MaxAckDelay as u64,
-            tp.max_ack_delay as u64,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::AckDelayExponent as u64,
-            tp.ack_delay_exponent as u64,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::ActiveConnectionIdLimit as u64,
-            tp.active_connection_id_limit as u64,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::MaxDatagramFrameSize as u64,
-            tp.max_datagram_frame_size as u64,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::EnableLossBit as u64,
-            tp.enable_loss_bit as u64,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::EnableTimeStamp as u64,
-            tp.enable_time_stamp as u64,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::MinAckDelay as u64,
-            tp.min_ack_delay.ticks(),
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::InitialMaxPathId as u64,
-            tp.initial_max_path_id,
-        ) && encode_tp_varint_param(
-            &mut out,
-            crate::tp::TransportParameter::AddressDiscovery as u64,
-            tp.address_discovery_mode as u64,
-        );
-        if !ok {
-            return -1;
-        }
-        if tp.migration_disabled
-            && !encode_tp_param(
-                &mut out,
-                crate::tp::TransportParameter::DisableMigration as u64,
-                &[],
-            )
-        {
-            return -1;
-        }
-        if tp.do_grease_quic_bit
-            && !encode_tp_varint_param(
-                &mut out,
-                crate::tp::TransportParameter::GreaseQuicBit as u64,
-                1,
-            )
-        {
-            return -1;
-        }
-        if tp.enable_bdp_frame
-            && !encode_tp_varint_param(
-                &mut out,
-                crate::tp::TransportParameter::EnableBdpFrame as u64,
-                1,
-            )
-        {
-            return -1;
-        }
-        if tp.is_reset_stream_at_enabled
-            && !encode_tp_varint_param(
-                &mut out,
-                crate::tp::TransportParameter::ResetStreamAt as u64,
-                1,
-            )
-        {
-            return -1;
-        }
-        if extension_mode != 0 {
-            let mut vn = Vec::new();
-            vn.extend_from_slice(&self.proposed_version.to_be_bytes());
-            if self.desired_version != 0 {
-                vn.extend_from_slice(&self.desired_version.to_be_bytes());
+        let bytes_max = bytes_max.min(bytes.len());
+        let handshake_cid = self.local_cnxid();
+        let initial_cid = self.initial_connection_id;
+        let original_cid = self.original_connection_id;
+
+        let written = {
+            let mut tail = Some(&mut bytes[..bytes_max]);
+
+            transport_tail_encode(&mut tail, |bytes| {
+                picoquic_transport_param_type_varint_encode(
+                    bytes,
+                    crate::tp::TransportParameter::InitialMaxStreamDataBidiLocal,
+                    self.local_parameters.initial_max_stream_data_bidi_local,
+                )
+            });
+
+            transport_tail_encode(&mut tail, |bytes| {
+                picoquic_transport_param_type_varint_encode(
+                    bytes,
+                    crate::tp::TransportParameter::InitialMaxData,
+                    self.local_parameters.initial_max_data,
+                )
+            });
+
+            if self.local_parameters.initial_max_stream_id_bidir > 0 {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::InitialMaxStreamsBidi,
+                        self.local_parameters.initial_max_stream_id_bidir,
+                    )
+                });
             }
-            if !encode_tp_param(
-                &mut out,
-                crate::tp::TransportParameter::VersionNegotiation as u64,
-                &vn,
-            ) {
-                return -1;
+
+            if self.local_parameters.max_idle_timeout.ticks() > 0 {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::IdleTimeout,
+                        self.local_parameters.max_idle_timeout.ticks(),
+                    )
+                });
             }
+
+            transport_tail_encode(&mut tail, |bytes| {
+                picoquic_transport_param_type_varint_encode(
+                    bytes,
+                    crate::tp::TransportParameter::MaxPacketSize,
+                    self.local_parameters.max_packet_size as u64,
+                )
+            });
+
+            if self.local_parameters.ack_delay_exponent != 3 {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::AckDelayExponent,
+                        self.local_parameters.ack_delay_exponent as u64,
+                    )
+                });
+            }
+
+            if self.local_parameters.initial_max_stream_id_unidir > 0 {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::InitialMaxStreamsUni,
+                        self.local_parameters.initial_max_stream_id_unidir,
+                    )
+                });
+            }
+
+            if self.local_parameters.preferred_address.v4.is_some()
+                || self.local_parameters.preferred_address.v6.is_some()
+            {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_encode_transport_preferred_address_address(
+                        bytes,
+                        &self.local_parameters.preferred_address,
+                    )
+                });
+            }
+
+            if self.local_parameters.migration_disabled && tail.is_some() {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_flag_encode(
+                        bytes,
+                        crate::tp::TransportParameter::DisableMigration,
+                    )
+                });
+            }
+
+            if self.local_parameters.initial_max_stream_data_bidi_remote > 0 {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::InitialMaxStreamDataBidiRemote,
+                        self.local_parameters.initial_max_stream_data_bidi_remote,
+                    )
+                });
+            }
+
+            if self.local_parameters.initial_max_stream_data_uni > 0 {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::InitialMaxStreamDataUni,
+                        self.local_parameters.initial_max_stream_data_uni,
+                    )
+                });
+            }
+
+            if self.local_parameters.active_connection_id_limit > 0 {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::ActiveConnectionIdLimit,
+                        self.local_parameters.active_connection_id_limit as u64,
+                    )
+                });
+            }
+
+            if self.local_parameters.max_ack_delay != ACK_DELAY_MAX_DEFAULT.ticks() as u32 {
+                let max_ack_delay_ms =
+                    u64::from(self.local_parameters.max_ack_delay).div_ceil(1000);
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::MaxAckDelay,
+                        max_ack_delay_ms,
+                    )
+                });
+            }
+
+            transport_tail_encode(&mut tail, |bytes| {
+                picoquic_transport_param_cid_encode(
+                    bytes,
+                    crate::tp::TransportParameter::HandshakeConnectionId,
+                    &handshake_cid,
+                )
+            });
+
+            if extension_mode == 1 {
+                if !original_cid.is_empty() {
+                    transport_tail_encode(&mut tail, |bytes| {
+                        picoquic_transport_param_cid_encode(
+                            bytes,
+                            crate::tp::TransportParameter::OriginalConnectionId,
+                            &original_cid,
+                        )
+                    });
+                    transport_tail_encode(&mut tail, |bytes| {
+                        picoquic_transport_param_cid_encode(
+                            bytes,
+                            crate::tp::TransportParameter::RetryConnectionId,
+                            &initial_cid,
+                        )
+                    });
+                } else if self.is_hcid_verified {
+                    transport_tail_encode(&mut tail, |bytes| {
+                        picoquic_transport_param_cid_encode(
+                            bytes,
+                            crate::tp::TransportParameter::OriginalConnectionId,
+                            &initial_cid,
+                        )
+                    });
+                }
+            }
+
+            if extension_mode == 1 && tail.is_some() {
+                let mut reset_secret = [0u8; RESET_SECRET_SIZE];
+                if self.quic_mut().is_some_and(|quic| {
+                    quic.create_connection_id_reset_secret(&handshake_cid, &mut reset_secret)
+                        .is_ok()
+                }) {
+                    transport_tail_encode(&mut tail, |bytes| {
+                        picoquic_transport_param_stateless_reset_token_encode(bytes, &reset_secret)
+                    });
+                } else {
+                    tail = None;
+                }
+            }
+
+            if !self.client_mode
+                && self.local_parameters.max_datagram_frame_size == 0
+                && self.remote_parameters.max_datagram_frame_size > 0
+            {
+                self.local_parameters.max_datagram_frame_size = crate::MAX_PACKET_SIZE as u32;
+            }
+
+            if self.local_parameters.max_datagram_frame_size > 0 && tail.is_some() {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::MaxDatagramFrameSize,
+                        self.local_parameters.max_datagram_frame_size as u64,
+                    )
+                });
+            }
+
+            if self.grease_transport_parameters {
+                let initial_cid_bytes = initial_cid.as_bytes();
+                let initial_cid_byte = |index| initial_cid_bytes.get(index).copied().unwrap_or(0);
+                let mut grease_type =
+                    31 * (u64::from(initial_cid_byte(0)) + u64::from(self.client_mode)) + 27;
+                while grease_type == crate::tp::TransportParameter::TestLargeChello as u64 {
+                    grease_type += 31;
+                }
+                let grease_value =
+                    (u64::from(initial_cid_byte(1)) << 8) + u64::from(initial_cid_byte(2));
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode_raw(
+                        bytes,
+                        grease_type,
+                        grease_value,
+                    )
+                });
+            }
+
+            if self.test_large_chello && tail.is_some() {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_test_padding_encode(bytes, 1200)
+                });
+            }
+
+            if self.local_parameters.enable_loss_bit > 0 && tail.is_some() {
+                let loss_bit_value = u64::from(self.local_parameters.enable_loss_bit > 1);
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::EnableLossBit,
+                        loss_bit_value,
+                    )
+                });
+            }
+
+            if self.local_parameters.min_ack_delay.ticks() > 0 && tail.is_some() {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::MinAckDelay,
+                        self.local_parameters.min_ack_delay.ticks(),
+                    )
+                });
+            }
+
+            if self.local_parameters.enable_time_stamp > 0 && tail.is_some() {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::EnableTimeStamp,
+                        self.local_parameters.enable_time_stamp as u64,
+                    )
+                });
+            }
+
+            if self.local_parameters.do_grease_quic_bit && tail.is_some() {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_flag_encode(
+                        bytes,
+                        crate::tp::TransportParameter::GreaseQuicBit,
+                    )
+                });
+            }
+
+            if self.do_version_negotiation && tail.is_some() {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_encode_transport_param_version_negotiation(bytes, extension_mode, self)
+                });
+            }
+
+            if self.local_parameters.enable_bdp_frame && tail.is_some() {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::EnableBdpFrame,
+                        u64::from(self.local_parameters.enable_bdp_frame),
+                    )
+                });
+            }
+
+            if self.local_parameters.initial_max_path_id > 0 && tail.is_some() {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::InitialMaxPathId,
+                        self.local_parameters.initial_max_path_id,
+                    )
+                });
+            }
+
+            if self.local_parameters.address_discovery_mode > 0 && tail.is_some() {
+                let address_discovery_value =
+                    (self.local_parameters.address_discovery_mode - 1) as u64;
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_varint_encode(
+                        bytes,
+                        crate::tp::TransportParameter::AddressDiscovery,
+                        address_discovery_value,
+                    )
+                });
+            }
+
+            if self.local_parameters.is_reset_stream_at_enabled && tail.is_some() {
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_type_flag_encode(
+                        bytes,
+                        crate::tp::TransportParameter::ResetStreamAt,
+                    )
+                });
+            }
+
+            if extension_mode == 1
+                && !self.test_large_chello
+                && self
+                    .quic_ref()
+                    .is_some_and(|quic| quic.test_large_server_flight)
+                && tail.is_some()
+            {
+                let available = tail.as_ref().map(|bytes| bytes.len()).unwrap_or(0);
+                let pad_length = if available > 24 { available - 24 } else { 1 };
+                transport_tail_encode(&mut tail, |bytes| {
+                    picoquic_transport_param_test_padding_encode(bytes, pad_length)
+                });
+            }
+
+            tail.map(|bytes| bytes_max - bytes.len())
+        };
+
+        if let Some(written) = written {
+            *consumed = written;
+            crate::logger::Log::transport_extension(self, true, &bytes[..written]);
+            0
+        } else {
+            *consumed = 0;
+            crate::errors::InternalError::ExtensionBufferTooSmall as i32
         }
-        if out.len() > bytes_max || out.len() > bytes.len() {
-            return -1;
-        }
-        bytes[..out.len()].copy_from_slice(&out);
-        *consumed = out.len();
-        0
     }
 }
 
@@ -21365,156 +23941,725 @@ impl Connection {
         consumed: &mut usize,
     ) -> i32 {
         *consumed = 0;
+        let bytes_max = bytes_max.min(bytes.len());
+        let mut byte_index = 0usize;
+        let mut present_flag = 0u64;
+        let mut original_connection_id = ConnectionId::default();
+        let mut handshake_connection_id = ConnectionId::default();
+        let mut retry_connection_id = ConnectionId::default();
+        let mut ret = 0;
+
         self.remote_parameters_received = true;
         self.picoquic_clear_transport_extensions();
-        let mut tail = &bytes[..bytes_max.min(bytes.len())];
-        let mut tp = self.remote_parameters.clone();
-        while !tail.is_empty() {
-            let before = tail.len();
-            let mut id = 0;
-            let Some(after_id) = frames_varint_decode(tail, &mut id) else {
-                return -1;
-            };
-            let mut len = 0;
-            let Some(after_len) = frames_varint_decode(after_id, &mut len) else {
-                return -1;
-            };
-            if after_len.len() < len as usize {
-                return -1;
-            }
-            let value = &after_len[..len as usize];
-            match id {
-                x if x == crate::tp::TransportParameter::InitialMaxData as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.initial_max_data = v;
+
+        crate::logger::Log::transport_extension(self, false, &bytes[..bytes_max]);
+
+        self.remote_parameters = TransportParameters::default();
+        self.remote_parameters.ack_delay_exponent = 3;
+
+        let stream_id_from_rank = |rank: u64, client_mode: bool, is_unidir: bool| -> u64 {
+            let role_bit = u64::from(!client_mode);
+            let dir_bit = if is_unidir { 2 } else { 0 };
+            (rank.wrapping_sub(1) << 2) | dir_bit | role_bit
+        };
+
+        while ret == 0 && byte_index < bytes_max {
+            let mut extension_type = u64::MAX;
+            let mut extension_length = 0u64;
+
+            if byte_index + 2 > bytes_max {
+                ret = self.connection_error_ex(
+                    crate::errors::TransportError::ParameterError as u64,
+                    0,
+                    Some("TP length"),
+                );
+            } else {
+                let ll_type = varint_decode(&bytes[byte_index..bytes_max], &mut extension_type);
+                byte_index += ll_type;
+                let ll_length = varint_decode(&bytes[byte_index..bytes_max], &mut extension_length);
+                byte_index += ll_length;
+
+                if ll_type == 0
+                    || ll_length == 0
+                    || extension_length > bytes_max.saturating_sub(byte_index) as u64
+                {
+                    ret = self
+                        .connection_error(crate::errors::TransportError::ParameterError as u64, 0);
+                    continue;
+                }
+
+                let extension_length_usize = match usize::try_from(extension_length) {
+                    Ok(length) => length,
+                    Err(_) => {
+                        ret = self.connection_error(
+                            crate::errors::TransportError::ParameterError as u64,
+                            0,
+                        );
+                        continue;
+                    }
+                };
+                let value = &bytes[byte_index..byte_index + extension_length_usize];
+
+                if extension_type < 64 {
+                    let flag = 1u64 << extension_type;
+                    if (present_flag & flag) != 0 {
+                        ret = self.connection_error_ex(
+                            crate::errors::TransportError::ParameterError as u64,
+                            0,
+                            Some("Malformed TP"),
+                        );
+                    } else {
+                        present_flag |= flag;
                     }
                 }
-                x if x == crate::tp::TransportParameter::InitialMaxStreamDataBidiLocal as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.initial_max_stream_data_bidi_local = v;
-                    }
+
+                if ret != 0 {
+                    continue;
                 }
-                x if x == crate::tp::TransportParameter::InitialMaxStreamDataBidiRemote as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.initial_max_stream_data_bidi_remote = v;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::InitialMaxStreamDataUni as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.initial_max_stream_data_uni = v;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::InitialMaxStreamsBidi as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.initial_max_stream_id_bidir = v;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::InitialMaxStreamsUni as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.initial_max_stream_id_unidir = v;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::IdleTimeout as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.max_idle_timeout = Duration::from_ticks(v);
-                    }
-                }
-                x if x == crate::tp::TransportParameter::MaxPacketSize as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.max_packet_size = v as u32;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::MaxAckDelay as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.max_ack_delay = v as u32;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::AckDelayExponent as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.ack_delay_exponent = v as u8;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::ActiveConnectionIdLimit as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.active_connection_id_limit = v as u32;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::DisableMigration as u64 => {
-                    tp.migration_disabled = true;
-                }
-                x if x == crate::tp::TransportParameter::MaxDatagramFrameSize as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.max_datagram_frame_size = v as u32;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::EnableLossBit as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.enable_loss_bit = v as i32;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::EnableTimeStamp as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.enable_time_stamp = v as i32;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::MinAckDelay as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.min_ack_delay = Duration::from_ticks(v);
-                    }
-                }
-                x if x == crate::tp::TransportParameter::GreaseQuicBit as u64 => {
-                    tp.do_grease_quic_bit = true;
-                }
-                x if x == crate::tp::TransportParameter::EnableBdpFrame as u64 => {
-                    tp.enable_bdp_frame = true;
-                }
-                x if x == crate::tp::TransportParameter::InitialMaxPathId as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.initial_max_path_id = v;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::AddressDiscovery as u64 => {
-                    if let Some(v) = decode_single_varint(value) {
-                        tp.address_discovery_mode = v as i32;
-                    }
-                }
-                x if x == crate::tp::TransportParameter::ResetStreamAt as u64 => {
-                    tp.is_reset_stream_at_enabled = true;
-                }
-                x if x == crate::tp::TransportParameter::VersionNegotiation as u64 => {
-                    let mut negotiated = 0;
-                    let mut negotiated_index = -1;
-                    let mut vn_error = 0;
-                    if process_tp_version_negotiation(
-                        value,
-                        extension_mode,
-                        self.version_number(),
-                        &mut negotiated,
-                        &mut negotiated_index,
-                        &mut vn_error,
-                    )
-                    .is_none()
-                    {
-                        return -1;
-                    }
-                    tp.version_negotiation.current = negotiated;
-                    self.do_version_negotiation = true;
-                    if negotiated != 0 && self.version_index != negotiated_index {
-                        let ret =
-                            self.process_version_upgrade(self.version_index, negotiated_index);
-                        if ret != 0 {
-                            return ret;
+
+                match extension_type {
+                    x if x == crate::tp::TransportParameter::InitialMaxData as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.initial_max_data = v;
+                            self.maxdata_remote = self.remote_parameters.initial_max_data;
                         }
                     }
-                    let _ = vn_error;
+                    x if x
+                        == crate::tp::TransportParameter::InitialMaxStreamDataBidiLocal as u64 =>
+                    {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.initial_max_stream_data_bidi_local = v;
+                            self.update_stream_initial_remote();
+                        }
+                    }
+                    x if x
+                        == crate::tp::TransportParameter::InitialMaxStreamDataBidiRemote as u64 =>
+                    {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.initial_max_stream_data_bidi_remote = v;
+                            self.update_stream_initial_remote();
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::InitialMaxStreamDataUni as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.initial_max_stream_data_uni = v;
+                            self.update_stream_initial_remote();
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::InitialMaxStreamsBidi as u64 => {
+                        let old_limit = self.max_stream_id_bidir_remote;
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.initial_max_stream_id_bidir = v;
+                            if v >= (1u64 << 60) {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                    Some("Max streams bidir"),
+                                );
+                            } else {
+                                self.max_stream_id_bidir_remote =
+                                    stream_id_from_rank(v, self.client_mode, false);
+                                self.max_stream_data_remote =
+                                    self.remote_parameters.initial_max_stream_data_bidi_remote;
+                                self.add_output_streams(
+                                    old_limit,
+                                    self.max_stream_id_bidir_remote,
+                                    true,
+                                );
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::InitialMaxStreamsUni as u64 => {
+                        let old_limit = self.max_stream_id_unidir_remote;
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.initial_max_stream_id_unidir = v;
+                            if v >= (1u64 << 60) {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                    Some("Max streams unidir"),
+                                );
+                            } else {
+                                self.max_stream_id_unidir_remote =
+                                    stream_id_from_rank(v, self.client_mode, true);
+                                self.add_output_streams(
+                                    old_limit,
+                                    self.max_stream_id_unidir_remote,
+                                    false,
+                                );
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::IdleTimeout as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.max_idle_timeout = Duration::from_ticks(v);
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::MaxPacketSize as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            if !(1200..=65527).contains(&v) {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                    Some("Max packet size TP"),
+                                );
+                            } else {
+                                self.remote_parameters.max_packet_size = v as u32;
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::MaxAckDelay as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            if v > MAX_ACK_DELAY_MAX_MS {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                    Some("Max ack delay too large"),
+                                );
+                            } else {
+                                self.remote_parameters.max_ack_delay = (v as u32) * 1000;
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::AckDelayExponent as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            if v > 20 {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                    Some("ack delay exponent over 20"),
+                                );
+                            } else {
+                                self.remote_parameters.ack_delay_exponent = v as u8;
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::ActiveConnectionIdLimit as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.active_connection_id_limit = v as u32;
+                            if self.remote_parameters.active_connection_id_limit < 2 {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                    Some("CID limit too small."),
+                                );
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::DisableMigration as u64 => {
+                        if extension_length != 0 {
+                            ret = self.connection_error_ex(
+                                crate::errors::TransportError::ParameterError as u64,
+                                0,
+                                Some("Disable migration TP"),
+                            );
+                        } else {
+                            self.remote_parameters.migration_disabled = true;
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::MaxDatagramFrameSize as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.max_datagram_frame_size = v as u32;
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::EnableLossBit as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            if v == 0 {
+                                self.remote_parameters.enable_loss_bit = 1;
+                            } else if v == 1 {
+                                self.remote_parameters.enable_loss_bit = 2;
+                            } else {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                    Some("Loss bit TP"),
+                                );
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::EnableTimeStamp as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            if !(1..=3).contains(&v) {
+                                ret = self.connection_error(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                );
+                            } else {
+                                self.remote_parameters.enable_time_stamp = v as i32;
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::MinAckDelay as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.min_ack_delay = Duration::from_ticks(v);
+                            if v == 0 || v > ACK_DELAY_MIN_MAX_VALUE {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ProtocolViolation as u64,
+                                    0,
+                                    Some("Min ack delay TP"),
+                                );
+                            } else if self.local_parameters.min_ack_delay.ticks() > 0 {
+                                self.is_ack_frequency_negotiated = true;
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::GreaseQuicBit as u64 => {
+                        if extension_length != 0 {
+                            ret = self.connection_error_ex(
+                                crate::errors::TransportError::ParameterError as u64,
+                                0,
+                                Some("Grease TP"),
+                            );
+                        } else {
+                            self.remote_parameters.do_grease_quic_bit = true;
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::EnableBdpFrame as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            if v > 1 {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                    Some("BDP parameter"),
+                                );
+                            } else {
+                                self.remote_parameters.enable_bdp_frame = v != 0;
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::InitialMaxPathId as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            self.remote_parameters.initial_max_path_id = v;
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::AddressDiscovery as u64 => {
+                        let v = picoquic_transport_param_varint_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut ret,
+                        );
+                        if ret == 0 {
+                            if v > 2 {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                    Some("Address discovery parameter"),
+                                );
+                            } else {
+                                self.remote_parameters.address_discovery_mode = (v + 1) as i32;
+                                self.is_address_discovery_provider =
+                                    (self.remote_parameters.address_discovery_mode & 2) != 0
+                                        && (self.local_parameters.address_discovery_mode & 1) != 0;
+                                self.is_address_discovery_receiver =
+                                    (self.remote_parameters.address_discovery_mode & 1) != 0
+                                        && (self.local_parameters.address_discovery_mode & 2) != 0;
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::ResetStreamAt as u64 => {
+                        if extension_length != 0 {
+                            ret = self.connection_error_ex(
+                                crate::errors::TransportError::ParameterError as u64,
+                                0,
+                                Some("Reset Stream At TP"),
+                            );
+                        } else {
+                            self.remote_parameters.is_reset_stream_at_enabled = true;
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::VersionNegotiation as u64 => {
+                        let mut negotiated = 0;
+                        let mut negotiated_index = -1;
+                        let mut vn_error = 0;
+                        let envelope_version = supported_version_from_index(self.version_index)
+                            .map(|version| version as u32)
+                            .unwrap_or(self.proposed_version);
+                        if process_tp_version_negotiation(
+                            value,
+                            extension_mode,
+                            envelope_version,
+                            &mut negotiated,
+                            &mut negotiated_index,
+                            &mut vn_error,
+                        )
+                        .is_none()
+                        {
+                            ret = self.connection_error_ex(vn_error, 0, Some("V. Negotiation TP"));
+                        } else {
+                            self.do_version_negotiation = true;
+                            if negotiated != 0 && self.version_index != negotiated_index {
+                                ret = self
+                                    .process_version_upgrade(self.version_index, negotiated_index);
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::StatelessResetToken as u64 => {
+                        if extension_mode != 1 {
+                            ret = self.connection_error_ex(
+                                crate::errors::TransportError::ParameterError as u64,
+                                0,
+                                Some("Reset token from client"),
+                            );
+                        } else if extension_length != RESET_SECRET_SIZE as u64 {
+                            ret = self.connection_error_ex(
+                                crate::errors::TransportError::ParameterError as u64,
+                                0,
+                                Some("Reset token TP"),
+                            );
+                        } else {
+                            let unique_path_id = self
+                                .paths
+                                .first()
+                                .map(|path| path.unique_path_id)
+                                .unwrap_or(0);
+                            let remote_cid_index = self
+                                .paths
+                                .first()
+                                .and_then(|path| path.tuples.first())
+                                .and_then(|tuple| tuple.remote_connection_id_index)
+                                .unwrap_or(0);
+                            if let Some(remote_cid) = self
+                                .remote_connection_id_stashes
+                                .iter_mut()
+                                .find(|stash| stash.unique_path_id == unique_path_id)
+                                .and_then(|stash| stash.connection_ids.get_mut(remote_cid_index))
+                            {
+                                remote_cid.reset_secret.copy_from_slice(value);
+                            } else {
+                                ret = self.connection_error(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                );
+                            }
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::ServerPreferredAddress as u64 => {
+                        let coded_length = picoquic_decode_transport_preferred_address_address(
+                            value,
+                            extension_length_usize,
+                            &mut self.remote_parameters.preferred_address,
+                        );
+                        if coded_length != extension_length_usize {
+                            ret = self.connection_error_ex(
+                                crate::errors::TransportError::ParameterError as u64,
+                                0,
+                                Some("Preferred address TP"),
+                            );
+                        }
+                    }
+                    x if x == crate::tp::TransportParameter::OriginalConnectionId as u64 => {
+                        ret = picoquic_transport_param_cid_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut original_connection_id,
+                        );
+                    }
+                    x if x == crate::tp::TransportParameter::RetryConnectionId as u64 => {
+                        ret = picoquic_transport_param_cid_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut retry_connection_id,
+                        );
+                    }
+                    x if x == crate::tp::TransportParameter::HandshakeConnectionId as u64 => {
+                        ret = picoquic_transport_param_cid_decode(
+                            self,
+                            value,
+                            extension_length,
+                            &mut handshake_connection_id,
+                        );
+                        if ret == 0 {
+                            let unique_path_id = self
+                                .paths
+                                .first()
+                                .map(|path| path.unique_path_id)
+                                .unwrap_or(0);
+                            let remote_cid_index = self
+                                .paths
+                                .first()
+                                .and_then(|path| path.tuples.first())
+                                .and_then(|tuple| tuple.remote_connection_id_index)
+                                .unwrap_or(0);
+                            let expected_hcid = self
+                                .remote_connection_id_stashes
+                                .iter()
+                                .find(|stash| stash.unique_path_id == unique_path_id)
+                                .and_then(|stash| stash.connection_ids.get(remote_cid_index))
+                                .map(|remote_cid| remote_cid.connection_id);
+                            if expected_hcid != Some(handshake_connection_id) {
+                                ret = self.connection_error_ex(
+                                    crate::errors::TransportError::ParameterError as u64,
+                                    0,
+                                    Some("HCID check"),
+                                );
+                            } else {
+                                self.is_hcid_verified = true;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
+
+                if ret == 0 {
+                    byte_index += extension_length_usize;
+                }
             }
-            tail = &after_len[len as usize..];
-            *consumed += before - tail.len();
         }
-        self.remote_parameters = tp;
-        0
+
+        let local_idle = self.local_parameters.max_idle_timeout.ticks();
+        let remote_idle = self.remote_parameters.max_idle_timeout.ticks();
+        let mut idle_timeout = local_idle.saturating_mul(1000);
+        if local_idle == 0 || (remote_idle > 0 && remote_idle < local_idle) {
+            idle_timeout = remote_idle.saturating_mul(1000);
+        }
+        self.idle_timeout = if idle_timeout == 0 {
+            Duration::from_ticks(u64::MAX)
+        } else {
+            if self.keep_alive_interval.ticks() != 0
+                && self.keep_alive_interval.ticks() > idle_timeout / 2
+            {
+                self.keep_alive_interval = Duration::from_ticks(idle_timeout / 2);
+            }
+            Duration::from_ticks(idle_timeout)
+        };
+
+        let has_tp = |tp: crate::tp::TransportParameter| -> bool {
+            let tp = tp as u64;
+            tp < 64 && (present_flag & (1u64 << tp)) != 0
+        };
+
+        if ret == 0 && !has_tp(crate::tp::TransportParameter::MaxAckDelay) {
+            self.remote_parameters.max_ack_delay = ACK_DELAY_MAX_DEFAULT.ticks() as u32;
+        }
+
+        if ret == 0 && !has_tp(crate::tp::TransportParameter::ActiveConnectionIdLimit) {
+            self.remote_parameters.active_connection_id_limit = if self.local_cnxid().is_empty() {
+                0
+            } else {
+                NB_PATH_DEFAULT as u32
+            };
+        }
+
+        if ret == 0
+            && extension_mode == 0
+            && (has_tp(crate::tp::TransportParameter::StatelessResetToken)
+                || has_tp(crate::tp::TransportParameter::ServerPreferredAddress)
+                || has_tp(crate::tp::TransportParameter::OriginalConnectionId)
+                || has_tp(crate::tp::TransportParameter::RetryConnectionId))
+        {
+            ret = self.connection_error_ex(
+                crate::errors::TransportError::ParameterError as u64,
+                0,
+                Some("T. Param. unexpected on client"),
+            );
+        }
+
+        if ret == 0
+            && supported_version_from_index(self.version_index) != Some(Version::SeventeenthInterop)
+            && !has_tp(crate::tp::TransportParameter::HandshakeConnectionId)
+        {
+            ret = self.connection_error_ex(
+                crate::errors::TransportError::ParameterError as u64,
+                0,
+                Some("HCID missing"),
+            );
+        }
+
+        let has_retry = !self.original_connection_id.is_empty();
+
+        if ret == 0 && extension_mode == 1 {
+            if has_tp(crate::tp::TransportParameter::HandshakeConnectionId) {
+                if has_retry {
+                    if !has_tp(crate::tp::TransportParameter::RetryConnectionId)
+                        || !has_tp(crate::tp::TransportParameter::OriginalConnectionId)
+                        || self.original_connection_id != original_connection_id
+                        || self.initial_connection_id != retry_connection_id
+                    {
+                        ret = self.connection_error_ex(
+                            crate::errors::TransportError::ParameterError as u64,
+                            0,
+                            Some("OCID verification"),
+                        );
+                    }
+                } else if has_tp(crate::tp::TransportParameter::RetryConnectionId)
+                    || !has_tp(crate::tp::TransportParameter::OriginalConnectionId)
+                    || self.initial_connection_id != original_connection_id
+                {
+                    ret = self.connection_error_ex(
+                        crate::errors::TransportError::ParameterError as u64,
+                        0,
+                        Some("HCID or no OCID"),
+                    );
+                }
+            } else if supported_version_from_index(self.version_index)
+                == Some(Version::SeventeenthInterop)
+                && has_retry
+                && (!has_tp(crate::tp::TransportParameter::OriginalConnectionId)
+                    || self.original_connection_id != original_connection_id)
+            {
+                ret = self.connection_error_ex(
+                    crate::errors::TransportError::ParameterError as u64,
+                    0,
+                    Some("old draft version"),
+                );
+            }
+        }
+
+        if ret == 0 {
+            ret = self.negotiate_multipath_option();
+        }
+
+        self.is_loss_bit_enabled_outgoing =
+            self.local_parameters.enable_loss_bit > 1 && self.remote_parameters.enable_loss_bit > 0;
+        self.is_loss_bit_enabled_incoming =
+            self.local_parameters.enable_loss_bit > 0 && self.remote_parameters.enable_loss_bit > 1;
+
+        self.send_receive_bdp_frame =
+            self.local_parameters.enable_bdp_frame && self.remote_parameters.enable_bdp_frame;
+
+        if self.client_mode {
+            self.is_time_stamp_enabled = (self.local_parameters.enable_time_stamp & 1) != 0
+                && (self.remote_parameters.enable_time_stamp & 2) != 0;
+            self.is_time_stamp_sent = (self.local_parameters.enable_time_stamp & 2) != 0
+                && (self.remote_parameters.enable_time_stamp & 1) != 0;
+            self.do_grease_quic_bit = self.local_parameters.do_grease_quic_bit
+                && self.remote_parameters.do_grease_quic_bit;
+        } else {
+            if self.remote_parameters.enable_time_stamp != 0 {
+                let mut local_time_stamp = 0;
+                if (self.remote_parameters.enable_time_stamp & 1) != 0 {
+                    local_time_stamp |= 2;
+                    self.is_time_stamp_sent = true;
+                }
+                if (self.remote_parameters.enable_time_stamp & 2) != 0 {
+                    local_time_stamp |= 1;
+                    self.is_time_stamp_enabled = true;
+                }
+                self.local_parameters.enable_time_stamp = local_time_stamp;
+            }
+            let one_way_grease_quic_bit = self
+                .quic_ref()
+                .map(|quic| quic.one_way_grease_quic_bit)
+                .unwrap_or(false);
+            self.local_parameters.do_grease_quic_bit =
+                self.remote_parameters.do_grease_quic_bit && !one_way_grease_quic_bit;
+            self.do_grease_quic_bit = self.remote_parameters.do_grease_quic_bit;
+        }
+
+        if !self.client_mode && !self.is_ack_frequency_negotiated {
+            self.local_parameters.min_ack_delay = Duration::from_ticks(0);
+        }
+
+        self.is_reset_stream_at_enabled = self.remote_parameters.is_reset_stream_at_enabled
+            && self.local_parameters.is_reset_stream_at_enabled;
+
+        *consumed = byte_index;
+        ret
     }
 }
 
@@ -21523,8 +24668,14 @@ pub fn create_misc_frame(
     is_pure_ack: bool,
     pc: PacketContext,
 ) -> Result<MiscFrameHeader, crate::Error> {
+    let mut frame_bytes = Vec::new();
+    frame_bytes
+        .try_reserve_exact(bytes.len())
+        .map_err(|_| crate::Error::Memory)?;
+    frame_bytes.extend_from_slice(bytes);
+
     Ok(MiscFrameHeader {
-        bytes: bytes.to_vec(),
+        bytes: frame_bytes,
         packet_context: pc,
         is_pure_ack: if is_pure_ack { 1 } else { 0 },
     })
@@ -21553,11 +24704,21 @@ impl Connection {
         } else {
             self.rejected_version
         };
+
         self.version_index = new_version_index;
         self.proposed_version = new_version as u32;
         self.desired_version = self.proposed_version;
         self.local_parameters.version_negotiation.current = self.proposed_version;
-        0
+        self.crypto_context[Epoch::Initial as usize] = CryptoContext {
+            aead_encrypt: None,
+            aead_decrypt: None,
+            pn_enc: None,
+            pn_dec: None,
+        };
+        match self.setup_initial_traffic_keys() {
+            Ok(()) => 0,
+            Err(_) => -1,
+        }
     }
 }
 
@@ -22016,67 +25177,45 @@ impl Connection {
 // ---------------------------------------------------------------------------
 // Helpers used by the Phase 3A skip-frame test-body translation.
 
-/// Enqueue a remote CID (received in a NEW_CONNECTION_ID frame) into the
-/// connection's stash list.
-/// C: `picoquic_stash_remote_cnxid(cnx, sequence, cid_bytes, reset_secret)`.
+/// Enqueue a remote CID into the connection's per-path stash.
+///
+/// Returns the C transport error code and, when requested, the index of the
+/// newly stashed CID. Duplicates return success with `pstashed` set to `None`.
+///
+/// C: `picoquic_stash_remote_cnxid`.
 pub fn stash_remote_cnxid(
     cnx: &mut Connection,
+    retire_before_next: u64,
+    unique_path_id: u64,
     sequence: u64,
     cid_bytes: &[u8],
     reset_secret: &[u8],
-) -> crate::Result<()> {
-    use crate::RESET_SECRET_SIZE;
-    // Find or create a default stash (path_id 0).
-    let stash_idx = cnx
-        .find_or_create_remote_connection_id_stash(0, true)
-        .ok_or(crate::Error::Memory)?;
-    let cid = ConnectionId::clone_from_slice(cid_bytes).ok_or(crate::Error::Memory)?;
-    let mut secret = [0u8; RESET_SECRET_SIZE];
-    let copy_len = reset_secret.len().min(RESET_SECRET_SIZE);
-    secret[..copy_len].copy_from_slice(&reset_secret[..copy_len]);
-    let r_cid = RemoteConnectionId {
+    pstashed: Option<&mut Option<usize>>,
+) -> u64 {
+    let result = cnx.stash_remote_connection_id(
+        retire_before_next,
+        unique_path_id,
         sequence,
-        connection_id: cid,
-        reset_secret: secret,
-        nb_path_references: 0,
-        needs_removal: false,
-        retire_sent: false,
-        retire_acked: false,
-        pkt_ctx: PacketContextState {
-            send_sequence: 0,
-            next_sequence_hole: 0,
-            retransmit_sequence: 0,
-            highest_acknowledged: u64::MAX,
-            latest_time_acknowledged: crate::Instant::from_ticks(0),
-            highest_acknowledged_time: crate::Instant::from_ticks(0),
-            pending: std::collections::BTreeMap::new(),
-            retransmitted: std::collections::BTreeMap::new(),
-            preemptive_repeat_seq: None,
-            retransmitted_queue_size: 0,
-            ecn_ect0_total_remote: 0,
-            ecn_ect1_total_remote: 0,
-            ecn_ce_total_remote: 0,
-            ack_of_ack_requested: false,
-        },
-    };
-    cnx.remote_connection_id_stashes[stash_idx]
-        .connection_ids
-        .push(r_cid);
-    Ok(())
+        cid_bytes,
+        reset_secret,
+    );
+    if let Some(stashed) = pstashed {
+        *stashed = result.stashed_index;
+    }
+    result.status
 }
 
-/// Remove and return one CID from the connection's stash list.  Returns
-/// `Ok(true)` when a CID was available, `Ok(false)` when the list was empty.
-/// C: `picoquic_obtain_stashed_cnxid(cnx)`.
-pub fn obtain_stashed_cnxid(cnx: &mut Connection) -> crate::Result<bool> {
-    if let Some(stash) = cnx.remote_connection_id_stashes.first_mut() {
-        if stash.connection_ids.is_empty() {
-            return Ok(false);
-        }
-        stash.connection_ids.remove(0);
-        return Ok(true);
-    }
-    Ok(false)
+/// Return the first usable stashed CID for `unique_path_id` without removing it.
+/// C: `picoquic_obtain_stashed_cnxid`.
+pub fn obtain_stashed_cnxid(
+    cnx: &mut Connection,
+    unique_path_id: u64,
+) -> Option<&mut RemoteConnectionId> {
+    let (stash_idx, cid_idx) = cnx.obtain_stashed_connection_id(unique_path_id)?;
+    cnx.remote_connection_id_stashes
+        .get_mut(stash_idx)?
+        .connection_ids
+        .get_mut(cid_idx)
 }
 
 /// Splay tree of [`StreamDataNode`]s keyed by byte offset.
@@ -24188,22 +27327,11 @@ impl Connection {
             {
                 let unique_path_id = self.next_path_id_in_lists;
                 if self
-                    .local_connection_id_lists
-                    .iter()
-                    .all(|list| list.unique_path_id != unique_path_id)
+                    .find_or_create_local_connection_id_list(unique_path_id, true)
+                    .is_none()
                 {
-                    self.local_connection_id_lists.push(LocalConnectionIdList {
-                        unique_path_id,
-                        local_connection_id_sequence_next: 0,
-                        local_connection_id_retire_before: 0,
-                        local_connection_id_oldest_created: current_time.ticks(),
-                        nb_local_connection_id_expired: 0,
-                        is_demoted: false,
-                        demotion_time: Instant::from_ticks(u64::MAX),
-                        connection_ids: Vec::new(),
-                    });
+                    no_space_left = true;
                 }
-                self.next_path_id_in_lists = self.next_path_id_in_lists.saturating_add(1);
             }
         }
 
@@ -24864,6 +27992,7 @@ impl Connection {
                                         &mut tuple,
                                         current_time,
                                         next_wake_time,
+                                        &mut self.observed_number,
                                         &mut more_data,
                                         &mut is_pure_ack,
                                     )
@@ -26487,6 +29616,626 @@ mod test {
         assert!(matches!(result, Err(crate::Error::InvalidFile)));
         assert_eq!(quic.stored_tickets.len(), 1);
         assert_eq!(quic.stored_tickets[0].ticket.as_slice(), &[0xcc_u8; 8][..]);
+    }
+
+    fn test_misc_frame(
+        bytes: &[u8],
+        packet_context: PacketContext,
+        is_pure_ack: i32,
+    ) -> MiscFrameHeader {
+        MiscFrameHeader {
+            bytes: bytes.to_vec(),
+            packet_context,
+            is_pure_ack,
+        }
+    }
+
+    fn test_ack_context() -> AckContext {
+        AckContext {
+            sack_list: SackList::new(),
+            time_stamp_largest_received: Instant::from_ticks(42),
+            act: [
+                AckContextTrack {
+                    highest_ack_sent: 10,
+                    highest_ack_sent_time: Instant::from_ticks(11),
+                    time_oldest_unack_packet_received: Instant::from_ticks(12),
+                    ack_needed: true,
+                    ack_after_fin: true,
+                    out_of_order_received: true,
+                    is_immediate_ack_required: true,
+                },
+                AckContextTrack {
+                    highest_ack_sent: 20,
+                    highest_ack_sent_time: Instant::from_ticks(21),
+                    time_oldest_unack_packet_received: Instant::from_ticks(22),
+                    ack_needed: true,
+                    ack_after_fin: false,
+                    out_of_order_received: true,
+                    is_immediate_ack_required: false,
+                },
+            ],
+            crypto_rotation_sequence: 77,
+            ecn_ect0_total_local: 1,
+            ecn_ect1_total_local: 2,
+            ecn_ce_total_local: 3,
+            sending_ecn_ack: true,
+        }
+    }
+
+    fn test_stream_head() -> StreamHead {
+        StreamHead {
+            stream_tree_membership: None,
+            stream_id: 17,
+            affinity_path: None,
+            consumed_offset: 11,
+            fin_offset: 12,
+            reset_offset: 13,
+            maxdata_local: 1_000,
+            maxdata_local_acked: 900,
+            maxdata_remote: 2_000,
+            local_error: 21,
+            remote_error: 22,
+            local_stop_error: 23,
+            remote_stop_error: 24,
+            last_time_data_sent: Instant::from_ticks(25),
+            stream_data_tree: SplayTree::default(),
+            stream_data_nodes: Arena::new(),
+            sent_offset: 31,
+            reliable_size: 32,
+            send_queue: VecDeque::new(),
+            app_stream_ctx: None,
+            direct_receive_fn: None,
+            direct_receive_ctx: None,
+            sack_list: SackList::new(),
+            stream_priority: 7,
+            is_active: true,
+            fin_requested: true,
+            fin_sent: true,
+            fin_received: true,
+            fin_signalled: true,
+            reset_requested: true,
+            reset_sent: true,
+            reset_acked: true,
+            reset_received: true,
+            reset_signalled: true,
+            stop_sending_requested: true,
+            stop_sending_sent: true,
+            stop_sending_received: true,
+            stop_sending_signalled: true,
+            max_stream_updated: true,
+            stream_data_blocked_sent: true,
+            is_output_stream: true,
+            is_closed: true,
+            is_discarded: true,
+            use_app_flow_control: true,
+            is_not_coalesced: true,
+        }
+    }
+
+    fn new_test_quic(current_time: Instant) -> Box<Quic> {
+        Quic::new(
+            8,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            [0u8; RESET_SECRET_SIZE],
+            current_time,
+            None,
+            None,
+        )
+        .expect("test QUIC context should be created")
+    }
+
+    fn test_addr() -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, 1], 4433))
+    }
+
+    fn create_datagram_test_connection(quic: &mut Quic, current_time: Instant) -> &mut Connection {
+        let cid = ConnectionId::with_size(0).expect("zero-length CID");
+        quic.create_connection(
+            cid,
+            cid,
+            Some(&test_addr()),
+            current_time,
+            0,
+            Some("test-sni"),
+            Some("test-alpn"),
+            false,
+        )
+        .expect("test connection should be created")
+    }
+
+    struct ReadyDatagramCallback {
+        payload: Vec<u8>,
+        active: DatagramActive,
+        expected_stream_id: u64,
+        expected_allowed_space: usize,
+        mark_connection_ready_after_provider: Option<bool>,
+    }
+
+    impl StreamDataCallback for ReadyDatagramCallback {
+        fn callback(
+            &mut self,
+            connection: &mut Connection,
+            stream_id: u64,
+            bytes: &[u8],
+            fin_or_event: CallbackEvent,
+            stream_ctx: Option<&mut dyn Any>,
+        ) -> i32 {
+            assert_eq!(fin_or_event, CallbackEvent::PrepareDatagram);
+            assert_eq!(stream_id, self.expected_stream_id);
+            assert_eq!(bytes.len(), self.expected_allowed_space);
+            let context = stream_ctx
+                .and_then(|ctx| ctx.downcast_mut::<DatagramBufferArgument>())
+                .expect("prepare datagram callback should receive datagram context");
+            let buffer = context
+                .provide_buffer_ex(self.payload.len(), self.active)
+                .expect("datagram payload buffer should be available");
+            buffer.copy_from_slice(&self.payload);
+            if let Some(is_ready) = self.mark_connection_ready_after_provider {
+                let _ = connection.mark_datagram_ready(is_ready);
+            }
+            0
+        }
+    }
+
+    #[test]
+    fn clear_ack_ctx_only_clears_sack_list() {
+        let mut ack_ctx = test_ack_context();
+        ack_ctx
+            .sack_list
+            .insert_item(1, 3, Instant::from_ticks(5))
+            .expect("test SACK range should insert");
+
+        ack_ctx.clear_ack_ctx();
+
+        assert!(ack_ctx.sack_list.is_empty());
+        assert_eq!(ack_ctx.time_stamp_largest_received.ticks(), 42);
+        assert_eq!(ack_ctx.crypto_rotation_sequence, 77);
+        assert_eq!(ack_ctx.ecn_ect0_total_local, 1);
+        assert_eq!(ack_ctx.ecn_ect1_total_local, 2);
+        assert_eq!(ack_ctx.ecn_ce_total_local, 3);
+        assert!(ack_ctx.sending_ecn_ack);
+        assert_eq!(ack_ctx.act[0].highest_ack_sent, 10);
+        assert_eq!(ack_ctx.act[0].highest_ack_sent_time.ticks(), 11);
+        assert_eq!(ack_ctx.act[0].time_oldest_unack_packet_received.ticks(), 12);
+        assert!(ack_ctx.act[0].ack_needed);
+        assert!(ack_ctx.act[0].ack_after_fin);
+        assert!(ack_ctx.act[0].out_of_order_received);
+        assert!(ack_ctx.act[0].is_immediate_ack_required);
+        assert_eq!(ack_ctx.act[1].highest_ack_sent, 20);
+        assert_eq!(ack_ctx.act[1].highest_ack_sent_time.ticks(), 21);
+        assert_eq!(ack_ctx.act[1].time_oldest_unack_packet_received.ticks(), 22);
+        assert!(ack_ctx.act[1].ack_needed);
+        assert!(!ack_ctx.act[1].ack_after_fin);
+        assert!(ack_ctx.act[1].out_of_order_received);
+        assert!(!ack_ctx.act[1].is_immediate_ack_required);
+    }
+
+    #[test]
+    fn clear_stream_only_clears_queued_data_output_and_sack_state() {
+        let mut stream = test_stream_head();
+        stream.send_queue.push_back(StreamQueueNode {
+            offset: 31,
+            bytes: vec![1, 2, 3],
+        });
+        let data_token = stream
+            .stream_data_nodes
+            .insert(StreamDataNode {
+                stream_data_membership: None,
+                offset: 11,
+                data: [0u8; crate::MAX_PACKET_SIZE],
+                length: 1,
+            })
+            .expect("stream data node should insert");
+        let (splay_token, _) = stream
+            .stream_data_tree
+            .insert(11, data_token)
+            .expect("stream data tree entry should insert");
+        stream
+            .stream_data_nodes
+            .get_mut(data_token)
+            .expect("stream data node should exist")
+            .stream_data_membership = Some(splay_token);
+        stream
+            .sack_list
+            .insert_item(1, 3, Instant::from_ticks(5))
+            .expect("test SACK range should insert");
+
+        stream.clear_stream();
+
+        assert!(stream.send_queue.is_empty());
+        assert!(!stream.is_output_stream);
+        assert!(stream.stream_data_tree.is_empty());
+        assert!(stream.stream_data_nodes.is_empty());
+        assert!(stream.sack_list.is_empty());
+        assert_eq!(stream.stream_id, 17);
+        assert_eq!(stream.consumed_offset, 11);
+        assert_eq!(stream.fin_offset, 12);
+        assert_eq!(stream.reset_offset, 13);
+        assert_eq!(stream.maxdata_local, 1_000);
+        assert_eq!(stream.maxdata_local_acked, 900);
+        assert_eq!(stream.maxdata_remote, 2_000);
+        assert_eq!(stream.local_error, 21);
+        assert_eq!(stream.remote_error, 22);
+        assert_eq!(stream.local_stop_error, 23);
+        assert_eq!(stream.remote_stop_error, 24);
+        assert_eq!(stream.last_time_data_sent.ticks(), 25);
+        assert_eq!(stream.sent_offset, 31);
+        assert_eq!(stream.reliable_size, 32);
+        assert_eq!(stream.stream_priority, 7);
+        assert!(stream.is_active);
+        assert!(stream.fin_requested);
+        assert!(stream.fin_sent);
+        assert!(stream.fin_received);
+        assert!(stream.fin_signalled);
+        assert!(stream.reset_requested);
+        assert!(stream.reset_sent);
+        assert!(stream.reset_acked);
+        assert!(stream.reset_received);
+        assert!(stream.reset_signalled);
+        assert!(stream.stop_sending_requested);
+        assert!(stream.stop_sending_sent);
+        assert!(stream.stop_sending_received);
+        assert!(stream.stop_sending_signalled);
+        assert!(stream.max_stream_updated);
+        assert!(stream.stream_data_blocked_sent);
+        assert!(stream.is_closed);
+        assert!(stream.is_discarded);
+        assert!(stream.use_app_flow_control);
+        assert!(stream.is_not_coalesced);
+    }
+
+    #[test]
+    fn reset_ack_context_preserves_ack_state_and_clears_local_ecn() {
+        let mut ack_ctx = test_ack_context();
+        ack_ctx
+            .sack_list
+            .insert_item(1, 3, Instant::from_ticks(5))
+            .expect("test SACK range should insert");
+
+        ack_ctx.reset_ack_context();
+
+        assert!(ack_ctx.sack_list.is_empty());
+        assert_eq!(ack_ctx.time_stamp_largest_received.ticks(), 42);
+        assert_eq!(ack_ctx.crypto_rotation_sequence, 77);
+        assert_eq!(ack_ctx.ecn_ect0_total_local, 0);
+        assert_eq!(ack_ctx.ecn_ect1_total_local, 0);
+        assert_eq!(ack_ctx.ecn_ce_total_local, 0);
+        assert!(ack_ctx.sending_ecn_ack);
+        assert_eq!(ack_ctx.act[0].highest_ack_sent, 10);
+        assert_eq!(ack_ctx.act[0].highest_ack_sent_time.ticks(), 11);
+        assert_eq!(ack_ctx.act[0].time_oldest_unack_packet_received.ticks(), 12);
+        assert!(ack_ctx.act[0].ack_needed);
+        assert!(ack_ctx.act[0].ack_after_fin);
+        assert!(ack_ctx.act[0].out_of_order_received);
+        assert!(ack_ctx.act[0].is_immediate_ack_required);
+        assert_eq!(ack_ctx.act[1].highest_ack_sent, 20);
+        assert_eq!(ack_ctx.act[1].highest_ack_sent_time.ticks(), 21);
+        assert_eq!(ack_ctx.act[1].time_oldest_unack_packet_received.ticks(), 22);
+        assert!(ack_ctx.act[1].ack_needed);
+        assert!(!ack_ctx.act[1].ack_after_fin);
+        assert!(ack_ctx.act[1].out_of_order_received);
+        assert!(!ack_ctx.act[1].is_immediate_ack_required);
+    }
+
+    #[test]
+    fn format_first_misc_or_dg_frame_overflow_keeps_frame_and_sets_more_data() {
+        let mut queue = VecDeque::from([test_misc_frame(
+            &[0x01, 0x02, 0x03],
+            PacketContext::Application,
+            0,
+        )]);
+        let mut output = [0u8; 2];
+        let output_len = output.len();
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+
+        let tail = format_first_misc_or_dg_frame(
+            &mut output,
+            &mut more_data,
+            &mut is_pure_ack,
+            &mut queue,
+        )
+        .expect("format should return unchanged tail on overflow");
+        let remaining = tail.len();
+
+        assert_eq!(remaining, output_len);
+        assert_eq!(more_data, 1);
+        assert_eq!(is_pure_ack, 1);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].bytes, [0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn format_misc_or_dg_frame_at_removes_selected_frame_only_on_success() {
+        let mut queue = VecDeque::from([
+            test_misc_frame(&[0xaa], PacketContext::Initial, 1),
+            test_misc_frame(&[0xbb, 0xcc], PacketContext::Application, 0),
+            test_misc_frame(&[0xdd], PacketContext::Handshake, 1),
+        ]);
+        let mut output = [0u8; 8];
+        let output_len = output.len();
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+
+        let tail = format_misc_or_dg_frame_at(
+            &mut output,
+            &mut more_data,
+            &mut is_pure_ack,
+            &mut queue,
+            1,
+        )
+        .expect("selected frame should fit");
+        let written = output_len - tail.len();
+
+        assert_eq!(written, 2);
+        assert_eq!(&output[..written], &[0xbb, 0xcc]);
+        assert_eq!(more_data, 0);
+        assert_eq!(is_pure_ack, 0);
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue[0].bytes, [0xaa]);
+        assert_eq!(queue[1].bytes, [0xdd]);
+    }
+
+    #[test]
+    fn format_first_datagram_frame_copies_queued_frame_raw_when_it_fits() {
+        let mut queue = VecDeque::from([test_misc_frame(
+            &[crate::frames::FrameType::HandshakeDone as u8],
+            PacketContext::Application,
+            0,
+        )]);
+        let mut output = [0u8; 1];
+        let output_len = output.len();
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+
+        let written = {
+            let (tail, dropped_length) = format_first_datagram_frame_from_queue(
+                &mut queue,
+                &mut output,
+                0,
+                &mut more_data,
+                &mut is_pure_ack,
+            )
+            .expect("queued frame should fit");
+            assert_eq!(dropped_length, None);
+            output_len - tail.len()
+        };
+
+        assert_eq!(written, 1);
+        assert_eq!(output, [crate::frames::FrameType::HandshakeDone as u8]);
+        assert_eq!(more_data, 0);
+        assert_eq!(is_pure_ack, 0);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn format_first_datagram_frame_squeezes_datagram_l_with_padding() {
+        let mut frame = vec![crate::frames::FrameType::DatagramL as u8, 0x40, 64];
+        frame.extend(0..64);
+        let second = [crate::frames::FrameType::HandshakeDone as u8];
+        let mut queue = VecDeque::from([
+            test_misc_frame(&frame, PacketContext::Application, 0),
+            test_misc_frame(&second, PacketContext::Application, 0),
+        ]);
+        let mut output = [0xffu8; 66];
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+
+        let remaining = {
+            let (tail, dropped_length) = format_first_datagram_frame_from_queue(
+                &mut queue,
+                &mut output,
+                0,
+                &mut more_data,
+                &mut is_pure_ack,
+            )
+            .expect("DATAGRAM_L should squeeze to DATAGRAM");
+            assert_eq!(dropped_length, None);
+            tail.len()
+        };
+
+        assert_eq!(remaining, 0);
+        assert_eq!(output[0], crate::frames::FrameType::Padding as u8);
+        assert_eq!(output[1], crate::frames::FrameType::Datagram as u8);
+        assert_eq!(&output[2..], &(0..64).collect::<Vec<_>>());
+        assert_eq!(more_data, 1);
+        assert_eq!(is_pure_ack, 1);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].bytes, second);
+    }
+
+    #[test]
+    fn format_first_datagram_frame_drops_oversized_first_datagram() {
+        let first = [
+            crate::frames::FrameType::DatagramL as u8,
+            4,
+            0xaa,
+            0xbb,
+            0xcc,
+            0xdd,
+        ];
+        let second = [crate::frames::FrameType::HandshakeDone as u8];
+        let mut queue = VecDeque::from([
+            test_misc_frame(&first, PacketContext::Application, 0),
+            test_misc_frame(&second, PacketContext::Application, 0),
+        ]);
+        let mut output = [0x55u8; 4];
+        let output_len = output.len();
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+
+        let (remaining, dropped_length) = {
+            let (tail, dropped_length) = format_first_datagram_frame_from_queue(
+                &mut queue,
+                &mut output,
+                1,
+                &mut more_data,
+                &mut is_pure_ack,
+            )
+            .expect("oversized first datagram should be dropped");
+            (tail.len(), dropped_length)
+        };
+
+        assert_eq!(remaining, output_len);
+        assert_eq!(dropped_length, Some(first.len()));
+        assert_eq!(output, [0x55u8; 4]);
+        assert_eq!(more_data, 1);
+        assert_eq!(is_pure_ack, 1);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].bytes, second);
+    }
+
+    #[test]
+    fn datagram_buffer_argument_formats_length_delimited_payload() {
+        let mut context = DatagramBufferArgument::new(15, true, false);
+        {
+            let payload = context
+                .provide_buffer_ex(4, DatagramActive::AnyPath)
+                .expect("payload buffer should be available");
+            payload.copy_from_slice(&[0xaa, 0xbb, 0xcc, 0xdd]);
+        }
+
+        assert_eq!(context.was_called, 1);
+        assert_eq!(context.is_active, 1);
+        assert!(context.connection_is_datagram_ready);
+        assert!(!context.path_is_datagram_ready);
+
+        let mut output = [0u8; 16];
+        let header_len = varint_encode(&mut output, crate::frames::FrameType::DatagramL as u64);
+        let remaining = context
+            .format_into(&mut output, header_len)
+            .expect("datagram should format")
+            .len();
+
+        assert_eq!(remaining, 10);
+        assert_eq!(output[0], crate::frames::FrameType::DatagramL as u8);
+        assert_eq!(output[1], 4);
+        assert_eq!(&output[2..6], &[0xaa, 0xbb, 0xcc, 0xdd]);
+    }
+
+    #[test]
+    fn datagram_buffer_argument_squeezes_without_length_when_needed() {
+        let expected: Vec<u8> = (0u8..65).collect();
+        let mut context = DatagramBufferArgument::new(65, true, true);
+        {
+            let payload = context
+                .provide_buffer_ex(65, DatagramActive::ThisPathOnly)
+                .expect("payload buffer should be available");
+            payload.copy_from_slice(&expected);
+        }
+
+        assert_eq!(context.is_active, 0);
+        assert!(!context.connection_is_datagram_ready);
+        assert!(context.path_is_datagram_ready);
+
+        let mut output = [0u8; 66];
+        let header_len = varint_encode(&mut output, crate::frames::FrameType::DatagramL as u64);
+        let remaining = context
+            .format_into(&mut output, header_len)
+            .expect("datagram should fit without length")
+            .len();
+
+        assert_eq!(remaining, 0);
+        assert_eq!(output[0], crate::frames::FrameType::Datagram as u8);
+        assert_eq!(&output[1..], &expected[..]);
+    }
+
+    #[test]
+    fn format_ready_datagram_frame_invokes_prepare_callback_and_formats_payload() {
+        let current_time = Instant::from_ticks(0);
+        let mut quic = new_test_quic(current_time);
+        let cnx = create_datagram_test_connection(&mut quic, current_time);
+        cnx.remote_parameters.max_datagram_frame_size = 20;
+        cnx.is_datagram_ready = true;
+        cnx.are_path_callbacks_enabled = true;
+        let mut path = cnx.paths.remove(0);
+        path.unique_path_id = 77;
+        path.is_datagram_ready = false;
+        cnx.callback_fn = Some(Box::new(ReadyDatagramCallback {
+            payload: vec![0xde, 0xad, 0xbe],
+            active: DatagramActive::ThisPathAndOthers,
+            expected_stream_id: 77,
+            expected_allowed_space: 20,
+            mark_connection_ready_after_provider: None,
+        }));
+
+        let mut output = [0u8; 64];
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+        let mut ret = 0;
+        let remaining = {
+            let tail = format_ready_datagram_frame(
+                cnx,
+                &mut path,
+                &mut output,
+                &mut more_data,
+                &mut is_pure_ack,
+                &mut ret,
+            )
+            .expect("ready datagram should format");
+            tail.len()
+        };
+
+        assert_eq!(ret, 0);
+        assert_eq!(remaining, 59);
+        assert_eq!(output[0], crate::frames::FrameType::DatagramL as u8);
+        assert_eq!(output[1], 3);
+        assert_eq!(&output[2..5], &[0xde, 0xad, 0xbe]);
+        assert_eq!(more_data, 1);
+        assert_eq!(is_pure_ack, 0);
+        assert!(cnx.is_datagram_ready);
+        assert!(path.is_datagram_ready);
+    }
+
+    #[test]
+    fn format_ready_datagram_frame_preserves_callback_readiness_update_after_provider() {
+        let current_time = Instant::from_ticks(0);
+        let mut quic = new_test_quic(current_time);
+        let cnx = create_datagram_test_connection(&mut quic, current_time);
+        cnx.remote_parameters.max_datagram_frame_size = 20;
+        cnx.is_datagram_ready = true;
+        let mut path = cnx.paths.remove(0);
+        path.is_datagram_ready = true;
+        cnx.callback_fn = Some(Box::new(ReadyDatagramCallback {
+            payload: vec![0xab],
+            active: DatagramActive::AnyPath,
+            expected_stream_id: 0,
+            expected_allowed_space: 20,
+            mark_connection_ready_after_provider: Some(false),
+        }));
+
+        let mut output = [0u8; 32];
+        let mut more_data = 0;
+        let mut is_pure_ack = 1;
+        let mut ret = 0;
+        let remaining = {
+            let tail = format_ready_datagram_frame(
+                cnx,
+                &mut path,
+                &mut output,
+                &mut more_data,
+                &mut is_pure_ack,
+                &mut ret,
+            )
+            .expect("ready datagram should format");
+            tail.len()
+        };
+
+        assert_eq!(ret, 0);
+        assert_eq!(remaining, 29);
+        assert_eq!(
+            &output[..3],
+            &[crate::frames::FrameType::DatagramL as u8, 1, 0xab]
+        );
+        assert_eq!(more_data, 1);
+        assert_eq!(is_pure_ack, 0);
+        assert!(!cnx.is_datagram_ready);
+        assert!(!path.is_datagram_ready);
     }
 
     #[test]

@@ -1518,6 +1518,7 @@ impl Quic {
             issued_tickets: crate::arena::Arena::new(),
             nb_packets_allocated: 0,
             nb_packets_allocated_max: 0,
+            stream_data_node_pool: Vec::new(),
             nb_data_nodes_allocated: 0,
             nb_data_nodes_allocated_max: 0,
             connection_id_callback_fn: cnx_id_callback,
@@ -4473,19 +4474,19 @@ impl Connection {
 
 /// C: `provide_datagram_buffer`.  Old API, prefer
 /// [`provide_datagram_buffer_ex`].
-pub fn provide_datagram_buffer<'a>(
-    context: &'a mut crate::internal::StreamDataBufferArgument<'a>,
+pub fn provide_datagram_buffer(
+    context: &mut crate::internal::DatagramBufferArgument,
     length: usize,
-) -> Option<&'a mut [u8]> {
-    provide_stream_data_buffer(context, length, false, false)
+) -> Option<&mut [u8]> {
+    context.provide_buffer(length)
 }
 
-pub fn provide_datagram_buffer_ex<'a>(
-    context: &'a mut crate::internal::StreamDataBufferArgument<'a>,
+pub fn provide_datagram_buffer_ex(
+    context: &mut crate::internal::DatagramBufferArgument,
     length: usize,
-    _is_active: DatagramActive,
-) -> Option<&'a mut [u8]> {
-    provide_stream_data_buffer(context, length, false, false)
+    is_active: DatagramActive,
+) -> Option<&mut [u8]> {
+    context.provide_buffer_ex(length, is_active)
 }
 
 // ---------------------------------------------------------------------------
@@ -5154,7 +5155,7 @@ impl Quic {
     /// Number of data nodes currently available in the pool.
     /// C: `picoquic_quic_t::nb_data_nodes_in_pool`.
     pub fn nb_data_nodes_in_pool(&self) -> i32 {
-        self.nb_data_nodes_allocated
+        self.stream_data_node_pool.len() as i32
     }
 }
 
@@ -6876,7 +6877,7 @@ impl Quic {
             ret = -1;
         }
 
-        decrypted_data.stream_data_node_recycle();
+        self.stream_data_node_recycle(decrypted_data);
         ret
     }
 }

@@ -7,7 +7,7 @@
 
 use crate::bytestream::{BYTESTREAM_MAX_BUFFER_SIZE, ByteStream};
 use crate::internal::skip_frame;
-use crate::{Instant, Quic};
+use crate::{ConnectionId, Instant, Quic, RESET_SECRET_SIZE};
 
 // ---------------------------------------------------------------------------
 // Internal frame-test helpers.
