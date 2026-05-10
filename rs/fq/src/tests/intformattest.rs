@@ -5,6 +5,9 @@
 use crate::internal::{
     format_16, format_24, format_32, format_64, parse_16, parse_24, parse_32, parse_64,
 };
+use crate::utils::{
+    frames_uint16_encode, frames_uint24_encode, frames_uint32_encode, frames_uint64_encode,
+};
 
 const TEST_NUMBERS: &[u64] = &[
     0,
@@ -27,33 +30,71 @@ fn decode_number(bytes: &[u8], length: usize) -> u64 {
 /// C: `intformattest` in `picoquictest/intformattest.c`.
 ///
 /// Roundtrip every value in [`TEST_NUMBERS`] through each of the
-/// 16 / 24 / 32 / 64-bit big-endian formatters and parsers.  The
-/// C version also exercises a parallel `picoquic_frames_uint*_encode`
-/// family that returns a tail pointer; that encoding is a Phase 4
-/// addition and is omitted here.
+/// 16 / 24 / 32 / 64-bit big-endian formatters and parsers, including
+/// the `picoquic_frames_uint*_encode` family that returns a tail pointer.
 #[test]
 fn intformat() {
     let mut buf = [0u8; 8];
 
-    for &n in TEST_NUMBERS {
-        let n16 = n as u16;
-        format_16(&mut buf, n16);
-        assert_eq!(decode_number(&buf, 2), n16 as u64, "u16 BE bytes mismatch");
-        assert_eq!(parse_16(&buf), n16, "parse_16 roundtrip");
+    for new_encoding in 0..2 {
+        for &n in TEST_NUMBERS {
+            let n16 = n as u16;
+            if new_encoding == 0 {
+                format_16(&mut buf, n16);
+            } else {
+                let advance = {
+                    let rest = frames_uint16_encode(&mut buf, n16).expect("u16 encode fits");
+                    8 - rest.len()
+                };
+                assert_eq!(advance, 2, "u16 encoder advanced wrong length");
+            }
+            assert_eq!(decode_number(&buf, 2), n16 as u64, "u16 BE bytes mismatch");
+            assert_eq!(parse_16(&buf), n16, "parse_16 roundtrip");
+        }
 
-        let n24 = (n & 0xFF_FFFF) as u32;
-        format_24(&mut buf, n24);
-        assert_eq!(decode_number(&buf, 3), n24 as u64, "u24 BE bytes mismatch");
-        assert_eq!(parse_24(&buf), n24, "parse_24 roundtrip");
+        for &n in TEST_NUMBERS {
+            let n24 = (n & 0xFF_FFFF) as u32;
+            if new_encoding == 0 {
+                format_24(&mut buf, n24);
+            } else {
+                let advance = {
+                    let rest = frames_uint24_encode(&mut buf, n24).expect("u24 encode fits");
+                    8 - rest.len()
+                };
+                assert_eq!(advance, 3, "u24 encoder advanced wrong length");
+            }
+            assert_eq!(decode_number(&buf, 3), n24 as u64, "u24 BE bytes mismatch");
+            assert_eq!(parse_24(&buf), n24, "parse_24 roundtrip");
+        }
 
-        let n32 = n as u32;
-        format_32(&mut buf, n32);
-        assert_eq!(decode_number(&buf, 4), n32 as u64, "u32 BE bytes mismatch");
-        assert_eq!(parse_32(&buf), n32, "parse_32 roundtrip");
+        for &n in TEST_NUMBERS {
+            let n32 = n as u32;
+            if new_encoding == 0 {
+                format_32(&mut buf, n32);
+            } else {
+                let advance = {
+                    let rest = frames_uint32_encode(&mut buf, n32).expect("u32 encode fits");
+                    8 - rest.len()
+                };
+                assert_eq!(advance, 4, "u32 encoder advanced wrong length");
+            }
+            assert_eq!(decode_number(&buf, 4), n32 as u64, "u32 BE bytes mismatch");
+            assert_eq!(parse_32(&buf), n32, "parse_32 roundtrip");
+        }
 
-        format_64(&mut buf, n);
-        assert_eq!(decode_number(&buf, 8), n, "u64 BE bytes mismatch");
-        assert_eq!(parse_64(&buf), n, "parse_64 roundtrip");
+        for &n in TEST_NUMBERS {
+            if new_encoding == 0 {
+                format_64(&mut buf, n);
+            } else {
+                let advance = {
+                    let rest = frames_uint64_encode(&mut buf, n).expect("u64 encode fits");
+                    8 - rest.len()
+                };
+                assert_eq!(advance, 8, "u64 encoder advanced wrong length");
+            }
+            assert_eq!(decode_number(&buf, 8), n, "u64 BE bytes mismatch");
+            assert_eq!(parse_64(&buf), n, "parse_64 roundtrip");
+        }
     }
 }
 
@@ -65,7 +106,10 @@ fn intformat() {
 /// Appendix A.1).
 #[test]
 fn varint() {
-    use crate::internal::{varint_decode, varint_encode};
+    use crate::internal::{
+        frames_varint_decode, frames_varint_encode_length, varint_decode, varint_encode,
+    };
+    use crate::utils::frames_varint_encode;
 
     struct Case {
         encoding: [u8; 8],
@@ -182,39 +226,66 @@ fn varint() {
     let mut test_buf = [0xCCu8; 16];
 
     for (idx, case) in cases.iter().enumerate() {
-        // Decode: walk every prefix length up to length+2 and check
-        // that under-reads return 0 while a sufficient buffer
-        // returns the canonical length.
-        for buf_size in 0..=(case.length + 2).min(15) {
-            test_buf[..case.length].copy_from_slice(&case.encoding[..case.length]);
-            let mut n64 = 0u64;
-            let length = varint_decode(&test_buf[..buf_size], &mut n64);
-            let expected_length = if buf_size < case.length {
-                0
-            } else {
-                case.length
-            };
-            assert_eq!(
-                length, expected_length,
-                "case {idx}, buf_size={buf_size}: wrong length"
-            );
-            if length != 0 {
+        for is_new_decode in [false, true] {
+            for buf_size in 0..=(case.length + 2).min(15) {
+                test_buf[..case.length].copy_from_slice(&case.encoding[..case.length]);
+                let mut n64 = 0u64;
+                let length = if is_new_decode {
+                    frames_varint_decode(&test_buf[..buf_size], &mut n64)
+                        .map_or(0, |rest| buf_size - rest.len())
+                } else {
+                    varint_decode(&test_buf[..buf_size], &mut n64)
+                };
+                let expected_length = if buf_size < case.length {
+                    0
+                } else {
+                    case.length
+                };
                 assert_eq!(
-                    n64, case.decoded,
-                    "case {idx}, buf_size={buf_size}: wrong value"
+                    length, expected_length,
+                    "case {idx}, is_new_decode={is_new_decode}, buf_size={buf_size}: wrong length"
                 );
+                if length != 0 {
+                    assert_eq!(
+                        n64, case.decoded,
+                        "case {idx}, is_new_decode={is_new_decode}, buf_size={buf_size}: wrong value"
+                    );
+                }
             }
         }
 
-        // Encode: only canonical encodings round-trip.
         if case.is_canonical {
-            let mut encoding = [0u8; 8];
-            let coded = varint_encode(&mut encoding, case.decoded);
-            assert_eq!(coded, case.length, "case {idx}: wrong encoded length");
+            for is_new_encode in [false, true] {
+                let mut encoding = [0u8; 8];
+                let coded_length = if is_new_encode {
+                    frames_varint_encode(&mut encoding, case.decoded)
+                        .map_or(usize::MAX, |rest| 8 - rest.len())
+                } else {
+                    varint_encode(&mut encoding[..case.length], case.decoded)
+                };
+                assert_eq!(
+                    coded_length, case.length,
+                    "case {idx}, is_new_encode={is_new_encode}: wrong encoded length"
+                );
+                assert!(
+                    coded_length <= encoding.len(),
+                    "case {idx}, is_new_encode={is_new_encode}: encoded length exceeds buffer"
+                );
+                assert_eq!(
+                    &encoding[..coded_length],
+                    &case.encoding[..coded_length],
+                    "case {idx}, is_new_encode={is_new_encode}: wrong bytes"
+                );
+            }
+        }
+    }
+
+    for (idx, case) in cases.iter().enumerate() {
+        if case.is_canonical {
             assert_eq!(
-                &encoding[..coded],
-                &case.encoding[..coded],
-                "case {idx}: wrong bytes"
+                frames_varint_encode_length(case.decoded),
+                case.length,
+                "case {idx}: wrong predicted frame varint length"
             );
         }
     }

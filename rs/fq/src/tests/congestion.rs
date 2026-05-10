@@ -150,6 +150,11 @@ enum BdpTestOption {
 // ---------------------------------------------------------------------------
 // Private test helpers.
 
+fn cc_algo(name: &str) -> &'static CongestionAlgorithm {
+    register_all_congestion_control_algorithms();
+    get_congestion_algorithm(name).unwrap_or_else(|| panic!("cc algo not found: {name}"))
+}
+
 /// Run a congestion-control scenario on a symmetric 1 Mbps, 10 ms link.
 /// C: `congestion_control_test`.
 fn congestion_control_test(
@@ -286,7 +291,7 @@ fn performance_test_one(
     ])
     .expect("8-byte CID");
 
-    let ccalgo = get_congestion_algorithm("bbr").expect("bbr cc algo");
+    let ccalgo = cc_algo("bbr");
 
     let mut test_ctx = tls_api_one_scenario_init_ex(
         &mut simulated_time,
@@ -351,7 +356,7 @@ fn bdp_option_test_one(bdp_test_option: BdpTestOption) {
     let latency = 300_000u64;
     let mut buffer_size = 2 * latency;
     let initial_cid_template = [0xbdu8, 0x80, 0, 0, 0, 0, 0, 0];
-    let ccalgo_bbr = get_congestion_algorithm("bbr").expect("bbr cc algo");
+    let ccalgo_bbr = cc_algo("bbr");
     let mut ccalgo: &'static CongestionAlgorithm = ccalgo_bbr;
 
     save_empty_tickets(TICKET_FILE_NAME, simulated_time).expect("init empty tickets");
@@ -432,14 +437,14 @@ fn bdp_option_test_one(bdp_test_option: BdpTestOption) {
         // Congestion algorithm selection.
         match bdp_test_option {
             BdpTestOption::Reno => {
-                ccalgo = get_congestion_algorithm("newreno").expect("newreno cc algo");
+                ccalgo = cc_algo("newreno");
             }
             BdpTestOption::Cubic => {
-                ccalgo = get_congestion_algorithm("cubic").expect("cubic cc algo");
+                ccalgo = cc_algo("cubic");
                 max_completion_time = 10_000_000;
             }
             BdpTestOption::Bbr1 => {
-                ccalgo = get_congestion_algorithm("bbr1").expect("bbr1 cc algo");
+                ccalgo = cc_algo("bbr1");
             }
             _ => {}
         }
@@ -671,7 +676,8 @@ fn cwin_max_test_one(
 
     std::fs::remove_file(CWIN_MAX_TRACE_QLOG).ok();
 
-    let client_params = TransportParameters::default();
+    let mut client_params = TransportParameters::default();
+    init_transport_parameters(&mut client_params);
 
     let mut test_ctx = tls_api_one_scenario_init_ex(
         &mut simulated_time,
@@ -724,77 +730,77 @@ fn cwin_max_test_one(
 /// C: `blackhole_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn blackhole() {
-    let ccalgo = get_congestion_algorithm("bbr").expect("bbr cc algo");
+    let ccalgo = cc_algo("bbr");
     blackhole_test_one(ccalgo, 15_000_000, 0);
 }
 
 /// C: `cubic_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn cubic() {
-    let ccalgo = get_congestion_algorithm("cubic").expect("cubic cc algo");
+    let ccalgo = cc_algo("cubic");
     congestion_control_test(ccalgo, 3_500_000, 0, 0);
 }
 
 /// C: `cubic_jitter_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn cubic_jitter() {
-    let ccalgo = get_congestion_algorithm("cubic").expect("cubic cc algo");
+    let ccalgo = cc_algo("cubic");
     congestion_control_test(ccalgo, 3_550_000, 5_000, 5);
 }
 
 /// C: `c4_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn c4() {
-    let ccalgo = get_congestion_algorithm("c4").expect("c4 cc algo");
+    let ccalgo = cc_algo("c4");
     congestion_control_test(ccalgo, 3_600_000, 0, 0);
 }
 
 /// C: `c4_jitter_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn c4_jitter() {
-    let ccalgo = get_congestion_algorithm("c4").expect("c4 cc algo");
+    let ccalgo = cc_algo("c4");
     congestion_control_test(ccalgo, 3_650_000, 5_000, 5);
 }
 
 /// C: `fastcc_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn fastcc() {
-    let ccalgo = get_congestion_algorithm("fastcc").expect("fastcc cc algo");
+    let ccalgo = cc_algo("fastcc");
     congestion_control_test(ccalgo, 3_700_000, 0, 0);
 }
 
 /// C: `fastcc_jitter_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn fastcc_jitter() {
-    let ccalgo = get_congestion_algorithm("fastcc").expect("fastcc cc algo");
+    let ccalgo = cc_algo("fastcc");
     congestion_control_test(ccalgo, 4_050_000, 5_000, 5);
 }
 
 /// C: `bbr_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn bbr() {
-    let ccalgo = get_congestion_algorithm("bbr").expect("bbr cc algo");
+    let ccalgo = cc_algo("bbr");
     congestion_control_test(ccalgo, 3_500_000, 0, 0);
 }
 
 /// C: `bbr_jitter_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn bbr_jitter() {
-    let ccalgo = get_congestion_algorithm("bbr").expect("bbr cc algo");
+    let ccalgo = cc_algo("bbr");
     congestion_control_test(ccalgo, 3_600_000, 5_000, 5);
 }
 
 /// C: `bbr_long_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn bbr_long() {
-    let ccalgo = get_congestion_algorithm("bbr").expect("bbr cc algo");
+    let ccalgo = cc_algo("bbr");
     congestion_long_test(ccalgo);
 }
 
 /// C: `c4_long_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn c4_long() {
-    let ccalgo = get_congestion_algorithm("c4").expect("c4 cc algo");
+    let ccalgo = cc_algo("c4");
     congestion_long_test(ccalgo);
 }
 
@@ -872,14 +878,14 @@ fn bbr_asym400() {
 /// C: `bbr1_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn bbr1() {
-    let ccalgo = get_congestion_algorithm("bbr1").expect("bbr1 cc algo");
+    let ccalgo = cc_algo("bbr1");
     congestion_control_test(ccalgo, 3_600_000, 0, 0);
 }
 
 /// C: `bbr1_long_test` in `picoquictest/congestion_test.c`.
 #[test]
 fn bbr1_long() {
-    let ccalgo = get_congestion_algorithm("bbr1").expect("bbr1 cc algo");
+    let ccalgo = cc_algo("bbr1");
     congestion_long_test(ccalgo);
 }
 
@@ -954,8 +960,7 @@ fn app_limit_cc() {
     ];
 
     for (name, &max_time) in algo_names.iter().zip(max_completion_times.iter()) {
-        let ccalgo =
-            get_congestion_algorithm(name).unwrap_or_else(|| panic!("cc algo not found: {name}"));
+        let ccalgo = cc_algo(name);
         app_limit_cc_test_one(ccalgo, max_time);
     }
 }
@@ -971,8 +976,7 @@ fn cwin_max() {
     ];
 
     for (name, &max_time) in algo_names.iter().zip(max_completion_times.iter()) {
-        let ccalgo =
-            get_congestion_algorithm(name).unwrap_or_else(|| panic!("cc algo not found: {name}"));
+        let ccalgo = cc_algo(name);
         cwin_max_test_one(ccalgo, 68_000, max_time);
     }
 }

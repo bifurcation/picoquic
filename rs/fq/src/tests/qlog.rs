@@ -35,8 +35,8 @@ fn autoqlog_no_binlog() -> crate::Result<()> {
     quic.set_qlog(".")?;
     {
         let cnx = quic.first_cnx_mut().expect("connection exists");
-        cnx.binlog_file_name = Some(PathBuf::from(AUTOQLOG_BAD_QLOG));
         cnx.start_client()?;
+        cnx.binlog_file_name = Some(PathBuf::from(AUTOQLOG_BAD_QLOG));
     }
     Ok(())
 }

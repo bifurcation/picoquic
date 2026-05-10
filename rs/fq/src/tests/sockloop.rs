@@ -22,6 +22,7 @@ use crate::packet_loop::{
     open_sockets,
 };
 use crate::socks_socket2::Socket2Udp;
+use crate::stream::StreamId;
 use crate::{ConnectionId, Error, Instant, Quic, RESET_SECRET_SIZE, State};
 
 // ---------------------------------------------------------------------------
@@ -88,7 +89,7 @@ impl SockloopTestSpec {
             test_id,
             af: AF_INET6,
             port: 3456,
-            socket_buffer_size: 1280, // PICOQUIC_MAX_PACKET_SIZE
+            socket_buffer_size: crate::MAX_PACKET_SIZE as i32, // PICOQUIC_MAX_PACKET_SIZE
             scenario: SOCKLOOP_SCENARIO_BASIC,
             thread_name: None,
             use_background_thread: false,
@@ -125,10 +126,16 @@ struct SockloopTestCb {
     client_alt_address: Option<SocketAddr>,
     client_cid_before_migration: Option<ConnectionId>,
     server_cid_before_migration: Option<ConnectionId>,
+    scenario: SockloopScenarioState,
 }
 
 impl SockloopTestCb {
-    fn new(test_id: u8, force_migration: i32, param: LoopParam) -> Self {
+    fn new(
+        test_id: u8,
+        force_migration: i32,
+        param: LoopParam,
+        scenario: &[TestApiStreamDesc],
+    ) -> Self {
         Self {
             test_id,
             notified_ready: false,
@@ -143,6 +150,7 @@ impl SockloopTestCb {
             client_alt_address: None,
             client_cid_before_migration: None,
             server_cid_before_migration: None,
+            scenario: SockloopScenarioState::new(scenario),
         }
     }
 
@@ -159,33 +167,40 @@ impl SockloopTestCb {
             }
             LoopEvent::AfterReceive(_) => {
                 let current_time = Instant::from_ticks(quic.time());
-                let Some(cnx) = quic.first_cnx_mut() else {
-                    return Ok(());
-                };
-                match cnx.connection_state {
-                    State::Disconnected => Err(Error::Protocol(
-                        InternalError::NoErrorTerminatePacketLoop as u64,
-                    )),
-                    State::ClientAlmostReady if !self.notified_ready => {
-                        self.notified_ready = true;
-                        self.client_address = connection_local_addr(cnx);
-                        self.server_address = connection_peer_addr(cnx);
-                        self.client_cid_before_migration = Some(cnx.local_connection_id());
-                        self.server_cid_before_migration = Some(cnx.remote_connection_id());
-                        Ok(())
-                    }
-                    State::Ready => {
-                        self.handle_ready_receive(cnx, current_time)?;
-                        if sockloop_test_received_finished(self) {
-                            Err(Error::Protocol(
+                let mut process_scenario = false;
+                {
+                    let Some(cnx) = quic.first_cnx_mut() else {
+                        return Ok(());
+                    };
+                    match cnx.connection_state {
+                        State::Disconnected => {
+                            return Err(Error::Protocol(
                                 InternalError::NoErrorTerminatePacketLoop as u64,
-                            ))
-                        } else {
-                            Ok(())
+                            ));
                         }
+                        State::ClientAlmostReady if !self.notified_ready => {
+                            self.notified_ready = true;
+                            self.client_address = connection_local_addr(cnx);
+                            self.server_address = connection_peer_addr(cnx);
+                            self.client_cid_before_migration = Some(cnx.local_connection_id());
+                            self.server_cid_before_migration = Some(cnx.remote_connection_id());
+                        }
+                        State::Ready => {
+                            self.handle_ready_receive(cnx, current_time)?;
+                            process_scenario = true;
+                        }
+                        _ => {}
                     }
-                    _ => Ok(()),
                 }
+                if process_scenario {
+                    self.scenario.process_received_streams(quic);
+                    if sockloop_test_received_finished(self) {
+                        return Err(Error::Protocol(
+                            InternalError::NoErrorTerminatePacketLoop as u64,
+                        ));
+                    }
+                }
+                Ok(())
             }
             LoopEvent::AfterSend(_) => {
                 let Some(cnx) = quic.first_cnx_mut() else {
@@ -298,6 +313,394 @@ impl PacketLoopCbFn for SharedSockloopTestCb {
 }
 
 // ---------------------------------------------------------------------------
+// Socket-loop scenario state.
+// C: the `picoquic_test_tls_api_ctx_t` stream fields used by
+// `test_api_init_send_recv_scenario`, `sockloop_test_received_finished`,
+// and `tls_api_one_scenario_verify`.
+
+struct SockloopStream {
+    stream_id: u64,
+    previous_stream_id: u64,
+    q_sent: bool,
+    q_received: bool,
+    r_received: bool,
+    q_len: usize,
+    r_len: usize,
+    q_recv_nb: usize,
+    r_recv_nb: usize,
+    q_src: Vec<u8>,
+    q_rcv: Vec<u8>,
+    r_src: Vec<u8>,
+    r_rcv: Vec<u8>,
+}
+
+impl SockloopStream {
+    fn new(desc: &TestApiStreamDesc) -> Self {
+        fn source_bytes(len: usize) -> Vec<u8> {
+            (0..len).map(|i| i as u8).collect()
+        }
+
+        Self {
+            stream_id: desc.stream_id,
+            previous_stream_id: desc.previous_stream_id,
+            q_sent: false,
+            q_received: false,
+            r_received: false,
+            q_len: desc.q_len,
+            r_len: desc.r_len,
+            q_recv_nb: 0,
+            r_recv_nb: 0,
+            q_src: source_bytes(desc.q_len),
+            q_rcv: vec![0; desc.q_len],
+            r_src: source_bytes(desc.r_len),
+            r_rcv: vec![0; desc.r_len],
+        }
+    }
+
+    fn response_complete(&self) -> bool {
+        self.r_received && self.r_recv_nb == self.r_len
+    }
+}
+
+struct SockloopStreamEvent {
+    client_mode: bool,
+    stream_id: u64,
+    bytes: Vec<u8>,
+    fin: bool,
+}
+
+struct SockloopScenarioState {
+    streams: Vec<SockloopStream>,
+    client_callback_error_detected: bool,
+    server_callback_error_detected: bool,
+    stream0_target: usize,
+    stream0_sent: usize,
+    stream0_received: usize,
+    streams_finished: bool,
+    test_finished: bool,
+}
+
+impl SockloopScenarioState {
+    fn new(scenario: &[TestApiStreamDesc]) -> Self {
+        Self {
+            streams: scenario.iter().map(SockloopStream::new).collect(),
+            client_callback_error_detected: false,
+            server_callback_error_detected: false,
+            stream0_target: 0,
+            stream0_sent: 0,
+            stream0_received: 0,
+            streams_finished: false,
+            test_finished: false,
+        }
+    }
+
+    fn set_callback_error(&mut self, client_mode: bool) {
+        if client_mode {
+            self.client_callback_error_detected = true;
+        } else {
+            self.server_callback_error_detected = true;
+        }
+    }
+
+    fn queue_initial_queries(&mut self, quic: &mut Quic, initial_data_stream_id: u64) {
+        let mut more_stream = false;
+
+        for i in 0..self.streams.len() {
+            if self.streams[i].previous_stream_id != initial_data_stream_id {
+                continue;
+            }
+
+            let stream_id = self.streams[i].stream_id;
+            let data = self.streams[i].q_src[..self.streams[i].q_len].to_vec();
+            let client_mode = StreamId(stream_id).is_client();
+            if queue_on_connection(quic, client_mode, stream_id, &data, true).is_err() {
+                self.set_callback_error(client_mode);
+            } else {
+                self.streams[i].q_sent = true;
+            }
+            more_stream = true;
+        }
+
+        if !more_stream {
+            more_stream = self.streams.iter().any(|s| !s.response_complete());
+        }
+
+        if more_stream {
+            self.test_finished = false;
+            self.streams_finished = false;
+        } else {
+            self.streams_finished = true;
+            self.test_finished = self.stream0_received >= self.stream0_target;
+        }
+    }
+
+    fn process_received_streams(&mut self, quic: &mut Quic) {
+        let mut events = Vec::new();
+
+        for cnx in quic.connections.iter_mut() {
+            events.extend(collect_received_stream_events(cnx, cnx.client_mode));
+        }
+
+        for event in events {
+            self.handle_stream_event(quic, event);
+        }
+    }
+
+    fn handle_stream_event(&mut self, quic: &mut Quic, event: SockloopStreamEvent) {
+        if event.stream_id == 0 && !event.client_mode {
+            if event.bytes.iter().any(|b| *b != 0xa5) {
+                self.set_callback_error(event.client_mode);
+                return;
+            }
+            self.stream0_received = self.stream0_received.saturating_add(event.bytes.len());
+            if self.streams_finished && self.stream0_received >= self.stream0_target {
+                self.test_finished = true;
+            }
+            return;
+        }
+
+        let Some(stream_index) = self
+            .streams
+            .iter()
+            .position(|stream| stream.stream_id == event.stream_id)
+        else {
+            self.set_callback_error(event.client_mode);
+            return;
+        };
+
+        let is_client_stream = StreamId(event.stream_id).is_client();
+        let mut stream_finished = false;
+        let mut response_target = None;
+        let mut response = Vec::new();
+        let callback_ok;
+
+        {
+            let stream = &mut self.streams[stream_index];
+
+            if is_client_stream {
+                if event.client_mode {
+                    callback_ok = receive_stream_data(stream, true, &event.bytes, event.fin);
+                    stream_finished = event.fin;
+                } else {
+                    callback_ok = receive_stream_data(stream, false, &event.bytes, event.fin);
+                    if event.fin && callback_ok {
+                        if stream.r_len == 0 {
+                            stream.r_received = true;
+                            stream_finished = true;
+                        } else {
+                            response_target = Some(false);
+                            response = stream.r_src.clone();
+                        }
+                    }
+                }
+            } else if event.client_mode {
+                callback_ok = receive_stream_data(stream, false, &event.bytes, event.fin);
+                if event.fin && callback_ok {
+                    if stream.r_len == 0 {
+                        stream.r_received = true;
+                        stream_finished = true;
+                    } else {
+                        response_target = Some(true);
+                        response = stream.r_src.clone();
+                    }
+                }
+            } else {
+                callback_ok = receive_stream_data(stream, true, &event.bytes, event.fin);
+                stream_finished = event.fin;
+            }
+        }
+
+        if !callback_ok {
+            self.set_callback_error(event.client_mode);
+            return;
+        }
+
+        if let Some(client_mode) = response_target
+            && queue_on_connection(quic, client_mode, event.stream_id, &response, true).is_err()
+        {
+            self.set_callback_error(event.client_mode);
+            return;
+        }
+
+        if stream_finished {
+            self.queue_initial_queries(quic, event.stream_id);
+        }
+    }
+
+    fn received_finished_or_error(&self) -> bool {
+        if self.server_callback_error_detected || self.client_callback_error_detected {
+            return true;
+        }
+
+        if self.streams.is_empty() {
+            return false;
+        }
+
+        if self
+            .streams
+            .iter()
+            .any(|stream| stream.q_recv_nb != stream.q_len || stream.r_recv_nb != stream.r_len)
+        {
+            return false;
+        }
+
+        self.stream0_sent == self.stream0_target && self.stream0_sent == self.stream0_received
+    }
+
+    fn verify(&self, quic: &Quic) -> Result<(), Error> {
+        if self.server_callback_error_detected || self.client_callback_error_detected {
+            return Err(Error::Generic);
+        }
+
+        for stream in &self.streams {
+            if stream.q_recv_nb != stream.q_len
+                || stream.r_recv_nb != stream.r_len
+                || !stream.q_received
+                || !stream.r_received
+                || stream.q_rcv != stream.q_src
+                || stream.r_rcv != stream.r_src
+            {
+                return Err(Error::Generic);
+            }
+        }
+
+        if self.stream0_sent != self.stream0_target || self.stream0_sent != self.stream0_received {
+            return Err(Error::Generic);
+        }
+
+        if quic.nb_data_nodes_allocated > quic.nb_data_nodes_in_pool() {
+            return Err(Error::Generic);
+        }
+
+        Ok(())
+    }
+}
+
+fn receive_stream_data(
+    stream: &mut SockloopStream,
+    response: bool,
+    bytes: &[u8],
+    fin: bool,
+) -> bool {
+    let (max_len, source, received, received_count, received_fin) = if response {
+        (
+            stream.r_len,
+            &stream.r_src,
+            &mut stream.r_rcv,
+            &mut stream.r_recv_nb,
+            &mut stream.r_received,
+        )
+    } else {
+        (
+            stream.q_len,
+            &stream.q_src,
+            &mut stream.q_rcv,
+            &mut stream.q_recv_nb,
+            &mut stream.q_received,
+        )
+    };
+
+    if received_count.saturating_add(bytes.len()) > max_len {
+        return false;
+    }
+
+    let start = *received_count;
+    let end = start + bytes.len();
+    received[start..end].copy_from_slice(bytes);
+    if source[start..end] != bytes[..] {
+        return false;
+    }
+    *received_count = end;
+
+    if fin {
+        if *received_fin {
+            return false;
+        }
+        *received_fin = true;
+    }
+
+    true
+}
+
+fn collect_received_stream_events(
+    cnx: &mut Connection,
+    client_mode: bool,
+) -> Vec<SockloopStreamEvent> {
+    let mut events = Vec::new();
+
+    for stream in cnx.streams.iter_mut() {
+        let stream_id = stream.stream_id;
+        while let Some(tree_token) = stream.stream_data_tree.first() {
+            let Some(data_token) = stream.stream_data_tree.get(tree_token).copied() else {
+                break;
+            };
+            let Some(data_node) = stream.stream_data_nodes.get(data_token) else {
+                stream.stream_data_tree.remove(tree_token);
+                continue;
+            };
+
+            let data_end = data_node.offset.saturating_add(data_node.length as u64);
+            if data_end <= stream.consumed_offset {
+                stream.stream_data_tree.remove(tree_token);
+                stream.stream_data_nodes.remove(data_token);
+                continue;
+            }
+            if data_node.offset > stream.consumed_offset {
+                break;
+            }
+
+            let start = stream.consumed_offset.saturating_sub(data_node.offset) as usize;
+            let bytes = data_node.data[start..data_node.length].to_vec();
+            stream.consumed_offset = stream.consumed_offset.saturating_add(bytes.len() as u64);
+            stream.stream_data_tree.remove(tree_token);
+            stream.stream_data_nodes.remove(data_token);
+
+            if !bytes.is_empty() {
+                events.push(SockloopStreamEvent {
+                    client_mode,
+                    stream_id,
+                    bytes,
+                    fin: false,
+                });
+            }
+        }
+
+        if stream.fin_received
+            && !stream.fin_signalled
+            && stream.consumed_offset >= stream.fin_offset
+        {
+            stream.fin_signalled = true;
+            events.push(SockloopStreamEvent {
+                client_mode,
+                stream_id,
+                bytes: Vec::new(),
+                fin: true,
+            });
+        }
+    }
+
+    events
+}
+
+fn queue_on_connection(
+    quic: &mut Quic,
+    client_mode: bool,
+    stream_id: u64,
+    data: &[u8],
+    fin: bool,
+) -> Result<(), Error> {
+    let Some(cnx) = quic
+        .connections
+        .iter_mut()
+        .find(|cnx| cnx.client_mode == client_mode)
+    else {
+        return Err(Error::Generic);
+    };
+
+    cnx.add_to_stream(stream_id, data, fin)
+}
+
+// ---------------------------------------------------------------------------
 // Initial CID builder.
 // C: `sockloop_test_set_icid`.
 
@@ -384,7 +787,7 @@ fn set_addr_port(addr: &mut SocketAddr, port: u16) {
 }
 
 fn sockloop_test_received_finished(loop_cb: &SockloopTestCb) -> bool {
-    loop_cb.established && loop_cb.notified_ready
+    loop_cb.established && loop_cb.notified_ready && loop_cb.scenario.received_finished_or_error()
 }
 
 fn sockloop_test_verify_migration(
@@ -464,7 +867,13 @@ fn sockloop_test_one_result(spec: &SockloopTestSpec) -> Result<(), Error> {
         spec.test_id,
         spec.force_migration,
         param,
+        spec.scenario,
     )));
+
+    loop_cb
+        .borrow_mut()
+        .scenario
+        .queue_initial_queries(&mut quic, 0);
 
     if !spec.use_background_thread
         && let Some(cnx) = quic.first_cnx_mut()
@@ -503,17 +912,20 @@ fn sockloop_test_one_result(spec: &SockloopTestSpec) -> Result<(), Error> {
             Err(Error::Generic)
         } else {
             thread_ctx.wake_up().map_err(|_| Error::Generic)?;
-            if let Some(cnx) = quic.first_cnx_mut() {
-                cnx.start_client()?;
-            }
+            let mut transfer_finished = false;
             for _ in 0..50 {
                 if sockloop_test_received_finished(&loop_cb.borrow()) {
+                    transfer_finished = true;
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
             drop(thread_ctx);
-            Ok(())
+            if transfer_finished {
+                Ok(())
+            } else {
+                Err(Error::Generic)
+            }
         }
     } else {
         quic.run_v2(
@@ -534,9 +946,10 @@ fn sockloop_test_one_result(spec: &SockloopTestSpec) -> Result<(), Error> {
             } else if spec.force_migration != 0 {
                 let cb = loop_cb.borrow();
                 let cnx = quic.first_cnx_mut().ok_or(Error::Generic)?;
-                sockloop_test_verify_migration(&cb, cnx)
+                sockloop_test_verify_migration(&cb, cnx)?;
+                cb.scenario.verify(&quic)
             } else {
-                Ok(())
+                loop_cb.borrow().scenario.verify(&quic)
             }
         }
         Err(error) => {

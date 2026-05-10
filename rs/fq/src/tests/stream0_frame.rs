@@ -15,7 +15,7 @@ use crate::internal::{
     StreamToken, decode_crypto_hs_frame, decode_stream_frame, format_stream_frame_header,
     parse_stream_header,
 };
-use crate::stream::StreamId;
+use crate::stream::{Direction, Role, StreamId};
 use crate::{
     CallbackEvent, ConnectionId, Error, Instant, RESET_SECRET_SIZE, State, StreamDataCallback,
 };
@@ -291,6 +291,20 @@ fn check_output_streams(cnx: &Connection, expected: &[u64]) -> crate::Result<()>
     }
 }
 
+fn with_detached_stream<R>(
+    cnx: &mut Connection,
+    token: StreamToken,
+    f: impl FnOnce(&mut Connection, &mut StreamHead) -> crate::Result<R>,
+) -> crate::Result<R> {
+    let mut streams = core::mem::take(&mut cnx.streams);
+    let result = match streams.get_mut(token) {
+        Some(stream) => f(cnx, stream),
+        None => Err(Error::InvalidState),
+    };
+    cnx.streams = streams;
+    result
+}
+
 struct StreamOutputCallback;
 
 impl StreamDataCallback for StreamOutputCallback {
@@ -315,8 +329,7 @@ fn stream_output_test_delete(
     let is_last = cnx.output_streams.len() == 1 && cnx.output_streams.front() == Some(&token);
     let client_mode = cnx.client_mode;
 
-    {
-        let stream = cnx.streams.get_mut(token).ok_or(Error::InvalidState)?;
+    with_detached_stream(cnx, token, |cnx, stream| {
         if !stream.is_output_stream {
             return Err(Error::InvalidState);
         }
@@ -338,10 +351,15 @@ fn stream_output_test_delete(
             stream.fin_received = true;
             stream.fin_signalled = true;
         }
-        stream.is_closed = stream.is_stream_closed(client_mode);
-    }
 
-    delete_stream_token(cnx, token);
+        if !stream.is_stream_closed(client_mode) {
+            return Err(Error::InvalidState);
+        }
+        cnx.remove_output_stream(stream);
+        cnx.delete_stream_if_closed(stream);
+        Ok(())
+    })?;
+
     let ready = cnx.find_ready_stream();
     if ready.is_none() && !is_last {
         return Err(Error::InvalidState);
@@ -352,8 +370,16 @@ fn stream_output_test_delete(
     if ready == Some(token) {
         return Err(Error::InvalidState);
     }
-    if cnx.output_streams.iter().any(|&existing| existing == token) {
-        return Err(Error::InvalidState);
+    for existing in cnx.output_streams.iter().copied() {
+        if cnx
+            .streams
+            .get(existing)
+            .ok_or(Error::InvalidState)?
+            .stream_id
+            == stream_id
+        {
+            return Err(Error::InvalidState);
+        }
     }
     if cnx.find_stream(stream_id).is_some() {
         return Err(Error::InvalidState);
@@ -537,7 +563,7 @@ fn stream_output_test_body() -> crate::Result<()> {
     cnx.max_stream_id_unidir_remote = if cnx.client_mode { 10 } else { 0 };
     cnx.high_priority_stream_id = 1;
 
-    for stream_id in values {
+    for stream_id in values.iter().take(7).copied() {
         cnx.create_stream(stream_id)?;
     }
     check_output_streams(cnx, &output1)?;
@@ -733,54 +759,49 @@ fn stream_rank() {
     let server_bidir: [u64; 5] = [1, 5, 9, 3997, 39997];
     let server_unidir: [u64; 5] = [3, 7, 11, 3999, 39999];
 
-    let rank_from_id = |id: u64| -> u64 { (id >> 2) + 1 };
-    let id_from_rank = |rank: u64, client_mode: bool, is_unidir: bool| -> u64 {
-        ((rank - 1) << 2) | (u64::from(is_unidir) << 1) | u64::from(!client_mode)
-    };
-
     for i in 0..5 {
         let r = ranks[i];
 
         assert_eq!(
-            rank_from_id(client_bidir[i]),
+            StreamId(client_bidir[i]).rank(),
             r,
             "rank_from_id client_bidir[{i}]"
         );
         assert_eq!(
-            id_from_rank(r, true, false),
+            StreamId::from_parts(r, Role::Client, Direction::Bidir).0,
             client_bidir[i],
             "id_from_rank client_bidir[{i}]"
         );
 
         assert_eq!(
-            rank_from_id(client_unidir[i]),
+            StreamId(client_unidir[i]).rank(),
             r,
             "rank_from_id client_unidir[{i}]"
         );
         assert_eq!(
-            id_from_rank(r, true, true),
+            StreamId::from_parts(r, Role::Client, Direction::Unidir).0,
             client_unidir[i],
             "id_from_rank client_unidir[{i}]"
         );
 
         assert_eq!(
-            rank_from_id(server_bidir[i]),
+            StreamId(server_bidir[i]).rank(),
             r,
             "rank_from_id server_bidir[{i}]"
         );
         assert_eq!(
-            id_from_rank(r, false, false),
+            StreamId::from_parts(r, Role::Server, Direction::Bidir).0,
             server_bidir[i],
             "id_from_rank server_bidir[{i}]"
         );
 
         assert_eq!(
-            rank_from_id(server_unidir[i]),
+            StreamId(server_unidir[i]).rank(),
             r,
             "rank_from_id server_unidir[{i}]"
         );
         assert_eq!(
-            id_from_rank(r, false, true),
+            StreamId::from_parts(r, Role::Server, Direction::Unidir).0,
             server_unidir[i],
             "id_from_rank server_unidir[{i}]"
         );

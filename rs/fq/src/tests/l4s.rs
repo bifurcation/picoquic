@@ -167,6 +167,7 @@ fn l4s_prague() {
 /// C: `l4s_prague_updown_test`.
 #[test]
 fn l4s_prague_updown() {
+    crate::register_all_congestion_control_algorithms();
     let ccalgo = get_congestion_algorithm("prague").expect("prague cc algo");
     l4s_congestion_test(ccalgo, true, 6_300_000, 55, 6_000, L4S_LINK_UPDOWN);
 }
@@ -181,6 +182,7 @@ fn l4s_bbr() {
 /// C4 under DualQ AQM.  C: `l4s_c4_test`.
 #[test]
 fn l4s_c4() {
+    crate::register_all_congestion_control_algorithms();
     let ccalgo = get_congestion_algorithm("c4").expect("c4 cc algo");
     l4s_congestion_test(ccalgo, true, 3_600_000, 30, 3_000, &[]);
 }
@@ -189,6 +191,7 @@ fn l4s_c4() {
 /// C: `l4s_bbr_updown_test` (Windows 32-bit guard omitted — not applicable).
 #[test]
 fn l4s_bbr_updown() {
+    crate::register_all_congestion_control_algorithms();
     let ccalgo = get_congestion_algorithm("bbr").expect("bbr cc algo");
     l4s_congestion_test(ccalgo, true, 5_800_000, 69, 3_000, L4S_LINK_UPDOWN);
 }

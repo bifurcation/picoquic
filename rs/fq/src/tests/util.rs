@@ -652,6 +652,127 @@ impl TestApiStream {
     }
 }
 
+struct TestApiStreamEvent {
+    client_mode: bool,
+    stream_id: u64,
+    bytes: Vec<u8>,
+    fin: bool,
+}
+
+fn test_api_receive_stream_data(
+    stream: &mut TestApiStream,
+    response: bool,
+    bytes: &[u8],
+    fin: bool,
+) -> bool {
+    let (max_len, source, received, received_count, received_fin) = if response {
+        (
+            stream.r_len,
+            &stream.r_src,
+            &mut stream.r_rcv,
+            &mut stream.r_recv_nb,
+            &mut stream.r_received,
+        )
+    } else {
+        (
+            stream.q_len,
+            &stream.q_src,
+            &mut stream.q_rcv,
+            &mut stream.q_recv_nb,
+            &mut stream.q_received,
+        )
+    };
+
+    if received_count.saturating_add(bytes.len()) > max_len {
+        return false;
+    }
+
+    let start = *received_count;
+    let end = start + bytes.len();
+    received[start..end].copy_from_slice(bytes);
+    if source[start..end] != bytes[..] {
+        return false;
+    }
+    *received_count = end;
+
+    if fin {
+        if *received_fin {
+            return false;
+        }
+        *received_fin = true;
+    }
+
+    true
+}
+
+fn collect_received_stream_events(
+    cnx: &mut Connection,
+    client_mode: bool,
+) -> Vec<TestApiStreamEvent> {
+    let mut events = Vec::new();
+
+    for stream in cnx.streams.iter_mut() {
+        let stream_id = stream.stream_id;
+        while let Some(tree_token) = stream.stream_data_tree.first() {
+            let Some(data_token) = stream.stream_data_tree.get(tree_token).copied() else {
+                break;
+            };
+            let Some(data_node) = stream.stream_data_nodes.get(data_token) else {
+                stream.stream_data_tree.remove(tree_token);
+                continue;
+            };
+
+            let data_end = data_node.offset.saturating_add(data_node.length as u64);
+            if data_end <= stream.consumed_offset {
+                stream.stream_data_tree.remove(tree_token);
+                stream.stream_data_nodes.remove(data_token);
+                continue;
+            }
+            if data_node.offset > stream.consumed_offset {
+                break;
+            }
+
+            let start = stream.consumed_offset.saturating_sub(data_node.offset) as usize;
+            let bytes = data_node.data[start..data_node.length].to_vec();
+            stream.consumed_offset = stream.consumed_offset.saturating_add(bytes.len() as u64);
+            stream.stream_data_tree.remove(tree_token);
+            stream.stream_data_nodes.remove(data_token);
+
+            if !bytes.is_empty() {
+                events.push(TestApiStreamEvent {
+                    client_mode,
+                    stream_id,
+                    bytes,
+                    fin: false,
+                });
+            }
+        }
+
+        if stream.fin_received
+            && !stream.fin_signalled
+            && stream.consumed_offset >= stream.fin_offset
+        {
+            stream.fin_signalled = true;
+            events.push(TestApiStreamEvent {
+                client_mode,
+                stream_id,
+                bytes: Vec::new(),
+                fin: true,
+            });
+        }
+    }
+
+    events
+}
+
+fn set_test_api_callback_error(test_ctx: &mut TestTlsApiCtx, client_mode: bool) {
+    if client_mode {
+        test_ctx.client_callback_error_detected = true;
+    } else {
+        test_ctx.server_callback_error_detected = true;
+    }
+}
+
 /// CPU-limiting parameters for a simulated endpoint in the test
 /// network simulator.  C: `picoquictest_endpoint_t`.
 #[derive(Default)]
@@ -1602,6 +1723,7 @@ fn tls_api_one_sim_round_inner(
                             ecn,
                             t,
                         );
+                        tls_api_process_received_streams(test_ctx);
                         *was_active = true;
                     }
                 }
@@ -1621,6 +1743,7 @@ fn tls_api_one_sim_round_inner(
                         ecn,
                         t,
                     );
+                    tls_api_process_received_streams(test_ctx);
                     *was_active = true;
                 }
                 continue;
@@ -1645,6 +1768,7 @@ fn tls_api_one_sim_round_inner(
                         ecn,
                         t,
                     );
+                    tls_api_process_received_streams(test_ctx);
                     *was_active = true;
                 }
                 continue;
@@ -1665,6 +1789,7 @@ fn tls_api_one_sim_round_inner(
                         ecn,
                         t,
                     );
+                    tls_api_process_received_streams(test_ctx);
                     *was_active = true;
                 }
                 continue;
@@ -2591,6 +2716,110 @@ pub fn test_api_queue_initial_queries(
     Ok(())
 }
 
+fn test_api_handle_stream_event(test_ctx: &mut TestTlsApiCtx, event: TestApiStreamEvent) {
+    if event.stream_id == 0 && !event.client_mode {
+        if event.bytes.iter().any(|b| *b != 0xa5) {
+            set_test_api_callback_error(test_ctx, event.client_mode);
+            return;
+        }
+        test_ctx.stream0_received = test_ctx.stream0_received.saturating_add(event.bytes.len());
+        if test_ctx.streams_finished && test_ctx.stream0_received >= test_ctx.stream0_target {
+            test_ctx.test_finished = true;
+        }
+        return;
+    }
+
+    let Some(stream_index) = test_ctx
+        .test_streams
+        .iter()
+        .position(|stream| stream.stream_id == event.stream_id)
+    else {
+        set_test_api_callback_error(test_ctx, event.client_mode);
+        return;
+    };
+
+    let is_client_stream = crate::stream::StreamId(event.stream_id).is_client();
+    let mut stream_finished = false;
+    let mut queue_response_on_client = false;
+    let mut response = Vec::new();
+    let callback_ok;
+
+    {
+        let stream = &mut test_ctx.test_streams[stream_index];
+
+        if is_client_stream {
+            if event.client_mode {
+                callback_ok = test_api_receive_stream_data(stream, true, &event.bytes, event.fin);
+                stream_finished = event.fin;
+            } else {
+                callback_ok = test_api_receive_stream_data(stream, false, &event.bytes, event.fin);
+                if event.fin && callback_ok {
+                    if stream.r_len == 0 {
+                        stream.r_received = true;
+                        stream_finished = true;
+                    } else {
+                        response = stream.r_src.clone();
+                    }
+                }
+            }
+        } else if event.client_mode {
+            callback_ok = test_api_receive_stream_data(stream, false, &event.bytes, event.fin);
+            if event.fin && callback_ok {
+                if stream.r_len == 0 {
+                    stream.r_received = true;
+                    stream_finished = true;
+                } else {
+                    queue_response_on_client = true;
+                    response = stream.r_src.clone();
+                }
+            }
+        } else {
+            callback_ok = test_api_receive_stream_data(stream, true, &event.bytes, event.fin);
+            stream_finished = event.fin;
+        }
+    }
+
+    if !callback_ok {
+        set_test_api_callback_error(test_ctx, event.client_mode);
+        return;
+    }
+
+    if !response.is_empty() {
+        let add_result = if queue_response_on_client {
+            test_ctx
+                .cnx_client()
+                .add_to_stream(event.stream_id, &response, true)
+        } else {
+            test_ctx
+                .cnx_server()
+                .add_to_stream(event.stream_id, &response, true)
+        };
+        if add_result.is_err() {
+            set_test_api_callback_error(test_ctx, event.client_mode);
+            return;
+        }
+    }
+
+    if stream_finished && test_api_queue_initial_queries(test_ctx, event.stream_id).is_err() {
+        set_test_api_callback_error(test_ctx, event.client_mode);
+    }
+}
+
+fn tls_api_process_received_streams(test_ctx: &mut TestTlsApiCtx) {
+    let mut events = test_ctx
+        .qclient
+        .first_cnx_mut()
+        .map(|cnx| collect_received_stream_events(cnx, true))
+        .unwrap_or_default();
+    if let Some(cnx) = test_ctx.qserver.first_cnx_mut() {
+        events.extend(collect_received_stream_events(cnx, false));
+    }
+
+    for event in events {
+        test_api_handle_stream_event(test_ctx, event);
+    }
+}
+
 /// Create a TLS-API test context with an explicit SNI, ALPN, and
 /// additional flag parameters.  This Rust helper exposes the subset
 /// exercised by the translated tests: version, SNI, ALPN, ticket file,
@@ -2629,6 +2858,98 @@ pub struct VaryLinkSpec {
     pub bits_per_second_down: u64,
     /// One-way latency (microseconds).  C: `microsec_latency`.
     pub microsec_latency: u64,
+}
+
+/// Apply one time-varying link segment and return the next transition time.
+/// C: `test_vary_link`.
+fn test_vary_link(
+    test_ctx: &mut TestTlsApiCtx,
+    transition_time: u64,
+    link_state: &VaryLinkSpec,
+) -> u64 {
+    const TEN_TWELVE: u64 = 1_000_000_000_000;
+    let picosec_per_byte_up = (TEN_TWELVE * 8) / link_state.bits_per_second_up;
+    let picosec_per_byte_down = (TEN_TWELVE * 8) / link_state.bits_per_second_down;
+
+    test_ctx.c_to_s_link.microsec_latency = link_state.microsec_latency;
+    test_ctx.c_to_s_link.picosec_per_byte = picosec_per_byte_up;
+    test_ctx.s_to_c_link.microsec_latency = link_state.microsec_latency;
+    test_ctx.s_to_c_link.picosec_per_byte = picosec_per_byte_down;
+
+    transition_time + link_state.duration
+}
+
+/// Drive data delivery with optional time-varying link states.
+/// C: `tls_api_data_sending_loop_ex`.
+pub fn tls_api_data_sending_loop_ex(
+    test_ctx: &mut TestTlsApiCtx,
+    loss_mask: &mut u64,
+    simulated_time: &mut Instant,
+    max_trials: i32,
+    link_states: &[VaryLinkSpec],
+) -> crate::Result<()> {
+    test_ctx.c_to_s_link.loss_mask = Some(*loss_mask);
+    test_ctx.s_to_c_link.loss_mask = Some(*loss_mask);
+
+    let max = if max_trials <= 0 {
+        4_000_000
+    } else {
+        max_trials
+    };
+    let mut nb_trials = 0;
+    let mut nb_inactive = 0;
+    let mut next_state_change = 0;
+    let mut next_link_state = 0;
+
+    if let Some(first_link_state) = link_states.first() {
+        next_state_change = test_vary_link(test_ctx, simulated_time.ticks(), first_link_state);
+    }
+
+    while nb_trials < max && nb_inactive < 256 && test_ctx.client_ready() && test_ctx.server_ready()
+    {
+        let mut was_active = false;
+        nb_trials += 1;
+        tls_api_one_sim_round(
+            test_ctx,
+            simulated_time,
+            Instant::from_ticks(next_state_change),
+            &mut was_active,
+        )?;
+        if !link_states.is_empty() && simulated_time.ticks() >= next_state_change {
+            next_link_state += 1;
+            if next_link_state >= link_states.len() {
+                next_link_state = 0;
+            }
+            next_state_change = test_vary_link(
+                test_ctx,
+                simulated_time.ticks(),
+                &link_states[next_link_state],
+            );
+        }
+
+        if was_active {
+            nb_inactive = 0;
+        } else {
+            nb_inactive += 1;
+        }
+
+        if test_ctx.test_finished {
+            let client_empty = test_ctx
+                .qclient
+                .first_cnx_mut()
+                .map(|c| c.is_backlog_empty())
+                .unwrap_or(true);
+            let server_empty = test_ctx
+                .qserver
+                .first_cnx_mut()
+                .map(|c| c.is_backlog_empty())
+                .unwrap_or(true);
+            if test_ctx.immediate_exit || (client_empty && server_empty) {
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Run a full scenario with optional time-varying link states.
@@ -2670,7 +2991,7 @@ pub fn tls_api_one_scenario_body_ex(
     _test_ctx.stream0_received = 0;
     test_api_init_send_recv_scenario(_test_ctx, _scenario)?;
     let mut loss_mask = _init_loss_mask;
-    tls_api_data_sending_loop(_test_ctx, &mut loss_mask, _simulated_time, 0)?;
+    tls_api_data_sending_loop_ex(_test_ctx, &mut loss_mask, _simulated_time, 0, _link_states)?;
     tls_api_one_scenario_body_verify(_test_ctx, _simulated_time, _max_completion_microsec)
 }
 
