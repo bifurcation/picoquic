@@ -16,36 +16,49 @@ fn hash_test_init(test: &mut [u8], k: &mut [u8; 16]) {
     let _ = len;
 }
 
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+struct HashTestKey(u64);
+
+impl core::hash::Hash for HashTestKey {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64(self.0.wrapping_add(0xDEAD_BEEF) & 31);
+    }
+}
+
 /// C: `picohash_test` in `picoquictest/hashtest.c`.
 ///
 /// Drives the hash-table API ([`crate::hash::HashTable`]) through
 /// inserts, lookups, collision-handling, and deletions.  The C body
-/// used a custom hash function and intrusive items; the Rust API
-/// parameterises on `Hash + Eq` via `u64` keys.
+/// used a custom hash function and intrusive items; this test key
+/// keeps the same 32-bin collision pattern through Rust's `Hash + Eq`
+/// table API.
 #[test]
 fn picohash() {
     use crate::hash::HashTable;
 
-    let mut t: HashTable<u64, ()> = HashTable::new(32).expect("create hash table");
+    let mut t: HashTable<HashTestKey, ()> = HashTable::new(32).expect("create hash table");
 
     assert_eq!(t.len(), 0);
 
     // Insert odd values 1, 3, 5, 7, 9.
     for i in (1u64..10).step_by(2) {
-        assert!(t.insert(i, ()).is_ok(), "insert({i}) failed");
+        assert!(t.insert(HashTestKey(i), ()).is_ok(), "insert({i}) failed");
     }
     assert_eq!(t.len(), 5);
 
     // Every inserted value is retrievable.
     for i in (1u64..10).step_by(2) {
-        assert!(t.lookup(&i).is_some(), "lookup({i}) failed");
+        assert!(t.lookup(&HashTestKey(i)).is_some(), "lookup({i}) failed");
     }
 
     // Create collisions: for k in {1, 5}, insert k + 32*j for j in 1..=k.
     for k in (1u64..6).step_by(4) {
         for j in 1u64..=k {
             let key = k + 32 * j;
-            assert!(t.insert(key, ()).is_ok(), "insert({key}) failed");
+            assert!(
+                t.insert(HashTestKey(key), ()).is_ok(),
+                "insert({key}) failed"
+            );
         }
     }
     // Original 5 + 1 + 5 = 11.
@@ -55,25 +68,34 @@ fn picohash() {
     for k in (1u64..6).step_by(4) {
         for j in 1u64..=k {
             let key = k + 32 * j;
-            assert!(t.lookup(&key).is_some(), "lookup({key}) failed");
+            assert!(
+                t.lookup(&HashTestKey(key)).is_some(),
+                "lookup({key}) failed"
+            );
         }
     }
 
     // Even values 0, 2, 4, 6, 8, 10 were never inserted.
     for i in (0u64..=10).step_by(2) {
-        assert!(t.lookup(&i).is_none(), "lookup({i}) returned invalid item");
+        assert!(
+            t.lookup(&HashTestKey(i)).is_none(),
+            "lookup({i}) returned invalid item"
+        );
     }
 
-    // Delete values 1 and 9 (first and near-last of the originals).
+    // Delete values 1, 5, and 9 (first, middle, and last of the originals).
     for i in (1u64..10).step_by(4) {
-        let tok = t.lookup(&i).expect("pre-delete lookup");
+        let tok = t.lookup(&HashTestKey(i)).expect("pre-delete lookup");
         t.remove(tok);
     }
     assert_eq!(t.len(), 8);
 
     // Deleted values are gone.
     for i in (1u64..10).step_by(4) {
-        assert!(t.lookup(&i).is_none(), "deleted value {i} still found");
+        assert!(
+            t.lookup(&HashTestKey(i)).is_none(),
+            "deleted value {i} still found"
+        );
     }
 }
 

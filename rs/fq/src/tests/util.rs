@@ -1064,6 +1064,18 @@ fn tls_api_sync_link_loss_mask(test_ctx: &TestTlsApiCtx, loss_mask: &mut u64) {
             self.use_udp_gso = true;
         }
     }
+
+    fn server_received_stream_data(&mut self) -> bool {
+        self.qserver
+            .first_cnx_mut()
+            .map(|cnx| {
+                cnx.streams.iter().any(|stream| {
+                    stream.fin_offset > 0
+                        || stream.stream_data_nodes.iter().any(|node| node.length > 0)
+                })
+            })
+            .unwrap_or(false)
+    }
 }
 
 fn tls_api_one_sim_round_with_loss_mask(
@@ -1176,7 +1188,15 @@ pub fn wait_client_connection_ready(
             nb_inactive += 1;
         }
     }
-    Ok(())
+
+    if matches!(
+        test_ctx.qclient.first_cnx_mut().map(|c| c.connection_state),
+        Some(crate::State::Ready)
+    ) {
+        Ok(())
+    } else {
+        Err(crate::Error::Generic)
+    }
 }
 
 /// Register the stream scenario on the test context so that the
@@ -2179,6 +2199,16 @@ pub fn tls_api_one_scenario_body_connect(
     wait_client_connection_ready(test_ctx, simulated_time)
 }
 
+const TEST_TICKET_ENCRYPT_KEY: [u8; 32] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 27, 28, 29, 30, 31,
+];
+
+const TEST_TICKET_BADCRYPT_KEY: [u8; 32] = [
+    255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 27, 28, 29, 30, 31,
+];
+
 /// Create a TLS-API test context from an explicit initial CID and
 /// optional ticket file.  Uses `TEST_SNI` / `TEST_ALPN` internally.
 /// C: `tls_api_init_ctx_ex`.
@@ -2224,6 +2254,7 @@ fn tls_api_init_ctx_ex_named(
         false,
         true,
         false,
+        Some(TEST_TICKET_ENCRYPT_KEY.as_slice()),
     )
 }
 
@@ -2248,6 +2279,33 @@ fn tls_api_init_ctx_ex_named_with_start(
         false,
         start_client,
         false,
+        Some(TEST_TICKET_ENCRYPT_KEY.as_slice()),
+    )
+    .ok()
+}
+
+fn tls_api_init_ctx_ex_named_with_ticket_key(
+    simulated_time: &mut Instant,
+    proposed_version: u32,
+    sni: Option<&str>,
+    alpn: Option<&str>,
+    ticket_file: Option<&str>,
+    initial_cid: Option<&ConnectionId>,
+    ticket_encryption_key: Option<&[u8]>,
+) -> Option<Box<TestTlsApiCtx>> {
+    tls_api_init_ctx_ex_named_with_flags(
+        simulated_time,
+        proposed_version,
+        sni,
+        alpn,
+        ticket_file,
+        initial_cid,
+        false,
+        false,
+        false,
+        true,
+        false,
+        ticket_encryption_key,
     )
     .ok()
 }
@@ -2265,17 +2323,8 @@ fn tls_api_init_ctx_ex_named_with_flags(
     preserve_zero_version: bool,
     start_client: bool,
     use_ecdsa: bool,
+    ticket_encryption_key: Option<&[u8]>,
 ) -> crate::Result<Box<TestTlsApiCtx>> {
-    const VERIFIER_ENCRYPT_KEY: [u8; RESET_SECRET_SIZE] = {
-        let mut k = [0u8; RESET_SECRET_SIZE];
-        let mut i = 0usize;
-        while i < RESET_SECRET_SIZE {
-            k[i] = i as u8;
-            i += 1;
-        }
-        k
-    };
-
     let version = if proposed_version == 0 && !preserve_zero_version {
         Version::InternalTest1 as u32
     } else {
@@ -2325,7 +2374,7 @@ fn tls_api_init_ctx_ex_named_with_flags(
         [0u8; RESET_SECRET_SIZE],
         *simulated_time,
         None,
-        Some(&VERIFIER_ENCRYPT_KEY),
+        ticket_encryption_key,
     )
     .ok_or(crate::Error::Generic)?;
     qclient.set_random_initial(0);
@@ -2670,6 +2719,7 @@ pub fn tls_api_init_ctx_zero_share(simulated_time: &mut Instant) -> Option<Box<T
         true,
         true,
         false,
+        Some(TEST_TICKET_ENCRYPT_KEY.as_slice()),
     )
     .ok()
 }
@@ -2877,6 +2927,7 @@ pub fn tls_api_init_ctx_ex2_ecdsa(
         false,
         true,
         true,
+        Some(TEST_TICKET_ENCRYPT_KEY.as_slice()),
     )
     .ok()
 }
@@ -3142,10 +3193,19 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
                 Instant::from_ticks(simulated_time.ticks().saturating_add(_zrt.extra_delay));
         }
 
-        let mut test_ctx = tls_api_init_ctx_delayed(
+        let ticket_encryption_key = if pass == 1 && _zrt.use_badcrypt {
+            TEST_TICKET_BADCRYPT_KEY.as_slice()
+        } else {
+            TEST_TICKET_ENCRYPT_KEY.as_slice()
+        };
+        let mut test_ctx = tls_api_init_ctx_ex_named_with_ticket_key(
             &mut simulated_time,
             proposed_version,
+            Some(TEST_SNI),
+            Some(TEST_ALPN),
             Some(TICKET_FILE_NAME),
+            None,
+            Some(ticket_encryption_key),
         )
         .ok_or(crate::Error::Generic)?;
 
@@ -3175,7 +3235,10 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
                 .saturating_add(1);
         }
         if _zrt.propose_ech {
-            test_ctx.qclient.client_zero_share = true;
+            test_ctx.qclient.ech_configure(None, None)?;
+            if !test_ctx.qclient.ech_client_enabled || test_ctx.qclient.client_zero_share {
+                return Err(crate::Error::Generic);
+            }
         }
 
         test_ctx.cnx_client().start_client()?;
@@ -3196,9 +3259,9 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
                 } else {
                     b"test0rtt".to_vec()
                 };
-                let _ = test_ctx
+                test_ctx
                     .cnx_client()
-                    .add_to_stream(stream_id, &payload, true);
+                    .add_to_stream(stream_id, &payload, true)?;
             }
 
             if _zrt.early_loss > 0 {
@@ -3250,6 +3313,11 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
         tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)?;
 
         if pass == 1 {
+            let server_received_stream_data = test_ctx.server_received_stream_data();
+            let server_zero_rtt_received = test_ctx
+                .qserver
+                .first_cnx_mut()
+                .map(|cnx| cnx.nb_zero_rtt_received);
             let cnx = test_ctx.cnx_client();
             if !_zrt.use_badcrypt && !_zrt.hardreset && !_zrt.change_params {
                 if cnx.nb_zero_rtt_sent == 0 {
@@ -3258,11 +3326,19 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
                 if _zrt.early_loss == 0 && cnx.nb_zero_rtt_acked != cnx.nb_zero_rtt_sent {
                     return Err(crate::Error::Generic);
                 }
+                if _zrt.early_loss == 0
+                    && _zrt.no_coal
+                    && server_zero_rtt_received
+                        .is_some_and(|received| cnx.nb_zero_rtt_sent != received)
+                {
+                    return Err(crate::Error::Generic);
+                }
                 if _zrt.long_data && cnx.nb_zero_rtt_sent < 3 {
                     return Err(crate::Error::Generic);
                 }
             } else if cnx.nb_zero_rtt_sent == 0
                 || ((_zrt.early_loss > 0 || _zrt.change_params) && cnx.nb_zero_rtt_acked != 0)
+                || !server_received_stream_data
                 || cnx.did_receive_short_initial
             {
                 return Err(crate::Error::Generic);
@@ -7817,6 +7893,97 @@ pub struct WifiTestSpec {
     pub queue_max_delay: u64,
 }
 
+struct WifiCubicCongestionControl;
+
+impl crate::CongestionControl for WifiCubicCongestionControl {
+    fn alg_init(
+        &self,
+        path_x: &mut crate::internal::Path,
+        option_string: Option<&str>,
+        current_time: Instant,
+    ) {
+        crate::cubic::CubicState::init(path_x, option_string, current_time.ticks());
+    }
+
+    fn alg_notify(
+        &self,
+        connection: &mut Connection,
+        path_x: &mut crate::internal::Path,
+        notification: crate::CongestionNotification,
+        ack_state: &crate::PerAckState,
+        current_time: Instant,
+    ) {
+        if path_x.congestion_alg_state.is_none() {
+            crate::cubic::CubicState::init(path_x, None, current_time.ticks());
+        }
+
+        let Some(boxed_state) = path_x.congestion_alg_state.take() else {
+            return;
+        };
+
+        let mut cubic_state = match boxed_state.downcast::<crate::cubic::CubicState>() {
+            Ok(state) => state,
+            Err(boxed_state) => {
+                path_x.congestion_alg_state = Some(boxed_state);
+                return;
+            }
+        };
+
+        cubic_state.notify(
+            connection,
+            path_x,
+            notification,
+            ack_state,
+            current_time.ticks(),
+        );
+        path_x.congestion_alg_state = Some(cubic_state);
+    }
+
+    fn alg_delete(&self, path_x: &mut crate::internal::Path) {
+        path_x.congestion_alg_state = None;
+    }
+
+    fn alg_observe(&self, path_x: &crate::internal::Path) -> Option<(u64, u64)> {
+        path_x
+            .congestion_alg_state
+            .as_ref()
+            .and_then(|state| state.downcast_ref::<crate::cubic::CubicState>())
+            .map(|state| state.observe())
+    }
+}
+
+static WIFI_CUBIC_CONTROL: WifiCubicCongestionControl = WifiCubicCongestionControl;
+static WIFI_CUBIC_ALGORITHM: crate::CongestionAlgorithm = crate::CongestionAlgorithm {
+    congestion_algorithm_id: "cubic",
+    congestion_algorithm_number: 2,
+    ecn_mark: crate::ECN_ECT_0,
+    algorithm: &WIFI_CUBIC_CONTROL,
+};
+
+fn wifi_congestion_algorithm(
+    ccalgo_id: &str,
+) -> crate::Result<&'static crate::CongestionAlgorithm> {
+    if ccalgo_id == "cubic" {
+        Ok(&WIFI_CUBIC_ALGORITHM)
+    } else {
+        crate::register_all_congestion_control_algorithms();
+        crate::get_congestion_algorithm(ccalgo_id).ok_or(crate::Error::Generic)
+    }
+}
+
+fn wifi_set_connection_congestion_algorithm(
+    connection: &mut Connection,
+    algo: &'static crate::CongestionAlgorithm,
+    option_string: Option<&str>,
+    current_time: Instant,
+) {
+    connection.set_congestion_algorithm_ex(algo, option_string);
+    for path_x in &mut connection.paths {
+        algo.algorithm.alg_delete(path_x);
+        algo.algorithm.alg_init(path_x, option_string, current_time);
+    }
+}
+
 /// Run one wifi-test scenario.  `test_id` is the C enum discriminant used to
 /// seed the initial connection ID.
 /// C: `wifi_test_one` in `picoquictest/wifitest.c`.
@@ -7837,13 +8004,16 @@ pub fn wifi_test_one(_test_id: u32, _spec: &WifiTestSpec) -> crate::Result<()> {
     )
     .ok_or(crate::Error::Generic)?;
 
-    let algo = crate::get_congestion_algorithm(_spec.ccalgo_id).ok_or(crate::Error::Generic)?;
+    let algo = wifi_congestion_algorithm(_spec.ccalgo_id)?;
     test_ctx
         .qserver
         .set_default_congestion_algorithm_ex(algo, _spec.cc_algo_option);
-    test_ctx
-        .cnx_client()
-        .set_congestion_algorithm_ex(algo, _spec.cc_algo_option);
+    wifi_set_connection_congestion_algorithm(
+        test_ctx.cnx_client(),
+        algo,
+        _spec.cc_algo_option,
+        simulated_time,
+    );
 
     test_ctx.c_to_s_link.microsec_latency = _spec.latency;
     test_ctx.s_to_c_link.microsec_latency = _spec.latency;

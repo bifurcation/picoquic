@@ -11,8 +11,8 @@
 use core::net::SocketAddr;
 
 use crate::internal::{
-    Epoch, PacketHeader, PacketType, StreamDataNode, Version, protect_packet_header,
-    update_payload_length,
+    ConnectionToken, Epoch, PacketHeader, PacketType, StreamDataNode, Version,
+    protect_packet_header, update_payload_length,
 };
 use crate::{ConnectionId, Instant, PacketContext, Quic, RESET_SECRET_SIZE};
 
@@ -33,6 +33,21 @@ fn local_id() -> ConnectionId {
 fn r10_id() -> ConnectionId {
     ConnectionId::clone_from_slice(&[0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09]).unwrap()
 }
+
+const TEST_0RTT_SECRET: &[u8] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6, 7, 8,
+    9, 10, 0, 1,
+];
+
+const TEST_HANDSHAKE_SECRET: &[u8] = &[
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6,
+    7, 8, 9, 10,
+];
+
+const TEST_1RTT_SECRET: &[u8] = &[
+    0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6,
+    7, 8, 9, 10,
+];
 
 // ---------------------------------------------------------------------------
 // Test packet bytes and expected headers (see C test_entries[]).
@@ -537,6 +552,7 @@ fn test_packet_encrypt_one(
     addr_from: &SocketAddr,
     cnx_client: &mut crate::internal::Connection,
     q_server: &mut Quic,
+    expected_server: Option<ConnectionToken>,
     ptype: PacketType,
     length: usize,
 ) -> crate::Result<()> {
@@ -584,16 +600,21 @@ fn test_packet_encrypt_one(
             .as_deref()
             .ok_or(crate::Error::Tls)?;
 
-        let header = packet[..header_length].to_vec();
-        let mut payload = packet[header_length..length].to_vec();
-        aead.encrypt(sequence_number, &header, &mut payload);
-        let send_length = header_length + payload.len();
+        let send_length = length
+            .checked_add(aead.tag_len())
+            .ok_or(crate::Error::BufferTooSmall)?;
         if send_length > send_buffer.len() {
             return Err(crate::Error::BufferTooSmall);
         }
+        update_payload_length(&mut packet, pn_offset, pn_offset, send_length);
+        let header = packet[..header_length].to_vec();
+        let mut payload = packet[header_length..length].to_vec();
+        aead.encrypt(sequence_number, &header, &mut payload);
+        if header_length + payload.len() != send_length {
+            return Err(crate::Error::Generic);
+        }
         send_buffer[..header_length].copy_from_slice(&header);
         send_buffer[header_length..send_length].copy_from_slice(&payload);
-        update_payload_length(&mut send_buffer, pn_offset, pn_offset, send_length);
         let first_mask = if (send_buffer[0] & 0x80) != 0 {
             0x0f
         } else {
@@ -664,7 +685,7 @@ fn test_packet_encrypt_one(
     };
     let mut ph = PacketHeader::default();
     let mut consumed = 0usize;
-    let _ = q_server.parse_header_and_decrypt(
+    let (server_token, _) = q_server.parse_header_and_decrypt(
         &send_buffer[..send_length],
         send_length,
         Some(addr_from),
@@ -674,6 +695,13 @@ fn test_packet_encrypt_one(
         &mut consumed,
     )?;
 
+    if let Some(expected_server) = expected_server {
+        assert_eq!(
+            server_token,
+            Some(expected_server),
+            "server connection mismatch"
+        );
+    }
     assert_eq!(ph.packet_type, ptype, "packet type mismatch");
     assert_eq!(ph.offset, pn_offset, "offset mismatch");
     assert_eq!(
@@ -692,6 +720,11 @@ fn test_packet_encrypt_one(
         ph.payload_length,
         send_length.saturating_sub(pn_offset),
         "payload length mismatch"
+    );
+    assert_eq!(
+        received.length,
+        length.saturating_sub(header_length),
+        "decrypted payload length mismatch"
     );
     assert_eq!(ph.dest_connection_id, expected_dest, "dest CID mismatch");
     assert_eq!(ph.src_connection_id, expected_src, "src CID mismatch");
@@ -752,33 +785,97 @@ fn packet_enc_dec() {
         cnx.start_client().expect("start client");
 
         // Initial packet
-        test_packet_encrypt_one(&addr, cnx, &mut qserver, PacketType::Initial, 1256)
+        test_packet_encrypt_one(&addr, cnx, &mut qserver, None, PacketType::Initial, 1256)
             .expect("initial enc_dec");
     }
 
+    let expected_server = qserver
+        .first_cnx_mut()
+        .and_then(|server| server.own_token)
+        .expect("server cnx");
+    let server_local_cid = {
+        let cnx_server = qserver.first_cnx_mut().expect("server cnx");
+        cnx_server
+            .paths
+            .first()
+            .and_then(|path| path.tuples.first())
+            .and_then(|tuple| tuple.local_connection_id)
+            .and_then(|token| cnx_server.local_connection_ids.get(token))
+            .map(|cid| cid.connection_id)
+            .expect("server local cid")
+    };
+
     // Handshake packet
     {
-        let prefix_label = {
-            let cnx = qclient.first_cnx_mut().unwrap();
-            cnx.version_tls_prefix_label()
-        };
-        let hs_secret: &[u8] = &[
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3,
-            4, 5, 6, 7, 8, 9, 10,
-        ];
         {
             let cnx = qclient.first_cnx_mut().unwrap();
-            cnx.set_test_aead_encrypt(Epoch::Handshake, hs_secret);
-            cnx.set_test_pn_enc(Epoch::Handshake, hs_secret);
-            let _ = prefix_label; // used in C to derive the test context
+            cnx.set_test_aead_encrypt(Epoch::Handshake, TEST_HANDSHAKE_SECRET);
+            cnx.set_test_pn_enc(Epoch::Handshake, TEST_HANDSHAKE_SECRET);
         }
         let cnx_server = qserver.first_cnx_mut().expect("server cnx");
-        cnx_server.set_test_aead_decrypt(Epoch::Handshake, hs_secret);
-        cnx_server.set_test_pn_dec(Epoch::Handshake, hs_secret);
+        cnx_server.set_test_aead_decrypt(Epoch::Handshake, TEST_HANDSHAKE_SECRET);
+        cnx_server.set_test_pn_dec(Epoch::Handshake, TEST_HANDSHAKE_SECRET);
 
         let cnx = qclient.first_cnx_mut().unwrap();
-        test_packet_encrypt_one(&addr, cnx, &mut qserver, PacketType::Handshake, 1256)
-            .expect("handshake enc_dec");
+        test_packet_encrypt_one(
+            &addr,
+            cnx,
+            &mut qserver,
+            Some(expected_server),
+            PacketType::Handshake,
+            1256,
+        )
+        .expect("handshake enc_dec");
+    }
+
+    // 0-RTT packet, using a null remote CID to trigger the initial-ID fallback.
+    {
+        {
+            let cnx = qclient.first_cnx_mut().unwrap();
+            cnx.set_test_aead_encrypt(Epoch::ZeroRtt, TEST_0RTT_SECRET);
+            cnx.set_test_pn_enc(Epoch::ZeroRtt, TEST_0RTT_SECRET);
+            cnx.set_path_tuple_remote_cid(0, 0, ConnectionId::default());
+        }
+        let cnx_server = qserver.first_cnx_mut().expect("server cnx");
+        cnx_server.set_test_aead_decrypt(Epoch::ZeroRtt, TEST_0RTT_SECRET);
+        cnx_server.set_test_pn_dec(Epoch::ZeroRtt, TEST_0RTT_SECRET);
+
+        let cnx = qclient.first_cnx_mut().unwrap();
+        test_packet_encrypt_one(
+            &addr,
+            cnx,
+            &mut qserver,
+            Some(expected_server),
+            PacketType::ZeroRttProtected,
+            256,
+        )
+        .expect("0rtt enc_dec");
+
+        let cnx = qclient.first_cnx_mut().unwrap();
+        cnx.set_path_tuple_remote_cid(0, 0, server_local_cid);
+    }
+
+    // 1-RTT packet.
+    {
+        {
+            let cnx = qclient.first_cnx_mut().unwrap();
+            cnx.set_test_aead_encrypt(Epoch::OneRtt, TEST_1RTT_SECRET);
+            cnx.set_test_pn_enc(Epoch::OneRtt, TEST_1RTT_SECRET);
+        }
+        let cnx_server = qserver.first_cnx_mut().expect("server cnx");
+        cnx_server.set_test_aead_decrypt(Epoch::OneRtt, TEST_1RTT_SECRET);
+        cnx_server.set_test_pn_dec(Epoch::OneRtt, TEST_1RTT_SECRET);
+
+        let cnx = qclient.first_cnx_mut().unwrap();
+        test_packet_encrypt_one(
+            &addr,
+            cnx,
+            &mut qserver,
+            Some(expected_server),
+            PacketType::OneRttProtected,
+            1024,
+        )
+        .expect("1rtt enc_dec");
     }
 }
 

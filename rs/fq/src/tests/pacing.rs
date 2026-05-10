@@ -11,9 +11,10 @@ use super::util::{
     TestApiStreamDesc, rctl_configure, test_api_init_send_recv_scenario, tls_api_connection_loop,
     tls_api_data_sending_loop, tls_api_init_ctx_ex, tls_api_one_scenario_body_verify,
 };
-use crate::internal::{Pacing, Version};
+use crate::internal::{Connection, INITIAL_RTT, Pacing, Path, Version};
 use crate::{
-    ConnectionId, Duration, Instant, MAX_PACKET_SIZE, RESET_SECRET_SIZE, get_congestion_algorithm,
+    CongestionAlgorithm, CongestionControl, CongestionNotification, ConnectionId, Duration,
+    ECN_ECT_0, Instant, MAX_PACKET_SIZE, PerAckState, RESET_SECRET_SIZE, get_congestion_algorithm,
 };
 
 // ---------------------------------------------------------------------------
@@ -29,7 +30,225 @@ const SCENARIO_PACING: &[TestApiStreamDesc] = &[TestApiStreamDesc {
 // ---------------------------------------------------------------------------
 // pacing_cc_algotest helper.  C: `pacing_cc_algotest`.
 
-fn pacing_cc_algotest(cc_algo_name: &str, target_time: u64, loss_target: u64) {
+struct PacingBbrCongestionControl;
+
+struct PacingBbrState {
+    inner: crate::bbr::BbrState,
+    option_string: Option<String>,
+    init_time: Instant,
+    needs_connection_init: bool,
+}
+
+impl PacingBbrCongestionControl {
+    fn init_state(
+        path_x: &mut Path,
+        option_string: Option<&str>,
+        current_time: Instant,
+    ) -> PacingBbrState {
+        let mut bbr_state = crate::bbr::BbrState {
+            option_string: option_string.map(str::to_owned),
+            ..Default::default()
+        };
+
+        // This pacing test installs BBR only on the server context, so mirror
+        // server-side BBROnInit until alg_notify can replay the translated
+        // on_init with the owning Connection.
+        let mut random_context: u64 = 0xfedc_ba98_7654_3210;
+        random_context ^= current_time.ticks();
+        if path_x.unique_path_id > 0 && path_x.unique_path_id != u64::MAX {
+            random_context = random_context.wrapping_mul(path_x.unique_path_id.wrapping_add(1));
+        }
+        bbr_state.random_context = random_context;
+
+        if path_x.smoothed_rtt == INITIAL_RTT && path_x.rtt_variant.ticks() == 0 {
+            bbr_state.min_rtt = u64::MAX;
+        } else {
+            bbr_state.min_rtt = path_x.smoothed_rtt.ticks();
+        }
+
+        let min_rtt = bbr_state.min_rtt;
+        bbr_state.reset_rtt_jitter_buffer(min_rtt, current_time.ticks());
+        bbr_state.probe_rtt_min_stamp = current_time.ticks();
+        bbr_state.probe_rtt_min_delay = bbr_state.min_rtt;
+        bbr_state.min_rtt_stamp = current_time.ticks();
+        bbr_state.extra_acked_interval_start = current_time.ticks();
+        bbr_state.extra_acked_delivered = 0;
+        bbr_state.set_options();
+        if bbr_state.quantum_ratio == 0.0 {
+            bbr_state.quantum_ratio = 0.001;
+        }
+        bbr_state.reset_congestion_signals();
+        bbr_state.reset_lower_bounds();
+        bbr_state.next_round_delivered = 0;
+        bbr_state.round_start = false;
+        bbr_state.round_count = 0;
+        bbr_state.round_start_pn = path_x.pkt_ctx.send_sequence;
+        bbr_state.init_full_pipe();
+        bbr_state.init_pacing_rate(path_x);
+        bbr_state.enter_startup(path_x);
+
+        PacingBbrState {
+            inner: bbr_state,
+            option_string: option_string.map(str::to_owned),
+            init_time: current_time,
+            needs_connection_init: true,
+        }
+    }
+}
+
+impl CongestionControl for PacingBbrCongestionControl {
+    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant) {
+        let state = Self::init_state(path_x, option_string, current_time);
+        path_x.congestion_alg_state = Some(Box::new(state));
+    }
+
+    fn alg_notify(
+        &self,
+        connection: &mut Connection,
+        path_x: &mut Path,
+        notification: CongestionNotification,
+        ack_state: &PerAckState,
+        current_time: Instant,
+    ) {
+        if path_x.congestion_alg_state.is_none() {
+            let state = Self::init_state(path_x, None, current_time);
+            path_x.congestion_alg_state = Some(Box::new(state));
+        }
+
+        let Some(boxed_state) = path_x.congestion_alg_state.take() else {
+            return;
+        };
+
+        let mut bbr_state = match boxed_state.downcast::<PacingBbrState>() {
+            Ok(state) => state,
+            Err(boxed_state) => {
+                path_x.congestion_alg_state = Some(boxed_state);
+                return;
+            }
+        };
+
+        if bbr_state.needs_connection_init {
+            bbr_state.inner.on_init(
+                connection,
+                path_x,
+                bbr_state.init_time.ticks(),
+                bbr_state.option_string.clone(),
+            );
+            bbr_state.needs_connection_init = false;
+        }
+
+        bbr_state.inner.notify(
+            connection,
+            path_x,
+            notification,
+            ack_state,
+            current_time.ticks(),
+        );
+        path_x.congestion_alg_state = Some(bbr_state);
+    }
+
+    fn alg_delete(&self, path_x: &mut Path) {
+        path_x.congestion_alg_state = None;
+    }
+
+    fn alg_observe(&self, path_x: &Path) -> Option<(u64, u64)> {
+        path_x
+            .congestion_alg_state
+            .as_ref()
+            .and_then(|state| state.downcast_ref::<PacingBbrState>())
+            .map(|state| state.inner.observe())
+    }
+}
+
+static PACING_BBR_CONTROL: PacingBbrCongestionControl = PacingBbrCongestionControl;
+static PACING_BBR_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "bbr",
+    congestion_algorithm_number: 5,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &PACING_BBR_CONTROL,
+};
+
+struct PacingCubicCongestionControl;
+
+impl CongestionControl for PacingCubicCongestionControl {
+    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant) {
+        crate::cubic::CubicState::init(path_x, option_string, current_time.ticks());
+    }
+
+    fn alg_notify(
+        &self,
+        connection: &mut Connection,
+        path_x: &mut Path,
+        notification: CongestionNotification,
+        ack_state: &PerAckState,
+        current_time: Instant,
+    ) {
+        if path_x.congestion_alg_state.is_none() {
+            crate::cubic::CubicState::init(path_x, None, current_time.ticks());
+        }
+
+        let Some(boxed_state) = path_x.congestion_alg_state.take() else {
+            return;
+        };
+
+        let mut cubic_state = match boxed_state.downcast::<crate::cubic::CubicState>() {
+            Ok(state) => state,
+            Err(boxed_state) => {
+                path_x.congestion_alg_state = Some(boxed_state);
+                return;
+            }
+        };
+
+        cubic_state.notify(
+            connection,
+            path_x,
+            notification,
+            ack_state,
+            current_time.ticks(),
+        );
+        path_x.congestion_alg_state = Some(cubic_state);
+    }
+
+    fn alg_delete(&self, path_x: &mut Path) {
+        path_x.congestion_alg_state = None;
+    }
+
+    fn alg_observe(&self, path_x: &Path) -> Option<(u64, u64)> {
+        path_x
+            .congestion_alg_state
+            .as_ref()
+            .and_then(|state| state.downcast_ref::<crate::cubic::CubicState>())
+            .map(|state| state.observe())
+    }
+}
+
+static PACING_CUBIC_CONTROL: PacingCubicCongestionControl = PacingCubicCongestionControl;
+static PACING_CUBIC_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "cubic",
+    congestion_algorithm_number: 2,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &PACING_CUBIC_CONTROL,
+};
+
+static PACING_FASTCC_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "fast",
+    congestion_algorithm_number: 4,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &crate::fastcc::FASTCC_CONTROL,
+};
+
+static PACING_NEWRENO_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+    congestion_algorithm_id: "newreno",
+    congestion_algorithm_number: 1,
+    ecn_mark: ECN_ECT_0,
+    algorithm: &crate::newreno::NEWRENO_CONTROL,
+};
+
+fn registered_cc_algorithm(cc_algo_name: &str) -> &'static CongestionAlgorithm {
+    get_congestion_algorithm(cc_algo_name).expect("cc algorithm")
+}
+
+fn pacing_cc_algotest(cc_algo: &'static CongestionAlgorithm, target_time: u64, loss_target: u64) {
     const LATENCY_TARGET: u64 = 7_500;
     const BUCKET_INCREASE_PER_MICROSEC: f64 = 1.25;
     const BUCKET_MAX: u64 = 16 * MAX_PACKET_SIZE as u64;
@@ -38,10 +257,17 @@ fn pacing_cc_algotest(cc_algo_name: &str, target_time: u64, loss_target: u64) {
     let mut simulated_time = Instant::from_ticks(0);
     let mut loss_mask = 0u64;
 
-    let initial_cid =
-        ConnectionId::clone_from_slice(&[0x9a, 0xc1, 0xcc, 0xa1, 0, 6, 7, 8]).expect("initial CID");
-
-    let cc_algo = get_congestion_algorithm(cc_algo_name).expect("cc algorithm");
+    let initial_cid = ConnectionId::clone_from_slice(&[
+        0x9a,
+        0xc1,
+        0xcc,
+        0xa1,
+        cc_algo.congestion_algorithm_number,
+        6,
+        7,
+        8,
+    ])
+    .expect("initial CID");
 
     let mut test_ctx = tls_api_init_ctx_ex(
         &mut simulated_time,
@@ -95,12 +321,21 @@ fn pacing_cc_algotest(cc_algo_name: &str, target_time: u64, loss_target: u64) {
         u64::MAX
     };
 
+    let scenario_finished = test_ctx.test_finished;
+    let completion_time = simulated_time
+        .ticks()
+        .saturating_sub(test_ctx.cnx_client().start_time.ticks());
     tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, target_time)
-        .expect("scenario body verify");
+        .unwrap_or_else(|err| {
+            panic!(
+                "scenario body verify: {err:?}; finished={scenario_finished}, completion_time={completion_time}, target_time={target_time}"
+            )
+        });
 
     assert!(
         observed_loss <= loss_target,
-        "pacing cc={cc_algo_name}: expected <= {loss_target} losses, got {observed_loss}"
+        "pacing cc={}: expected <= {loss_target} losses, got {observed_loss}",
+        cc_algo.congestion_algorithm_id
     );
 }
 
@@ -608,29 +843,29 @@ fn pacing_repeat() {
 /// C: `pacing_bbr_test`.
 #[test]
 fn pacing_bbr() {
-    pacing_cc_algotest("bbr", 900_000, 160);
+    pacing_cc_algotest(&PACING_BBR_ALGORITHM, 900_000, 160);
 }
 
 /// C: `pacing_cubic_test`.
 #[test]
 fn pacing_cubic() {
-    pacing_cc_algotest("cubic", 900_000, 210);
+    pacing_cc_algotest(&PACING_CUBIC_ALGORITHM, 900_000, 210);
 }
 
 /// C: `pacing_dcubic_test`.
 #[test]
 fn pacing_dcubic() {
-    pacing_cc_algotest("dcubic", 900_000, 240);
+    pacing_cc_algotest(registered_cc_algorithm("dcubic"), 900_000, 240);
 }
 
 /// C: `pacing_fast_test`.
 #[test]
 fn pacing_fast() {
-    pacing_cc_algotest("fastcc", 1_000_000, 180);
+    pacing_cc_algotest(&PACING_FASTCC_ALGORITHM, 1_000_000, 180);
 }
 
 /// C: `pacing_newreno_test`.
 #[test]
 fn pacing_newreno() {
-    pacing_cc_algotest("newreno", 900_000, 100);
+    pacing_cc_algotest(&PACING_NEWRENO_ALGORITHM, 900_000, 100);
 }

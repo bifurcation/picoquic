@@ -8648,12 +8648,184 @@ fn version_negotiation() {
 
 /// C: `test_version_negotiation_spoof` in `picoquictest/tls_api_test.c`.
 ///
-/// Injects a spoofed Version Negotiation packet and verifies the client
-/// ignores it.
+/// Injects spoofed Version Negotiation packets. Mode 0 is a syntactically
+/// valid VN and should not be ignored; modes 1 through 7 are spoof variants
+/// that should leave the client in `ClientInitSent`.
 #[test]
 fn version_negotiation_spoof() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN))
-        .expect("version_negotiation_spoof");
+    let state = version_negotiation_spoof_one(0).expect("version_negotiation_spoof mode 0");
+    assert_eq!(
+        state,
+        State::ClientRenegotiate,
+        "VN spoof mode 0 has no effect"
+    );
+
+    for spoof_mode in 1..8 {
+        let state = version_negotiation_spoof_one(spoof_mode)
+            .unwrap_or_else(|e| panic!("version_negotiation_spoof mode {spoof_mode}: {e:?}"));
+        assert_eq!(
+            state,
+            State::ClientInitSent,
+            "VN spoof mode {spoof_mode} caused failure"
+        );
+    }
+}
+
+fn version_negotiation_spoof_one(spoof_mode: u8) -> crate::Result<State> {
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut test_ctx =
+        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
+    let mut nb_trials = 0;
+    let mut nb_inactive = 0;
+
+    while nb_trials < 1024 && nb_inactive < 512 {
+        let mut was_active = false;
+        nb_trials += 1;
+        tls_api_one_sim_round(
+            &mut test_ctx,
+            &mut simulated_time,
+            Instant::from_ticks(0),
+            &mut was_active,
+        )?;
+        if was_active {
+            nb_inactive = 0;
+        } else {
+            nb_inactive += 1;
+        }
+        if test_ctx.cnx_client().connection_state >= State::ClientInitSent {
+            break;
+        }
+    }
+
+    assert_eq!(
+        test_ctx.cnx_client().connection_state,
+        State::ClientInitSent,
+        "client did not reach ClientInitSent before VN spoof injection"
+    );
+
+    let mut packet = [0u8; 256];
+    let packet_length =
+        version_negotiation_get_spoofed(test_ctx.cnx_client(), spoof_mode, &mut packet)?;
+    let server_addr = test_ctx.server_addr;
+    let client_addr = test_ctx.client_addr;
+
+    test_ctx.qclient.incoming_packet(
+        &mut packet[..packet_length],
+        &server_addr,
+        &client_addr,
+        0,
+        0,
+        simulated_time,
+    )?;
+
+    Ok(test_ctx.cnx_client().connection_state)
+}
+
+fn version_negotiation_get_spoofed(
+    cnx: &Connection,
+    spoof_mode: u8,
+    packet: &mut [u8],
+) -> crate::Result<usize> {
+    let bad_cid = ConnectionId::clone_from_slice(&[0xba, 0xdc, 0x1d, 0, 0, 0, 0, 0])
+        .ok_or(crate::Error::Generic)?;
+    let this_vn = usize::try_from(cnx.version_index)
+        .ok()
+        .and_then(|index| SUPPORTED_VERSIONS.get(index))
+        .copied()
+        .unwrap_or(Version::InternalTest1) as u32;
+    let random_vn = 0xa5a6_a7a8 ^ (this_vn & 0x0f0f_0f0f);
+    let mut packet_index = 0;
+
+    append_byte(packet, &mut packet_index, spoof_mode | 0x80)?;
+    append_u32(packet, &mut packet_index, 0)?;
+
+    let dcid = if spoof_mode == 1 {
+        bad_cid
+    } else {
+        version_negotiation_client_local_cid(cnx)?
+    };
+    append_cid(packet, &mut packet_index, dcid)?;
+
+    let scid = if spoof_mode == 2 {
+        bad_cid
+    } else {
+        cnx.initial_connection_id
+    };
+    append_cid(packet, &mut packet_index, scid)?;
+
+    if spoof_mode != 3 {
+        append_u32(packet, &mut packet_index, random_vn)?;
+
+        let plausible_vn = if spoof_mode == 4 || spoof_mode == 5 {
+            this_vn
+        } else if spoof_mode != 6 && SUPPORTED_VERSIONS.len() > 1 {
+            let mut plausible_index = SUPPORTED_VERSIONS.len() - 1;
+            if usize::try_from(cnx.version_index).ok() == Some(plausible_index) {
+                plausible_index = 0;
+            }
+            SUPPORTED_VERSIONS[plausible_index] as u32
+        } else {
+            0xffff_ffff
+        };
+        append_u32(packet, &mut packet_index, plausible_vn)?;
+
+        if spoof_mode == 7 {
+            append_byte(packet, &mut packet_index, 0xaf)?;
+        }
+    }
+
+    Ok(packet_index)
+}
+
+fn version_negotiation_client_local_cid(cnx: &Connection) -> crate::Result<ConnectionId> {
+    let token = cnx
+        .paths
+        .first()
+        .and_then(|path| path.tuples.first())
+        .and_then(|tuple| tuple.local_connection_id)
+        .ok_or(crate::Error::Generic)?;
+
+    cnx.local_connection_ids
+        .get(token)
+        .map(|lcid| lcid.connection_id)
+        .ok_or(crate::Error::Generic)
+}
+
+fn append_cid(packet: &mut [u8], packet_index: &mut usize, cid: ConnectionId) -> crate::Result<()> {
+    append_byte(packet, packet_index, cid.len() as u8)?;
+    let cid_end = packet_index
+        .checked_add(cid.len())
+        .ok_or(crate::Error::BufferTooSmall)?;
+    if cid_end > packet.len() {
+        return Err(crate::Error::BufferTooSmall);
+    }
+    packet[*packet_index..cid_end].copy_from_slice(cid.as_bytes());
+    *packet_index = cid_end;
+    Ok(())
+}
+
+fn append_u32(packet: &mut [u8], packet_index: &mut usize, value: u32) -> crate::Result<()> {
+    let value_end = packet_index
+        .checked_add(core::mem::size_of::<u32>())
+        .ok_or(crate::Error::BufferTooSmall)?;
+    if value_end > packet.len() {
+        return Err(crate::Error::BufferTooSmall);
+    }
+    packet[*packet_index..value_end].copy_from_slice(&value.to_be_bytes());
+    *packet_index = value_end;
+    Ok(())
+}
+
+fn append_byte(packet: &mut [u8], packet_index: &mut usize, value: u8) -> crate::Result<()> {
+    let value_end = packet_index
+        .checked_add(1)
+        .ok_or(crate::Error::BufferTooSmall)?;
+    if value_end > packet.len() {
+        return Err(crate::Error::BufferTooSmall);
+    }
+    packet[*packet_index] = value;
+    *packet_index = value_end;
+    Ok(())
 }
 
 /// C: `virtual_time_test` in `picoquictest/tls_api_test.c`.
@@ -8662,16 +8834,143 @@ fn version_negotiation_spoof() {
 /// and that the library never reads the system clock internally.
 #[test]
 fn virtual_time() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("virtual_time");
+    const SIMULATED_STEP: u64 = 12_345_678_000;
+    const TLS_TIME_TOLERANCE: u64 = 1000;
+
+    let mut simulated_time = 0u64;
+    let mut simulated_config = crate::config::Config {
+        nb_connections: 8,
+        root_trust_file: Some(TEST_FILE_CERT_STORE.to_owned()),
+        ..Default::default()
+    };
+    let qsimul = simulated_config
+        .create_and_configure(
+            None,
+            Instant::from_ticks(simulated_time),
+            Some(&mut simulated_time),
+        )
+        .expect("simulated-time quic");
+
+    for i in 0..5 {
+        simulated_time = simulated_time.saturating_add(SIMULATED_STEP);
+        let test_time = qsimul.time();
+        let tls_time = qsimul.tls_time();
+        assert_eq!(
+            test_time, simulated_time,
+            "iteration {i}: QUIC time does not follow simulated time"
+        );
+        assert!(
+            tls_time >= test_time && tls_time <= test_time.saturating_add(TLS_TIME_TOLERANCE),
+            "iteration {i}: TLS time {tls_time} is not within {TLS_TIME_TOLERANCE}us of QUIC time {test_time}"
+        );
+    }
+
+    let direct_start = crate::current_time();
+    let qdirect = Quic::new(
+        8,
+        None,
+        None,
+        Some(TEST_FILE_CERT_STORE),
+        None,
+        None,
+        None,
+        [0u8; crate::RESET_SECRET_SIZE],
+        Instant::from_ticks(direct_start),
+        None,
+        None,
+    )
+    .expect("direct quic");
+
+    let current_previous = crate::current_time();
+    let test_previous = crate::current_time();
+    let tls_previous = qdirect.tls_time();
+
+    for i in 0..5 {
+        std::thread::sleep(std::time::Duration::from_micros(1000));
+
+        let current_time = crate::current_time();
+        let test_time = qdirect.time();
+        let tls_time = qdirect.tls_time();
+        let delta = current_time.saturating_sub(current_previous);
+
+        assert_time_delta_matches(
+            test_time,
+            test_previous,
+            delta,
+            TLS_TIME_TOLERANCE,
+            "QUIC",
+            i,
+        );
+        assert_time_delta_matches(tls_time, tls_previous, delta, TLS_TIME_TOLERANCE, "TLS", i);
+    }
+}
+
+fn assert_time_delta_matches(
+    actual: u64,
+    previous: u64,
+    delta: u64,
+    tolerance: u64,
+    label: &str,
+    iteration: usize,
+) {
+    let low = previous as i128 + delta as i128 - tolerance as i128;
+    let high = previous as i128 + delta as i128 + tolerance as i128;
+    let actual = actual as i128;
+    assert!(
+        actual >= low && actual <= high,
+        "iteration {iteration}: {label} time {actual} does not match previous {previous} + delta {delta} within {tolerance}us"
+    );
 }
 
 /// C: `vn_compat_test` in `picoquictest/tls_api_test.c`.
 ///
-/// Verifies backward-compatibility with the RFC 8999 version negotiation
-/// format.
+/// Starts with QUIC v1, requests compatible upgrades to v2 and v2 draft, and
+/// verifies that an incompatible InternalTest1 target is rejected.
 #[test]
 fn vn_compat() {
-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("vn_compat");
+    vn_compat_test_one(Version::V1 as u32, Version::V2 as u32).expect("vn_compat V1 -> V2");
+    vn_compat_test_one(Version::V1 as u32, Version::V2Draft as u32)
+        .expect("vn_compat V1 -> V2 draft");
+    assert!(
+        vn_compat_test_one(Version::V1 as u32, Version::InternalTest1 as u32).is_err(),
+        "vn_compat V1 -> InternalTest1 unexpectedly succeeded"
+    );
+}
+
+fn vn_compat_test_one(current: u32, target: u32) -> crate::Result<()> {
+    let mut simulated_time = Instant::from_ticks(0);
+    let mut test_ctx =
+        tls_api_init_ctx(&mut simulated_time, current, None).ok_or(crate::Error::Generic)?;
+
+    test_ctx.cnx_client().set_desired_version(target);
+
+    let mut loss_mask = 0u64;
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+
+    let client_version = test_ctx
+        .qclient
+        .first_cnx_mut()
+        .and_then(connection_supported_version)
+        .ok_or(crate::Error::Generic)?;
+    let server_version = test_ctx
+        .qserver
+        .first_cnx_mut()
+        .and_then(connection_supported_version)
+        .ok_or(crate::Error::Generic)?;
+
+    if client_version != target || server_version != target {
+        return Err(crate::Error::Generic);
+    }
+
+    Ok(())
+}
+
+fn connection_supported_version(cnx: &mut Connection) -> Option<u32> {
+    let version_index = usize::try_from(cnx.version_index).ok()?;
+    SUPPORTED_VERSIONS
+        .get(version_index)
+        .copied()
+        .map(|version| version as u32)
 }
 
 /// C: `zero_rtt_test` in `picoquictest/tls_api_test.c`.
@@ -8697,12 +8996,27 @@ fn zero_rtt_bad_param() {
 
 /// C: `zero_rtt_delay_test` in `picoquictest/tls_api_test.c`.
 ///
-/// Zero-RTT test with an extra 100 ms delay before the handshake begins,
-/// to exercise delayed 0-RTT acceptance.
+/// Verifies the 0-RTT ticket-age boundary: a ticket older than the nominal
+/// delay by one second is rejected, while one two seconds inside the boundary
+/// is accepted.
 #[test]
 fn zero_rtt_delay() {
+    const NOMINAL_DELAY_SEC: u64 = 100_000;
+    const NOMINAL_DELAY: u64 = NOMINAL_DELAY_SEC * 1_000_000;
+
+    assert!(
+        zero_rtt_test_one(&ZeroRttTest {
+            long_data: true,
+            extra_delay: NOMINAL_DELAY + 1_000_000,
+            ..Default::default()
+        })
+        .is_err(),
+        "zero_rtt_delay accepted ticket age {NOMINAL_DELAY_SEC} seconds + 1 second"
+    );
+
     zero_rtt_test_one(&ZeroRttTest {
-        extra_delay: 100_000,
+        long_data: true,
+        extra_delay: NOMINAL_DELAY - 2_000_000,
         ..Default::default()
     })
     .expect("zero_rtt_delay");
@@ -8754,17 +9068,20 @@ fn zero_rtt_loss() {
 /// stress 0-RTT recovery.
 #[test]
 fn zero_rtt_many_losses() {
-    let mut seed = 0xdead_beef_cafe_1234u64;
-    for _ in 0..50 {
-        seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let mask = seed >> 56;
+    let mut random_context = 0x1055_ca45_c001_babau64;
+    for i in 0..50 {
+        let mut loss_mask = 0u64;
+        for _ in 0..64 {
+            loss_mask <<= 1;
+            if test_uniform_random(&mut random_context, 1000) < 300 {
+                loss_mask |= 1;
+            }
+        }
         zero_rtt_test_one(&ZeroRttTest {
-            early_loss: mask,
+            early_loss: loss_mask,
             ..Default::default()
         })
-        .expect("zero_rtt_many_losses");
+        .unwrap_or_else(|e| panic!("zero_rtt_many_losses i={i}, mask={loss_mask:016x}: {e:?}"));
     }
 }
 

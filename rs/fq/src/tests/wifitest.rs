@@ -21,7 +21,6 @@ const WIFI_TEST_CUBIC_LONG: u32 = 7;
 const WIFI_TEST_BBR_LONG: u32 = 8;
 const WIFI_TEST_BBR_SHADOW: u32 = 9;
 const WIFI_TEST_BBR_MANY: u32 = 10;
-const WIFI_TEST_BBR1: u32 = 11;
 const WIFI_TEST_BBR1_HARD: u32 = 12;
 const WIFI_TEST_BBR1_LONG: u32 = 13;
 
@@ -111,7 +110,9 @@ fn wifi_bbr() {
 #[test]
 fn wifi_bbr1() {
     let spec = default_spec("bbr1", SUSPENSION_BASIC, 2_800_000);
-    wifi_test_one(WIFI_TEST_BBR1, &spec).expect("wifi_bbr1");
+    // C's `wifi_bbr1_test` configures BBR1 but reuses `wifi_test_bbr`
+    // as the CID seed passed to `wifi_test_one`.
+    wifi_test_one(WIFI_TEST_BBR, &spec).expect("wifi_bbr1");
 }
 
 /// C: `wifi_bbr1_hard_test` in `picoquictest/wifitest.c`.

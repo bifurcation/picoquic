@@ -20,36 +20,48 @@ const EXPECTED_CIDS: &[(&[u8], &str)] = &[
 /// C: `util_connection_id_print_test` in `picoquictest/util_test.c`.
 ///
 /// `picoquic_print_connection_id_hexa(buf, sizeof, &cid)` formats
-/// the connection-id bytes as lowercase hex.  Rust callers do this
-/// inline with `core::fmt::Write` over `cid.as_bytes()`.
+/// the connection-id bytes as lowercase hex and reports failure when
+/// the output sink cannot accept the bytes.
 #[test]
 fn connection_id_print() {
-    use core::fmt::Write;
     for (bytes, expected) in EXPECTED_CIDS {
         let cid = ConnectionId::clone_from_slice(bytes).expect("CID under cap");
         let mut got = String::new();
-        for b in cid.as_bytes() {
-            write!(&mut got, "{b:02x}").unwrap();
-        }
+        crate::utils::print_connection_id_hexa(&mut got, &cid).expect("CID hex print");
         assert_eq!(got, *expected, "CID hex round-trip");
     }
+
+    struct FailingWrite;
+
+    impl core::fmt::Write for FailingWrite {
+        fn write_str(&mut self, _s: &str) -> core::fmt::Result {
+            Err(core::fmt::Error)
+        }
+    }
+
+    let cid = ConnectionId::clone_from_slice(EXPECTED_CIDS[0].0).expect("CID under cap");
+    let mut failing = FailingWrite;
+    assert!(
+        crate::utils::print_connection_id_hexa(&mut failing, &cid).is_err(),
+        "CID hex print should fail when the sink rejects output",
+    );
 }
 
 /// C: `util_connection_id_parse_test` in `picoquictest/util_test.c`.
 ///
 /// Parse a hex string back into a [`ConnectionId`].  Picoquic exposes
-/// `picoquic_parse_connection_id_hexa(text, len, &cid)`; the Rust
-/// equivalent is a small `from_str_radix` loop over byte pairs.
+/// `picoquic_parse_connection_id_hexa(text, len, &cid)`, returning the
+/// decoded byte length while filling the output connection ID.
 #[test]
 fn connection_id_parse() {
     for (bytes, hex) in EXPECTED_CIDS {
-        let mut decoded = [0u8; 20];
-        let n = hex.len() / 2;
-        for i in 0..n {
-            decoded[i] = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("hex byte");
-        }
-        let parsed = ConnectionId::clone_from_slice(&decoded[..n]).expect("CID under cap");
+        let parsed = crate::utils::parse_connection_id_hexa(hex).expect("CID hex parse");
         let expected = ConnectionId::clone_from_slice(bytes).expect("CID under cap");
+        assert_eq!(
+            parsed.as_bytes().len(),
+            expected.as_bytes().len(),
+            "CID parsed length for {hex}",
+        );
         assert_eq!(parsed, expected, "CID parse roundtrip for {hex}");
     }
 }
@@ -82,28 +94,22 @@ fn util_uint8_to_str() {
 ///
 /// The C body verifies [`crate::utils::constant_time_memcmp`]
 /// returns equal/unequal for matching/differing 16-byte slices over
-/// a 1 MB working set, plus rough timing measurements (skipped — the
-/// timing portion was always informational and noise-prone).  We
-/// keep just the correctness loop.
+/// a 1 MB working set, plus full-buffer one-byte mismatches.  The
+/// rough timing measurements are skipped; that portion was always
+/// informational and noise-prone.
 #[test]
 fn util_memcmp() {
     use core::cmp::Ordering;
 
+    use super::util::test_random;
     use crate::utils::constant_time_memcmp;
 
-    let nb_words = (1 << 17) / 8;
+    let nb_words = (1 << 20) / 8;
     let l_total = nb_words * 8;
     let mut x = vec![0u8; l_total];
-    // Borrow a deterministic test RNG so the data isn't all zeros.
     let mut seed = 0xbabac001u64;
-    let next = |seed: &mut u64| -> u64 {
-        *seed = seed
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        *seed
-    };
     for chunk in x[32..].chunks_mut(8) {
-        chunk.copy_from_slice(&next(&mut seed).to_le_bytes());
+        chunk.copy_from_slice(&test_random(&mut seed).to_le_bytes());
     }
     x[16..32].copy_from_slice(&[0xff; 16]);
 
@@ -137,6 +143,19 @@ fn util_memcmp() {
             );
             j += 16;
         }
+    }
+
+    // Full-buffer difference detection: one changed byte at each of
+    // the 16 interval positions used by the C timing loop.
+    for offset in 0..16 {
+        let mut y = x.clone();
+        let changed = 1 + ((offset * l_total) / 16);
+        y[changed] ^= 0xff;
+        assert_ne!(
+            constant_time_memcmp(&x, &y),
+            Ordering::Equal,
+            "unexpected full-buffer match at offset={offset}, byte={changed}",
+        );
     }
 }
 
