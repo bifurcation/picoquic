@@ -118,7 +118,7 @@ python3 scripts/phase1c.py               # process all
 1B and 1C can interleave: human reads the report, adds REVIEW
 markers, runs 1C, regenerates report, repeats.
 
-## Phase 4A/4B/4C/4D/4E: function map, completion, audit, and repair
+## Phase 4A/4B/4C/4D/4E/4F: function map, completion, audit, repair, and revalidation
 
 After `phase4.py` has filled existing Rust incomplete markers, the
 follow-up drivers close gaps that a marker-driven pass can miss:
@@ -134,6 +134,8 @@ python3 scripts/phase4d.py --classify-only --shard-count 8 --shard-index 0
 python3 scripts/phase4d.py              # run repair agent + HTML report
 python3 scripts/phase4e.py --status     # summarize confirmed repairs
 python3 scripts/phase4e.py              # repair Phase 4D needs_fix entries
+python3 scripts/phase4f.py --status     # summarize post-merge revalidation
+python3 scripts/phase4f.py              # re-triage final merged worker repairs
 ```
 
 Artifacts:
@@ -145,12 +147,15 @@ Artifacts:
 | `phase4c.py` | `xlate/phase4c_reviews.json`, `xlate/phase4c_report.html` |
 | `phase4d.py` | `xlate/phase4d_results.json`, `xlate/phase4d_report.html`; updates Rust and refreshes `xlate/function_translation_map.json` when repairs change spans |
 | `phase4e.py` | `xlate/phase4e_repairs.json`, `xlate/phase4e_report.html`; repairs `needs_fix` items and updates `xlate/phase4d_results.json` |
+| `phase4f.py` | `xlate/phase4f_revalidation.json`, `xlate/phase4f_revalidation.md`; read-only final-tree semantic revalidation after worker merges |
 
 `phase4b.py` refuses to run unless `xlate/phase4a_plan.md` is marked
 `Status: approved`, unless `--approved` is passed explicitly.
 `phase4e.py` runs a read-only confirmation pass after each `fixed` or
 repair-level `ok` result before moving the underlying Phase 4D entry out
 of `needs_fix`; use `--no-confirm-resolutions` only for diagnostics.
+`phase4f.py` does not edit Rust or overwrite Phase 4D/4E artifacts; it
+compares final merged outcomes against the worker repair baseline.
 
 ## Phase 5A/5B/5C: test audit, test repair, and failure debugging
 

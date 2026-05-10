@@ -1314,9 +1314,89 @@ confirmation pass allows that transition.
   confirmation result.
 * The Phase 4 build and lint gates pass after every Rust repair batch.
 
+## Phase 4F — Post-merge implementation revalidation
+
+Phase 4F verifies that the final merged tree still preserves the
+C-to-Rust alignment established by Phase 4D and Phase 4E.  It is a
+read-only revalidation pass intended for the period after parallel
+repair worktrees have been merged back into the main branch, when
+conflict resolution or overlapping edits could accidentally lose part
+of a worker's semantic fix.
+
+Phase 4F does not rerun the full Phase 4C body-only audit and does not
+edit Rust source.  It focuses on the functions touched or classified by
+the repair process and compares the final merged implementation against
+the worker baseline.
+
+### Inputs
+
+Phase 4F reads:
+
+* `xlate/function_translation_map.json` after the final merge, refreshing
+  it first if Rust line spans changed.
+* `xlate/phase4d_results.json` for the deep-review classifications.
+* `xlate/phase4e_repairs.json` and any merged worker repair artifacts
+  for the set of functions that were fixed, marked OK, blocked, or still
+  unresolved during Phase 4E.
+* The current C and Rust source files in the merged branch.
+
+The selected worklist includes Phase 4E-touched functions plus any
+remaining Phase 4D entries classified as `needs_fix` or `blocked`.
+
+### Procedure
+
+For each selected function:
+
+1. Read the C function, the mapped Rust function, and directly relevant
+   surrounding context needed to judge the final merged implementation.
+2. Re-run a 4D-style semantic review on the current merged tree.
+3. Classify the final result as:
+   * `ok` — the merged Rust implementation is an acceptable translation
+     of the C behavior.
+   * `needs_fix` — a real translation mismatch remains or a worker fix
+     appears to have been lost during merge integration.
+   * `blocked` — the final tree cannot be classified without a concrete
+     human decision or dependency.
+4. Compare the final classification with the worker baseline.  Any
+   `fixed` or `ok` baseline entry that revalidates as `needs_fix` or
+   `blocked` is treated as a likely merge regression and routed back to
+   Phase 4E or a focused follow-up repair.
+
+Phase 4F should be run in parallel shards when useful.  The reviewers
+must not edit source files, update Phase 4D/4E state, or run broad test
+suites; the output is evidence for whether another repair pass is
+needed.
+
+### Artifacts
+
+`scripts/phase4f.py` writes:
+
+* `xlate/phase4f_revalidation.json` — final-tree classifications,
+  baseline comparisons, and regression flags.
+* `xlate/phase4f_revalidation.md` — human-readable summary of final
+  OK, remaining `needs_fix`, blocked, and likely-regression entries.
+* `xlate/prompts/phase4f/` and `xlate/<agent>_logs/phase4f/` — prompts
+  and transcripts for each read-only review batch.
+
+Phase 4F does not overwrite `xlate/phase4d_results.json` or
+`xlate/phase4e_repairs.json`.
+
+### Acceptance gate
+
+* Every selected Phase 4E-touched, unresolved, or blocked implementation
+  entry has a Phase 4F final-tree result.
+* No Phase 4E `fixed` or `ok` baseline entry revalidates as
+  `needs_fix` or `blocked` without being explicitly routed to a repair
+  follow-up.
+* Remaining `needs_fix` and `blocked` entries are listed with concrete,
+  human-actionable rationales.
+* `xlate/function_translation_map.json` reflects the final merged Rust
+  spans for the revalidated functions.
+
 ## Phase 5 — Get the Rust test suite passing
 
-Phase 5 starts after the implementation-mapping work has converged far
+Phase 5 starts after the implementation-mapping work has converged and
+Phase 4F has revalidated the final merged implementation state well
 enough that test failures are meaningful.  Its goal is simple: every C
 test that is in v1 scope has a faithful Rust counterpart, and
 `cargo test` is green.
@@ -1447,8 +1527,8 @@ For each failing Rust test:
 * libclang + Python — Phase 0 AST analysis, call graph, dashboard.
 * `bindgen` — per-file allowlisted reference output (never shipped).
 * Python scripts — driver for Phase 1 module skeletons; `phase3a.py`,
-  `phase4.py`, and the Phase 4A/4B/4C/4D/4E and Phase 5A/5B/5C map,
-  audit, repair, and debug drivers.
+  `phase4.py`, and the Phase 4A/4B/4C/4D/4E/4F and Phase 5A/5B/5C
+  map, audit, repair, revalidation, and debug drivers.
 * `cargo check` and `cargo test` — inner loop, manually invoked.
 * `cargo fmt` and `cargo clippy` — style and lint gates.
 
