@@ -122,6 +122,13 @@ pub trait Session: Send {
         false
     }
 
+    /// Returns `true` when the negotiated TLS handshake used PSK.
+    ///
+    /// C: `ptls_is_psk_handshake(tls_ctx->tls)`
+    fn is_psk_handshake(&self) -> bool {
+        false
+    }
+
     /// ECH retry-config bytes the server sent back.  Empty when none.
     ///
     /// C: `tls_ctx->retry_configs.{base,len}` (`picoquic_ech_get_retry_config`)

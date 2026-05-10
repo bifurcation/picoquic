@@ -2881,44 +2881,495 @@ impl Connection {
         self.rejected_version = rejected_version;
     }
 
+    fn use_constant_challenges(&self) -> i32 {
+        self.quic_ref()
+            .map(|quic| i32::from(quic.use_constant_challenges))
+            .unwrap_or(0)
+    }
+
+    fn register_path_by_index(&mut self, path_index: usize) {
+        let Some(path) = self.paths.get_mut(path_index) else {
+            return;
+        };
+        path.path_is_published = true;
+        let peer_addr = path
+            .tuples
+            .first()
+            .map(|tuple| tuple.peer_addr)
+            .unwrap_or_else(unspecified_socket_addr);
+        path.registered_peer_addr = peer_addr;
+
+        if socket_addr_is_unspecified(&peer_addr) {
+            return;
+        }
+        let Some(token) = self.own_token else {
+            return;
+        };
+        if self.quic_ptr.is_null() {
+            return;
+        }
+
+        // SAFETY: `quic_ptr` is installed by `Quic::create_cnx_internal`
+        // and remains valid while this connection is live.  This mirrors
+        // `picoquic_register_path`: only the owning context's peer-address
+        // table is updated, and only when the connection is still in it.
+        let quic = unsafe { &mut *self.quic_ptr };
+        if quic.local_connection_id_length != 0 || !quic.connections.contains(token) {
+            return;
+        }
+
+        let old_membership = self
+            .paths
+            .get_mut(path_index)
+            .and_then(|path| path.connection_by_net_membership.take());
+        if let Some(membership) = old_membership {
+            quic.connection_by_net.remove(membership);
+        }
+
+        if quic.connection_by_net.lookup(&peer_addr).is_none()
+            && let Ok((membership, _)) = quic.connection_by_net.insert(peer_addr, token)
+            && let Some(path) = self.paths.get_mut(path_index)
+        {
+            path.connection_by_net_membership = Some(membership);
+        }
+    }
+
+    fn has_available_remote_cid(&self, unique_path_id: u64) -> bool {
+        self.remote_connection_id_stashes
+            .iter()
+            .find(|stash| stash.unique_path_id == unique_path_id)
+            .and_then(|stash| stash.get_connection_id_from_stash())
+            .is_some()
+    }
+
+    fn check_cid_for_new_tuple_result(&self, unique_path_id: u64) -> Result<(), Error> {
+        if self.has_available_remote_cid(unique_path_id) {
+            Ok(())
+        } else if self.unique_path_id_next > self.max_path_id_remote {
+            Err(Error::Protocol(InternalError::PathIdBlocked as u64))
+        } else {
+            Err(Error::Protocol(InternalError::PathCidBlocked as u64))
+        }
+    }
+
+    fn assign_peer_cnxid_to_tuple(
+        &mut self,
+        unique_path_id: u64,
+        tuple: &mut crate::internal::Tuple,
+    ) -> Result<(), Error> {
+        let (stash_idx, cid_idx) = self
+            .obtain_stashed_connection_id(unique_path_id)
+            .ok_or(Error::Generic)?;
+        let stash = self
+            .remote_connection_id_stashes
+            .get_mut(stash_idx)
+            .ok_or(Error::Generic)?;
+        let remote_cid = stash
+            .connection_ids
+            .get_mut(cid_idx)
+            .ok_or(Error::Generic)?;
+        tuple.remote_connection_id_index = Some(cid_idx);
+        tuple.unique_path_id = unique_path_id;
+        remote_cid.nb_path_references += 1;
+        stash.is_in_use = true;
+        Ok(())
+    }
+
+    fn register_default_path_reset_secret(&mut self) -> Result<(), Error> {
+        let (peer_addr, cid_path_id, cid_index) = {
+            let path = self.paths.first().ok_or(Error::InvalidArgument)?;
+            let tuple = path.tuples.first().ok_or(Error::InvalidArgument)?;
+            (
+                tuple.peer_addr,
+                if self.is_multipath_enabled {
+                    path.unique_path_id
+                } else {
+                    0
+                },
+                tuple.remote_connection_id_index.unwrap_or(0),
+            )
+        };
+        if socket_addr_is_unspecified(&peer_addr) {
+            return Ok(());
+        }
+        let reset_secret = self
+            .remote_connection_id_stashes
+            .iter()
+            .find(|stash| stash.unique_path_id == cid_path_id)
+            .and_then(|stash| stash.connection_ids.get(cid_index))
+            .map(|remote_cid| remote_cid.reset_secret)
+            .ok_or(Error::Protocol(InternalError::CnxidNotAvailable as u64))?;
+
+        let Some(token) = self.own_token else {
+            self.registered_secret_addr = peer_addr;
+            self.registered_reset_secret = reset_secret;
+            self.connection_by_secret_membership = None;
+            return Ok(());
+        };
+        if self.quic_ptr.is_null() {
+            self.registered_secret_addr = peer_addr;
+            self.registered_reset_secret = reset_secret;
+            self.connection_by_secret_membership = None;
+            return Ok(());
+        }
+
+        // SAFETY: `quic_ptr` is installed by `Quic::create_cnx_internal`
+        // and remains valid while this connection is live.  This updates
+        // only the owning context's reset-secret table plus this connection's
+        // cached membership fields, matching `picoquic_register_net_secret`.
+        let quic = unsafe { &mut *self.quic_ptr };
+        if !quic.connections.contains(token) {
+            self.registered_secret_addr = peer_addr;
+            self.registered_reset_secret = reset_secret;
+            self.connection_by_secret_membership = None;
+            return Ok(());
+        }
+        if let Some(membership) = self.connection_by_secret_membership.take() {
+            quic.connection_by_secret.remove(membership);
+        }
+
+        self.registered_secret_addr = peer_addr;
+        self.registered_reset_secret = reset_secret;
+        let key = (reset_secret, peer_addr);
+        if quic.connection_by_secret.lookup(&key).is_some() {
+            return Err(Error::Generic);
+        }
+        let (membership, _) = quic.connection_by_secret.insert(key, token)?;
+        self.connection_by_secret_membership = Some(membership);
+        Ok(())
+    }
+
+    fn adjust_remote_cid_indices_after_remove(&mut self, cid_path_id: u64, removed_index: usize) {
+        let is_multipath_enabled = self.is_multipath_enabled;
+        for path in &mut self.paths {
+            let path_cid_id = if is_multipath_enabled {
+                path.unique_path_id
+            } else {
+                0
+            };
+            if path_cid_id != cid_path_id {
+                continue;
+            }
+            for tuple in &mut path.tuples {
+                if let Some(index) = tuple.remote_connection_id_index {
+                    if index == removed_index {
+                        tuple.remote_connection_id_index = None;
+                    } else if index > removed_index {
+                        tuple.remote_connection_id_index = Some(index - 1);
+                    }
+                }
+            }
+        }
+    }
+
+    fn dereference_first_tuple_remote_cid(
+        &mut self,
+        path_index: usize,
+        stash_index: usize,
+        cid_path_id: u64,
+    ) -> Option<usize> {
+        let old_cid_index = self
+            .paths
+            .get_mut(path_index)
+            .and_then(|path| path.tuples.first_mut())
+            .and_then(|tuple| tuple.remote_connection_id_index.take())?;
+        if old_cid_index
+            >= self
+                .remote_connection_id_stashes
+                .get(stash_index)
+                .map(|stash| stash.connection_ids.len())
+                .unwrap_or(0)
+        {
+            return None;
+        }
+
+        let mut retire_sequence = None;
+        let remove_old = {
+            let old_cid =
+                &mut self.remote_connection_id_stashes[stash_index].connection_ids[old_cid_index];
+            if old_cid.nb_path_references <= 1 {
+                if !old_cid.retire_sent {
+                    retire_sequence = Some(old_cid.sequence);
+                }
+                old_cid.retire_acked
+            } else {
+                old_cid.nb_path_references -= 1;
+                false
+            }
+        };
+
+        if let Some(sequence) = retire_sequence
+            && self
+                .queue_retire_connection_id_frame(cid_path_id, sequence)
+                .is_ok()
+            && let Some(old_cid) = self
+                .remote_connection_id_stashes
+                .get_mut(stash_index)
+                .and_then(|stash| stash.connection_ids.get_mut(old_cid_index))
+        {
+            old_cid.retire_sent = true;
+        }
+
+        if remove_old {
+            self.remote_connection_id_stashes[stash_index]
+                .connection_ids
+                .remove(old_cid_index);
+            self.adjust_remote_cid_indices_after_remove(cid_path_id, old_cid_index);
+            Some(old_cid_index)
+        } else {
+            None
+        }
+    }
+
+    fn renew_path_remote_connection_id(&mut self, path_index: usize) -> Result<(), Error> {
+        let path_unique_id = self
+            .paths
+            .get(path_index)
+            .map(|path| path.unique_path_id)
+            .ok_or(Error::Generic)?;
+        if self
+            .paths
+            .get(path_index)
+            .and_then(|path| path.tuples.first())
+            .is_none()
+        {
+            return Err(Error::Protocol(InternalError::CnxidNotAvailable as u64));
+        }
+
+        let cid_path_id = if self.is_multipath_enabled {
+            path_unique_id
+        } else {
+            0
+        };
+        let stash_index = self
+            .remote_connection_id_stashes
+            .iter()
+            .position(|stash| stash.unique_path_id == cid_path_id)
+            .ok_or(Error::Protocol(InternalError::CnxidNotAvailable as u64))?;
+        let current_cid_index = self
+            .paths
+            .get(path_index)
+            .and_then(|path| path.tuples.first())
+            .and_then(|tuple| tuple.remote_connection_id_index);
+        let current_sequence = current_cid_index.and_then(|cid_index| {
+            self.remote_connection_id_stashes[stash_index]
+                .connection_ids
+                .get(cid_index)
+                .map(|remote_cid| remote_cid.sequence)
+        });
+        let retire_connection_id_before =
+            self.remote_connection_id_stashes[stash_index].retire_connection_id_before;
+        if (self.remote_parameters.migration_disabled
+            && current_sequence.is_some_and(|sequence| sequence >= retire_connection_id_before))
+            || self.local_parameters.migration_disabled
+        {
+            return Err(Error::Protocol(InternalError::MigrationDisabled as u64));
+        }
+
+        let mut new_cid_index = self.remote_connection_id_stashes[stash_index]
+            .get_connection_id_from_stash()
+            .ok_or(Error::Protocol(InternalError::CnxidNotAvailable as u64))?;
+        let new_sequence = self.remote_connection_id_stashes[stash_index]
+            .connection_ids
+            .get(new_cid_index)
+            .map(|remote_cid| remote_cid.sequence)
+            .ok_or(Error::Protocol(InternalError::CnxidNotAvailable as u64))?;
+        if current_sequence == Some(new_sequence) {
+            return Err(Error::Protocol(InternalError::CnxidNotAvailable as u64));
+        }
+
+        if let Some(removed_index) =
+            self.dereference_first_tuple_remote_cid(path_index, stash_index, cid_path_id)
+        {
+            if removed_index == new_cid_index {
+                return Err(Error::Protocol(InternalError::CnxidNotAvailable as u64));
+            }
+            if removed_index < new_cid_index {
+                new_cid_index -= 1;
+            }
+        }
+
+        {
+            let stash = self
+                .remote_connection_id_stashes
+                .get_mut(stash_index)
+                .ok_or(Error::Protocol(InternalError::CnxidNotAvailable as u64))?;
+            let remote_cid = stash
+                .connection_ids
+                .get_mut(new_cid_index)
+                .ok_or(Error::Protocol(InternalError::CnxidNotAvailable as u64))?;
+            remote_cid.nb_path_references += 1;
+            stash.is_in_use = true;
+        }
+        if let Some(tuple) = self
+            .paths
+            .get_mut(path_index)
+            .and_then(|path| path.tuples.first_mut())
+        {
+            tuple.remote_connection_id_index = Some(new_cid_index);
+            tuple.unique_path_id = path_unique_id;
+        }
+
+        if path_index == 0 {
+            self.register_default_path_reset_secret()?;
+        }
+        Ok(())
+    }
+
+    fn find_available_unique_path_id(&mut self, requested_id: u64) -> Option<u64> {
+        if !self.is_multipath_enabled {
+            return if requested_id == 0 || requested_id == u64::MAX {
+                Some(0)
+            } else {
+                None
+            };
+        }
+
+        if requested_id != u64::MAX || (!self.client_mode && !self.paths.is_empty()) {
+            return (requested_id != u64::MAX).then_some(requested_id);
+        }
+
+        while self.unique_path_id_next <= self.max_path_id_remote
+            && self.unique_path_id_next <= self.max_path_id_local
+            && self.unique_path_id_next <= self.max_path_id_in_connection_id_lists
+        {
+            let unique_path_id = self.unique_path_id_next;
+            self.unique_path_id_next = self.unique_path_id_next.saturating_add(1);
+            let has_local_cid_list = self
+                .local_connection_id_lists
+                .iter()
+                .any(|list| list.unique_path_id == unique_path_id);
+            let path_exists = self
+                .paths
+                .iter()
+                .any(|path| path.unique_path_id == unique_path_id);
+            if has_local_cid_list && !path_exists {
+                return Some(unique_path_id);
+            }
+        }
+
+        None
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn probe_new_tuple_resolved(
+        &mut self,
+        path_x: &mut Path,
+        addr_peer: SocketAddr,
+        addr_local: SocketAddr,
+        if_index: i32,
+        current_time: Instant,
+        to_preferred_address: bool,
+    ) -> Result<(), Error> {
+        let unique_path_id = path_x.unique_path_id;
+        self.check_cid_for_new_tuple_result(unique_path_id)?;
+
+        let tuple_index = path_x
+            .create_tuple(Some(&addr_local), Some(&addr_peer), if_index)
+            .map_err(|_| Error::Memory)?;
+        let use_constant_challenges = self.use_constant_challenges();
+        let tuple = path_x.tuples.get_mut(tuple_index).ok_or(Error::Memory)?;
+        self.assign_peer_cnxid_to_tuple(unique_path_id, tuple)?;
+        crate::internal::set_tuple_challenge(tuple, current_time, use_constant_challenges);
+        tuple.challenge_required = true;
+        tuple.to_preferred_address = to_preferred_address;
+        Ok(())
+    }
+
     /// Probe a new local↔peer path tuple.
     pub fn probe_new_path(
         &mut self,
-        _addr_peer: &SocketAddr,
-        _addr_local: &SocketAddr,
-        _current_time: Instant,
+        addr_peer: &SocketAddr,
+        addr_local: &SocketAddr,
+        current_time: Instant,
     ) -> Result<(), Error> {
-        // Complex: involves path creation and network probing.
-        Err(Error::Generic)
+        self.probe_new_path_ex(addr_peer, addr_local, 0, current_time, false)
     }
 
     /// Probe a new path with explicit interface index and
     /// preferred-address flag.
+    /// C: `picoquic_probe_new_path_ex`.
     pub fn probe_new_path_ex(
         &mut self,
-        _addr_peer: &SocketAddr,
-        _addr_local: &SocketAddr,
-        _if_index: i32,
-        _current_time: Instant,
-        _to_preferred_address: bool,
+        addr_peer: &SocketAddr,
+        addr_local: &SocketAddr,
+        if_index: i32,
+        current_time: Instant,
+        to_preferred_address: bool,
     ) -> Result<(), Error> {
-        // Complex: involves path creation and network probing.
-        Err(Error::Generic)
+        if !self.is_multipath_enabled || to_preferred_address {
+            let (addr_peer, addr_local, if_index) =
+                self.verify_proposed_tuple(Some(*addr_peer), Some(*addr_local), if_index)?;
+            if self.paths.is_empty() {
+                return Err(Error::InvalidArgument);
+            }
+            let mut path = self.paths.remove(0);
+            let ret = self.probe_new_tuple_resolved(
+                &mut path,
+                addr_peer,
+                addr_local,
+                if_index,
+                current_time,
+                to_preferred_address,
+            );
+            self.paths.insert(0, path);
+            return ret;
+        }
+
+        self.check_new_path_allowed(to_preferred_address)?;
+        let (addr_peer, addr_local, if_index) =
+            self.verify_proposed_tuple(Some(*addr_peer), Some(*addr_local), if_index)?;
+        let unique_path_id = self
+            .find_available_unique_path_id(u64::MAX)
+            .ok_or(Error::Memory)?;
+        let mut path = Path::new(
+            self,
+            current_time,
+            Some(&addr_local),
+            Some(&addr_peer),
+            if_index,
+            unique_path_id,
+        )
+        .map_err(|_| Error::Memory)?;
+
+        let unique_path_id = path.unique_path_id;
+        let use_constant_challenges = self.use_constant_challenges();
+        let tuple = path.tuples.first_mut().ok_or(Error::Memory)?;
+        self.assign_peer_cnxid_to_tuple(unique_path_id, tuple)?;
+        if !tuple.challenge_required || tuple.challenge_verified {
+            tuple.challenge_required = true;
+            crate::internal::set_tuple_challenge(tuple, current_time, use_constant_challenges);
+            tuple.challenge_verified = false;
+        }
+        path.path_is_published = true;
+        path.is_nat_challenge = false;
+        self.paths.push(path);
+        let path_id = self.paths.len() - 1;
+        self.register_path_by_index(path_id);
+        Ok(())
     }
 
     /// Probe a new tuple on an existing path object.
     #[allow(clippy::too_many_arguments)]
     pub fn probe_new_tuple(
         &mut self,
-        _path_x: &mut Path,
-        _addr_peer: &SocketAddr,
-        _addr_local: &SocketAddr,
-        _if_index: i32,
-        _current_time: Instant,
-        _to_preferred_address: bool,
+        path_x: &mut Path,
+        addr_peer: &SocketAddr,
+        addr_local: &SocketAddr,
+        if_index: i32,
+        current_time: Instant,
+        to_preferred_address: bool,
     ) -> Result<(), Error> {
-        // Complex: involves tuple creation within a path.
-        Err(Error::Generic)
+        let (addr_peer, addr_local, if_index) =
+            self.verify_proposed_tuple(Some(*addr_peer), Some(*addr_local), if_index)?;
+        self.probe_new_tuple_resolved(
+            path_x,
+            addr_peer,
+            addr_local,
+            if_index,
+            current_time,
+            to_preferred_address,
+        )
     }
 
     /// Validate and complete an address pair proposed for a new tuple.
@@ -2934,16 +3385,18 @@ impl Connection {
         addr_local: Option<SocketAddr>,
         if_index: i32,
     ) -> Result<(SocketAddr, SocketAddr, i32), Error> {
+        let addr_peer = addr_peer.filter(|addr| !socket_addr_is_unspecified(addr));
+        let addr_local = addr_local.filter(|addr| !socket_addr_is_unspecified(addr));
         let mut if_index = if_index;
         match (addr_peer, addr_local) {
-            (None, None) => Err(Error::Generic),
+            (None, None) => Err(Error::Protocol(InternalError::UnexpectedError as u64)),
             (None, Some(local)) => {
                 let t = self
                     .paths
                     .iter()
                     .filter_map(|p| p.tuples.first())
                     .find(|t| t.peer_addr.is_ipv4() == local.is_ipv4())
-                    .ok_or(Error::Generic)?;
+                    .ok_or(Error::Protocol(InternalError::UnexpectedError as u64))?;
                 if_index = t.if_index as i32;
                 Ok((t.peer_addr, local, if_index))
             }
@@ -2955,13 +3408,13 @@ impl Connection {
                     .iter()
                     .filter_map(|p| p.tuples.first())
                     .find(|t| t.local_addr.is_ipv4() == peer.is_ipv4())
-                    .ok_or(Error::Generic)?;
+                    .ok_or(Error::Protocol(InternalError::UnexpectedError as u64))?;
                 if_index = t.if_index as i32;
                 Ok((peer, t.local_addr, if_index))
             }
             (Some(peer), Some(local)) => {
                 if peer.is_ipv4() != local.is_ipv4() {
-                    return Err(Error::InvalidArgument);
+                    return Err(Error::Protocol(InternalError::PathAddressFamily as u64));
                 }
                 Ok((peer, local, if_index))
             }
@@ -2996,28 +3449,68 @@ impl Connection {
     /// Tear down a path.
     pub fn abandon_path(
         &mut self,
-        _unique_path_id: u64,
-        _reason: u64,
-        _current_time: Instant,
+        unique_path_id: u64,
+        reason: u64,
+        current_time: Instant,
     ) -> Result<(), Error> {
-        // Complex: involves path teardown signalling.
-        Err(Error::Generic)
+        if !self.is_multipath_enabled
+            || unique_path_id > self.max_path_id_remote
+            || unique_path_id > self.max_path_id_local
+        {
+            return Err(Error::InvalidArgument);
+        }
+
+        let path_index = self.get_path_id_from_unique(unique_path_id);
+        if path_index >= 0 {
+            if self.paths.len() <= 1 {
+                return Err(Error::InvalidArgument);
+            }
+            let path_index = path_index as usize;
+            if !self.paths[path_index].path_is_demoted {
+                self.demote_path(path_index as i32, current_time, reason);
+            }
+            Ok(())
+        } else {
+            match self.demote_local_connection_id_list(unique_path_id, reason) {
+                0 => Ok(()),
+                _ => Err(Error::Generic),
+            }
+        }
     }
 
     /// Issue a fresh CID for the given path.
-    pub fn refresh_path_connection_id(&mut self, _unique_path_id: u64) -> Result<(), Error> {
-        // Complex: involves CID generation and registration.
-        Err(Error::Generic)
+    pub fn refresh_path_connection_id(&mut self, unique_path_id: u64) -> Result<(), Error> {
+        let path_index = self.get_path_id_from_unique(unique_path_id);
+        if path_index < 0 {
+            return Err(Error::Generic);
+        }
+        self.renew_path_remote_connection_id(path_index as usize)
     }
 
     /// Pin a stream to a specific path.
     pub fn set_stream_path_affinity(
         &mut self,
-        _stream_id: u64,
-        _unique_path_id: u64,
+        stream_id: u64,
+        unique_path_id: u64,
     ) -> Result<(), Error> {
-        // Complex: involves stream lookup and path pinning.
-        Err(Error::Generic)
+        let stream_token = self.find_stream(stream_id).ok_or(Error::Generic)?;
+
+        let affinity_path = if unique_path_id == u64::MAX {
+            None
+        } else {
+            let path_id = self.get_path_id_from_unique(unique_path_id);
+            if path_id < 0 {
+                return Err(Error::Generic);
+            }
+            Some(crate::internal::PathToken::synthetic(
+                path_id as u32,
+                path_id as u32,
+            ))
+        };
+
+        let stream = self.streams.get_mut(stream_token).ok_or(Error::Generic)?;
+        stream.affinity_path = affinity_path;
+        Ok(())
     }
 
     /// Mark a path as Available or Backup.
@@ -3026,16 +3519,17 @@ impl Connection {
         unique_path_id: u64,
         status: PathStatus,
     ) -> Result<(), Error> {
-        if let Some(path) = self
-            .paths
-            .iter_mut()
-            .find(|p| p.unique_path_id == unique_path_id)
-        {
-            path.path_is_backup = status == PathStatus::Backup;
-            Ok(())
-        } else {
-            Err(Error::InvalidArgument)
+        let path_id = self.get_path_id_from_unique(unique_path_id);
+        if path_id < 0 {
+            return Ok(());
         }
+        let path_id = path_id as usize;
+        self.paths[path_id].path_is_backup = status != PathStatus::Available;
+
+        let mut path = self.paths.remove(path_id);
+        let ret = self.queue_path_available_or_backup_frame(&mut path, status);
+        self.paths.insert(path_id, path);
+        ret
     }
 
     /// Check whether the connection can create a new path now.
@@ -3107,7 +3601,12 @@ impl Connection {
     }
 
     /// Override the interface index for the first path.
+    /// C: `picoquic_set_first_if_index`.
     pub fn set_first_if_index(&mut self, if_index: u32) -> Result<(), Error> {
+        if self.connection_state != State::ClientInit {
+            return Ok(());
+        }
+
         if let Some(path) = self.paths.first_mut()
             && let Some(tuple) = path.tuples.first_mut()
         {
@@ -3139,22 +3638,28 @@ impl Connection {
     /// Snapshot a path's quality metrics.
     /// C: `picoquic_get_path_quality` (picoquic/quicctx.c:2701-2712).
     pub fn path_quality(&mut self, unique_path_id: u64) -> Result<PathQuality, Error> {
-        let sent = self.pkt_ctx[PacketContext::Application as usize].send_sequence;
+        let connection_sent = self.pkt_ctx[PacketContext::Application as usize].send_sequence;
+        let is_multipath_enabled = self.is_multipath_enabled;
         let path = self
             .paths
             .iter_mut()
             .find(|p| p.unique_path_id == unique_path_id)
             .ok_or(Error::InvalidArgument)?;
-        Ok(get_path_quality_from_context(path, sent))
+        Ok(get_path_quality_from_context(
+            path,
+            is_multipath_enabled,
+            connection_sent,
+        ))
     }
 
     /// Snapshot the default path's quality metrics.
     /// C: `picoquic_get_default_path_quality` (picoquic/quicctx.c:2714-2719).
     pub fn default_path_quality(&mut self) -> PathQuality {
-        let sent = self.pkt_ctx[PacketContext::Application as usize].send_sequence;
+        let connection_sent = self.pkt_ctx[PacketContext::Application as usize].send_sequence;
+        let is_multipath_enabled = self.is_multipath_enabled;
         self.paths
             .first_mut()
-            .map(|path| get_path_quality_from_context(path, sent))
+            .map(|path| get_path_quality_from_context(path, is_multipath_enabled, connection_sent))
             .unwrap_or_default()
     }
 
@@ -3168,6 +3673,7 @@ impl Connection {
         pacing_rate_delta: u64,
         rtt_delta: Duration,
     ) -> Result<(), Error> {
+        self.is_path_quality_update_requested = true;
         if let Some(path) = self
             .paths
             .iter_mut()
@@ -3186,6 +3692,7 @@ impl Connection {
     pub fn subscribe_to_quality_update(&mut self, pacing_rate_delta: u64, rtt_delta: Duration) {
         self.rtt_update_delta = rtt_delta;
         self.pacing_rate_update_delta = pacing_rate_delta;
+        self.is_path_quality_update_requested = true;
         for path in &mut self.paths {
             path.subscribe_to_quality_update_per_path_context(pacing_rate_delta, rtt_delta);
         }
@@ -3193,8 +3700,17 @@ impl Connection {
 }
 
 /// C: `picoquic_get_path_quality_from_context` (picoquic/quicctx.c:2678-2699).
-fn get_path_quality_from_context(path_x: &mut Path, sent: u64) -> PathQuality {
+fn get_path_quality_from_context(
+    path_x: &mut Path,
+    is_multipath_enabled: bool,
+    connection_sent: u64,
+) -> PathQuality {
     path_x.refresh_quality_thresholds();
+    let sent = if is_multipath_enabled {
+        path_x.pkt_ctx.send_sequence
+    } else {
+        connection_sent
+    };
     PathQuality {
         receive_rate_estimate: path_x.receive_rate_estimate,
         pacing_rate: path_x.pacing.rate,
@@ -3236,9 +3752,21 @@ impl Path {
 
 impl Connection {
     /// Trigger the next TLS key rotation.
+    /// C: `picoquic_start_key_rotation` (picoquic/quicctx.c:5036-5058).
     pub fn start_key_rotation(&mut self) -> Result<(), Error> {
-        // Complex: initiates TLS key update state machine.
-        Err(Error::Generic)
+        let app = PacketContext::Application as usize;
+        if self.connection_state != State::Ready
+            || self.crypto_epoch_sequence
+                > crate::internal::picoquic_sack_list_last(&self.ack_ctx[app].sack_list)
+        {
+            return Err(Error::Protocol(InternalError::KeyRotationNotReady as u64));
+        }
+
+        self.compute_new_rotated_keys()?;
+        self.apply_rotated_keys(true);
+        self.crypto_context_old.free_handles();
+        self.crypto_epoch_sequence = self.pkt_ctx[app].send_sequence;
+        Ok(())
     }
 
     /// Borrow the QUIC context that owns this connection.
@@ -3268,14 +3796,27 @@ impl Connection {
 
     /// Compute the number of microseconds until this connection
     /// next needs attention, capped at `delay_max`.
+    /// C: `picoquic_get_wake_delay` (picoquic/quicctx.c:1593-1612).
     pub fn wake_delay(&self, current_time: Instant, delay_max: i64) -> i64 {
-        let next = self.next_wake_time.ticks();
         let now = current_time.ticks();
+        let next = match self.quic_ref() {
+            Some(quic) if !quic.pending_stateless_packets.is_empty() => now,
+            _ => self.next_wake_time.ticks(),
+        };
+
         if next <= now {
             0
         } else {
-            let delta = (next - now) as i64;
-            delta.min(delay_max)
+            if delay_max <= 0 {
+                delay_max
+            } else {
+                let delta = next - now;
+                if delta >= delay_max as u64 {
+                    delay_max
+                } else {
+                    delta as i64
+                }
+            }
         }
     }
 
@@ -3312,7 +3853,11 @@ impl Connection {
 
     /// Set the per-connection crypto-epoch length.
     pub fn set_crypto_epoch_length(&mut self, crypto_epoch_length_max: u64) {
-        self.crypto_epoch_length_max = crypto_epoch_length_max;
+        self.crypto_epoch_length_max = if crypto_epoch_length_max == 0 {
+            crate::internal::DEFAULT_CRYPTO_EPOCH_LENGTH
+        } else {
+            crypto_epoch_length_max
+        };
     }
 
     /// Read the per-connection crypto-epoch length.
@@ -3338,7 +3883,7 @@ impl Connection {
     /// Returns `true` when the handshake completed using a
     /// pre-shared key (PSK).
     pub fn tls_is_psk_handshake(&self) -> bool {
-        self.psk_cipher_suite_id != 0
+        self.tls_ctx.as_ref().is_some_and(|s| s.is_psk_handshake())
     }
 
     /// Peer address of the default path.  C side returned an
