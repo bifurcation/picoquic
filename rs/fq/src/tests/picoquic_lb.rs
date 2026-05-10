@@ -969,8 +969,11 @@ fn cid_for_lb_cli() {
                 for &fc in FUZZ_C {
                     let mut buf = bytes.to_vec();
                     buf[f] = fc;
-                    let s = String::from_utf8_lossy(&buf);
-                    if Config::parse(&s).is_ok() {
+                    let c_len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+                    let parsed = core::str::from_utf8(&buf[..c_len])
+                        .map_err(|_| ())
+                        .and_then(|s| Config::parse(s).map_err(|_| ()));
+                    if parsed.is_ok() {
                         fuzz_ok += 1;
                     } else {
                         fuzz_err += 1;

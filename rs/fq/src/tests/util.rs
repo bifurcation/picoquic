@@ -727,6 +727,12 @@ pub struct TestTlsApiCtx {
     pub blackhole_start: u64,
     /// Timestamp (µs) at which the blackhole ends.  C: `blackhole_end`.
     pub blackhole_end: u64,
+    /// Size of the reusable packet-preparation buffer.
+    /// C: `test_ctx->send_buffer_size`.
+    pub send_buffer_size: usize,
+    /// Whether the simulator should split UDP GSO trains into segments.
+    /// C: `test_ctx->use_udp_gso`.
+    pub use_udp_gso: bool,
     /// CPU-limiting configuration for the simulated client endpoint.
     /// C: `test_ctx->client_endpoint`.
     pub client_endpoint: TestClientEndpoint,
@@ -925,6 +931,18 @@ fn tls_api_sync_link_loss_mask(test_ctx: &TestTlsApiCtx, loss_mask: &mut u64) {
     {
         *loss_mask = mask;
     }
+
+    /// Configure the packet-preparation buffer used by the simulator.
+    /// C: `tls_api_init_ctx_ex2`'s `send_buffer_size` parameter.
+    pub fn set_send_buffer_size(&mut self, send_buffer_size: usize) {
+        if send_buffer_size == 0 {
+            self.send_buffer_size = MAX_PACKET_SIZE;
+            self.use_udp_gso = false;
+        } else {
+            self.send_buffer_size = send_buffer_size;
+            self.use_udp_gso = true;
+        }
+    }
 }
 
 fn tls_api_one_sim_round_with_loss_mask(
@@ -1114,6 +1132,31 @@ pub fn tls_api_data_sending_loop(
     Ok(())
 }
 
+fn submit_simulated_send_buffer(
+    link: &mut TestSimLink,
+    addr_from: SocketAddr,
+    addr_to: SocketAddr,
+    ecn_mark: u8,
+    send_buffer: &[u8],
+    segment_size: usize,
+    simulated_time: Instant,
+) -> crate::Result<()> {
+    let segment_size = segment_size.clamp(1, MAX_PACKET_SIZE);
+    let mut offset = 0usize;
+    while offset < send_buffer.len() {
+        let packet_len = (send_buffer.len() - offset).min(segment_size);
+        let mut pkt = TestSimPacket::create()?;
+        pkt.addr_from = Some(addr_from);
+        pkt.addr_to = Some(addr_to);
+        pkt.ecn_mark = ecn_mark;
+        pkt.length = packet_len;
+        pkt.bytes[..packet_len].copy_from_slice(&send_buffer[offset..offset + packet_len]);
+        link.submit(pkt, simulated_time);
+        offset = offset.saturating_add(segment_size);
+    }
+    Ok(())
+}
+
 /// Assert that all scenario streams completed and that the wall-clock
 /// time did not exceed `max_completion_microsec` (0 = unconstrained).
 /// C: `tls_api_one_scenario_body_verify`.
@@ -1143,6 +1186,10 @@ pub fn tls_api_one_scenario_body_verify(
 /// C: `tls_api_one_scenario_verify`.
 pub fn tls_api_one_scenario_verify(test_ctx: &TestTlsApiCtx) -> crate::Result<()> {
     if test_ctx.server_callback_error_detected || test_ctx.client_callback_error_detected {
+        return Err(crate::Error::Generic);
+    }
+
+    if !test_ctx.test_finished {
         return Err(crate::Error::Generic);
     }
 
@@ -1930,6 +1977,8 @@ pub fn cert_verify_set_ctx(
         loss_mask_default: 0,
         blackhole_start: 0,
         blackhole_end: 0,
+        send_buffer_size: MAX_PACKET_SIZE,
+        use_udp_gso: false,
         client_endpoint: TestClientEndpoint::default(),
         stream0_flow_release: false,
         immediate_exit: false,
@@ -2048,7 +2097,32 @@ fn tls_api_init_ctx_ex_named(
         cid_zero,
         false,
         false,
+        true,
     )
+}
+
+fn tls_api_init_ctx_ex_named_with_start(
+    simulated_time: &mut Instant,
+    proposed_version: u32,
+    sni: Option<&str>,
+    alpn: Option<&str>,
+    ticket_file: Option<&str>,
+    initial_cid: Option<&ConnectionId>,
+    start_client: bool,
+) -> Option<Box<TestTlsApiCtx>> {
+    tls_api_init_ctx_ex_named_with_flags(
+        simulated_time,
+        proposed_version,
+        sni,
+        alpn,
+        ticket_file,
+        initial_cid,
+        false,
+        false,
+        false,
+        start_client,
+    )
+    .ok()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2062,6 +2136,7 @@ fn tls_api_init_ctx_ex_named_with_flags(
     cid_zero: bool,
     force_zero_share: bool,
     preserve_zero_version: bool,
+    start_client: bool,
 ) -> crate::Result<Box<TestTlsApiCtx>> {
     const VERIFIER_ENCRYPT_KEY: [u8; RESET_SECRET_SIZE] = {
         let mut k = [0u8; RESET_SECRET_SIZE];
@@ -2139,7 +2214,9 @@ fn tls_api_init_ctx_ex_named_with_flags(
                 true,
             )
             .ok_or(crate::Error::Generic)?;
-        cnx.start_client()?;
+        if start_client {
+            cnx.start_client()?;
+        }
     }
 
     let c_to_s_link = Box::new(TestSimLink::create(0.01, 10_000, None, 0, *simulated_time)?);
@@ -2165,6 +2242,8 @@ fn tls_api_init_ctx_ex_named_with_flags(
         loss_mask_default: 0,
         blackhole_start: 0,
         blackhole_end: 0,
+        send_buffer_size: MAX_PACKET_SIZE,
+        use_udp_gso: false,
         client_endpoint: TestClientEndpoint::default(),
         stream0_flow_release: false,
         immediate_exit: false,
@@ -2179,6 +2258,41 @@ fn tls_api_init_ctx_ex_named_with_flags(
         stream0_received: 0,
         streams_finished: false,
     }))
+}
+
+fn tls_api_init_ctx_delayed(
+    simulated_time: &mut Instant,
+    proposed_version: u32,
+    ticket_file: Option<&str>,
+) -> Option<Box<TestTlsApiCtx>> {
+    tls_api_init_ctx_ex_named_with_start(
+        simulated_time,
+        proposed_version,
+        Some(TEST_SNI),
+        Some(TEST_ALPN),
+        ticket_file,
+        None,
+        false,
+    )
+}
+
+pub fn tls_api_init_ctx_ex2_delayed(
+    simulated_time: &mut Instant,
+    proposed_version: u32,
+    sni: Option<&str>,
+    alpn: Option<&str>,
+    ticket_file: Option<&str>,
+    initial_cid: Option<&ConnectionId>,
+) -> Option<Box<TestTlsApiCtx>> {
+    tls_api_init_ctx_ex_named_with_start(
+        simulated_time,
+        proposed_version,
+        sni.or(Some(TEST_SNI)),
+        alpn.or(Some(TEST_ALPN)),
+        ticket_file,
+        initial_cid,
+        false,
+    )
 }
 
 /// Read a QLOG file and return the highest `bytes_in_flight` value
@@ -2419,6 +2533,7 @@ pub fn tls_api_init_ctx_zero_share(simulated_time: &mut Instant) -> Option<Box<T
         None,
         None,
         false,
+        true,
         true,
         true,
     )
@@ -2671,7 +2786,7 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
                 Instant::from_ticks(simulated_time.ticks().saturating_add(_zrt.extra_delay));
         }
 
-        let mut test_ctx = tls_api_init_ctx(
+        let mut test_ctx = tls_api_init_ctx_delayed(
             &mut simulated_time,
             proposed_version,
             Some(TICKET_FILE_NAME),
@@ -2733,24 +2848,6 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
             if _zrt.early_loss > 0 {
                 loss_mask = _zrt.early_loss;
             }
-
-            let accept_zero_rtt = !_zrt.use_badcrypt && !_zrt.hardreset && !_zrt.change_params;
-            let sent = if _zrt.long_data { 17 } else { 1 };
-            {
-                let cnx = test_ctx.cnx_client();
-                cnx.nb_zero_rtt_sent = sent;
-                cnx.nb_zero_rtt_acked = if accept_zero_rtt && _zrt.early_loss == 0 {
-                    sent
-                } else {
-                    0
-                };
-                cnx.zero_rtt_data_accepted = accept_zero_rtt;
-                cnx.is_0rtt_accepted = accept_zero_rtt;
-                cnx.max_early_data_size = usize::MAX;
-                if accept_zero_rtt {
-                    cnx.psk_cipher_suite_id = 0x1301;
-                }
-            }
         }
 
         tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
@@ -2768,10 +2865,7 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
                 let server_psk = test_ctx
                     .qserver
                     .first_cnx_mut()
-                    .map(|c| {
-                        c.psk_cipher_suite_id = c.psk_cipher_suite_id.max(0x1301);
-                        c.tls_is_psk_handshake()
-                    })
+                    .map(|c| c.tls_is_psk_handshake())
                     .unwrap_or(true);
                 if !client_psk || !server_psk {
                     return Err(crate::Error::Generic);
@@ -2781,10 +2875,6 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
         }
 
         if pass == 1 && _zrt.do_multipath {
-            test_ctx.cnx_client().is_multipath_enabled = true;
-            if let Some(cnx) = test_ctx.qserver.first_cnx_mut() {
-                cnx.is_multipath_enabled = true;
-            }
             let server_mp = test_ctx
                 .qserver
                 .first_cnx_mut()
@@ -2824,17 +2914,7 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
         }
 
         if test_ctx.qclient.stored_tickets.is_empty() {
-            let ticket = [0x5a_u8; 48];
-            let tp = test_ctx.cnx_client().local_parameters.clone();
-            test_ctx.qclient.store_ticket(
-                Some(TEST_SNI),
-                Some(TEST_ALPN),
-                Version::InternalTest1 as u32,
-                test_ctx.server_addr.ip(),
-                test_ctx.client_addr.ip(),
-                &ticket,
-                &tp,
-            )?;
+            return Err(crate::Error::Generic);
         }
         test_ctx
             .qclient
@@ -3095,19 +3175,59 @@ pub fn wait_multipath_ready(
     simulated_time: &mut Instant,
 ) -> crate::Result<()> {
     let time_out = Instant::from_ticks(simulated_time.ticks() + 4_000_000);
-    let mut nb = 0;
+    let mut nb_trials = 0;
     let mut nb_inactive = 0;
-    while simulated_time.ticks() < time_out.ticks() && nb < 1024 && nb_inactive < 64 {
+
+    fn path_one_ready(cnx: &Connection) -> bool {
+        cnx.nb_paths() == 2
+            && cnx
+                .paths
+                .get(1)
+                .and_then(|path| path.tuples.first())
+                .is_some_and(|tuple| tuple.challenge_verified)
+    }
+
+    fn client_connection_ready(test_ctx: &mut TestTlsApiCtx) -> bool {
+        test_ctx
+            .qclient
+            .first_cnx_mut()
+            .is_some_and(|cnx| cnx.connection_state == crate::State::Ready)
+    }
+
+    fn multipath_ready(test_ctx: &mut TestTlsApiCtx) -> bool {
+        let client_ready = test_ctx
+            .qclient
+            .first_cnx_mut()
+            .is_some_and(|cnx| cnx.connection_state == crate::State::Ready && path_one_ready(cnx));
+        let server_ready = test_ctx
+            .qserver
+            .first_cnx_mut()
+            .is_some_and(|cnx| path_one_ready(cnx));
+
+        client_ready && server_ready
+    }
+
+    while simulated_time.ticks() < time_out.ticks()
+        && nb_trials < 5000
+        && nb_inactive < 64
+        && client_connection_ready(test_ctx)
+        && !multipath_ready(test_ctx)
+    {
         let mut was = false;
         tls_api_one_sim_round(test_ctx, simulated_time, time_out, &mut was)?;
-        nb += 1;
+        nb_trials += 1;
         if was {
             nb_inactive = 0;
         } else {
             nb_inactive += 1;
         }
     }
-    Ok(())
+
+    if multipath_ready(test_ctx) {
+        Ok(())
+    } else {
+        Err(crate::Error::Generic)
+    }
 }
 
 /// Attach a second pair of sim links to the test context for multipath tests.
@@ -6929,18 +7049,73 @@ pub fn wifi_test_one(_test_id: u32, _spec: &WifiTestSpec) -> crate::Result<()> {
 
 /// Run one ticket-seed test.  `mode=1` → RTT seeding, `mode=2` → BDP-frame seeding.
 /// C: `ticket_seed_test_one` in `picoquictest/ticket_store_test.c`.
-pub fn ticket_seed_test_one(_mode: u32) -> crate::Result<()> {
-    use crate::tp::TransportParameter0RttKind::{CwinLocal, CwinRemote, RttLocal, RttRemote};
+pub fn ticket_seed_test_one(bdp_option: u32) -> crate::Result<()> {
+    use crate::tp::TransportParameter0RttKind::{CwinLocal, RttLocal};
+
+    fn run_ticket_seed_scenario(
+        test_ctx: &mut TestTlsApiCtx,
+        loss_mask: &mut u64,
+        simulated_time: &mut Instant,
+        scenario: &[TestApiStreamDesc],
+        max_completion_microsec: u64,
+    ) -> crate::Result<()> {
+        tls_api_connection_loop(test_ctx, loss_mask, 0, simulated_time)?;
+        test_api_init_send_recv_scenario(test_ctx, scenario)?;
+        tls_api_data_sending_loop(test_ctx, loss_mask, simulated_time, 0)?;
+        tls_api_one_scenario_body_verify(test_ctx, simulated_time, max_completion_microsec)
+    }
+
+    fn clear_ticket_seed_streams(test_ctx: &mut TestTlsApiCtx) {
+        test_ctx.test_streams.clear();
+        test_ctx.stream0_target = 0;
+        test_ctx.stream0_sent = 0;
+        test_ctx.stream0_received = 0;
+        test_ctx.streams_finished = false;
+        test_ctx.test_finished = false;
+    }
+
+    fn delete_and_recreate_ticket_seed_client(
+        test_ctx: &mut TestTlsApiCtx,
+        simulated_time: Instant,
+    ) -> crate::Result<()> {
+        let client_token = test_ctx
+            .cnx_client()
+            .own_token
+            .ok_or(crate::Error::Generic)?;
+        test_ctx.qclient.delete_connection(client_token);
+
+        let server_token = if test_ctx.has_cnx_server() {
+            test_ctx.cnx_server().own_token
+        } else {
+            None
+        };
+        if let Some(server_token) = server_token {
+            test_ctx.qserver.delete_connection(server_token);
+        }
+        clear_ticket_seed_streams(test_ctx);
+
+        let server_addr = test_ctx.server_addr;
+        let cnx_client = test_ctx
+            .qclient
+            .create_connection(
+                crate::ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                crate::ConnectionId::with_size(0).ok_or(crate::Error::Generic)?,
+                Some(&server_addr),
+                simulated_time,
+                Version::InternalTest1 as u32,
+                Some(TEST_SNI),
+                Some(TEST_ALPN),
+                true,
+            )
+            .ok_or(crate::Error::Generic)?;
+        cnx_client.start_client()
+    }
 
     const TICKET_SEED_STORE: &str = "ticket_seed_store.bin";
-    const CLIENT_TICKET_ID: u64 = 0x7469_636b_6574_0001;
-    const SERVER_TICKET_ID: u64 = 0x7469_636b_6574_0002;
 
     let mut simulated_time = Instant::from_ticks(0);
     let mut loss_mask = 0u64;
     let max_completion_microsec = 1_000_000;
-    let seeded_rtt = crate::Duration::from_ticks(20_000);
-    let seeded_cwin = 64_000u64;
     let scenario = [TestApiStreamDesc {
         stream_id: 4,
         previous_stream_id: 0,
@@ -6956,99 +7131,79 @@ pub fn ticket_seed_test_one(_mode: u32) -> crate::Result<()> {
         Some(TICKET_SEED_STORE),
     )
     .ok_or(crate::Error::Generic)?;
-    test_ctx.qclient.set_default_bdp_frame_option(_mode != 0);
-    test_ctx.qserver.set_default_bdp_frame_option(_mode != 0);
+    let enable_bdp = bdp_option != 0;
+    test_ctx.qclient.set_default_bdp_frame_option(enable_bdp);
+    test_ctx.qserver.set_default_bdp_frame_option(enable_bdp);
 
-    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
-    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
-    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, max_completion_microsec)?;
+    run_ticket_seed_scenario(
+        &mut test_ctx,
+        &mut loss_mask,
+        &mut simulated_time,
+        &scenario,
+        max_completion_microsec,
+    )?;
 
-    {
-        let cnx = test_ctx.cnx_client();
-        cnx.issued_ticket_id = CLIENT_TICKET_ID;
-        cnx.seed_rtt_min = seeded_rtt;
-        cnx.seed_cwin = seeded_cwin;
-    }
-    if let Some(cnx) = test_ctx.qserver.first_cnx_mut() {
-        cnx.issued_ticket_id = SERVER_TICKET_ID;
-    }
-
-    let tp = test_ctx.cnx_client().local_parameters.clone();
-    let ticket = [0xcc_u8; 48];
-    test_ctx.qclient.store_ticket(
+    let client_ticket_id = test_ctx.cnx_client().issued_ticket_id;
+    let client_ticket = test_ctx.qclient.get_stored_ticket(
         Some(TEST_SNI),
         Some(TEST_ALPN),
-        Version::InternalTest1 as u32,
-        test_ctx.server_addr.ip(),
-        test_ctx.client_addr.ip(),
-        &ticket,
-        &tp,
-    )?;
-    let client_ticket = test_ctx
-        .qclient
-        .stored_tickets
-        .iter_mut()
-        .find(|t| {
-            t.sni.as_deref() == Some(TEST_SNI)
-                && t.alpn.as_deref() == Some(TEST_ALPN)
-                && t.version == Version::InternalTest1 as u32
-        })
-        .ok_or(crate::Error::Generic)?;
-    client_ticket.tp_0rtt[RttLocal as usize] = seeded_rtt.ticks();
-    client_ticket.tp_0rtt[CwinLocal as usize] = seeded_cwin;
-    client_ticket.tp_0rtt[RttRemote as usize] = seeded_rtt.ticks();
-    client_ticket.tp_0rtt[CwinRemote as usize] = seeded_cwin;
+        0,
+        false,
+        client_ticket_id,
+    );
+    let Some(client_ticket) = client_ticket else {
+        return Err(crate::Error::Generic);
+    };
     if client_ticket.tp_0rtt[RttLocal as usize] == 0
         || client_ticket.tp_0rtt[CwinLocal as usize] == 0
     {
         return Err(crate::Error::Generic);
     }
 
-    test_ctx.qserver.remember_issued_ticket(
-        SERVER_TICKET_ID,
-        seeded_rtt,
-        seeded_cwin,
-        test_ctx.client_addr.ip(),
+    let server_ticket_id = if test_ctx.has_cnx_server() {
+        let server_issued_ticket_id = test_ctx.cnx_server().issued_ticket_id;
+        let Some(server_ticket) = test_ctx
+            .qserver
+            .retrieve_issued_ticket(server_issued_ticket_id)
+        else {
+            return Err(crate::Error::Generic);
+        };
+        if server_ticket.rtt.ticks() == 0 || server_ticket.cwin == 0 {
+            return Err(crate::Error::Generic);
+        }
+        server_ticket.ticket_id
+    } else {
+        let Some(server_ticket) = test_ctx.qserver.issued_tickets.iter_mut().next() else {
+            return Err(crate::Error::Generic);
+        };
+        if server_ticket.rtt.ticks() == 0 || server_ticket.cwin == 0 {
+            return Err(crate::Error::Generic);
+        }
+        server_ticket.ticket_id
+    };
+
+    delete_and_recreate_ticket_seed_client(&mut test_ctx, simulated_time)?;
+    run_ticket_seed_scenario(
+        &mut test_ctx,
+        &mut loss_mask,
+        &mut simulated_time,
+        &scenario,
+        max_completion_microsec,
     )?;
-    let server_ticket = test_ctx
-        .qserver
-        .retrieve_issued_ticket(SERVER_TICKET_ID)
-        .ok_or(crate::Error::Generic)?;
-    if server_ticket.rtt.ticks() == 0 || server_ticket.cwin == 0 {
-        return Err(crate::Error::Generic);
-    }
 
-    {
-        let cnx = test_ctx.cnx_client();
-        cnx.resumed_ticket_id = CLIENT_TICKET_ID;
-        cnx.seed_rtt_min = seeded_rtt;
-        cnx.seed_cwin = seeded_cwin;
-    }
-    if let Some(cnx) = test_ctx.qserver.first_cnx_mut() {
-        cnx.resumed_ticket_id = SERVER_TICKET_ID;
-        cnx.seed_rtt_min = seeded_rtt;
-        cnx.seed_cwin = seeded_cwin;
-    }
-
-    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
-    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
-    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, max_completion_microsec)?;
-
-    let cnx = test_ctx.cnx_client();
-    if cnx.resumed_ticket_id != CLIENT_TICKET_ID
-        || cnx.seed_rtt_min.ticks() == 0
-        || cnx.seed_cwin == 0
+    if test_ctx.cnx_client().resumed_ticket_id != client_ticket_id
+        || test_ctx.cnx_client().seed_rtt_min.ticks() == 0
+        || test_ctx.cnx_client().seed_cwin == 0
     {
         return Err(crate::Error::Generic);
     }
-    if let Some(cnx) = test_ctx.qserver.first_cnx_mut()
-        && (cnx.resumed_ticket_id != SERVER_TICKET_ID
-            || cnx.seed_rtt_min.ticks() == 0
-            || cnx.seed_cwin == 0)
-    {
-        return Err(crate::Error::Generic);
+    if test_ctx.has_cnx_server() {
+        if test_ctx.cnx_server().resumed_ticket_id != server_ticket_id {
+            return Err(crate::Error::Generic);
+        }
+        if test_ctx.cnx_client().seed_rtt_min.ticks() == 0 || test_ctx.cnx_client().seed_cwin == 0 {
+            return Err(crate::Error::Generic);
+        }
     }
 
     Ok(())

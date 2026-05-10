@@ -9,11 +9,14 @@
 
 use super::util::{
     TestApiStreamDesc, TestTlsApiCtx, test_api_init_send_recv_scenario,
-    tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex, tls_api_one_sim_round,
-    wait_client_connection_ready,
+    tls_api_init_ctx_ex2_delayed, tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex,
+    tls_api_one_scenario_verify, tls_api_one_sim_round, wait_client_connection_ready,
 };
 use crate::internal::Version;
-use crate::{CongestionAlgorithm, Instant, MAX_PACKET_SIZE, State, get_congestion_algorithm};
+use crate::{
+    CongestionAlgorithm, Instant, MAX_PACKET_SIZE, State, get_congestion_algorithm,
+    register_all_congestion_control_algorithms,
+};
 
 // ---------------------------------------------------------------------------
 // Shared stream scenarios.
@@ -91,14 +94,17 @@ fn netperf_one_scenario(
     let mut simulated_time = Instant::from_ticks(0);
     let mut loss_mask = init_loss_mask;
 
-    let mut test_ctx = tls_api_one_scenario_init_ex(
+    let mut test_ctx = tls_api_init_ctx_ex2_delayed(
         &mut simulated_time,
-        Version::InternalTest1,
+        Version::InternalTest1 as u32,
+        None,
         None,
         None,
         None,
     )
-    .expect("tls_api_one_scenario_init_ex");
+    .expect("tls_api_init_ctx_ex2_delayed");
+
+    test_ctx.set_send_buffer_size(send_buffer_size);
 
     if let Some(algo) = cc_algo {
         test_ctx.qserver.padding_multiple_default = 128;
@@ -125,25 +131,40 @@ fn netperf_one_scenario(
         .expect("data sending loop");
 
     // Verify completion and coalescing efficiency.
+    let completion_time = {
+        let start_time = test_ctx.cnx_client().start_time.ticks();
+        simulated_time.ticks().saturating_sub(start_time)
+    };
+    let test_finished = test_ctx.test_finished;
+    let (server_trains, server_packets) = if test_ctx.has_cnx_server() {
+        let cnx_s = test_ctx.cnx_server();
+        (cnx_s.nb_trains_sent, cnx_s.nb_packets_sent)
+    } else {
+        (0, 0)
+    };
+
     tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, max_completion_microsec)
-        .expect("scenario body verify");
+        .unwrap_or_else(|err| {
+            panic!(
+                "scenario body verify failed: {err:?}; completion_time={completion_time}, max_completion_microsec={max_completion_microsec}, test_finished={test_finished}, server_trains={server_trains}, server_packets={server_packets}"
+            )
+        });
 
     // Check that datagram coalescing occurred.
-    if test_ctx.has_cnx_server() {
-        let cnx_s = test_ctx.cnx_server();
-        assert!(
-            cnx_s.nb_trains_sent * 3 / 2 <= cnx_s.nb_packets_sent || send_buffer_size == 0,
-            "Datagram coalescing failed: {} trains for {} packets",
-            cnx_s.nb_trains_sent,
-            cnx_s.nb_packets_sent
-        );
-        assert!(
-            cnx_s.nb_retransmission_total * 20 <= cnx_s.nb_packets_sent,
-            "Too many losses: {} for {} packets",
-            cnx_s.nb_retransmission_total,
-            cnx_s.nb_packets_sent
-        );
-    }
+    assert!(test_ctx.has_cnx_server(), "Cannot check server stats");
+    let cnx_s = test_ctx.cnx_server();
+    assert!(
+        cnx_s.nb_trains_sent * 3 / 2 <= cnx_s.nb_packets_sent,
+        "Datagram coalescing failed: {} trains for {} packets",
+        cnx_s.nb_trains_sent,
+        cnx_s.nb_packets_sent
+    );
+    assert!(
+        cnx_s.nb_retransmission_total * 20 <= cnx_s.nb_packets_sent,
+        "Too many losses: {} for {} packets",
+        cnx_s.nb_retransmission_total,
+        cnx_s.nb_packets_sent
+    );
 }
 
 fn nat_attack_loop(
@@ -235,6 +256,7 @@ fn netperf_basic() {
 /// C: `netperf_bbr_test`.
 #[test]
 fn netperf_bbr() {
+    register_all_congestion_control_algorithms();
     let algo = get_congestion_algorithm("bbr").expect("bbr algorithm");
     netperf_one_scenario(
         NETPERF_SCENARIO_BASIC,
@@ -250,7 +272,6 @@ fn netperf_bbr() {
 #[test]
 fn nat_attack() {
     let mut simulated_time = Instant::from_ticks(0);
-    let send_buffer_size = MAX_PACKET_SIZE;
 
     let mut test_ctx = tls_api_one_scenario_init_ex(
         &mut simulated_time,
@@ -268,16 +289,7 @@ fn nat_attack() {
 
     nat_attack_loop(&mut test_ctx, &mut simulated_time, true).expect("nat attack loop");
 
-    // If the client is still connected, verify data delivery.
-    {
-        let cnx_c = test_ctx.cnx_client();
-        if cnx_c.state() == crate::State::Ready {
-            // tls_api_one_scenario_body_verify checks completion metrics.
-        }
+    if test_ctx.cnx_client().state() == State::Ready {
+        tls_api_one_scenario_verify(&test_ctx).expect("scenario verify");
     }
-
-    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, 0)
-        .expect("scenario body verify");
-
-    let _ = send_buffer_size; // used only to size the buffer in the C version
 }

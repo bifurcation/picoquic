@@ -33,9 +33,9 @@ fn spinbit_test_one(
     let mut test_ctx = tls_api_init_ctx(&mut simulated_time, Version::InternalTest1 as u32, None)
         .ok_or(crate::Error::Generic)?;
 
-    let _ = test_ctx
+    test_ctx
         .qserver
-        .set_default_spinbit_policy(spin_policy_server);
+        .set_default_spinbit_policy(spin_policy_server)?;
     test_ctx.cnx_client().set_spinbit_policy(spin_policy)?;
 
     test_ctx.cnx_client().start_client()?;
@@ -160,16 +160,14 @@ fn spinbit_null() {
 /// C: `spinbit_bad_test` in `picoquictest/spinbit_test.c`.
 /// Verifies that invalid spinbit policy codes are rejected.
 ///
-/// The C test passes raw out-of-range integer values (123456, 123455) which
-/// the Rust type system prevents.  The equivalent Rust check uses
-/// `SpinbitVersion::On`, which is documented as "not valid as a per-connection
-/// override (server only)" — passing it as a client policy must return `Err`.
+/// The C test passes raw out-of-range integer values (123456, 123455), which
+/// the current closed Rust enum API cannot represent safely.  The in-API
+/// invalid case available here is the server-only `SpinbitVersion::On` value
+/// used as a per-connection override.
 #[test]
 fn spinbit_bad() {
-    let r1 = spinbit_test_one(SpinbitVersion::On, SpinbitVersion::Basic);
-    let r2 = spinbit_test_one(SpinbitVersion::Basic, SpinbitVersion::On);
     assert!(
-        r1.is_err() || r2.is_err(),
-        "expected at least one invalid per-connection policy to be rejected"
+        spinbit_test_one(SpinbitVersion::On, SpinbitVersion::Basic).is_err(),
+        "expected server-only per-connection spinbit policy to be rejected"
     );
 }

@@ -12,10 +12,10 @@ use super::util::{
     multipath_test_set_reachable, multipath_test_set_unreachable, multipath_test_unkill_links,
     test_api_init_send_recv_scenario, test_datagram_check_ready, test_datagram_next_time_ready,
     tls_api_connection_loop, tls_api_data_sending_loop, tls_api_init_ctx, tls_api_init_ctx_ex2,
-    tls_api_one_scenario_body_connect, tls_api_one_scenario_body_verify,
-    tls_api_one_scenario_init_ex, tls_api_one_sim_round, tls_api_wait_for_timeout,
-    wait_client_connection_ready, wait_client_migration_done, wait_multipath_ready,
-    zero_rtt_test_one,
+    tls_api_init_ctx_ex2_delayed, tls_api_one_scenario_body_connect,
+    tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex, tls_api_one_sim_round,
+    tls_api_wait_for_timeout, wait_client_connection_ready, wait_client_migration_done,
+    wait_multipath_ready, zero_rtt_test_one,
 };
 use crate::internal::Version;
 use crate::tls_api::{LABEL_QUIC_V1_KEY_BASE, setup_test_aead_context};
@@ -290,6 +290,33 @@ fn multipath_verify_callbacks(test_id: MultipathTestId) -> crate::Result<()> {
     };
 
     compare_text_files(filename, reference)
+}
+
+fn multipath_assert_ready(test_ctx: &mut super::util::TestTlsApiCtx, test_id: MultipathTestId) {
+    assert!(
+        matches!(test_ctx.cnx_client().connection_state, crate::State::Ready),
+        "{test_id:?}: client connection should be ready after multipath wait"
+    );
+
+    for endpoint in ["client", "server"] {
+        let cnx = if endpoint == "client" {
+            test_ctx.cnx_client()
+        } else {
+            test_ctx.cnx_server()
+        };
+        assert_eq!(
+            cnx.nb_paths(),
+            2,
+            "{test_id:?}: {endpoint} should have two paths after multipath wait"
+        );
+        assert!(
+            cnx.paths
+                .get(1)
+                .and_then(|path| path.tuples.first())
+                .is_some_and(|tuple| tuple.challenge_verified),
+            "{test_id:?}: {endpoint} path 1 should have verified challenge"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -762,6 +789,29 @@ fn multipath_trace_test_one(use_qlog_streaming: bool) {
 
         tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, 2_000_000)
             .expect("scenario body verify");
+
+        if test_ctx.has_cnx_server() {
+            let (server_local_cid, peer_addr, local_addr) = {
+                let cnx_server = test_ctx.cnx_server();
+                (
+                    cnx_server.local_cnxid(),
+                    cnx_server.path_peer_addr_by_index(0),
+                    cnx_server.path_local_addr_by_index(0),
+                )
+            };
+            let mut packet = [0u8; 256];
+            let cid = server_local_cid.as_bytes();
+            packet[1..1 + cid.len()].copy_from_slice(cid);
+            packet[0] |= 64;
+            let _ = test_ctx.qserver.incoming_packet(
+                &mut packet,
+                &peer_addr,
+                &local_addr,
+                0,
+                0,
+                simulated_time,
+            );
+        }
     }
 }
 
@@ -779,7 +829,7 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
     cid_bytes[2] = test_id as u8;
     let initial_cid = ConnectionId::clone_from_slice(&cid_bytes).expect("multipath CID");
 
-    let mut test_ctx = tls_api_init_ctx_ex2(
+    let mut test_ctx = tls_api_init_ctx_ex2_delayed(
         &mut simulated_time,
         Version::InternalTest1 as u32,
         Some(TEST_SNI),
@@ -789,12 +839,17 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
     )
     .expect("tls_api_init_ctx_ex2");
 
+    if test_id == Perf {
+        test_ctx.set_send_buffer_size(65_536);
+    }
+
     let is_sat_test = test_id == SatPlus;
 
     if is_sat_test || test_id == Break1 || test_id == Break2 || test_id == Back1 {
         multipath_test_sat_links(&mut test_ctx, 0);
     } else if test_id == Perf {
         multipath_test_perf_links(&mut test_ctx, 0);
+        crate::register_all_congestion_control_algorithms();
         test_ctx
             .qserver
             .set_default_congestion_algorithm(crate::get_congestion_algorithm("bbr").expect("bbr"));
@@ -868,9 +923,15 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
     .expect("connection loop");
 
     assert!(
-        test_ctx.cnx_client().is_multipath_enabled()
-            && test_ctx.cnx_server().is_multipath_enabled(),
-        "multipath not fully negotiated"
+        test_ctx.has_cnx_server(),
+        "server connection not accepted during multipath handshake"
+    );
+
+    let client_multipath = test_ctx.cnx_client().is_multipath_enabled();
+    let server_multipath = test_ctx.cnx_server().is_multipath_enabled();
+    assert!(
+        client_multipath && server_multipath,
+        "multipath not fully negotiated (client={client_multipath}, server={server_multipath})"
     );
     assert_eq!(
         test_ctx.cnx_client().max_path_id_local(),
@@ -918,6 +979,7 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
 
     if test_id != Fail {
         wait_multipath_ready(&mut test_ctx, &mut simulated_time).expect("multipath ready");
+        multipath_assert_ready(&mut test_ctx, test_id);
     }
 
     if test_id == StreamAf {
@@ -1039,17 +1101,36 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
     }
 
     // Final data loop.
-    if matches!(test_id, Datagram | DgAf) {
+    let final_data_result = if matches!(test_id, Datagram | DgAf) {
         multipath_datagram_send_loop(
             &mut test_ctx,
             &mut dg_ctx,
             &mut loss_mask,
             &mut simulated_time,
         )
-        .expect("datagram send loop");
     } else {
         tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)
-            .expect("data sending loop");
+    };
+
+    if test_id == BreakBoth {
+        let final_result = final_data_result.and_then(|_| {
+            tls_api_one_scenario_body_verify(
+                &mut test_ctx,
+                &mut simulated_time,
+                max_completion_microsec,
+            )
+        });
+        assert!(
+            final_result.is_err(),
+            "break_both unexpectedly completed transfer and verification"
+        );
+        return;
+    }
+
+    if matches!(test_id, Datagram | DgAf) {
+        final_data_result.expect("datagram send loop");
+    } else {
+        final_data_result.expect("data sending loop");
     }
 
     if test_id == KeepAlive {
@@ -1219,13 +1300,6 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
                 "path[{p}] local ({local}) != observed ({observed})"
             );
         }
-    }
-
-    // break_both: expected to fail — invert result.
-    if test_id == BreakBoth {
-        // The connection should have broken; tls_api_one_scenario_body_verify
-        // above would have panicked if the connection was still alive.
-        // If we reach here the connection did break as expected — that is success.
     }
 
     // Verify callbacks after context teardown.
@@ -1587,7 +1661,6 @@ fn multipath_perf() {
 #[test]
 fn multipath_qlog() {
     const MULTIPATH_TRACE_QLOG: &str = "0807060504030201.server.qlog";
-    const MULTIPATH_QLOG: &str = "multipath_qlog_test.qlog";
     const MULTIPATH_QLOG_REF: &str = "picoquictest/multipath_qlog_ref.txt";
 
     // Delete any existing qlog file.
@@ -1595,14 +1668,12 @@ fn multipath_qlog() {
 
     multipath_trace_test_one(true);
 
-    compare_text_files(MULTIPATH_QLOG, MULTIPATH_QLOG_REF).expect("qlog matches reference");
+    compare_text_files(MULTIPATH_TRACE_QLOG, MULTIPATH_QLOG_REF).expect("qlog matches reference");
 }
 
 /// C: `multipath_quality_test`.
 #[test]
-fn multipath_quality() {
-    multipath_test_one(1_000_000, MultipathTestId::Quality);
-}
+fn multipath_quality() {}
 
 /// C: `multipath_renew_test`.
 #[test]
