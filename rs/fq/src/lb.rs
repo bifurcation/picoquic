@@ -18,10 +18,9 @@
 //! * [`Quic::clear_lb_cid_config`] tears the installed context back
 //!   down (no-op when none is installed).
 //! * [`ConnectionIdContext::generate`] / [`ConnectionIdContext::verify`]
-//!   are the per-CID callback bodies.  They are exposed as inherent methods
-//!   so the eventual [`crate::ConnectionIdCallback`] trait impl can
-//!   delegate to them; the C `void* connection_id_cb_data` parameter is
-//!   recovered as `&mut self`.
+//!   are the per-CID callback bodies.  The private
+//!   `ConnectionIdCallback` adapter delegates to them; the C
+//!   `void* connection_id_cb_data` parameter is recovered as `&mut self`.
 //!
 //! ## Field-shape decisions
 //!
@@ -47,7 +46,7 @@
 
 use crate::Error;
 use crate::tls_api::Aes128EcbContext;
-use crate::{CONNECTION_ID_MAX_SIZE, ConnectionId, Quic};
+use crate::{CONNECTION_ID_MAX_SIZE, ConnectionId, ConnectionIdCallback, Quic};
 
 // ---------------------------------------------------------------------------
 // Private hex-parsing helpers.
@@ -523,9 +522,28 @@ impl ConnectionIdContext {
     }
 }
 
+struct LbConnectionIdCallback;
+
+impl ConnectionIdCallback for LbConnectionIdCallback {
+    fn is_lb_compat_cid_generator(&self) -> bool {
+        true
+    }
+
+    /// C: `picoquic_lb_compat_cid_generate`.
+    fn produce(
+        &mut self,
+        quic: &mut Quic,
+        connection_id_local: ConnectionId,
+        _connection_id_remote: ConnectionId,
+    ) -> ConnectionId {
+        quic.lb_generate_cid(&connection_id_local)
+            .unwrap_or(connection_id_local)
+    }
+}
+
 impl Quic {
     /// Apply `lb_config` to `self`, installing a [`ConnectionIdContext`]
-    /// as the connection-ID callback context.
+    /// and LB adapter in the connection-ID callback slots.
     /// C: `lb_compat_cid_config`.
     ///
     /// Returns `Err` when `self` already has a different CID
@@ -606,6 +624,7 @@ impl Quic {
         };
 
         self.local_connection_id_length = lb_config.connection_id_length as u8;
+        self.connection_id_callback_fn = Some(Box::new(LbConnectionIdCallback));
         self.connection_id_callback_ctx = Some(Box::new(context));
         Ok(())
     }
@@ -613,14 +632,15 @@ impl Quic {
     /// Tear down the [`ConnectionIdContext`] previously installed by
     /// [`Quic::set_lb_cid_config`], releasing the AES-ECB
     /// encryption contexts and clearing the callback slot on
-    /// `self`.  No-op when no LB CID context is installed.
+    /// `self`.  No-op unless the installed callback is the LB
+    /// generator and a callback context is present.
     /// C: `lb_compat_cid_config_free`.
     pub fn clear_lb_cid_config(&mut self) {
         let is_lb = self
-            .connection_id_callback_ctx
+            .connection_id_callback_fn
             .as_ref()
-            .is_some_and(|c| c.is::<ConnectionIdContext>());
-        if is_lb {
+            .is_some_and(|cb| cb.is_lb_compat_cid_generator());
+        if is_lb && self.connection_id_callback_ctx.is_some() {
             self.connection_id_callback_ctx = None;
             self.connection_id_callback_fn = None;
         }
@@ -628,4 +648,102 @@ impl Quic {
 }
 
 #[cfg(test)]
-mod test {}
+mod test {
+    use super::*;
+    use crate::{Instant, RESET_SECRET_SIZE};
+
+    struct PassthroughCallback;
+
+    impl ConnectionIdCallback for PassthroughCallback {
+        fn produce(
+            &mut self,
+            _quic: &mut Quic,
+            connection_id_local: ConnectionId,
+            _connection_id_remote: ConnectionId,
+        ) -> ConnectionId {
+            connection_id_local
+        }
+    }
+
+    fn new_test_quic() -> Box<Quic> {
+        let simulated_time = Instant::from_ticks(0);
+        Quic::new(
+            8,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            [0u8; RESET_SECRET_SIZE],
+            simulated_time,
+            None,
+            None,
+        )
+        .expect("create quic context")
+    }
+
+    fn clear_config() -> Config {
+        Config {
+            method: ConnectionIdMethod::Clear,
+            rotation_bits: RotationBits::Zero,
+            first_byte_encodes_length: true,
+            server_id_length: 2,
+            nonce_length: 0,
+            connection_id_length: 3,
+            server_id: 0xbeef,
+            cid_encryption_key: [0u8; 16],
+        }
+    }
+
+    #[test]
+    fn set_lb_cid_config_installs_create_local_callback() {
+        let mut quic = new_test_quic();
+        let config = clear_config();
+
+        quic.set_lb_cid_config(&config).expect("set LB CID config");
+        assert!(quic.connection_id_callback_fn.is_some());
+
+        let mut cid = ConnectionId::default();
+        quic.create_local_cnx_id(&mut cid, ConnectionId::default());
+
+        assert_eq!(cid.as_bytes(), &[2, 0xbe, 0xef]);
+        assert_eq!(quic.lb_verify_cid(&cid), Some(0xbeef));
+    }
+
+    #[test]
+    fn clear_lb_cid_config_clears_only_installed_lb_pair() {
+        let mut quic = new_test_quic();
+        let config = clear_config();
+
+        quic.set_lb_cid_config(&config).expect("set LB CID config");
+        quic.clear_lb_cid_config();
+
+        assert!(quic.connection_id_callback_fn.is_none());
+        assert!(quic.connection_id_callback_ctx.is_none());
+    }
+
+    #[test]
+    fn clear_lb_cid_config_preserves_non_lb_callback_with_lb_context() {
+        let mut quic = new_test_quic();
+        let config = clear_config();
+
+        quic.set_lb_cid_config(&config).expect("set LB CID config");
+        quic.connection_id_callback_fn = Some(Box::new(PassthroughCallback));
+        quic.clear_lb_cid_config();
+
+        assert!(quic.connection_id_callback_fn.is_some());
+        assert!(quic.connection_id_callback_ctx.is_some());
+    }
+
+    #[test]
+    fn clear_lb_cid_config_requires_context() {
+        let mut quic = new_test_quic();
+
+        quic.connection_id_callback_fn = Some(Box::new(LbConnectionIdCallback));
+        quic.clear_lb_cid_config();
+
+        assert!(quic.connection_id_callback_fn.is_some());
+        assert!(quic.connection_id_callback_ctx.is_none());
+    }
+}

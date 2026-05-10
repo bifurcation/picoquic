@@ -82,6 +82,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::net::{IpAddr, SocketAddr};
@@ -1027,6 +1028,9 @@ fn queue_tls_bytes(cnx: &mut Connection, epoch: usize, bytes: &[u8]) -> Result<(
         .back()
         .map(|node| node.offset.checked_add(node.bytes.len() as u64))
         .unwrap_or(Some(stream.sent_offset))
+        .ok_or(Error::InvalidArgument)?;
+    offset
+        .checked_add(bytes.len() as u64)
         .ok_or(Error::InvalidArgument)?;
     stream.send_queue.push_back(StreamQueueNode {
         offset,
@@ -3616,7 +3620,7 @@ impl Quic {
 }
 
 #[cfg(feature = "sys-mbedtls")]
-fn load_cert_chain_pem(file_name: &str) -> Option<Vec<Vec<u8>>> {
+fn get_mbedtls_certs_from_file(file_name: &str) -> Option<Vec<Vec<u8>>> {
     let contents = std::fs::read_to_string(file_name).ok()?;
     let begin = "-----BEGIN CERTIFICATE-----";
     let end = "-----END CERTIFICATE-----";
@@ -3632,6 +3636,26 @@ fn load_cert_chain_pem(file_name: &str) -> Option<Vec<Vec<u8>>> {
     if certs.is_empty() { None } else { Some(certs) }
 }
 
+fn certs_from_provider(provider: CryptoProvider, file_name: &str) -> Option<Vec<Vec<u8>>> {
+    let _ = provider;
+    let _ = file_name;
+
+    #[cfg(feature = "sys-openssl")]
+    if provider == CryptoProvider::OpenSsl {
+        let certs = (crate::sys::openssl::OPENSSL_PROVIDER_REGISTRATION
+            .tls_key_provider
+            .cert_chain_loader)(file_name);
+        return (!certs.is_empty()).then_some(certs);
+    }
+
+    #[cfg(feature = "sys-mbedtls")]
+    if provider == CryptoProvider::MbedTls {
+        return get_mbedtls_certs_from_file(file_name);
+    }
+
+    None
+}
+
 /// Load a PEM-encoded certificate chain from `file_name` and return it as an
 /// owned vector of DER-encoded certificate byte strings through the registered
 /// certificate-loader callback.  C: `get_certs_from_file` (which allocated both
@@ -3639,21 +3663,8 @@ fn load_cert_chain_pem(file_name: &str) -> Option<Vec<Vec<u8>>> {
 /// the nested `Vec<Vec<u8>>`).  Returns `None` when the loader callback is unset
 /// or the file fails to parse.
 pub fn get_certs_from_file(file_name: &str) -> Option<Vec<Vec<u8>>> {
-    let _ = file_name;
-    let cert_chain_loader = tls_api_state().cert_chain_loader?;
-    match cert_chain_loader {
-        CryptoProvider::Minicrypto => None,
-        #[cfg(feature = "sys-openssl")]
-        CryptoProvider::OpenSsl => {
-            let provider = crate::sys::openssl::OPENSSL_PROVIDER_REGISTRATION.tls_key_provider;
-            let certs = (provider.cert_chain_loader)(file_name);
-            if certs.is_empty() { None } else { Some(certs) }
-        }
-        #[cfg(feature = "sys-fusion")]
-        CryptoProvider::Fusion => None,
-        #[cfg(feature = "sys-mbedtls")]
-        CryptoProvider::MbedTls => load_cert_chain_pem(file_name),
-    }
+    let provider = tls_api_state().cert_chain_loader?;
+    certs_from_provider(provider, file_name)
 }
 
 /// Extract the public key from a registered private-key loader, if the active
@@ -3674,6 +3685,76 @@ pub fn get_public_key_from_private_file(file_name: &str) -> Result<Option<Vec<u8
         Some(CryptoProvider::Fusion) => Ok(None),
         #[cfg(feature = "sys-mbedtls")]
         Some(CryptoProvider::MbedTls) => Err(Error::Generic),
+    }
+}
+
+/// A single crypto-provider error reported through the TLS API registry.
+///
+/// C exposes the packed error code as the function return value and the source
+/// location through out-parameters.  Rust keeps those values together and lets
+/// provider-specific backends attach optional diagnostic strings when they are
+/// available.
+pub struct CryptoError {
+    /// Raw provider-specific packed error code.
+    pub code: u64,
+    /// Human-readable error reason.
+    pub reason: Option<String>,
+    /// Provider library component name.
+    pub library: Option<String>,
+    /// Provider source file where the error was recorded.
+    pub file: String,
+    /// Line number in the provider source file.
+    pub line: u32,
+}
+
+fn crypto_errors_from_provider(provider: CryptoProvider) -> Vec<CryptoError> {
+    let _ = provider;
+
+    #[cfg(feature = "sys-openssl")]
+    if provider == CryptoProvider::OpenSsl {
+        return (crate::sys::openssl::OPENSSL_PROVIDER_REGISTRATION
+            .crypto_error_provider
+            .explain_crypto_error)();
+    }
+
+    Vec::new()
+}
+
+fn clear_crypto_errors_for_provider(provider: CryptoProvider) {
+    let _ = provider;
+
+    #[cfg(feature = "sys-openssl")]
+    if provider == CryptoProvider::OpenSsl {
+        (crate::sys::openssl::OPENSSL_PROVIDER_REGISTRATION
+            .crypto_error_provider
+            .clear_crypto_errors)();
+    }
+}
+
+/// Return pending crypto-provider errors through the registered provider hook.
+///
+/// The C API calls the optional callback once and returns `0` when no callback
+/// is installed.  Rust returns the batch that repeated C calls would expose;
+/// an empty vector is the equivalent of C's `0` return.
+///
+/// C: `picoquic_explain_crypto_error`.
+pub fn picoquic_explain_crypto_error() -> Vec<CryptoError> {
+    let provider = {
+        let state = tls_api_state();
+        state.crypto_error_provider
+    };
+    provider.map_or_else(Vec::new, crypto_errors_from_provider)
+}
+
+/// Clear pending crypto-provider errors through the registered provider hook.
+/// C: `picoquic_clear_crypto_errors`.
+pub fn picoquic_clear_crypto_errors() {
+    let provider = {
+        let state = tls_api_state();
+        state.crypto_error_provider
+    };
+    if let Some(provider) = provider {
+        clear_crypto_errors_for_provider(provider);
     }
 }
 
@@ -3986,6 +4067,7 @@ struct TlsApiState {
     sign_certificate_disposer: Option<CryptoProvider>,
     cert_chain_loader: Option<CryptoProvider>,
     public_key_loader: Option<CryptoProvider>,
+    crypto_error_provider: Option<CryptoProvider>,
 }
 
 impl TlsApiState {
@@ -4002,6 +4084,7 @@ impl TlsApiState {
             sign_certificate_disposer: None,
             cert_chain_loader: None,
             public_key_loader: None,
+            crypto_error_provider: None,
         }
     }
 
@@ -4017,6 +4100,7 @@ impl TlsApiState {
         self.sign_certificate_disposer = None;
         self.cert_chain_loader = None;
         self.public_key_loader = None;
+        self.crypto_error_provider = None;
     }
 
     /// Register or replace a TLS cipher suite.  The first matching slot by
@@ -4060,6 +4144,13 @@ impl TlsApiState {
     /// C: `picoquic_register_crypto_random_provider_fn`.
     fn register_crypto_random_provider(&mut self, provider: CryptoProvider) {
         self.crypto_random_provider = Some(provider);
+    }
+
+    /// Register the crypto-error reporting callback family.
+    /// C: `picoquic_register_explain_crypto_error_fn`.
+    #[cfg(feature = "sys-openssl")]
+    fn register_crypto_error_provider(&mut self, provider: CryptoProvider) {
+        self.crypto_error_provider = Some(provider);
     }
 
     /// Register the private-key loading callback family.
@@ -4136,6 +4227,7 @@ fn ptls_openssl_load_locked(state: &mut TlsApiState, unload: i32) {
             state.register_key_exchange_algorithm(key_exchange.group_id, CryptoProvider::OpenSsl);
         }
         state.register_crypto_random_provider(CryptoProvider::OpenSsl);
+        state.register_crypto_error_provider(CryptoProvider::OpenSsl);
         state.register_tls_key_provider(TlsKeyProviderCallbacks::new(
             Some(CryptoProvider::OpenSsl),
             Some(CryptoProvider::OpenSsl),

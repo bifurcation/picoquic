@@ -1878,6 +1878,30 @@ impl Quic {
         Ok(token)
     }
 
+    fn get_token_for_sni_any_ip(
+        &mut self,
+        sni: Option<&str>,
+        mark_used: bool,
+    ) -> Result<&[u8], crate::Error> {
+        let idx = self
+            .stored_tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| {
+                token.time_valid_until.ticks() > 0
+                    && token.sni.as_deref() == sni
+                    && !token.was_used
+                    && !token.token.is_empty()
+            })
+            .max_by_key(|(_, token)| token.time_valid_until)
+            .map(|(idx, _)| idx)
+            .ok_or(crate::Error::Generic)?;
+        if mark_used {
+            self.stored_tokens[idx].was_used = true;
+        }
+        Ok(self.stored_tokens[idx].token.as_slice())
+    }
+
     /// Persist cached tokens to `token_file_name`.
     pub fn save_tokens(
         &mut self,
@@ -12894,6 +12918,19 @@ impl Connection {
         }
 
         last_tok.ok_or(crate::Error::Memory)
+    }
+
+    /// Look up a stream by id, creating any missing streams up to that id.
+    /// C: `picoquic_find_or_create_stream`.
+    pub fn find_or_create_stream(
+        &mut self,
+        stream_id: u64,
+        is_remote: bool,
+    ) -> Option<StreamToken> {
+        match self.find_stream(stream_id) {
+            Some(stream) => Some(stream),
+            None => self.create_missing_streams(stream_id, is_remote).ok(),
+        }
     }
 
     /// If `stream` has reached the closed state, mark it closed.
@@ -25322,80 +25359,178 @@ impl Default for StreamDataSplay {
     }
 }
 
-/// Deliver `data` for `stream_id` starting at `offset` into `tree`,
-/// merging overlapping or adjacent segments.  Sets `*new_data = true`
+/// Optional C-style output state for [`queue_network_input`].
+///
+/// C passes `received_data` and `new_data_available` as separate output
+/// pointers.  This carrier keeps the old Rust test-helper call shape available
+/// through `&mut bool`, while still letting callers preserve the `received_data`
+/// metadata when they need the full C behavior.
+pub struct QueueNetworkInputState<'a> {
+    pub received_data: Option<&'a mut StreamDataNode>,
+    pub new_data_available: &'a mut bool,
+}
+
+/// Output sink used by [`queue_network_input`].
+pub trait QueueNetworkInputTarget {
+    fn set_new_data_available(&mut self, value: bool);
+    fn record_received_data(&mut self, offset: u64, data: &[u8]) -> bool;
+}
+
+impl QueueNetworkInputTarget for &mut bool {
+    fn set_new_data_available(&mut self, value: bool) {
+        **self = value;
+    }
+
+    fn record_received_data(&mut self, _offset: u64, _data: &[u8]) -> bool {
+        false
+    }
+}
+
+impl QueueNetworkInputTarget for QueueNetworkInputState<'_> {
+    fn set_new_data_available(&mut self, value: bool) {
+        *self.new_data_available = value;
+    }
+
+    fn record_received_data(&mut self, offset: u64, data: &[u8]) -> bool {
+        let Some(received_data) = self.received_data.as_deref_mut() else {
+            return false;
+        };
+        if data.len() > MAX_PACKET_SIZE {
+            return false;
+        }
+        received_data.stream_data_membership = None;
+        received_data.offset = offset;
+        received_data.length = data.len();
+        received_data.data[..data.len()].copy_from_slice(data);
+        true
+    }
+}
+
+/// Deliver `data` starting at `offset` into `tree`, ignoring bytes before
+/// `consumed_offset` and already-present chunks.  Sets `new_data_available`
 /// when any previously-missing bytes become available.
 /// C: `picoquic_queue_network_input`.
-pub fn queue_network_input(
-    _quic: &mut Quic,
+pub fn queue_network_input<T: QueueNetworkInputTarget>(
+    quic: &mut Quic,
     tree: &mut StreamDataSplay,
-    _stream_id: u64,
+    consumed_offset: u64,
     offset: u64,
     data: &[u8],
-    _fin: bool,
-    new_data: &mut bool,
+    is_last_frame: bool,
+    mut target: T,
 ) -> crate::Result<()> {
-    *new_data = false;
+    target.set_new_data_available(false);
     if data.is_empty() {
         return Ok(());
     }
 
     let input_begin = offset;
     let input_end = offset.saturating_add(data.len() as u64);
-    let mut cursor = input_begin;
+    let mut frame_offset = offset.max(consumed_offset);
+    let mut received_data_used = false;
 
-    let mut existing = Vec::new();
-    let mut tok = tree.inner.first();
-    while let Some(st) = tok {
-        if let Some((key, node)) = tree.inner.get_key_value(st) {
-            existing.push((*key, node.offset.saturating_add(node.length as u64)));
-        }
-        tok = tree.inner.next(st);
+    if frame_offset >= input_end {
+        return Ok(());
     }
 
-    for (seg_begin, seg_end) in existing {
-        if seg_end <= cursor {
-            continue;
-        }
-        if seg_begin >= input_end {
-            break;
-        }
-        if cursor < seg_begin {
-            let chunk_end = seg_begin.min(input_end);
-            let src_off = (cursor - input_begin) as usize;
-            let len = (chunk_end - cursor) as usize;
-            insert_stream_data_chunk(tree, cursor, &data[src_off..src_off + len])?;
-            *new_data = true;
-        }
-        cursor = cursor.max(seg_end);
-        if cursor >= input_end {
-            break;
+    let previous = tree.inner.find_previous(&frame_offset);
+    if let Some(previous) = previous
+        && let Some((_prev_offset, prev_node)) = tree.inner.get_key_value(previous)
+    {
+        let prev_end = prev_node.offset.saturating_add(prev_node.length as u64);
+        if prev_end > frame_offset {
+            frame_offset = prev_end;
         }
     }
 
-    if cursor < input_end {
-        let src_off = (cursor - input_begin) as usize;
-        insert_stream_data_chunk(tree, cursor, &data[src_off..])?;
-        *new_data = true;
+    let mut next = if let Some(previous) = previous {
+        tree.inner.next(previous)
+    } else {
+        tree.inner.first()
+    };
+
+    while frame_offset < input_end {
+        let Some(next_token) = next else {
+            break;
+        };
+        let Some((_next_key, next_node)) = tree.inner.get_key_value(next_token) else {
+            break;
+        };
+        let next_offset = next_node.offset;
+        let next_len = next_node.length;
+        if next_offset >= input_end {
+            break;
+        }
+
+        if next_offset > frame_offset {
+            let src_off = (frame_offset - input_begin) as usize;
+            let len = (next_offset - frame_offset) as usize;
+            add_stream_data_chunk(
+                quic,
+                tree,
+                frame_offset,
+                &data[src_off..src_off + len],
+                is_last_frame,
+                &mut target,
+                &mut received_data_used,
+            )?;
+        }
+
+        frame_offset = next_offset.saturating_add(next_len as u64);
+        next = tree.inner.next(next_token);
+    }
+
+    if frame_offset < input_end {
+        let src_off = (frame_offset - input_begin) as usize;
+        add_stream_data_chunk(
+            quic,
+            tree,
+            frame_offset,
+            &data[src_off..],
+            is_last_frame,
+            &mut target,
+            &mut received_data_used,
+        )?;
     }
 
     Ok(())
 }
 
+fn add_stream_data_chunk<T: QueueNetworkInputTarget>(
+    quic: &mut Quic,
+    tree: &mut StreamDataSplay,
+    offset: u64,
+    data: &[u8],
+    is_last_frame: bool,
+    target: &mut T,
+    received_data_used: &mut bool,
+) -> crate::Result<()> {
+    insert_stream_data_chunk(quic, tree, offset, data)?;
+    target.set_new_data_available(true);
+    if is_last_frame && !*received_data_used && target.record_received_data(offset, data) {
+        *received_data_used = true;
+    }
+    Ok(())
+}
+
 fn insert_stream_data_chunk(
+    quic: &mut Quic,
     tree: &mut StreamDataSplay,
     offset: u64,
     data: &[u8],
 ) -> crate::Result<()> {
-    let len = data.len().min(crate::MAX_PACKET_SIZE);
-    let mut node = StreamDataNode {
-        stream_data_membership: None,
-        offset,
-        data: [0u8; crate::MAX_PACKET_SIZE],
-        length: len,
-    };
-    node.data[..len].copy_from_slice(&data[..len]);
-    tree.inner.insert(offset, node).map(|_| ())
+    if data.len() > crate::MAX_PACKET_SIZE {
+        return Err(crate::Error::BufferTooSmall);
+    }
+    let mut node = quic.stream_data_node_alloc()?;
+    node.offset = offset;
+    node.length = data.len();
+    node.data[..data.len()].copy_from_slice(data);
+    let (tree_token, _old) = tree.inner.insert(offset, node)?;
+    if let Some(stored) = tree.inner.get_mut(tree_token) {
+        stored.stream_data_membership = Some(tree_token);
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -27845,6 +27980,11 @@ impl Connection {
 
             if length <= bytes_limit {
                 let mut offset = length;
+                let path_challenge_verified = path_x
+                    .tuples
+                    .first()
+                    .map(|tuple| tuple.challenge_verified)
+                    .unwrap_or(false);
                 let tail_len = {
                     let tail = &mut packet.bytes[offset..bytes_limit];
                     match self.prepare_path_challenge_frames(
@@ -27880,11 +28020,7 @@ impl Connection {
                             send_buffer_min_max.saturating_sub(checksum_overhead),
                         );
                     } else if ret == 0
-                        && path_x
-                            .tuples
-                            .first()
-                            .map(|tuple| tuple.challenge_verified)
-                            .unwrap_or(false)
+                        && path_challenge_verified
                         && path_x.pacing.is_authorized(
                             current_time,
                             next_wake_time,
@@ -28014,26 +28150,52 @@ impl Connection {
                             offset = bytes_limit.saturating_sub(tail_len);
                         }
 
-                        if path_x.cwin <= path_x.bytes_in_transit
-                            || self.quic_cwin_max() <= path_x.bytes_in_transit
+                        if (path_x.cwin < path_x.bytes_in_transit
+                            || self.quic_cwin_max() < path_x.bytes_in_transit)
+                            && !path_x.is_pto_required
                         {
-                            self.cwin_blocked = true;
-                            path_x.last_cwin_blocked_time = current_time;
-                            if let Some(cc_alg) = self.congestion_alg {
-                                let ack_state = PerAckState {
-                                    pc: pc as i32,
-                                    ..PerAckState::default()
+                            let before_bypass = offset;
+                            let mut no_data_to_send = 0;
+                            if self.priority_limit_for_bypass > 0 && self.paths.len() == 1 {
+                                let is_first = offset <= packet.offset;
+                                let tail_len = {
+                                    let tail = &mut packet.bytes[offset..bytes_limit];
+                                    self.prepare_stream_and_datagrams(
+                                        path_x,
+                                        tail,
+                                        current_time,
+                                        is_first,
+                                        self.priority_limit_for_bypass,
+                                        &mut more_data,
+                                        &mut is_pure_ack,
+                                        &mut no_data_to_send,
+                                        &mut ret,
+                                    )
+                                    .map(|next| next.len())
+                                    .unwrap_or_else(|| tail.len())
                                 };
-                                cc_alg.algorithm.alg_notify(
-                                    self,
-                                    path_x,
-                                    CongestionNotification::CwinBlocked,
-                                    &ack_state,
-                                    current_time,
-                                );
-                                self.report_pending_pacing_update_for_path(path_x);
+                                offset = bytes_limit.saturating_sub(tail_len);
+                            }
+                            if offset == before_bypass {
+                                self.cwin_blocked = true;
+                                path_x.last_cwin_blocked_time = current_time;
+                                if let Some(cc_alg) = self.congestion_alg {
+                                    let ack_state = PerAckState {
+                                        pc: pc as i32,
+                                        ..PerAckState::default()
+                                    };
+                                    cc_alg.algorithm.alg_notify(
+                                        self,
+                                        path_x,
+                                        CongestionNotification::CwinBlocked,
+                                        &ack_state,
+                                        current_time,
+                                    );
+                                    self.report_pending_pacing_update_for_path(path_x);
+                                }
                             }
                         } else if ret == 0 {
+                            let mut preemptive_repeat = false;
                             let pmtu_discovery_needed = self.is_mtu_probe_needed(path_x);
                             if self.is_tls_stream_ready() {
                                 let tail_len = {
@@ -28155,7 +28317,67 @@ impl Connection {
                                     };
                                     offset = bytes_limit.saturating_sub(tail_len);
                                 }
-                                if no_data_to_send != 0 {
+                                if self.is_preemptive_repeat_enabled
+                                    || (self.is_forced_probe_up_required
+                                        && path_x.is_cca_probing_up)
+                                {
+                                    if offset <= header_length {
+                                        let mut preemptive_length = offset;
+                                        let preemptive_ret = {
+                                            let tail = &mut packet.bytes[offset..bytes_limit];
+                                            self.picoquic_preemptive_retransmit_as_needed(
+                                                path_x,
+                                                pc,
+                                                current_time,
+                                                next_wake_time,
+                                                tail,
+                                                bytes_limit.saturating_sub(offset),
+                                                &mut preemptive_length,
+                                                &mut more_data,
+                                                Some(&mut is_pure_ack),
+                                            )
+                                        };
+                                        if preemptive_ret != 0 {
+                                            ret = preemptive_ret;
+                                        }
+                                        if preemptive_length > header_length {
+                                            preemptive_repeat = true;
+                                            packet.is_preemptive_repeat = true;
+                                            offset = preemptive_length;
+                                        } else if self.is_forced_probe_up_required
+                                            && path_x.is_cca_probing_up
+                                            && offset < bytes_limit
+                                        {
+                                            packet.bytes[offset] =
+                                                crate::frames::FrameType::Ping as u8;
+                                            offset += 1;
+                                            packet.bytes[offset..bytes_limit]
+                                                .fill(crate::frames::FrameType::Padding as u8);
+                                            offset = bytes_limit;
+                                            is_pure_ack = 0;
+                                        }
+                                    } else if more_data == 0 {
+                                        let mut preemptive_length = offset;
+                                        let preemptive_ret = {
+                                            let tail = &mut packet.bytes[offset..bytes_limit];
+                                            self.picoquic_preemptive_retransmit_as_needed(
+                                                path_x,
+                                                pc,
+                                                current_time,
+                                                next_wake_time,
+                                                tail,
+                                                bytes_limit.saturating_sub(offset),
+                                                &mut preemptive_length,
+                                                &mut more_data,
+                                                None,
+                                            )
+                                        };
+                                        if preemptive_ret != 0 {
+                                            ret = preemptive_ret;
+                                        }
+                                    }
+                                }
+                                if no_data_to_send != 0 && !preemptive_repeat {
                                     path_x.last_sender_limited_time = current_time;
                                 }
                             }
@@ -28190,7 +28412,10 @@ impl Connection {
                                 offset = probe_len;
                             }
                         }
-                    } else if self.priority_limit_for_bypass > 0 && self.paths.len() == 1 {
+                    } else if path_challenge_verified
+                        && self.priority_limit_for_bypass > 0
+                        && self.paths.len() == 1
+                    {
                         let mut no_data_to_send = 0;
                         let is_first = offset <= packet.offset;
                         let tail_len = {

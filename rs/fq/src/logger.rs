@@ -58,8 +58,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::Instant;
-use crate::internal::{PacketHeader, PacketType};
-use crate::{Connection, ConnectionId, Path, Quic};
+use crate::internal::{Epoch, PacketHeader, PacketType, SUPPORTED_VERSIONS, frames_varint_decode};
+use crate::{Connection, ConnectionId, PacketContext, Path, Quic};
 
 // ---------------------------------------------------------------------------
 // Unified-logger vtable.
@@ -236,6 +236,305 @@ fn option_path<'a>(path_x: &'a mut Option<&mut Path>) -> Option<&'a mut Path> {
     path_x.as_mut().map(|path| &mut **path)
 }
 
+fn initial_remote_connection_id(connection: &Connection) -> ConnectionId {
+    let path_unique_id = connection
+        .paths
+        .first()
+        .map(|p| p.unique_path_id)
+        .unwrap_or(0);
+    let remote_index = connection
+        .paths
+        .first()
+        .and_then(|p| p.tuples.first())
+        .and_then(|t| t.remote_connection_id_index)
+        .unwrap_or(0);
+
+    connection
+        .remote_connection_id_stashes
+        .iter()
+        .find(|stash| stash.unique_path_id == path_unique_id)
+        .and_then(|stash| stash.connection_ids.get(remote_index))
+        .or_else(|| {
+            connection
+                .remote_connection_id_stashes
+                .first()
+                .and_then(|stash| stash.connection_ids.first())
+        })
+        .map(|remote| remote.connection_id)
+        .unwrap_or_default()
+}
+
+fn supported_version_index(version: u32) -> Option<i32> {
+    SUPPORTED_VERSIONS
+        .iter()
+        .position(|v| *v as u32 == version)
+        .map(|index| index as i32)
+}
+
+fn parse_outgoing_header(
+    send_buffer: &[u8],
+    outgoing_short_dcid_len: usize,
+    connection_version_index: i32,
+    do_grease_quic_bit: bool,
+    has_loss_bit: bool,
+) -> PacketHeader {
+    let mut ph = PacketHeader::default();
+    if send_buffer.is_empty() {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    }
+
+    let flags = send_buffer[0];
+    if flags & 0x80 == 0 {
+        ph.packet_context = PacketContext::Application;
+        ph.epoch = Epoch::OneRtt;
+        ph.payload_length_value = 0;
+        if send_buffer.len() < 1 + outgoing_short_dcid_len {
+            ph.packet_type = PacketType::Error;
+            ph.offset = send_buffer.len();
+            ph.payload_length = 0;
+            return ph;
+        }
+        let Some(cid) =
+            ConnectionId::clone_from_slice(&send_buffer[1..1 + outgoing_short_dcid_len])
+        else {
+            ph.packet_type = PacketType::Error;
+            ph.offset = send_buffer.len();
+            ph.payload_length = 0;
+            return ph;
+        };
+        ph.dest_connection_id = cid;
+        ph.offset = 1 + outgoing_short_dcid_len;
+        ph.packet_number_offset = ph.offset;
+        ph.version_index = connection_version_index;
+        ph.quic_bit_is_zero = (flags & 0x40) == 0;
+        ph.packet_type = if !ph.quic_bit_is_zero || do_grease_quic_bit {
+            PacketType::OneRttProtected
+        } else {
+            PacketType::Error
+        };
+        ph.has_spin_bit = true;
+        ph.spin = (flags & 0x20) != 0;
+        ph.key_phase = (flags & 0x04) != 0;
+        ph.packet_number_mask = 0;
+        ph.packet_number_truncated = 0;
+        if has_loss_bit {
+            ph.has_loss_bits = true;
+            ph.loss_bit_l = (flags & 0x08) != 0;
+            ph.loss_bit_q = (flags & 0x10) != 0;
+        }
+        ph.payload_length = if ph.packet_type == PacketType::Error {
+            0
+        } else {
+            send_buffer.len() - ph.offset
+        };
+        return ph;
+    }
+
+    if send_buffer.len() < 5 {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    }
+
+    let version = u32::from_be_bytes([
+        send_buffer[1],
+        send_buffer[2],
+        send_buffer[3],
+        send_buffer[4],
+    ]);
+    ph.version = version;
+    let mut pos = 5usize;
+
+    if version != 0 {
+        let Some(version_index) = supported_version_index(version) else {
+            ph.packet_type = PacketType::Error;
+            ph.version_index = -1;
+            return ph;
+        };
+        ph.version_index = version_index;
+    }
+
+    if pos >= send_buffer.len() {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    }
+    let dcid_len = send_buffer[pos] as usize;
+    pos += 1;
+    if pos + dcid_len > send_buffer.len() {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    }
+    let Some(cid) = ConnectionId::clone_from_slice(&send_buffer[pos..pos + dcid_len]) else {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    };
+    ph.dest_connection_id = cid;
+    pos += dcid_len;
+
+    if pos >= send_buffer.len() {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    }
+    let scid_len = send_buffer[pos] as usize;
+    pos += 1;
+    if pos + scid_len > send_buffer.len() {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    }
+    let Some(cid) = ConnectionId::clone_from_slice(&send_buffer[pos..pos + scid_len]) else {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    };
+    ph.src_connection_id = cid;
+    pos += scid_len;
+
+    if version == 0 {
+        ph.packet_type = PacketType::VersionNegotiation;
+        ph.offset = pos;
+        ph.payload_length_value = send_buffer.len().saturating_sub(pos);
+        ph.payload_length = ph.payload_length_value;
+        return ph;
+    }
+
+    ph.packet_type = crate::internal::parse_long_packet_type(flags, ph.version_index);
+    ph.quic_bit_is_zero = (flags & 0x40) == 0;
+    ph.spin = false;
+    ph.has_spin_bit = false;
+
+    match ph.packet_type {
+        PacketType::Initial => {
+            ph.packet_context = PacketContext::Initial;
+            ph.epoch = Epoch::Initial;
+            let mut tok_len = 0u64;
+            match frames_varint_decode(&send_buffer[pos..], &mut tok_len) {
+                Some(rest) => {
+                    pos = send_buffer.len() - rest.len();
+                    let Some(token_len) = usize::try_from(tok_len).ok() else {
+                        ph.packet_type = PacketType::Error;
+                        ph.offset = send_buffer.len();
+                        return ph;
+                    };
+                    let token_end = pos.saturating_add(token_len);
+                    if token_end > send_buffer.len() {
+                        ph.packet_type = PacketType::Error;
+                        ph.offset = send_buffer.len();
+                        return ph;
+                    }
+                    ph.token_bytes = send_buffer[pos..token_end].to_vec();
+                    pos = token_end;
+                }
+                None => {
+                    ph.packet_type = PacketType::Error;
+                    return ph;
+                }
+            }
+        }
+        PacketType::ZeroRttProtected => {
+            ph.packet_context = PacketContext::Application;
+            ph.epoch = Epoch::ZeroRtt;
+        }
+        PacketType::Handshake => {
+            ph.packet_context = PacketContext::Handshake;
+            ph.epoch = Epoch::Handshake;
+        }
+        PacketType::Retry => {
+            ph.packet_context = PacketContext::Initial;
+            ph.epoch = Epoch::Initial;
+        }
+        _ => {
+            ph.packet_type = PacketType::Error;
+            return ph;
+        }
+    }
+
+    if ph.packet_type == PacketType::Retry {
+        ph.offset = pos;
+        ph.packet_number_offset = pos;
+        if send_buffer.len() > pos {
+            ph.payload_length_value = send_buffer.len() - pos;
+            ph.payload_length = ph.payload_length_value;
+        } else {
+            ph.packet_type = PacketType::Error;
+        }
+        return ph;
+    }
+
+    let mut payload_len = 0u64;
+    let after_len = match frames_varint_decode(&send_buffer[pos..], &mut payload_len) {
+        Some(r) => r,
+        None => {
+            ph.packet_type = PacketType::Error;
+            return ph;
+        }
+    };
+    let len_consumed = (send_buffer.len() - after_len.len()) - pos;
+    pos += len_consumed;
+    let Ok(payload_len) = usize::try_from(payload_len) else {
+        ph.packet_type = PacketType::Error;
+        return ph;
+    };
+    if after_len.len() < payload_len {
+        ph.packet_type = PacketType::Error;
+        ph.payload_length = send_buffer.len().saturating_sub(ph.offset);
+        ph.payload_length_value = ph.payload_length;
+        return ph;
+    }
+    ph.packet_number_offset = pos;
+    ph.offset = pos;
+    ph.payload_length_value = payload_len;
+    ph.payload_length = payload_len;
+    if ph.quic_bit_is_zero && !do_grease_quic_bit {
+        ph.packet_type = PacketType::Error;
+    }
+
+    ph
+}
+
+pub(crate) fn prepare_outgoing_packet_header(
+    connection: &Connection,
+    send_buffer: &[u8],
+    sequence_number: u64,
+    pn_length: usize,
+) -> PacketHeader {
+    let outgoing_short_dcid_len = initial_remote_connection_id(connection).len();
+    let mut ph = parse_outgoing_header(
+        send_buffer,
+        outgoing_short_dcid_len,
+        connection.version_index,
+        connection.local_parameters.do_grease_quic_bit,
+        connection.is_loss_bit_enabled_outgoing,
+    );
+
+    ph.packet_number_full = sequence_number;
+    ph.packet_number_truncated = sequence_number as u32;
+
+    let mut checksum_length = 16usize;
+    if ph.packet_type != PacketType::Retry {
+        let epoch = match ph.packet_type {
+            PacketType::OneRttProtected => Epoch::OneRtt,
+            PacketType::ZeroRttProtected => Epoch::ZeroRtt,
+            PacketType::Handshake => Epoch::Handshake,
+            _ => Epoch::Initial,
+        };
+        if connection.crypto_context[epoch as usize]
+            .aead_encrypt
+            .is_some()
+        {
+            checksum_length = connection.get_checksum_length(epoch);
+        }
+        if ph.packet_number_offset != 0 {
+            ph.offset = ph.packet_number_offset + pn_length;
+            ph.payload_length = ph.payload_length.saturating_sub(pn_length);
+        }
+    }
+
+    if ph.packet_type != PacketType::VersionNegotiation {
+        ph.payload_length = ph.payload_length.saturating_sub(checksum_length);
+    }
+
+    ph
+}
+
 // ---------------------------------------------------------------------------
 // Public dispatch layer.
 //
@@ -251,7 +550,9 @@ impl Quic {
     ///
     /// C: `picoquic_log_context_free_app_message`.
     pub fn log_app_message(&mut self, cid: &ConnectionId, args: core::fmt::Arguments<'_>) {
-        if let Some(text) = logger_ref(&self.text_log_fns) {
+        if self.f_log.is_some()
+            && let Some(text) = logger_ref(&self.text_log_fns)
+        {
             text.borrow_mut().quic_app_message(self, cid, args);
         }
     }
@@ -481,19 +782,34 @@ impl Log for Connection {
             );
         }
 
-        if self.f_binlog.is_some()
-            && let Some(bin) = logger_ref(&self.bin_log_fns)
-        {
-            bin.borrow_mut().pdu(
-                self,
-                receiving,
-                current_time,
-                addr_peer,
-                addr_local,
-                packet_length,
-                unique_path_id,
-                ecn,
-            );
+        if self.f_binlog.is_some() {
+            if let Some(bin) = logger_ref(&self.bin_log_fns) {
+                bin.borrow_mut().pdu(
+                    self,
+                    receiving,
+                    current_time,
+                    addr_peer,
+                    addr_local,
+                    packet_length,
+                    unique_path_id,
+                    ecn,
+                );
+            } else {
+                let cid = self.initial_connection_id;
+                if let Some(f_binlog) = self.f_binlog.as_mut() {
+                    crate::binlog::pdu(
+                        f_binlog,
+                        &cid,
+                        receiving,
+                        current_time,
+                        addr_peer,
+                        addr_local,
+                        packet_length,
+                        unique_path_id,
+                        ecn,
+                    );
+                }
+            }
         }
 
         if self.qlog_ctx.is_some()
@@ -537,17 +853,38 @@ impl Log for Connection {
             );
         }
 
-        if self.f_binlog.is_some()
-            && let Some(bin) = logger_ref(&self.bin_log_fns)
-        {
-            bin.borrow_mut().packet(
-                self,
-                option_path(&mut path_x),
-                receiving,
-                current_time,
-                ph,
-                bytes,
-            );
+        if self.f_binlog.is_some() {
+            if let Some(bin) = logger_ref(&self.bin_log_fns) {
+                bin.borrow_mut().packet(
+                    self,
+                    option_path(&mut path_x),
+                    receiving,
+                    current_time,
+                    ph,
+                    bytes,
+                );
+            } else {
+                let cid = self.initial_connection_id;
+                let path_id = if self.is_multipath_enabled {
+                    path_x
+                        .as_deref()
+                        .map(|path| path.unique_path_id)
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                if let Some(f_binlog) = self.f_binlog.as_mut() {
+                    crate::binlog::packet(
+                        f_binlog,
+                        &cid,
+                        path_id,
+                        receiving,
+                        current_time,
+                        ph,
+                        bytes,
+                    );
+                }
+            }
         }
 
         if self.qlog_ctx.is_some()
@@ -756,7 +1093,9 @@ impl Log for Connection {
     }
 
     fn negotiated_alpn(&mut self, is_local: bool, sni: &[u8], alpn: &[u8], alpn_list: &[&[u8]]) {
-        if let Some(text) = logger_ref(&self.text_log_fns) {
+        if self.is_still_logging()
+            && let Some(text) = logger_ref(&self.text_log_fns)
+        {
             text.borrow_mut()
                 .negotiated_alpn(self, is_local, sni, alpn, alpn_list);
         }
@@ -777,7 +1116,9 @@ impl Log for Connection {
     }
 
     fn transport_extension(&mut self, is_local: bool, params: &[u8]) {
-        if let Some(text) = logger_ref(&self.text_log_fns) {
+        if self.is_still_logging()
+            && let Some(text) = logger_ref(&self.text_log_fns)
+        {
             text.borrow_mut()
                 .transport_extension(self, is_local, params);
         }
@@ -801,10 +1142,15 @@ impl Log for Connection {
             text.borrow_mut().tls_ticket(self, ticket);
         }
 
-        if self.f_binlog.is_some()
-            && let Some(bin) = logger_ref(&self.bin_log_fns)
-        {
-            bin.borrow_mut().tls_ticket(self, ticket);
+        if self.f_binlog.is_some() {
+            if let Some(bin) = logger_ref(&self.bin_log_fns) {
+                bin.borrow_mut().tls_ticket(self, ticket);
+            } else if self.is_still_logging() {
+                let cid = self.initial_connection_id;
+                if let Some(f_binlog) = self.f_binlog.as_mut() {
+                    crate::binlog::tls_ticket(f_binlog, cid, ticket);
+                }
+            }
         }
 
         if self.qlog_ctx.is_some()

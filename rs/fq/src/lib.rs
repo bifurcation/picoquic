@@ -643,6 +643,11 @@ pub trait AlpnSelect {
 /// Folds the C `void* connection_id_cb_data` into the implementor's state.
 /// C: `ConnectionIdCallback`.
 pub trait ConnectionIdCallback {
+    #[doc(hidden)]
+    fn is_lb_compat_cid_generator(&self) -> bool {
+        false
+    }
+
     fn produce(
         &mut self,
         quic: &mut Quic,

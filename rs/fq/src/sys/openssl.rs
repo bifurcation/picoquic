@@ -7,7 +7,6 @@
 
 extern crate alloc;
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::Error;
@@ -17,6 +16,7 @@ use crate::tls::{
     ClientConfig, ConfigError, HandshakeData, KeyLogEvent, KeyPair, KeyPairHeader, Keys,
     PeerIdentity, ServerConfig, Session, TlsBackend,
 };
+pub use crate::tls_api::CryptoError;
 use crate::tls_api::{hkdf_expand_label, pn_enc_create_for_test, setup_test_aead_context};
 use crate::{
     AES_128_GCM_SHA256, AES_256_GCM_SHA384, CHACHA20_POLY1305_SHA256, Connection, GROUP_SECP256R1,
@@ -350,6 +350,182 @@ pub struct KeyExchangeContext {
     pub key: openssl::pkey::PKey<openssl::pkey::Private>,
 }
 
+impl KeyExchangeContext {
+    /// Return the TLS named-group id represented by this key-exchange
+    /// context.
+    ///
+    /// C: the `keyex->id` field consumed through `ptls_hpke_kem_t->keyex`.
+    pub fn group_id(&self) -> Result<u16, crate::Error> {
+        key_exchange_group_id_from_key(&self.key)
+    }
+
+    /// Return the HPKE KEM id that corresponds to this context's TLS group.
+    ///
+    /// C: selected via the `picoquic_hpke_kems[]` table.
+    pub fn kem_id(&self) -> Result<u16, crate::Error> {
+        key_exchange_kem_id_from_group(self.group_id()?)
+    }
+
+    /// Export the raw private scalar bytes required by the Rust HPKE
+    /// decapsulation path.
+    ///
+    /// C: private key material owned by the
+    /// `ptls_key_exchange_context_t` returned from
+    /// `ptls_openssl_create_key_exchange`.
+    pub fn hpke_private_key(&self) -> Result<Vec<u8>, crate::Error> {
+        key_exchange_private_key_from_key(&self.key)
+    }
+
+    /// Perform HPKE base-mode receiver setup using this key-exchange
+    /// context.
+    ///
+    /// Returns the same exported ECH key material shape used by
+    /// `crate::ech::EchOpenerState::open`; `None` means the KEM, cipher,
+    /// encapsulated key, or private-key material is incompatible.
+    ///
+    /// C: `ptls_hpke_setup_base_r(..., keyex, ...)`.
+    pub fn hpke_setup_base_r(
+        &self,
+        kem: u16,
+        cipher: HpkeCipherSuiteId,
+        enc: &[u8],
+        info: &[u8],
+    ) -> Option<Vec<u8>> {
+        if self.kem_id().ok()? != kem {
+            return None;
+        }
+        let private_key = self.hpke_private_key().ok()?;
+        hpke_setup_receiver(kem, cipher, &private_key, enc, info)
+    }
+}
+
+fn key_exchange_kem_id_from_group(group_id: u16) -> Result<u16, crate::Error> {
+    match group_id {
+        GROUP_SECP256R1 => Ok(kem_id::P256_SHA256),
+        GROUP_SECP384R1 => Ok(kem_id::P384_SHA384),
+        GROUP_X25519 => Ok(kem_id::X25519_SHA256),
+        _ => Err(crate::Error::InvalidFile),
+    }
+}
+
+fn key_exchange_group_id_from_key(
+    key: &openssl::pkey::PKey<openssl::pkey::Private>,
+) -> Result<u16, crate::Error> {
+    use openssl::nid::Nid;
+    use openssl::pkey::Id;
+
+    match key.id() {
+        Id::X25519 => Ok(GROUP_X25519),
+        Id::EC => {
+            let ec_key = key.ec_key().map_err(|_| crate::Error::InvalidFile)?;
+            match ec_key.group().curve_name() {
+                Some(Nid::X9_62_PRIME256V1) => Ok(GROUP_SECP256R1),
+                Some(Nid::SECP384R1) => Ok(GROUP_SECP384R1),
+                _ => Err(crate::Error::InvalidFile),
+            }
+        }
+        _ => Err(crate::Error::InvalidFile),
+    }
+}
+
+fn key_exchange_private_key_from_key(
+    key: &openssl::pkey::PKey<openssl::pkey::Private>,
+) -> Result<Vec<u8>, crate::Error> {
+    match key_exchange_group_id_from_key(key)? {
+        GROUP_X25519 => {
+            let private_key = key
+                .raw_private_key()
+                .map_err(|_| crate::Error::InvalidFile)?;
+            if private_key.len() == 32 {
+                Ok(private_key)
+            } else {
+                Err(crate::Error::InvalidFile)
+            }
+        }
+        GROUP_SECP256R1 | GROUP_SECP384R1 => {
+            let ec_key = key.ec_key().map_err(|_| crate::Error::InvalidFile)?;
+            let scalar_len = match ec_key.group().curve_name() {
+                Some(openssl::nid::Nid::X9_62_PRIME256V1) => 32,
+                Some(openssl::nid::Nid::SECP384R1) => 48,
+                _ => return Err(crate::Error::InvalidFile),
+            };
+            ec_key
+                .private_key()
+                .to_vec_padded(scalar_len)
+                .map_err(|_| crate::Error::InvalidFile)
+        }
+        _ => Err(crate::Error::InvalidFile),
+    }
+}
+
+fn hpke_setup_receiver(
+    kem: u16,
+    cipher: HpkeCipherSuiteId,
+    private_key: &[u8],
+    enc: &[u8],
+    info: &[u8],
+) -> Option<Vec<u8>> {
+    use hpke::{Deserializable, Kem as HpkeKem, OpModeR};
+
+    macro_rules! run_hpke {
+        ($KemType:ty, $KdfType:ty, $AeadType:ty) => {{
+            let sk = <$KemType as HpkeKem>::PrivateKey::from_bytes(private_key).ok()?;
+            let ek = <$KemType as HpkeKem>::EncappedKey::from_bytes(enc).ok()?;
+            let ctx = hpke::setup_receiver::<$AeadType, $KdfType, $KemType>(
+                &OpModeR::Base,
+                &sk,
+                &ek,
+                info,
+            )
+            .ok()?;
+            let mut out = alloc::vec![0u8; 32];
+            ctx.export(b"picoquic ech key material", &mut out).ok()?;
+            Some(out)
+        }};
+    }
+
+    match (kem, cipher.kdf, cipher.aead) {
+        (kem_id::X25519_SHA256, kdf_id::HKDF_SHA256, aead_id::AES_128_GCM) => {
+            run_hpke!(
+                hpke::kem::X25519HkdfSha256,
+                hpke::kdf::HkdfSha256,
+                hpke::aead::AesGcm128
+            )
+        }
+        (kem_id::X25519_SHA256, kdf_id::HKDF_SHA256, aead_id::CHACHA20_POLY1305) => {
+            run_hpke!(
+                hpke::kem::X25519HkdfSha256,
+                hpke::kdf::HkdfSha256,
+                hpke::aead::ChaCha20Poly1305
+            )
+        }
+        (kem_id::P256_SHA256, kdf_id::HKDF_SHA256, aead_id::AES_128_GCM) => {
+            run_hpke!(
+                hpke::kem::DhP256HkdfSha256,
+                hpke::kdf::HkdfSha256,
+                hpke::aead::AesGcm128
+            )
+        }
+        (kem_id::P384_SHA384, kdf_id::HKDF_SHA384, aead_id::AES_256_GCM) => {
+            run_hpke!(
+                hpke::kem::DhP384HkdfSha384,
+                hpke::kdf::HkdfSha384,
+                hpke::aead::AesGcm256
+            )
+        }
+        _ => None,
+    }
+}
+
+/// Build the OpenSSL-backed key-exchange context that C obtains from
+/// `ptls_openssl_create_key_exchange`.
+fn create_key_exchange_context(
+    key: openssl::pkey::PKey<openssl::pkey::Private>,
+) -> Result<KeyExchangeContext, crate::Error> {
+    key_exchange_private_key_from_key(&key)?;
+    Ok(KeyExchangeContext { key })
+}
+
 /// Read a PEM-encoded private key from `keypem` and build a key-exchange
 /// context for it.  Returns `Err(NoSuchFile)` when the path is unreadable
 /// and `Err(InvalidFile)` when the PEM cannot be parsed as a private key.
@@ -358,7 +534,7 @@ pub fn openssl_keyex_from_key_file(keypem: &str) -> Result<KeyExchangeContext, c
     let pem = std::fs::read(keypem).map_err(|_| crate::Error::NoSuchFile)?;
     let key =
         openssl::pkey::PKey::private_key_from_pem(&pem).map_err(|_| crate::Error::InvalidFile)?;
-    Ok(KeyExchangeContext { key })
+    create_key_exchange_context(key)
 }
 
 /// Drop an OpenSSL key-exchange context.
@@ -472,21 +648,6 @@ pub fn picoquic_openssl_get_certificate_verifier(
 
 // ---------------------------------------------------------------------------
 // OpenSSL error-queue helpers.
-
-/// A single entry dequeued from the OpenSSL error queue.
-/// C: single `ERR_get_error_line` / `ERR_get_error_all` result.
-pub struct CryptoError {
-    /// Raw OpenSSL packed error code.
-    pub code: u64,
-    /// Human-readable error reason (e.g. "no such file or directory").
-    pub reason: Option<String>,
-    /// OpenSSL library component name (e.g. "PEM routines").
-    pub library: Option<String>,
-    /// OpenSSL source file where the error was recorded.
-    pub file: String,
-    /// Line number in the OpenSSL source file.
-    pub line: u32,
-}
 
 /// Dequeue all pending OpenSSL errors and return them.
 /// C callers loop over `picoquic_open_ssl_explain_crypto_error` until the
@@ -849,5 +1010,67 @@ pub fn picoquic_ptls_openssl_log_version(cnx: &mut Connection) {
             source_version,
             binary_version
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ECH_PRIVATE_KEY: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../certs/ech/private.pem");
+    const ECH_CONFIG: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../certs/ech/ech_config.txt"
+    );
+    const SECP256R1_KEY: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../certs/secp256r1-pkcs8/key.pem"
+    );
+    const SECP384R1_KEY: &str =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../certs/secp384r1/key.pem");
+    const RSA_KEY: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../certs/rsa-pkcs8/keypair.pem"
+    );
+
+    #[test]
+    fn keyex_loader_accepts_supported_ech_keys() -> Result<(), crate::Error> {
+        let ech_key = openssl_keyex_from_key_file(ECH_PRIVATE_KEY)?;
+        assert_eq!(ech_key.group_id()?, GROUP_SECP256R1);
+        assert_eq!(ech_key.kem_id()?, kem_id::P256_SHA256);
+        assert_eq!(ech_key.hpke_private_key()?.len(), 32);
+
+        let secp256r1 = openssl_keyex_from_key_file(SECP256R1_KEY)?;
+        assert_eq!(secp256r1.group_id()?, GROUP_SECP256R1);
+        assert_eq!(secp256r1.kem_id()?, kem_id::P256_SHA256);
+        assert_eq!(secp256r1.hpke_private_key()?.len(), 32);
+
+        let secp384r1 = openssl_keyex_from_key_file(SECP384R1_KEY)?;
+        assert_eq!(secp384r1.group_id()?, GROUP_SECP384R1);
+        assert_eq!(secp384r1.kem_id()?, kem_id::P384_SHA384);
+        assert_eq!(secp384r1.hpke_private_key()?.len(), 48);
+
+        Ok(())
+    }
+
+    #[test]
+    fn keyex_loader_rejects_non_key_exchange_private_key() {
+        let err = match openssl_keyex_from_key_file(RSA_KEY) {
+            Ok(_) => panic!("RSA key should not create an HPKE key-exchange context"),
+            Err(err) => err,
+        };
+        assert_eq!(err, crate::Error::InvalidFile);
+    }
+
+    #[test]
+    fn ech_opener_uses_openssl_key_exchange_provider() -> Result<(), crate::Error> {
+        let opener = crate::ech::ech_init_opener(ECH_PRIVATE_KEY, ECH_CONFIG)?;
+
+        assert!(opener.key_exchange.is_some());
+        assert_eq!(opener.kem_id, kem_id::P256_SHA256);
+        assert_eq!(opener.private_key.len(), 32);
+
+        Ok(())
     }
 }

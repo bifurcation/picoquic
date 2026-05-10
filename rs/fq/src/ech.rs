@@ -268,18 +268,22 @@ pub struct EchOpenResult {
 
 /// Server-side ECH opener callback state.
 ///
-/// Holds the KEM id, the private key bytes used for HPKE decapsulation,
-/// and the serialised ECH config bytes (used to reconstruct the HPKE `info`
-/// string during opening).
+/// Holds the KEM id, the key-exchange material used for HPKE
+/// decapsulation, and the serialised ECH config bytes (used to reconstruct
+/// the HPKE `info` string during opening).
 ///
 /// C: `ech_opener_callback_t`
 pub struct EchOpenerState {
     /// HPKE KEM identifier, e.g. `kem_id::X25519_SHA256`.
     /// C: `kem` (`ptls_hpke_kem_t*`; we store only the numeric id).
     pub kem_id: u16,
-    /// Raw private key bytes for HPKE decapsulation.
-    /// C: `keyex` (`ptls_key_exchange_context_t*` loaded from a PEM file).
+    /// Raw private key bytes for HPKE decapsulation.  This remains the
+    /// pure-Rust fallback when no backend key-exchange provider is linked.
     pub private_key: Vec<u8>,
+    /// OpenSSL key-exchange context loaded through the registered provider.
+    /// C: `keyex` (`ptls_key_exchange_context_t*` loaded from a PEM file).
+    #[cfg(feature = "sys-openssl")]
+    pub key_exchange: Option<crate::sys::openssl::KeyExchangeContext>,
     /// Serialised ECH config bytes including the two-byte outer length prefix.
     /// C: `config` (`ptls_buffer_t`).
     pub config: Vec<u8>,
@@ -319,7 +323,16 @@ impl EchOpenerState {
         info.extend_from_slice(config_payload);
 
         // HPKE base-mode receiver setup (equivalent to ptls_hpke_setup_base_r).
+        #[cfg(feature = "sys-openssl")]
+        let key_material = if let Some(key_exchange) = &self.key_exchange {
+            key_exchange.hpke_setup_base_r(self.kem_id, cipher, enc, &info)?
+        } else {
+            hpke_setup_receiver(self.kem_id, cipher, &self.private_key, enc, &info)?
+        };
+
+        #[cfg(not(feature = "sys-openssl"))]
         let key_material = hpke_setup_receiver(self.kem_id, cipher, &self.private_key, enc, &info)?;
+
         Some(EchOpenResult {
             cipher,
             key_material,
@@ -903,21 +916,35 @@ pub fn ech_init_opener(
         return Err(Error::Generic);
     }
 
-    // Read and parse the PEM private key file.
-    let pem_text = std::fs::read_to_string(private_key_file).map_err(|_| Error::Generic)?;
-    // Determine the key format from the PEM label.
-    let label_start = pem_text.find("-----BEGIN ").ok_or(Error::Generic)? + "-----BEGIN ".len();
-    let label_end = pem_text[label_start..]
-        .find("-----")
-        .ok_or(Error::Generic)?;
-    let label = &pem_text[label_start..label_start + label_end];
+    #[cfg(feature = "sys-openssl")]
+    let (private_key, key_exchange) = {
+        let registration =
+            crate::sys::openssl::picoquic_ptls_openssl_load(0).ok_or(Error::Generic)?;
+        let key_exchange = (registration.key_exchange_provider.loader)(private_key_file)?;
+        let private_key = key_exchange.hpke_private_key()?;
+        (private_key, Some(key_exchange))
+    };
 
-    let der = pem_base64_decode(&pem_text)?;
-    let private_key = extract_private_key_der(&der, label)?;
+    #[cfg(not(feature = "sys-openssl"))]
+    let private_key = {
+        // Read and parse the PEM private key file.
+        let pem_text = std::fs::read_to_string(private_key_file).map_err(|_| Error::Generic)?;
+        // Determine the key format from the PEM label.
+        let label_start = pem_text.find("-----BEGIN ").ok_or(Error::Generic)? + "-----BEGIN ".len();
+        let label_end = pem_text[label_start..]
+            .find("-----")
+            .ok_or(Error::Generic)?;
+        let label = &pem_text[label_start..label_start + label_end];
+
+        let der = pem_base64_decode(&pem_text)?;
+        extract_private_key_der(&der, label)?
+    };
 
     Ok(EchOpenerState {
         kem_id,
         private_key,
+        #[cfg(feature = "sys-openssl")]
+        key_exchange,
         config,
     })
 }
