@@ -1583,7 +1583,61 @@ At this point a failure is assumed to be an implementation bug, a test
 bug that slipped through Phase 5A/5B/5C, a fixture issue, or a harness
 issue.
 
-For each failing Rust test:
+### Test runner
+
+The Phase 6 gate runs under `cargo nextest run --features sys-openssl
+--no-fail-fast`.  Two practical reasons:
+
+* `cargo test` (libtest) has no per-test timeout.  One hung test
+  blocks the entire suite; nextest's `slow-timeout` + `terminate-after`
+  combination (configured in `rs/fq/.config/nextest.toml`, 120 s
+  default) SIGKILLs any single test that runs too long, so a baseline
+  can always complete.
+* The default feature set ships only the minicrypto provider, which
+  registers no PEM certificate-chain loader.  The translated test
+  fixtures load real `*.pem` files, so `sys-openssl` (or another
+  full-coverage provider) is mandatory for the suite to clear
+  `Quic::new`.
+
+### Triage: cluster-first, then per-test
+
+Real Phase 6 failure lists run into the hundreds.  Many failures share
+a single root cause: dozens of tests panicking at the same line with
+the same message usually trace to **one** broken helper or
+implementation function.  Debugging those one-at-a-time wastes
+agent-time and risks divergent fixes.  The triage order is therefore:
+
+1. Build a cluster snapshot from the current failure map:
+   ```sh
+   python3 scripts/phase6_clusters.py
+   ```
+   This reads `xlate/phase6_failures.json`, fingerprints each failure
+   as `(panic-location, panic-message)`, and writes
+   `xlate/phase6_clusters.json` + `xlate/phase6_clusters.md`.  The
+   markdown file lists clusters by descending size with a
+   representative test for each.
+
+2. For every cluster of size ≥ 2, dispatch one agent with the cluster
+   context — the full sibling list, the shared panic, and the
+   representative test's body + C twin — and ask it to find the
+   shared root cause.  `scripts/phase6.py --cluster top` (or
+   `--cluster <index>` / `--cluster <substring>`) does this, using
+   the cluster-aware prompt that explicitly tells the agent "this is
+   one root cause across N tests; fix the implementation, not each
+   test."
+
+3. Re-baseline (`--refresh-failures`) and rebuild clusters between
+   cluster dispatches.  A successful cluster fix typically shrinks
+   the failure count by exactly the cluster size; a partial fix
+   leaves a smaller cluster (often with a panic at a later line) for
+   the next pass.
+
+4. Once all clusters of size ≥ 2 are drained, run the per-test agent
+   loop (`scripts/phase6.py --limit N`) on the remaining singletons.
+
+### Per-test loop
+
+For each remaining failing Rust test (cluster mop-up or singleton):
 
 1. Capture the cargo-test failure output and related test source.
 2. Determine whether the failure is caused by the Rust test, Rust
@@ -1605,12 +1659,21 @@ weaken coverage to turn the suite green.  If the test faithfully
 reflects the C test and is still failing, the bug is in the
 implementation (or fixture/harness) and must be fixed there.
 
+### Outputs
+
 `scripts/phase6.py` writes:
 
-* `xlate/phase6_failures.json` — latest cargo-test summary and per-test
+* `xlate/phase6_failures.json` — latest nextest summary and per-test
   debug status.
 * `xlate/phase6_report.html` — human-readable failure/debug report.
-* `xlate/phase6_runs/<timestamp>.log` — raw cargo-test output.
+* `xlate/phase6_runs/<timestamp>.log` — raw nextest output.
+* `xlate/prompts/phase6/<label>.md` — the exact prompt sent to each
+  agent invocation (per-test or per-cluster).
+
+`scripts/phase6_clusters.py` writes:
+
+* `xlate/phase6_clusters.json` — machine-readable cluster snapshot.
+* `xlate/phase6_clusters.md` — human-readable cluster summary.
 
 ### Acceptance gate
 
@@ -1627,8 +1690,12 @@ implementation (or fixture/harness) and must be fixed there.
 * `bindgen` — per-file allowlisted reference output (never shipped).
 * Python scripts — driver for Phase 1 module skeletons; `phase3a.py`,
   `phase4.py`, and the Phase 4A/4B/4C/4D/4E/4F and Phase 5A/5B/5C
-  map, audit, repair, and revalidation drivers; Phase 6 debug driver.
+  map, audit, repair, and revalidation drivers; Phase 6 debug driver
+  (`phase6.py`, with per-test and `--cluster` modes) and cluster
+  builder (`phase6_clusters.py`).
 * `cargo check` and `cargo test` — inner loop, manually invoked.
+* `cargo nextest` — Phase 6 test gate, picked for its per-test
+  timeout (avoids hangs blocking the whole suite).
 * `cargo fmt` and `cargo clippy` — style and lint gates.
 
 Explicitly *not* used in v1: `c2rust`, `bear` / `compiledb` (CMake covers

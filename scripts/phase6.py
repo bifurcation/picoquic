@@ -46,6 +46,8 @@ FAILURES_LOCK = XLATE / "phase6_failures.lock"
 REPORT = XLATE / "phase6_report.html"
 RUNS_DIR = XLATE / "phase6_runs"
 PROMPTS_DIR = XLATE / "prompts" / "phase6"
+CLUSTERS_JSON = XLATE / "phase6_clusters.json"
+CLUSTERS_SCRIPT = REPO_ROOT / "scripts" / "phase6_clusters.py"
 
 # The test suite needs a real TLS provider (PEM cert loading, certificate
 # verification, etc.).  The minicrypto provider that ships under the
@@ -395,6 +397,151 @@ def compose_prompt(batch: list[dict], mapping: dict) -> str:
     )
 
 
+def refresh_clusters() -> list[dict]:
+    """Rebuild the cluster snapshot by invoking scripts/phase6_clusters.py."""
+    subprocess.run(
+        ["python3", str(CLUSTERS_SCRIPT)],
+        cwd=REPO_ROOT,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    return load_clusters_from_disk()
+
+
+def load_clusters_from_disk() -> list[dict]:
+    if not CLUSTERS_JSON.is_file():
+        return []
+    data = json.loads(CLUSTERS_JSON.read_text())
+    return data.get("clusters", [])
+
+
+def select_cluster(clusters: list[dict], *, index: int | None, match: str | None) -> dict | None:
+    """Pick one cluster by 1-based index or by substring match against the location."""
+    candidates = [c for c in clusters if c.get("size", 0) >= 2]
+    if not candidates:
+        return None
+    if index is not None:
+        if 1 <= index <= len(candidates):
+            return candidates[index - 1]
+        return None
+    if match is not None:
+        for c in candidates:
+            if match in c.get("location", "") or any(match in t for t in c.get("tests", [])):
+                return c
+        return None
+    return candidates[0]
+
+
+def cluster_failure_records(cluster: dict, failures: dict) -> list[dict]:
+    """Return the failure-map entries (pending only) that belong to this cluster."""
+    records = []
+    failure_map = failures.get("failures", {})
+    for name in cluster.get("tests", []):
+        entry = failure_map.get(name)
+        if entry and entry.get("status") == "pending":
+            records.append(entry)
+    return records
+
+
+def compose_cluster_prompt(cluster: dict, failures: dict, mapping: dict) -> str:
+    """Build the agent prompt for a whole cluster of failures sharing a panic."""
+    representative_name = cluster.get("representative") or cluster["tests"][0]
+    representative = failures["failures"].get(representative_name, {"name": representative_name, "excerpt": ""})
+    entry = related_test_entry(mapping, representative_name)
+    c_body = entry.get("c") if entry else None
+    rust_body = entry.get("rust") if entry else None
+
+    sibling_lines = "\n".join(f"* `{name}`" for name in cluster["tests"])
+
+    rep_sections = [
+        f"## Representative failure: `{representative_name}`",
+        f"* Related Rust test file: `{test_module_file(representative_name) or 'unknown'}`",
+        f"* Cargo log: `{representative.get('log', '')}`",
+        "",
+        "### Failure excerpt",
+        "```text",
+        representative.get("excerpt", ""),
+        "```",
+        "",
+    ]
+    if entry:
+        rep_sections.extend(
+            [
+                f"* C test-table name: `{entry.get('test_name')}`",
+                f"* C entry function: `{entry.get('entry_fn')}`",
+                "",
+                "### C test body",
+                "```c",
+                source_body(c_body),
+                "```",
+                "",
+                "### Rust test body",
+                "```rust",
+                source_body(rust_body),
+                "```",
+                "",
+            ]
+        )
+
+    return "\n".join(
+        [
+            "# Phase 6 cluster debug",
+            "",
+            f"You are debugging a **cluster** of {cluster['size']} Rust tests that all",
+            f"panic at **`{cluster['location']}`** with the same message:",
+            "",
+            f"> {cluster['message']}",
+            "",
+            "Tests sharing a panic fingerprint almost always share a single",
+            "underlying root cause — fix the implementation (or test-helper)",
+            "once and the whole cluster turns green.  Do not try to debug",
+            "each test individually; investigate the shared code path.",
+            "",
+            "## All tests in this cluster",
+            "",
+            sibling_lines,
+            "",
+            "\n".join(rep_sections),
+            "",
+            "## Rules",
+            "",
+            "* Do not edit C sources.",
+            "* Prefer the smallest faithful Rust fix to the implementation,",
+            "  fixture setup, or test-side helper that is shared across the",
+            "  whole cluster.  A fix that touches only one test is almost",
+            "  always wrong here.",
+            "* The ONLY legitimate edits to Rust test code are fixes to",
+            "  translation bugs that bring the Rust test CLOSER to the C",
+            "  test it mirrors.  Edits that move a test AWAY from the C",
+            "  behavior (relaxing assertions, ignoring tests, loosening",
+            "  tolerances) are out of bounds — fix the implementation",
+            "  instead.",
+            "* Compare against the C source.  Look at the C twin of the",
+            "  representative test, walk through its setup, and inspect the",
+            "  code path the panic message implicates.",
+            "* Verify the fix by running the representative test plus at",
+            "  least 3 other sibling tests from this cluster.",
+            "* Report `blocked` only with a concrete human-actionable reason.",
+            "",
+            "## Return format",
+            "",
+            "End your response with a JSON object using this shape so",
+            "phase6.py can update its failure map.  Include an entry for",
+            "every cluster member you verified passing or determined to",
+            "share the fix:",
+            "",
+            "```json",
+            "{\"debug\":[{\"name\":\"test::path\",\"outcome\":\"fixed|ok|blocked\","
+            "\"analysis\":\"root cause shared across cluster\","
+            "\"fix_summary\":\"what changed, or empty\","
+            "\"files_changed\":[\"rs/fq/src/...\"],"
+            "\"verification\":[\"cargo test ...\"]}]}",
+            "```",
+        ]
+    )
+
+
 def extract_json(text: str) -> dict:
     candidates: list[dict] = []
     for fenced in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL):
@@ -566,6 +713,25 @@ def main() -> int:
     parser.add_argument("--max-turns", type=int, default=250)
     parser.add_argument("--skip-gate", action="store_true", help="skip targeted cargo gates after a batch")
     parser.add_argument("--full-gate", action="store_true", help="run full cargo test after all debug batches")
+    parser.add_argument(
+        "--cluster",
+        nargs="?",
+        const="top",
+        default=None,
+        metavar="TARGET",
+        help=(
+            "dispatch one agent against an entire shared-panic cluster instead "
+            "of one failure at a time.  TARGET may be 'top' (largest cluster), a "
+            "1-based index into the cluster list, or a substring of the cluster's "
+            "panic location.  Reads xlate/phase6_clusters.json; pass "
+            "--refresh-clusters to rebuild it first."
+        ),
+    )
+    parser.add_argument(
+        "--refresh-clusters",
+        action="store_true",
+        help="run scripts/phase6_clusters.py before dispatching (only with --cluster)",
+    )
     args = parser.parse_args()
 
     if (args.status or args.dry_run) and not args.refresh_failures and not FAILURES.is_file():
@@ -579,6 +745,92 @@ def main() -> int:
 
     if args.status:
         print_status(failures)
+        return 0
+
+    if args.cluster is not None:
+        if args.refresh_clusters or not CLUSTERS_JSON.is_file():
+            clusters = refresh_clusters()
+        else:
+            clusters = load_clusters_from_disk()
+        if not clusters:
+            print(
+                "no clusters available; run scripts/phase6_clusters.py "
+                "or pass --refresh-clusters",
+            )
+            return 1
+        index: int | None = None
+        match: str | None = None
+        target = args.cluster
+        if target == "top":
+            index = 1
+        else:
+            try:
+                index = int(target)
+            except ValueError:
+                match = target
+        cluster = select_cluster(clusters, index=index, match=match)
+        if cluster is None:
+            print(f"no cluster matched --cluster={target}")
+            return 1
+        batch = cluster_failure_records(cluster, failures)
+        if not batch:
+            print(
+                f"cluster `{cluster['location']}` has no pending failures; "
+                "re-run --refresh-failures or pick a different cluster",
+            )
+            return 1
+        print(
+            f"cluster: {cluster['size']} tests at "
+            f"`{cluster['location']}` — {cluster['message'][:70]}"
+        )
+        print(f"representative: {cluster.get('representative') or batch[0]['name']}")
+        if args.dry_run:
+            for failure in batch[:80]:
+                print(f"  {failure['status']:8s} {failure['name']}")
+            if len(batch) > 80:
+                print(f"  ... and {len(batch) - 80} more")
+            return 0
+        agent = agent_runner.config_from_args(args)
+        PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+        mapping = load_test_map(refresh=True)
+        prompt = compose_cluster_prompt(cluster, failures, mapping)
+        pfile = PROMPTS_DIR / f"cluster__{prompt_path(batch[:3]).stem}.md"
+        pfile.write_text(prompt)
+        before_rs = rs_diff_names()
+        print(f"dispatching cluster agent on {len(batch)} pending failure(s)")
+        res = agent_runner.run_capture(
+            agent,
+            prompt,
+            repo_root=REPO_ROOT,
+            log_path=log_path(agent, batch[:3]),
+            phase="phase6",
+            label=pfile.stem,
+            prompt_file=pfile,
+            allowed_tools=ALLOWED_TOOLS,
+            max_turns=args.max_turns,
+        )
+        if res.returncode != 0:
+            print(f"agent failed with exit {res.returncode}")
+            return res.returncode
+        try:
+            parsed = extract_json(res.stdout + "\n" + res.stderr)
+        except ValueError:
+            print("agent did not return parseable JSON; leaving failures untouched")
+            parsed = {"debug": []}
+        updates = normalize_debug(parsed, batch)
+        failures = apply_debug_updates(failures, updates)
+        after_rs = rs_diff_names()
+        if after_rs != before_rs or any(u.get("status") == "fixed" for u in updates.values()):
+            gate = run_targeted_tests(batch, skip_gate=args.skip_gate)
+            if gate != 0:
+                print(f"targeted gate failed with exit {gate}")
+                return gate
+        if args.full_gate:
+            failures = save_failures(run_cargo_test())
+        write_report(failures)
+        print_status(failures)
+        print(f"wrote: {FAILURES.relative_to(REPO_ROOT)}")
+        print(f"wrote: {REPORT.relative_to(REPO_ROOT)}")
         return 0
 
     selected = work_failures(failures, only=args.only, force=args.force)

@@ -1,9 +1,10 @@
 {
   "clusters": [
     {
-      "size": 29,
       "location": "src/tests/multipath.rs:1039:5",
       "message": "server connection not accepted during multipath handshake",
+      "representative": "tests::multipath::multipath_ab1",
+      "size": 29,
       "tests": [
         "tests::multipath::multipath_ab1",
         "tests::multipath::multipath_abandon",
@@ -37,9 +38,10 @@
       ]
     },
     {
-      "size": 17,
       "location": "src/tests/satellite.rs:161:6",
       "message": "scenario completed: Generic",
+      "representative": "tests::satellite::satellite_basic",
+      "size": 17,
       "tests": [
         "tests::satellite::satellite_basic",
         "tests::satellite::satellite_bbr1",
@@ -61,9 +63,10 @@
       ]
     },
     {
-      "size": 11,
       "location": "src/tests/datagram.rs:494:63",
       "message": "datagram_test_one: Generic",
+      "representative": "tests::datagram::datagram",
+      "size": 11,
       "tests": [
         "tests::datagram::datagram",
         "tests::datagram::datagram_loss",
@@ -79,9 +82,10 @@
       ]
     },
     {
-      "size": 10,
       "location": "src/tests/congestion.rs:501:10",
       "message": "scenario body: Generic",
+      "representative": "tests::congestion::bdp_basic",
+      "size": 10,
       "tests": [
         "tests::congestion::bdp_basic",
         "tests::congestion::bdp_bbr1",
@@ -96,9 +100,10 @@
       ]
     },
     {
-      "size": 9,
       "location": "src/tests/congestion.rs:213:6",
       "message": "scenario body: Generic",
+      "representative": "tests::congestion::bbr",
+      "size": 9,
       "tests": [
         "tests::congestion::bbr",
         "tests::congestion::bbr1",
@@ -112,9 +117,10 @@
       ]
     },
     {
-      "size": 8,
       "location": "src/tests/sockloop.rs:824:36",
       "message": "sockloop_test_one: Generic",
+      "representative": "tests::sockloop::sockloop_basic",
+      "size": 8,
       "tests": [
         "tests::sockloop::sockloop_basic",
         "tests::sockloop::sockloop_eio",
@@ -127,9 +133,10 @@
       ]
     },
     {
-      "size": 7,
       "location": "src/tests/congestion.rs:345:6",
       "message": "scenario body: Generic",
+      "representative": "tests::congestion::bbr_asym100",
+      "size": 7,
       "tests": [
         "tests::congestion::bbr_asym100",
         "tests::congestion::bbr_asym100_nodelay",
@@ -141,9 +148,10 @@
       ]
     },
     {
-      "size": 5,
       "location": "src/tests/cpu_limited.rs:145:6",
       "message": "scenario body: Generic",
+      "representative": "tests::cpu_limited::limited_batch",
+      "size": 5,
       "tests": [
         "tests::cpu_limited::limited_batch",
         "tests::cpu_limited::limited_bbr",
@@ -153,9 +161,10 @@
       ]
     },
     {
-      "size": 5,
       "location": "src/tests/util.rs:912:14",
       "message": "server connection not yet accepted",
+      "representative": "tests::tls_api::nat_rebinding",
+      "size": 5,
       "tests": [
         "tests::tls_api::nat_rebinding",
         "tests::tls_api::nat_rebinding_latency",
@@ -165,9 +174,10 @@
       ]
     },
     {
-      "size": 4,
       "location": "src/tests/app_limited.rs:48:56",
       "message": "newreno cc algo",
+      "representative": "tests::app_limited::app_limited_bbr",
+      "size": 4,
       "tests": [
         "tests::app_limited::app_limited_bbr",
         "tests::app_limited::app_limited_cubic",
@@ -176,9 +186,10 @@
       ]
     },
     {
-      "size": 4,
       "location": "src/tests/delay_tolerant.rs:128:6",
       "message": "DTN scenario: Generic",
+      "representative": "tests::delay_tolerant::dtn_basic",
+      "size": 4,
       "tests": [
         "tests::delay_tolerant::dtn_basic",
         "tests::delay_tolerant::dtn_data",
@@ -187,9 +198,10 @@
       ]
     },
     {
-      "size": 4,
       "location": "src/tests/ech.rs:82:34",
       "message": "ech_e2e_test_one: Generic",
+      "representative": "tests::ech::ech_e2e",
+      "size": 4,
       "tests": [
         "tests::ech::ech_e2e",
         "tests::ech::ech_e2e_0rtt",
@@ -198,9 +210,10 @@
       ]
     },
     {
-      "size": 4,
       "location": "src/tests/high_latency.rs:248:70",
       "message": "client ready: Generic",
+      "representative": "tests::high_latency::high_latency_basic",
+      "size": 4,
       "tests": [
         "tests::high_latency::high_latency_basic",
         "tests::high_latency::high_latency_bbr",
@@ -209,9 +222,10 @@
       ]
     },
     {
-      "size": 4,
       "location": "src/tests/multipath.rs:1464:10",
       "message": "body connect: Generic",
+      "representative": "tests::multipath::monopath_basic",
+      "size": 4,
       "tests": [
         "tests::multipath::monopath_basic",
         "tests::multipath::monopath_hole",
@@ -220,15 +234,2383 @@
       ]
     },
     {
-      "size": 4,
       "location": "src/tests/util.rs:7088:5",
       "message": "client was not ready after mTLS client-auth loop",
+      "representative": "tests::tls_api::client_auth",
+      "size": 4,
       "tests": [
         "tests::tls_api::client_auth",
         "tests::tls_api::client_auth_25519",
         "tests::tls_api::request_client_authentication",
         "tests::tls_api::set_verify_certificate_callback_test"
       ]
+    },
+    {
+      "location": "src/tests/cert_verify.rs:37:5",
+      "message": "assertion `left == right` failed: expected TLS handshake success=true, got loop_ok=true, client_ready=false, server_ready=false",
+      "representative": "tests::cert_verify::cert_verify_null",
+      "size": 3,
+      "tests": [
+        "tests::cert_verify::cert_verify_null",
+        "tests::cert_verify::cert_verify_null_sni",
+        "tests::cert_verify::cert_verify_rsa"
+      ]
+    },
+    {
+      "location": "src/tests/congestion.rs:243:81",
+      "message": "connect: Generic",
+      "representative": "tests::congestion::bbr1_long",
+      "size": 3,
+      "tests": [
+        "tests::congestion::bbr1_long",
+        "tests::congestion::bbr_long",
+        "tests::congestion::c4_long"
+      ]
+    },
+    {
+      "location": "src/tests/l4s.rs:131:6",
+      "message": "tls_api_one_scenario_body_ex: Generic",
+      "representative": "tests::l4s::l4s_bbr_updown",
+      "size": 3,
+      "tests": [
+        "tests::l4s::l4s_bbr_updown",
+        "tests::l4s::l4s_c4",
+        "tests::l4s::l4s_prague_updown"
+      ]
+    },
+    {
+      "location": "src/tests/pacing.rs:342:13",
+      "message": "scenario body verify: Generic; finished=false, completion_time=61560000000, target_time=900000",
+      "representative": "tests::pacing::pacing_bbr",
+      "size": 3,
+      "tests": [
+        "tests::pacing::pacing_bbr",
+        "tests::pacing::pacing_cubic",
+        "tests::pacing::pacing_newreno"
+      ]
+    },
+    {
+      "location": "src/tests/ack_frequency.rs:114:10",
+      "message": "client connection ready: Generic",
+      "representative": "tests::ack_frequency::ackfrq_basic",
+      "size": 2,
+      "tests": [
+        "tests::ack_frequency::ackfrq_basic",
+        "tests::ack_frequency::ackfrq_short"
+      ]
+    },
+    {
+      "location": "src/tests/multipath.rs:217:70",
+      "message": "client ready: Generic",
+      "representative": "tests::multipath::migration_controlled",
+      "size": 2,
+      "tests": [
+        "tests::multipath::migration_controlled",
+        "tests::multipath::migration_mtu_drop"
+      ]
+    },
+    {
+      "location": "src/tests/netperf.rs:125:70",
+      "message": "client ready: Generic",
+      "representative": "tests::netperf::netperf_basic",
+      "size": 2,
+      "tests": [
+        "tests::netperf::netperf_basic",
+        "tests::netperf::netperf_bbr"
+      ]
+    },
+    {
+      "location": "src/tests/cleartext_aead.rs:212:10",
+      "message": "server connection",
+      "representative": "tests::cleartext_aead::clear_text_aead",
+      "size": 1,
+      "tests": [
+        "tests::cleartext_aead::clear_text_aead"
+      ]
+    },
+    {
+      "location": "src/tests/cleartext_aead.rs:472:10",
+      "message": "server connection",
+      "representative": "tests::cleartext_aead::cleartext_pn_enc",
+      "size": 1,
+      "tests": [
+        "tests::cleartext_aead::cleartext_pn_enc"
+      ]
+    },
+    {
+      "location": "src/tests/cnx_creation.rs:265:17",
+      "message": "connection 1 (odd) should still exist",
+      "representative": "tests::cnx_creation::create_cnx",
+      "size": 1,
+      "tests": [
+        "tests::cnx_creation::create_cnx"
+      ]
+    },
+    {
+      "location": "src/tests/cnxstress.rs:907:40",
+      "message": "loop step: Generic",
+      "representative": "tests::cnxstress::cnx_limit",
+      "size": 1,
+      "tests": [
+        "tests::cnxstress::cnx_limit"
+      ]
+    },
+    {
+      "location": "src/tests/cnxstress.rs:966:49",
+      "message": "cnx_stress_do_test: Generic",
+      "representative": "tests::cnxstress::cnx_stress",
+      "size": 1,
+      "tests": [
+        "tests::cnxstress::cnx_stress"
+      ]
+    },
+    {
+      "location": "src/tests/config.rs:505:14",
+      "message": "create_and_configure",
+      "representative": "tests::config::config_quic",
+      "size": 1,
+      "tests": [
+        "tests::config::config_quic"
+      ]
+    },
+    {
+      "location": "src/tests/config.rs:590:5",
+      "message": "assertion `left == right` failed",
+      "representative": "tests::config::config_usage",
+      "size": 1,
+      "tests": [
+        "tests::config::config_usage"
+      ]
+    },
+    {
+      "location": "src/tests/congestion.rs:617:6",
+      "message": "scenario body: Generic",
+      "representative": "tests::congestion::blackhole",
+      "size": 1,
+      "tests": [
+        "tests::congestion::blackhole"
+      ]
+    },
+    {
+      "location": "src/tests/congestion.rs:675:6",
+      "message": "scenario body: Generic",
+      "representative": "tests::congestion::app_limit_cc",
+      "size": 1,
+      "tests": [
+        "tests::congestion::app_limit_cc"
+      ]
+    },
+    {
+      "location": "src/tests/congestion.rs:738:6",
+      "message": "scenario body: Generic",
+      "representative": "tests::congestion::cwin_max",
+      "size": 1,
+      "tests": [
+        "tests::congestion::cwin_max"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1604:34",
+      "message": "crypto_hs_offset_one: Generic",
+      "representative": "tests::edge_cases::crypto_hs_offset",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::crypto_hs_offset"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1614:66",
+      "message": "edge_case_prepare: Generic",
+      "representative": "tests::edge_cases::ec00_zero",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::ec00_zero"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1630:10",
+      "message": "edge_case_prepare: Generic",
+      "representative": "tests::edge_cases::ec2f_second_flight",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::ec2f_second_flight"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1683:73",
+      "message": "edge_case_prepare: Generic",
+      "representative": "tests::edge_cases::eca1_amplification_loss",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::eca1_amplification_loss"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1693:68",
+      "message": "edge_case_prepare: Generic",
+      "representative": "tests::edge_cases::ecf1_final_loss",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::ecf1_final_loss"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1716:10",
+      "message": "edge_case_prepare: Generic",
+      "representative": "tests::edge_cases::ec5c_silly_cid",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::ec5c_silly_cid"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1730:72",
+      "message": "edge_case_prepare: Generic",
+      "representative": "tests::edge_cases::ec9a_preemptive_amok",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::ec9a_preemptive_amok"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1751:58",
+      "message": "case 1: Generic",
+      "representative": "tests::edge_cases::idle_timeout",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::idle_timeout"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1766:52",
+      "message": "case 1: Generic",
+      "representative": "tests::edge_cases::idle_server",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::idle_server"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1793:42",
+      "message": "start_client: Generic",
+      "representative": "tests::edge_cases::initial_pto",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::initial_pto"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1829:42",
+      "message": "start_client: Generic",
+      "representative": "tests::edge_cases::initial_pto_srv",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::initial_pto_srv"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1877:56",
+      "message": "reset_ack_max: Generic",
+      "representative": "tests::edge_cases::reset_ack_max",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_ack_max"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1883:52",
+      "message": "reset_ack_reset: Generic",
+      "representative": "tests::edge_cases::reset_ack_reset",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_ack_reset"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1889:58",
+      "message": "reset_extra_max: Generic",
+      "representative": "tests::edge_cases::reset_extra_max",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_extra_max"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1895:54",
+      "message": "reset_extra_reset: Generic",
+      "representative": "tests::edge_cases::reset_extra_reset",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_extra_reset"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1901:53",
+      "message": "reset_extra_stop: Generic",
+      "representative": "tests::edge_cases::reset_extra_stop",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_extra_stop"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1907:57",
+      "message": "reset_need_max: Generic",
+      "representative": "tests::edge_cases::reset_need_max",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_need_max"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1913:53",
+      "message": "reset_need_reset: Generic",
+      "representative": "tests::edge_cases::reset_need_reset",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_need_reset"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1919:52",
+      "message": "reset_need_stop: Generic",
+      "representative": "tests::edge_cases::reset_need_stop",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_need_stop"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:1950:42",
+      "message": "start_client: Generic",
+      "representative": "tests::edge_cases::reset_loop_test",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_loop_test"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:2076:56",
+      "message": "reset_stream_at_basic: Generic",
+      "representative": "tests::edge_cases::reset_stream_at_basic",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_stream_at_basic"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:2082:56",
+      "message": "reset_stream_at_limit: Generic",
+      "representative": "tests::edge_cases::reset_stream_at_limit_test",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_stream_at_limit_test"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:2088:55",
+      "message": "reset_stream_at_loss: Generic",
+      "representative": "tests::edge_cases::reset_stream_at_loss",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::reset_stream_at_loss"
+      ]
+    },
+    {
+      "location": "src/tests/edge_cases.rs:2207:9",
+      "message": "assertion `left == right` failed: error_code=0x0 got=\"<none>\" expected=\"unknown\"",
+      "representative": "tests::edge_cases::error_name",
+      "size": 1,
+      "tests": [
+        "tests::edge_cases::error_name"
+      ]
+    },
+    {
+      "location": "src/tests/flow_control.rs:369:47",
+      "message": "bbr algorithm",
+      "representative": "tests::flow_control::flow_control",
+      "size": 1,
+      "tests": [
+        "tests::flow_control::flow_control"
+      ]
+    },
+    {
+      "location": "src/tests/getter.rs:177:42",
+      "message": "start client: Generic",
+      "representative": "tests::getter::getter",
+      "size": 1,
+      "tests": [
+        "tests::getter::getter"
+      ]
+    },
+    {
+      "location": "src/tests/l4s.rs:155:54",
+      "message": "newreno cc algo",
+      "representative": "tests::l4s::l4s_reno",
+      "size": 1,
+      "tests": [
+        "tests::l4s::l4s_reno"
+      ]
+    },
+    {
+      "location": "src/tests/l4s.rs:162:53",
+      "message": "prague cc algo",
+      "representative": "tests::l4s::l4s_prague",
+      "size": 1,
+      "tests": [
+        "tests::l4s::l4s_prague"
+      ]
+    },
+    {
+      "location": "src/tests/l4s.rs:178:50",
+      "message": "bbr cc algo",
+      "representative": "tests::l4s::l4s_bbr",
+      "size": 1,
+      "tests": [
+        "tests::l4s::l4s_bbr"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1426:46",
+      "message": "mediatest_video: Generic",
+      "representative": "tests::mediatest::mediatest_video",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_video"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1439:51",
+      "message": "mediatest_video_audio: Generic",
+      "representative": "tests::mediatest::mediatest_video_audio",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_video_audio"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1453:55",
+      "message": "mediatest_video_data_audio: Generic",
+      "representative": "tests::mediatest::mediatest_video_data_audio",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_video_data_audio"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1471:51",
+      "message": "mediatest_video2_down: Generic",
+      "representative": "tests::mediatest::mediatest_video2_down",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_video2_down"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1489:51",
+      "message": "mediatest_video2_back: Generic",
+      "representative": "tests::mediatest::mediatest_video2_back",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_video2_back"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1506:52",
+      "message": "mediatest_video2_probe: Generic",
+      "representative": "tests::mediatest::mediatest_video2_probe",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_video2_probe"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1530:45",
+      "message": "mediatest_wifi: Generic",
+      "representative": "tests::mediatest::mediatest_wifi",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_wifi"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1544:46",
+      "message": "mediatest_worst: Generic",
+      "representative": "tests::mediatest::mediatest_worst",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_worst"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1560:47",
+      "message": "mediatest_no_coal: Generic",
+      "representative": "tests::mediatest::mediatest_no_coal",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_no_coal"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1582:51",
+      "message": "mediatest_suspension: Generic",
+      "representative": "tests::mediatest::mediatest_suspension",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_suspension"
+      ]
+    },
+    {
+      "location": "src/tests/mediatest.rs:1601:52",
+      "message": "mediatest_suspension2: Generic",
+      "representative": "tests::mediatest::mediatest_suspension2",
+      "size": 1,
+      "tests": [
+        "tests::mediatest::mediatest_suspension2"
+      ]
+    },
+    {
+      "location": "src/tests/memlog.rs:126:16",
+      "message": "memlog scenario: Generic",
+      "representative": "tests::memlog::memlog",
+      "size": 1,
+      "tests": [
+        "tests::memlog::memlog"
+      ]
+    },
+    {
+      "location": "src/tests/minicrypto.rs:50:6",
+      "message": "tls_api_init_ctx_ex2",
+      "representative": "tests::minicrypto::minicrypto",
+      "size": 1,
+      "tests": [
+        "tests::minicrypto::minicrypto"
+      ]
+    },
+    {
+      "location": "src/tests/multipath.rs:1518:29",
+      "message": "monopath_0rtt: Generic",
+      "representative": "tests::multipath::monopath_0rtt",
+      "size": 1,
+      "tests": [
+        "tests::multipath::monopath_0rtt"
+      ]
+    },
+    {
+      "location": "src/tests/multipath.rs:1528:29",
+      "message": "monopath_0rtt_2: Generic",
+      "representative": "tests::multipath::monopath_0rtt_2",
+      "size": 1,
+      "tests": [
+        "tests::multipath::monopath_0rtt_2"
+      ]
+    },
+    {
+      "location": "src/tests/multipath.rs:1541:33",
+      "message": "monopath_0rtt_loss fails at packet #1",
+      "representative": "tests::multipath::monopath_0rtt_loss",
+      "size": 1,
+      "tests": [
+        "tests::multipath::monopath_0rtt_loss"
+      ]
+    },
+    {
+      "location": "src/tests/multipath.rs:1555:33",
+      "message": "monopath_0rtt_loss_2 fails at packet #1",
+      "representative": "tests::multipath::monopath_0rtt_loss_2",
+      "size": 1,
+      "tests": [
+        "tests::multipath::monopath_0rtt_loss_2"
+      ]
+    },
+    {
+      "location": "src/tests/multipath.rs:887:46",
+      "message": "start client: Generic",
+      "representative": "tests::multipath::multipath_qlog",
+      "size": 1,
+      "tests": [
+        "tests::multipath::multipath_qlog"
+      ]
+    },
+    {
+      "location": "src/tests/netperf.rs:285:42",
+      "message": "start client: Generic",
+      "representative": "tests::netperf::nat_attack",
+      "size": 1,
+      "tests": [
+        "tests::netperf::nat_attack"
+      ]
+    },
+    {
+      "location": "src/tests/p2p.rs:83:10",
+      "message": "wait client ready: Generic",
+      "representative": "tests::p2p::address_discovery",
+      "size": 1,
+      "tests": [
+        "tests::p2p::address_discovery"
+      ]
+    },
+    {
+      "location": "src/tests/pacing.rs:260:44",
+      "message": "cc algorithm",
+      "representative": "tests::pacing::pacing_dcubic",
+      "size": 1,
+      "tests": [
+        "tests::pacing::pacing_dcubic"
+      ]
+    },
+    {
+      "location": "src/tests/pacing.rs:342:13",
+      "message": "scenario body verify: Generic; finished=false, completion_time=61560000000, target_time=1000000",
+      "representative": "tests::pacing::pacing_fast",
+      "size": 1,
+      "tests": [
+        "tests::pacing::pacing_fast"
+      ]
+    },
+    {
+      "location": "src/tests/parseheadertest.rs:453:9",
+      "message": "assertion `left == right` failed: epoch mismatch at 5",
+      "representative": "tests::parseheadertest::parseheader",
+      "size": 1,
+      "tests": [
+        "tests::parseheadertest::parseheader"
+      ]
+    },
+    {
+      "location": "src/tests/parseheadertest.rs:542:5",
+      "message": "expected a new connection to be created",
+      "representative": "tests::parseheadertest::incoming_initial",
+      "size": 1,
+      "tests": [
+        "tests::parseheadertest::incoming_initial"
+      ]
+    },
+    {
+      "location": "src/tests/parseheadertest.rs:789:14",
+      "message": "initial enc_dec: Generic",
+      "representative": "tests::parseheadertest::packet_enc_dec",
+      "size": 1,
+      "tests": [
+        "tests::parseheadertest::packet_enc_dec"
+      ]
+    },
+    {
+      "location": "src/tests/parseheadertest.rs:933:6",
+      "message": "create connection",
+      "representative": "tests::parseheadertest::header_length",
+      "size": 1,
+      "tests": [
+        "tests::parseheadertest::header_length"
+      ]
+    },
+    {
+      "location": "src/tests/sacktest.rs:232:9",
+      "message": "attempt to subtract with overflow",
+      "representative": "tests::sacktest::ack_send",
+      "size": 1,
+      "tests": [
+        "tests::sacktest::ack_send"
+      ]
+    },
+    {
+      "location": "src/tests/skip_frame.rs:3048:5",
+      "message": "connections created before set_textlog must dispatch through the installed textlog backend",
+      "representative": "tests::skip_frame::logger",
+      "size": 1,
+      "tests": [
+        "tests::skip_frame::logger"
+      ]
+    },
+    {
+      "location": "src/tests/skip_frame.rs:3744:13",
+      "message": "assertion `left == right` failed: parse frame <streams_blocked_bidir>",
+      "representative": "tests::skip_frame::frames_parse",
+      "size": 1,
+      "tests": [
+        "tests::skip_frame::frames_parse"
+      ]
+    },
+    {
+      "location": "src/tests/skip_frame.rs:3863:30",
+      "message": "frames_format: Generic",
+      "representative": "tests::skip_frame::frames_format",
+      "size": 1,
+      "tests": [
+        "tests::skip_frame::frames_format"
+      ]
+    },
+    {
+      "location": "src/tests/skip_frame.rs:4382:10",
+      "message": "convert overflow binlog to qlog: Generic",
+      "representative": "tests::skip_frame::app_message_overflow",
+      "size": 1,
+      "tests": [
+        "tests::skip_frame::app_message_overflow"
+      ]
+    },
+    {
+      "location": "src/tests/skip_frame.rs:4472:23",
+      "message": "binlog_test: Generic",
+      "representative": "tests::skip_frame::binlog",
+      "size": 1,
+      "tests": [
+        "tests::skip_frame::binlog"
+      ]
+    },
+    {
+      "location": "src/tests/socket.rs:168:54",
+      "message": "ping-pong on port 12345: Generic",
+      "representative": "tests::socket::sockets",
+      "size": 1,
+      "tests": [
+        "tests::socket::sockets"
+      ]
+    },
+    {
+      "location": "src/tests/socket.rs:183:35",
+      "message": "ECN on IPv6: Generic",
+      "representative": "tests::socket::socket_ecn",
+      "size": 1,
+      "tests": [
+        "tests::socket::socket_ecn"
+      ]
+    },
+    {
+      "location": "src/tests/spinbit.rs:146:65",
+      "message": "spinbit: Generic",
+      "representative": "tests::spinbit::spinbit",
+      "size": 1,
+      "tests": [
+        "tests::spinbit::spinbit"
+      ]
+    },
+    {
+      "location": "src/tests/spinbit.rs:152:69",
+      "message": "spinbit_random: Generic",
+      "representative": "tests::spinbit::spinbit_random",
+      "size": 1,
+      "tests": [
+        "tests::spinbit::spinbit_random"
+      ]
+    },
+    {
+      "location": "src/tests/spinbit.rs:158:69",
+      "message": "spinbit_randclient: Generic",
+      "representative": "tests::spinbit::spinbit_randclient",
+      "size": 1,
+      "tests": [
+        "tests::spinbit::spinbit_randclient"
+      ]
+    },
+    {
+      "location": "src/tests/spinbit.rs:164:67",
+      "message": "spinbit_null: Generic",
+      "representative": "tests::spinbit::spinbit_null",
+      "size": 1,
+      "tests": [
+        "tests::spinbit::spinbit_null"
+      ]
+    },
+    {
+      "location": "src/tests/stream0_frame.rs:722:60",
+      "message": "tlstest_v1",
+      "representative": "tests::stream0_frame::tlsstreamframe",
+      "size": 1,
+      "tests": [
+        "tests::stream0_frame::tlsstreamframe"
+      ]
+    },
+    {
+      "location": "src/tests/stresstest.rs:1769:5",
+      "message": "fuzzer never mutated packet bytes",
+      "representative": "tests::stresstest::fuzz",
+      "size": 1,
+      "tests": [
+        "tests::stresstest::fuzz"
+      ]
+    },
+    {
+      "location": "src/tests/stresstest.rs:1796:5",
+      "message": "initial fuzzer did not finish the skip-frame mutation pass",
+      "representative": "tests::stresstest::fuzz_initial",
+      "size": 1,
+      "tests": [
+        "tests::stresstest::fuzz_initial"
+      ]
+    },
+    {
+      "location": "src/tests/ticket_store.rs:17:29",
+      "message": "ticket_seed: Generic",
+      "representative": "tests::ticket_store::ticket_seed",
+      "size": 1,
+      "tests": [
+        "tests::ticket_store::ticket_seed"
+      ]
+    },
+    {
+      "location": "src/tests/ticket_store.rs:26:29",
+      "message": "ticket_seed_from_bdp_frame: Generic",
+      "representative": "tests::ticket_store::ticket_seed_from_bdp_frame",
+      "size": 1,
+      "tests": [
+        "tests::ticket_store::ticket_seed_from_bdp_frame"
+      ]
+    },
+    {
+      "location": "src/tests/ticket_store.rs:295:5",
+      "message": "assertion failed: ctx_too_late.qclient.stored_tickets.is_empty()",
+      "representative": "tests::ticket_store::ticket_store",
+      "size": 1,
+      "tests": [
+        "tests::ticket_store::ticket_store"
+      ]
+    },
+    {
+      "location": "src/tests/ticket_store.rs:355:35",
+      "message": "Token[2] already used? Generic",
+      "representative": "tests::ticket_store::token_reuse_api",
+      "size": 1,
+      "tests": [
+        "tests::ticket_store::token_reuse_api"
+      ]
+    },
+    {
+      "location": "src/tests/ticket_store.rs:495:5",
+      "message": "expired tokens should be dropped during late reload",
+      "representative": "tests::ticket_store::token_store",
+      "size": 1,
+      "tests": [
+        "tests::ticket_store::token_store"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1054:10",
+      "message": "scenario verify: Generic",
+      "representative": "tests::tls_api::af_undef",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::af_undef"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1089:5",
+      "message": "server connection should exist",
+      "representative": "tests::tls_api::bad_certificate",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::bad_certificate"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1164:6",
+      "message": "post bad chello scenario: Generic",
+      "representative": "tests::tls_api::bad_chello",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::bad_chello"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1219:5",
+      "message": "assertion `left == right` failed",
+      "representative": "tests::tls_api::bad_client_certificate",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::bad_client_certificate"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1250:81",
+      "message": "connect: Generic",
+      "representative": "tests::tls_api::bad_cnxid",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::bad_cnxid"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1330:10",
+      "message": "bad_coalesce: Generic",
+      "representative": "tests::tls_api::bad_coalesce",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::bad_coalesce"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1356:10",
+      "message": "chacha20: Generic",
+      "representative": "tests::tls_api::chacha20",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::chacha20"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1371:53",
+      "message": "cid_length(0): Generic",
+      "representative": "tests::tls_api::cid_length",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::cid_length"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1391:70",
+      "message": "client ready: Generic",
+      "representative": "tests::tls_api::cid_quiescence",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::cid_quiescence"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1499:5",
+      "message": "assertion `left == right` failed: certificate verification callback count",
+      "representative": "tests::tls_api::client_cert_callback",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::client_cert_callback"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1513:53",
+      "message": "client_error(stream): Generic",
+      "representative": "tests::tls_api::client_error",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::client_error"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1561:36",
+      "message": "cnx_ddos: Generic",
+      "representative": "tests::tls_api::cnx_ddos",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::cnx_ddos"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1641:5",
+      "message": "assertion `left != right` failed: local CNX ID did not change to a new value",
+      "representative": "tests::tls_api::cnxid_renewal",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::cnxid_renewal"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1652:50",
+      "message": "cnxid_transmit: Generic",
+      "representative": "tests::tls_api::cnxid_transmit",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::cnxid_transmit"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1660:49",
+      "message": "cnxid_transmit_disable: Generic",
+      "representative": "tests::tls_api::cnxid_transmit_disable",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::cnxid_transmit_disable"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1668:49",
+      "message": "cnxid_transmit_r_before: Generic",
+      "representative": "tests::tls_api::cnxid_transmit_r_before",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::cnxid_transmit_r_before"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1676:48",
+      "message": "cnxid_transmit_r_disable: Generic",
+      "representative": "tests::tls_api::cnxid_transmit_r_disable",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::cnxid_transmit_r_disable"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1684:49",
+      "message": "cnxid_transmit_r_early: Generic",
+      "representative": "tests::tls_api::cnxid_transmit_r_early",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::cnxid_transmit_r_early"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1911:13",
+      "message": "connection_drop case 0 failed: target=ClientInitSent, target_is_client=true, error=Generic",
+      "representative": "tests::tls_api::connection_drop",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::connection_drop"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1925:39",
+      "message": "ddos_amplification: Generic",
+      "representative": "tests::tls_api::ddos_amplification",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::ddos_amplification"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1933:39",
+      "message": "ddos_amplification_0rtt: Generic",
+      "representative": "tests::tls_api::ddos_amplification_0rtt",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::ddos_amplification_0rtt"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1941:39",
+      "message": "ddos_amplification_8k: Generic",
+      "representative": "tests::tls_api::ddos_amplification_8k",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::ddos_amplification_8k"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1973:6",
+      "message": "different_params: Generic",
+      "representative": "tests::tls_api::different_params",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::different_params"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:1991:81",
+      "message": "connect: Generic",
+      "representative": "tests::tls_api::direct_receive",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::direct_receive"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2030:40",
+      "message": "discard_stream: Generic",
+      "representative": "tests::tls_api::discard_stream",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::discard_stream"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2075:6",
+      "message": "document_addresses scenario: Generic",
+      "representative": "tests::tls_api::document_addresses",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::document_addresses"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2286:33",
+      "message": "excess_repeat(newreno): Generic",
+      "representative": "tests::tls_api::excess_repeat",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::excess_repeat"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2577:29",
+      "message": "false_migration initial target_client=true: Generic",
+      "representative": "tests::tls_api::false_migration",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::false_migration"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2753:37",
+      "message": "grease_quic_bit: Generic",
+      "representative": "tests::tls_api::grease_quic_bit",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::grease_quic_bit"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2761:36",
+      "message": "grease_quic_bit_one_way: Generic",
+      "representative": "tests::tls_api::grease_quic_bit_one_way",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::grease_quic_bit_one_way"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2770:40",
+      "message": "heavy_loss: Generic",
+      "representative": "tests::tls_api::heavy_loss",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::heavy_loss"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2778:40",
+      "message": "heavy_loss_inter: Generic",
+      "representative": "tests::tls_api::heavy_loss_inter",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::heavy_loss_inter"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2786:40",
+      "message": "heavy_loss_total: Generic",
+      "representative": "tests::tls_api::heavy_loss_total",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::heavy_loss_total"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2883:30",
+      "message": "immediate_ack: Generic",
+      "representative": "tests::tls_api::immediate_ack",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::immediate_ack"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2944:32",
+      "message": "immediate_close: Generic",
+      "representative": "tests::tls_api::immediate_close",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::immediate_close"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:2957:52",
+      "message": "implicit_ack_ready: Generic",
+      "representative": "tests::tls_api::implicit_ack",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::implicit_ack"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3020:5",
+      "message": "server connection deleted, cannot verify error code",
+      "representative": "tests::tls_api::initial_close",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::initial_close"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3102:5",
+      "message": "server did not queue its first packet",
+      "representative": "tests::tls_api::initial_race",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::initial_race"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3147:5",
+      "message": "server connection not accepted before close; client_state=ClientInitSent, c_to_s_packets=0, s_to_c_packets=0, time=3600000000",
+      "representative": "tests::tls_api::initial_server_close",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::initial_server_close"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3315:29",
+      "message": "keep_alive_on: Generic",
+      "representative": "tests::tls_api::keep_alive",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::keep_alive"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3325:30",
+      "message": "key_rotation: Generic",
+      "representative": "tests::tls_api::key_rotation",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::key_rotation"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3335:38",
+      "message": "key_rotation_client: Generic",
+      "representative": "tests::tls_api::key_rotation_client",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::key_rotation_client"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3343:39",
+      "message": "key_rotation_server: Generic",
+      "representative": "tests::tls_api::key_rotation_server",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::key_rotation_server"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3540:6",
+      "message": "keylog q_and_r scenario: Generic",
+      "representative": "tests::tls_api::keylog_test",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::keylog_test"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3587:6",
+      "message": "large_client_hello q_and_r scenario: Generic",
+      "representative": "tests::tls_api::large_client_hello",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::large_client_hello"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3633:6",
+      "message": "long_rtt: Generic",
+      "representative": "tests::tls_api::long_rtt",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::long_rtt"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:3745:13",
+      "message": "loss_bit wait-ready client=0 server=0: Generic",
+      "representative": "tests::tls_api::loss_bit",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::loss_bit"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4019:33",
+      "message": "many_losses random mask 0=0x9024423006603000: Generic",
+      "representative": "tests::tls_api::many_losses",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::many_losses"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4179:32",
+      "message": "many_short_loss: Generic",
+      "representative": "tests::tls_api::many_short_loss",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::many_short_loss"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4187:62",
+      "message": "migration: Generic",
+      "representative": "tests::tls_api::migration",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::migration"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4211:6",
+      "message": "migration_disabled q_and_r scenario: Generic",
+      "representative": "tests::tls_api::migration_disabled",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::migration_disabled"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4246:31",
+      "message": "migration_fail: Generic",
+      "representative": "tests::tls_api::migration_fail",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::migration_fail"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4254:64",
+      "message": "migration_long: Generic",
+      "representative": "tests::tls_api::migration_long",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::migration_long"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4262:65",
+      "message": "migration_with_loss: Generic",
+      "representative": "tests::tls_api::migration_with_loss",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::migration_with_loss"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4276:49",
+      "message": "migration_zero: Generic",
+      "representative": "tests::tls_api::migration_zero",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::migration_zero"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4291:76",
+      "message": "mtu_blocked: Generic",
+      "representative": "tests::tls_api::mtu_blocked",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::mtu_blocked"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4306:76",
+      "message": "mtu_delayed: Generic",
+      "representative": "tests::tls_api::mtu_delayed",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::mtu_delayed"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4320:74",
+      "message": "mtu_discovery: Generic",
+      "representative": "tests::tls_api::mtu_discovery",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::mtu_discovery"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4328:45",
+      "message": "mtu_drop_bbr: Generic",
+      "representative": "tests::tls_api::mtu_drop_bbr",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::mtu_drop_bbr"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4336:47",
+      "message": "mtu_drop_cubic: Generic",
+      "representative": "tests::tls_api::mtu_drop_cubic",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::mtu_drop_cubic"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4344:47",
+      "message": "mtu_drop_dcubic: Generic",
+      "representative": "tests::tls_api::mtu_drop_dcubic",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::mtu_drop_dcubic"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4352:46",
+      "message": "mtu_drop_fast: Generic",
+      "representative": "tests::tls_api::mtu_drop_fast",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::mtu_drop_fast"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4360:49",
+      "message": "mtu_drop_newreno: Generic",
+      "representative": "tests::tls_api::mtu_drop_newreno",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::mtu_drop_newreno"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4374:77",
+      "message": "mtu_max: Generic",
+      "representative": "tests::tls_api::mtu_max",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::mtu_max"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4389:77",
+      "message": "mtu_required: Generic",
+      "representative": "tests::tls_api::mtu_required",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::mtu_required"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4508:33",
+      "message": "multi_segment(newreno): Generic",
+      "representative": "tests::tls_api::multi_segment",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::multi_segment"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4531:33",
+      "message": "multiple_versions ver=0x6b3343cf: Generic",
+      "representative": "tests::tls_api::multiple_versions",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::multiple_versions"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4655:33",
+      "message": "nat_handshake(0): Generic",
+      "representative": "tests::tls_api::nat_handshake",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::nat_handshake"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4806:31",
+      "message": "nat_rebinding_fast: Generic",
+      "representative": "tests::tls_api::nat_rebinding_fast",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::nat_rebinding_fast"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:4977:33",
+      "message": "nat_rebinding_stress: Generic",
+      "representative": "tests::tls_api::nat_rebinding_stress",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::nat_rebinding_stress"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5155:28",
+      "message": "new_rotated_key: Protocol(1526726660)",
+      "representative": "tests::tls_api::new_rotated_key",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::new_rotated_key"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5212:29",
+      "message": "no_ack_frequency(1): Generic",
+      "representative": "tests::tls_api::no_ack_frequency",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::no_ack_frequency"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5390:29",
+      "message": "not_before_cnxid: Protocol(1527775233)",
+      "representative": "tests::tls_api::not_before_cnxid",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::not_before_cnxid"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5408:35",
+      "message": "optimistic_ack: Generic",
+      "representative": "tests::tls_api::optimistic_ack",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::optimistic_ack"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5417:36",
+      "message": "optimistic_hole: Generic",
+      "representative": "tests::tls_api::optimistic_hole",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::optimistic_hole"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5426:26",
+      "message": "pacing_update: Generic",
+      "representative": "tests::tls_api::pacing_update",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::pacing_update"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5686:25",
+      "message": "packet_trace: Generic",
+      "representative": "tests::tls_api::packet_trace",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::packet_trace"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5855:29",
+      "message": "padding_null: Protocol(1526878719)",
+      "representative": "tests::tls_api::padding_null",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::padding_null"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5863:31",
+      "message": "padding_test: Protocol(1526903295)",
+      "representative": "tests::tls_api::padding_test",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::padding_test"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5871:30",
+      "message": "padding_zero_min: Protocol(1526903295)",
+      "representative": "tests::tls_api::padding_zero_min",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::padding_zero_min"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:5894:10",
+      "message": "pn_enc_1rtt application aead: Generic",
+      "representative": "tests::tls_api::pn_enc_1rtt",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::pn_enc_1rtt"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6077:31",
+      "message": "pn_random initial-only: Generic",
+      "representative": "tests::tls_api::pn_random",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::pn_random"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6126:9",
+      "message": "unexpected one-rtt: server did not respond to unblocked source 1.1.1.1:0",
+      "representative": "tests::tls_api::port_blocked",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::port_blocked"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6331:46",
+      "message": "preferred_address: Generic",
+      "representative": "tests::tls_api::preferred_address",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::preferred_address"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6340:45",
+      "message": "preferred_address_dis_mig: Generic",
+      "representative": "tests::tls_api::preferred_address_dis_mig",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::preferred_address_dis_mig"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6348:45",
+      "message": "preferred_address_zero: Generic",
+      "representative": "tests::tls_api::preferred_address_zero",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::preferred_address_zero"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6385:5",
+      "message": "Only 1 CID created on client.",
+      "representative": "tests::tls_api::probe_api",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::probe_api"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6521:26",
+      "message": "qlog_fns: Generic",
+      "representative": "tests::tls_api::qlog_fns",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::qlog_fns"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6529:29",
+      "message": "qlog_fns_ecn: Generic",
+      "representative": "tests::tls_api::qlog_fns_ecn",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::qlog_fns_ecn"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6538:35",
+      "message": "qlog_trace: Generic",
+      "representative": "tests::tls_api::qlog_trace",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::qlog_trace"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6546:38",
+      "message": "qlog_trace_ecn: Generic",
+      "representative": "tests::tls_api::qlog_trace_ecn",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::qlog_trace_ecn"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6554:34",
+      "message": "qlog_trace_parallel: Generic",
+      "representative": "tests::tls_api::qlog_trace_parallel",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::qlog_trace_parallel"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6598:6",
+      "message": "quality_update scenario: Generic",
+      "representative": "tests::tls_api::quality_update",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::quality_update"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6683:10",
+      "message": "quant_params: Generic",
+      "representative": "tests::tls_api::quant_params",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::quant_params"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6695:58",
+      "message": "random_padding_128: Generic",
+      "representative": "tests::tls_api::random_padding",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::random_padding"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6826:31",
+      "message": "ready_to_send: Generic",
+      "representative": "tests::tls_api::ready_to_send",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::ready_to_send"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6834:31",
+      "message": "ready_to_skip: Generic",
+      "representative": "tests::tls_api::ready_to_skip",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::ready_to_skip"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6842:31",
+      "message": "ready_to_zero: Generic",
+      "representative": "tests::tls_api::ready_to_zero",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::ready_to_zero"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6850:31",
+      "message": "ready_to_zfin: Generic",
+      "representative": "tests::tls_api::ready_to_zfin",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::ready_to_zfin"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6858:42",
+      "message": "red_bbr: Generic",
+      "representative": "tests::tls_api::red_bbr",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::red_bbr"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6866:44",
+      "message": "red_cubic: Generic",
+      "representative": "tests::tls_api::red_cubic",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::red_cubic"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6874:45",
+      "message": "red_dcubic: Generic",
+      "representative": "tests::tls_api::red_dcubic",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::red_dcubic"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6882:43",
+      "message": "red_fast: Generic",
+      "representative": "tests::tls_api::red_fast",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::red_fast"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6890:46",
+      "message": "red_newreno: Generic",
+      "representative": "tests::tls_api::red_newreno",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::red_newreno"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:6930:5",
+      "message": "Only 1 cids created on client.",
+      "representative": "tests::tls_api::retire_cnxid",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::retire_cnxid"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7069:33",
+      "message": "retry_large: Generic",
+      "representative": "tests::tls_api::retry_large",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::retry_large"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7301:5",
+      "message": "simulated time 120760039",
+      "representative": "tests::tls_api::server_busy",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::server_busy"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7385:9",
+      "message": "session_resume pass 0: no ticket received",
+      "representative": "tests::tls_api::session_resume",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::session_resume"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7454:5",
+      "message": "client did not reach ready state: client=Some(ClientInitSent) server=None",
+      "representative": "tests::tls_api::set_certificate_and_key",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::set_certificate_and_key"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7487:33",
+      "message": "short_initial_cid(8): Generic",
+      "representative": "tests::tls_api::short_initial_cid",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::short_initial_cid"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7603:5",
+      "message": "first stateless reset was not sent at T=0",
+      "representative": "tests::tls_api::stateless_blowback",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::stateless_blowback"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7705:70",
+      "message": "client ready: Generic",
+      "representative": "tests::tls_api::stateless_reset",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::stateless_reset"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7809:5",
+      "message": "client did not remain ready after bogus stateless reset",
+      "representative": "tests::tls_api::stateless_reset_bad",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::stateless_reset_bad"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7827:5",
+      "message": "server connection was not accepted after connection loop",
+      "representative": "tests::tls_api::stateless_reset_client",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::stateless_reset_client"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7957:41",
+      "message": "stop_sending: Generic",
+      "representative": "tests::tls_api::stop_sending",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::stop_sending"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7965:40",
+      "message": "stop_sending_loss: Generic",
+      "representative": "tests::tls_api::stop_sending_loss",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::stop_sending_loss"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:7997:6",
+      "message": "stream_id_max: Generic",
+      "representative": "tests::tls_api::stream_id_max",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::stream_id_max"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8027:14",
+      "message": "server connection not accepted",
+      "representative": "tests::tls_api::tls_api",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8069:9",
+      "message": "client did not derive handshake epoch keys before ACK injection",
+      "representative": "tests::tls_api::tls_api_inject_hs_ack",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api_inject_hs_ack"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8107:10",
+      "message": "oneway_stream: Generic",
+      "representative": "tests::tls_api::tls_api_oneway_stream",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api_oneway_stream"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8127:6",
+      "message": "q2_and_r2_stream: Generic",
+      "representative": "tests::tls_api::tls_api_q2_and_r2_stream",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api_q2_and_r2_stream"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8138:10",
+      "message": "q_and_r_stream: Generic",
+      "representative": "tests::tls_api::tls_api_q_and_r_stream",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api_q_and_r_stream"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8168:14",
+      "message": "server connection not accepted",
+      "representative": "tests::tls_api::tls_api_sni",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api_sni"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8186:52",
+      "message": "very_long_congestion ready: Generic",
+      "representative": "tests::tls_api::tls_api_very_long_congestion",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api_very_long_congestion"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8226:6",
+      "message": "very_long_max: Generic",
+      "representative": "tests::tls_api::tls_api_very_long_max",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api_very_long_max"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8246:6",
+      "message": "very_long_stream: Generic",
+      "representative": "tests::tls_api::tls_api_very_long_stream",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api_very_long_stream"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8261:52",
+      "message": "very_long_with_err ready: Generic",
+      "representative": "tests::tls_api::tls_api_very_long_with_err",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api_very_long_with_err"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8311:5",
+      "message": "assertion `left == right` failed: wrong_alpn: client did not disconnect",
+      "representative": "tests::tls_api::tls_api_wrong_alpn",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_api_wrong_alpn"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8355:10",
+      "message": "server connection not accepted",
+      "representative": "tests::tls_api::tls_exporter",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::tls_exporter"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8397:5",
+      "message": "first client connection is not ready",
+      "representative": "tests::tls_api::two_connections",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::two_connections"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8493:6",
+      "message": "unidir: Generic",
+      "representative": "tests::tls_api::unidir",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::unidir"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8545:5",
+      "message": "VN response too short: got 19, need at least 393",
+      "representative": "tests::tls_api::version_invariant",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::version_invariant"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8674:5",
+      "message": "assertion `left == right` failed: VN spoof mode 0 has no effect",
+      "representative": "tests::tls_api::version_negotiation_spoof",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::version_negotiation_spoof"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8875:9",
+      "message": "assertion `left == right` failed: iteration 0: QUIC time does not follow simulated time",
+      "representative": "tests::tls_api::virtual_time",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::virtual_time"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:8948:64",
+      "message": "vn_compat V1 -> V2: Generic",
+      "representative": "tests::tls_api::vn_compat",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::vn_compat"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:9006:48",
+      "message": "zero_rtt: Generic",
+      "representative": "tests::tls_api::zero_rtt",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::zero_rtt"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:9019:6",
+      "message": "zero_rtt_bad_param: Generic",
+      "representative": "tests::tls_api::zero_rtt_bad_param",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::zero_rtt_bad_param"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:9047:6",
+      "message": "zero_rtt_delay: Generic",
+      "representative": "tests::tls_api::zero_rtt_delay",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::zero_rtt_delay"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:9060:6",
+      "message": "zero_rtt_ech: Generic",
+      "representative": "tests::tls_api::zero_rtt_ech",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::zero_rtt_ech"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:9072:6",
+      "message": "zero_rtt_long: Generic",
+      "representative": "tests::tls_api::zero_rtt_long",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::zero_rtt_long"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:9086:29",
+      "message": "zero_rtt_loss i=1: Generic",
+      "representative": "tests::tls_api::zero_rtt_loss",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::zero_rtt_loss"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:9109:29",
+      "message": "zero_rtt_many_losses i=0, mask=9024423006603000: Generic",
+      "representative": "tests::tls_api::zero_rtt_many_losses",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::zero_rtt_many_losses"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:9122:6",
+      "message": "zero_rtt_no_coal: Generic",
+      "representative": "tests::tls_api::zero_rtt_no_coal",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::zero_rtt_no_coal"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:9135:6",
+      "message": "zero_rtt_retry: Generic",
+      "representative": "tests::tls_api::zero_rtt_retry",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::zero_rtt_retry"
+      ]
+    },
+    {
+      "location": "src/tests/tls_api.rs:9147:6",
+      "message": "zero_rtt_spurious: Generic",
+      "representative": "tests::tls_api::zero_rtt_spurious",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::zero_rtt_spurious"
+      ]
+    },
+    {
+      "location": "src/tests/transport_param.rs:331:10",
+      "message": "transport parameter connection",
+      "representative": "tests::transport_param::transport_param",
+      "size": 1,
+      "tests": [
+        "tests::transport_param::transport_param"
+      ]
+    },
+    {
+      "location": "src/tests/transport_param.rs:937:43",
+      "message": "assertion `left == right` failed: default_tp[22] grease_quic_bit: max_idle_timeout",
+      "representative": "tests::transport_param::transport_param_default",
+      "size": 1,
+      "tests": [
+        "tests::transport_param::transport_param_default"
+      ]
+    },
+    {
+      "location": "src/tests/util.rs:6440:5",
+      "message": "Retry test completes in 120010071 microsec, more than 230000",
+      "representative": "tests::tls_api::retry",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::retry"
+      ]
+    },
+    {
+      "location": "src/tests/util.rs:6534:9",
+      "message": "assertion `left == right` failed: Second retry did not use the stored token, odcil len=8",
+      "representative": "tests::tls_api::retry_token",
+      "size": 1,
+      "tests": [
+        "tests::tls_api::retry_token"
+      ]
+    },
+    {
+      "location": "src/tests/warptest.rs:21:28",
+      "message": "warptest_param: Generic",
+      "representative": "tests::warptest::warptest_param",
+      "size": 1,
+      "tests": [
+        "tests::warptest::warptest_param"
+      ]
+    },
+    {
+      "location": "src/tests/warptest.rs:35:28",
+      "message": "warptest_video: Generic",
+      "representative": "tests::warptest::warptest_video",
+      "size": 1,
+      "tests": [
+        "tests::warptest::warptest_video"
+      ]
+    },
+    {
+      "location": "src/tests/warptest.rs:50:28",
+      "message": "warptest_video_audio: Generic",
+      "representative": "tests::warptest::warptest_video_audio",
+      "size": 1,
+      "tests": [
+        "tests::warptest::warptest_video_audio"
+      ]
+    },
+    {
+      "location": "src/tests/warptest.rs:66:28",
+      "message": "warptest_video_data_audio: Generic",
+      "representative": "tests::warptest::warptest_video_data_audio",
+      "size": 1,
+      "tests": [
+        "tests::warptest::warptest_video_data_audio"
+      ]
+    },
+    {
+      "location": "src/tests/warptest.rs:82:28",
+      "message": "warptest_worst: Generic",
+      "representative": "tests::warptest::warptest_worst",
+      "size": 1,
+      "tests": [
+        "tests::warptest::warptest_worst"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:106:41",
+      "message": "wifi_bbr: Generic",
+      "representative": "tests::wifitest::wifi_bbr",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_bbr"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:115:41",
+      "message": "wifi_bbr1: Generic",
+      "representative": "tests::wifitest::wifi_bbr1",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_bbr1"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:130:47",
+      "message": "wifi_bbr1_hard: Generic",
+      "representative": "tests::wifitest::wifi_bbr1_hard",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_bbr1_hard"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:145:47",
+      "message": "wifi_bbr1_long: Generic",
+      "representative": "tests::wifitest::wifi_bbr1_long",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_bbr1_long"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:160:46",
+      "message": "wifi_bbr_hard: Generic",
+      "representative": "tests::wifitest::wifi_bbr_hard",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_bbr_hard"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:175:46",
+      "message": "wifi_bbr_long: Generic",
+      "representative": "tests::wifitest::wifi_bbr_long",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_bbr_long"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:190:46",
+      "message": "wifi_bbr_many: Generic",
+      "representative": "tests::wifitest::wifi_bbr_many",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_bbr_many"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:207:48",
+      "message": "wifi_bbr_shadow: Generic",
+      "representative": "tests::wifitest::wifi_bbr_shadow",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_bbr_shadow"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:214:43",
+      "message": "wifi_cubic: Generic",
+      "representative": "tests::wifitest::wifi_cubic",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_cubic"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:229:48",
+      "message": "wifi_cubic_hard: Generic",
+      "representative": "tests::wifitest::wifi_cubic_hard",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_cubic_hard"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:244:48",
+      "message": "wifi_cubic_long: Generic",
+      "representative": "tests::wifitest::wifi_cubic_long",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_cubic_long"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:251:42",
+      "message": "wifi_reno: Generic",
+      "representative": "tests::wifitest::wifi_reno",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_reno"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:266:47",
+      "message": "wifi_reno_hard: Generic",
+      "representative": "tests::wifitest::wifi_reno_hard",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_reno_hard"
+      ]
+    },
+    {
+      "location": "src/tests/wifitest.rs:281:47",
+      "message": "wifi_reno_long: Generic",
+      "representative": "tests::wifitest::wifi_reno_long",
+      "size": 1,
+      "tests": [
+        "tests::wifitest::wifi_reno_long"
+      ]
     }
+  ],
+  "generated_from": "xlate/phase6_runs/20260511-072921.log",
+  "schema_version": 1,
+  "summary": {
+    "command": "cargo nextest run",
+    "failed": 410,
+    "flaky": 0,
+    "generated_at": "2026-05-11T07:31:29",
+    "log": "xlate/phase6_runs/20260511-072921.log",
+    "passed": 331,
+    "returncode": 100,
+    "skipped": 0,
+    "timed_out": 1
+  },
+  "unclassified": [
+    "tests::tls_api::integrity_limit"
   ]
 }

@@ -172,18 +172,21 @@ python3 scripts/phase5b.py --status     # summarize test-repair progress
 python3 scripts/phase5b.py              # repair Phase 5A needs_fix entries
 python3 scripts/phase5c.py --status     # summarize final-tree revalidation
 python3 scripts/phase5c.py              # revalidate tests after worker merges
-python3 scripts/phase6.py --refresh-failures --status
-python3 scripts/phase6.py --refresh-failures
+python3 scripts/phase6.py --refresh-failures --status   # build / show baseline
+python3 scripts/phase6_clusters.py                      # group failures by shared panic
+python3 scripts/phase6.py --cluster top                 # dispatch one agent on the biggest cluster
+python3 scripts/phase6.py --limit 5                     # per-test debug for singletons
 ```
 
 Artifacts:
 
-| Script       | Produces |
-|--------------|----------|
-| `phase5a.py` | `xlate/test_translation_map.json`, `xlate/phase5a_reviews.json`, `xlate/phase5a_report.html` |
-| `phase5b.py` | `xlate/phase5b_repairs.json`, `xlate/phase5b_report.html`; repairs test mismatches and updates `xlate/phase5a_reviews.json` |
-| `phase5c.py` | `xlate/phase5c_revalidation.json`, `xlate/phase5c_revalidation.html`; read-only final-tree revalidation |
-| `phase6.py` | `xlate/phase6_failures.json`, `xlate/phase6_report.html`, `xlate/phase6_runs/<timestamp>.log` |
+| Script               | Produces |
+|----------------------|----------|
+| `phase5a.py`         | `xlate/test_translation_map.json`, `xlate/phase5a_reviews.json`, `xlate/phase5a_report.html` |
+| `phase5b.py`         | `xlate/phase5b_repairs.json`, `xlate/phase5b_report.html`; repairs test mismatches and updates `xlate/phase5a_reviews.json` |
+| `phase5c.py`         | `xlate/phase5c_revalidation.json`, `xlate/phase5c_revalidation.html`; read-only final-tree revalidation |
+| `phase6.py`          | `xlate/phase6_failures.json`, `xlate/phase6_report.html`, `xlate/phase6_runs/<timestamp>.log`, per-prompt `.md` files under `xlate/prompts/phase6/` |
+| `phase6_clusters.py` | `xlate/phase6_clusters.json`, `xlate/phase6_clusters.md` (groups pending failures by `(panic-location, panic-message)`) |
 
 `phase5a.py` supports read-only parallel shards with `--shard-count`
 and `--shard-index`; `--replay-logs` reprocesses previous Phase 5A
@@ -192,7 +195,14 @@ remaining pending tests.  `phase5b.py` supports file-owned repair
 buckets with `--bucket-count` and `--bucket-index`.  `phase5c.py` is
 read-only and supports `--shard-count` / `--shard-index` for parallel
 post-merge revalidation.  `phase6.py` is the first Phase 5/6 script
-that intentionally runs cargo test.
+that intentionally runs cargo (via `cargo nextest run --features
+sys-openssl --no-fail-fast`, picked for its per-test timeout
+configured in `rs/fq/.config/nextest.toml`).  Its `--cluster TARGET`
+mode dispatches one agent against an entire shared-panic cluster
+instead of one failure at a time — `TARGET` is `top` (largest
+cluster), a 1-based index, or a substring of the cluster's panic
+location.  Pass `--refresh-clusters` to rebuild the cluster snapshot
+before dispatching.
 
 ## Helpers / diagnostics
 
