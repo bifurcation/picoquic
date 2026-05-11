@@ -5,8 +5,22 @@
 
 #![allow(non_snake_case)]
 
-use super::util::{test_gauss_random, test_random, test_uniform_random};
+use std::{
+    cell::RefCell,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    rc::Rc,
+};
+
+use super::util::{
+    TEST_ALPN, TEST_FILE_SERVER_CERT, TEST_FILE_SERVER_KEY, TEST_SNI, TestSimLink, TestSimPacket,
+    save_empty_tickets, test_gauss_random, test_random, test_uniform_random,
+};
+use crate::errors::TransportError;
 use crate::frames::FrameType;
+use crate::{
+    CallbackEvent, Connection, ConnectionId, Error, Instant, PacketContext, Quic,
+    RESET_SECRET_SIZE, State, StreamDataCallback, current_time,
+};
 
 // ---------------------------------------------------------------------------
 // Stress / fuzz harness.
@@ -14,19 +28,21 @@ use crate::frames::FrameType;
 // a set of client wake times ordered by the next simulated action.
 
 const STRESS_NB_CLIENTS: usize = 4;
+const STRESS_MAX_CLIENTS: u32 = 1024;
+const STRESS_MAX_TRACKED_STREAMS: usize = 16;
+const STRESS_MINIMAL_QUERY_SIZE: usize = 127;
+const STRESS_DEFAULT_RESPONSE_SIZE: usize = 257;
 const STRESS_RESPONSE_LENGTH_MAX: u64 = 1_000_000;
+const STRESS_MESSAGE_BUFFER_SIZE: usize = 0x10000;
+const STRESS_MAX_CLIENT_STREAMS: usize = 16;
+const STRESS_MAX_BIDIR: u64 = 8 * 4;
 const STRESS_MAX_OPEN_STREAMS: u64 = 4;
-const STRESS_FUZZ_HEADER_LENGTH: usize = 17;
-
-trait StressFuzzer {
-    fn fuzz_state(
-        &mut self,
-        connection_state: crate::State,
-        bytes: &mut [u8],
-        length: usize,
-        header_length: usize,
-    ) -> u32;
-}
+const STRESS_MAX_MESSAGE_BEFORE_DROP: u32 = 25;
+const STRESS_MAX_MESSAGE_BEFORE_MIGRATE: u32 = 8;
+const STRESS_TICKET_ENCRYPT_KEY: [u8; 32] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+    26, 27, 28, 29, 30, 31,
+];
 
 #[derive(Debug)]
 struct BasicFuzzer {
@@ -95,18 +111,6 @@ impl BasicFuzzer {
         }
 
         length as u32
-    }
-}
-
-impl StressFuzzer for BasicFuzzer {
-    fn fuzz_state(
-        &mut self,
-        connection_state: crate::State,
-        bytes: &mut [u8],
-        length: usize,
-        header_length: usize,
-    ) -> u32 {
-        BasicFuzzer::fuzz_state(self, connection_state, bytes, length, header_length)
     }
 }
 
@@ -697,18 +701,6 @@ impl InitialFuzzer {
     }
 }
 
-impl StressFuzzer for InitialFuzzer {
-    fn fuzz_state(
-        &mut self,
-        connection_state: crate::State,
-        bytes: &mut [u8],
-        length: usize,
-        header_length: usize,
-    ) -> u32 {
-        InitialFuzzer::fuzz_state(self, connection_state, bytes, length, header_length)
-    }
-}
-
 impl crate::Fuzz for InitialFuzzer {
     fn fuzz(
         &mut self,
@@ -721,122 +713,868 @@ impl crate::Fuzz for InitialFuzzer {
     }
 }
 
-#[derive(Clone, Copy)]
-struct StressClient {
-    client_next_time: u64,
-    random_context: u64,
-    nb_connections: u64,
-    nb_open_streams: u64,
-    connection_state: crate::State,
-    next_state_index: usize,
-    fuzz_installed: bool,
+#[derive(Clone)]
+enum StressFuzzerConfig {
+    Basic(Rc<RefCell<BasicFuzzer>>),
+    Initial(Rc<RefCell<InitialFuzzer>>),
 }
 
-impl StressClient {
-    fn advance_connection_state(&mut self) {
-        const STATES: [crate::State; 5] = [
-            crate::State::ClientInitSent,
-            crate::State::ClientHandshakeStart,
-            crate::State::ClientAlmostReady,
-            crate::State::ClientReadyStart,
-            crate::State::Ready,
-        ];
-
-        if let Some(state) = STATES.get(self.next_state_index) {
-            self.connection_state = *state;
-            self.next_state_index += 1;
+impl StressFuzzerConfig {
+    fn boxed(&self) -> Box<dyn crate::Fuzz> {
+        match self {
+            Self::Basic(inner) => Box::new(SharedBasicFuzzer {
+                inner: Rc::clone(inner),
+            }),
+            Self::Initial(inner) => Box::new(SharedInitialFuzzer {
+                inner: Rc::clone(inner),
+            }),
         }
     }
+}
+
+struct SharedBasicFuzzer {
+    inner: Rc<RefCell<BasicFuzzer>>,
+}
+
+impl crate::Fuzz for SharedBasicFuzzer {
+    fn fuzz(
+        &mut self,
+        connection: &mut Connection,
+        bytes: &mut [u8],
+        length: usize,
+        header_length: usize,
+    ) -> u32 {
+        self.inner
+            .borrow_mut()
+            .fuzz_state(connection.state(), bytes, length, header_length)
+    }
+}
+
+struct SharedInitialFuzzer {
+    inner: Rc<RefCell<InitialFuzzer>>,
+}
+
+impl crate::Fuzz for SharedInitialFuzzer {
+    fn fuzz(
+        &mut self,
+        connection: &mut Connection,
+        bytes: &mut [u8],
+        length: usize,
+        header_length: usize,
+    ) -> u32 {
+        self.inner
+            .borrow_mut()
+            .fuzz_state(connection.state(), bytes, length, header_length)
+    }
+}
+
+#[derive(Default)]
+struct StressShared {
+    sum_data_received_from_server: i32,
+    nb_connections_complete: i32,
+}
+
+struct StressClientControl {
+    message_disconnect_trigger: u32,
+    message_migration_trigger: u32,
+}
+
+struct StressServerCallback {
+    data_received_on_stream: [usize; STRESS_MAX_TRACKED_STREAMS],
+    data_sum_of_stream: [u32; STRESS_MAX_TRACKED_STREAMS],
+    buffer: [u8; STRESS_MESSAGE_BUFFER_SIZE],
+    is_default: bool,
+}
+
+impl StressServerCallback {
+    fn new(is_default: bool) -> Self {
+        Self {
+            data_received_on_stream: [0; STRESS_MAX_TRACKED_STREAMS],
+            data_sum_of_stream: [0; STRESS_MAX_TRACKED_STREAMS],
+            buffer: [0; STRESS_MESSAGE_BUFFER_SIZE],
+            is_default,
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        connection: &mut Connection,
+        stream_id: u64,
+        bytes: &[u8],
+        fin_or_event: CallbackEvent,
+    ) -> i32 {
+        match fin_or_event {
+            CallbackEvent::Close
+            | CallbackEvent::StatelessReset
+            | CallbackEvent::ApplicationClose => {
+                connection.set_callback(None);
+                0
+            }
+            CallbackEvent::VersionNegotiation
+            | CallbackEvent::AlmostReady
+            | CallbackEvent::Ready => 0,
+            CallbackEvent::PrepareToSend => -1,
+            CallbackEvent::StopSending | CallbackEvent::StreamReset => {
+                connection.reset_stream(stream_id, 0).map_or(-1, |_| 0)
+            }
+            CallbackEvent::StreamData | CallbackEvent::StreamFin => {
+                self.handle_stream_data(connection, stream_id, bytes, fin_or_event)
+            }
+            _ => connection
+                .reset_stream(stream_id, TransportError::ProtocolViolation as u64)
+                .map_or(-1, |_| 0),
+        }
+    }
+
+    fn handle_stream_data(
+        &mut self,
+        connection: &mut Connection,
+        stream_id: u64,
+        bytes: &[u8],
+        fin_or_event: CallbackEvent,
+    ) -> i32 {
+        if (stream_id & 3) != 0 {
+            return 0;
+        }
+
+        let bidir_id = (stream_id / 4) as usize;
+        let mut response_length = 0usize;
+
+        if bidir_id < STRESS_MAX_TRACKED_STREAMS {
+            let previous = self.data_received_on_stream[bidir_id];
+            let received = previous.saturating_add(bytes.len());
+            if previous < STRESS_MINIMAL_QUERY_SIZE {
+                let mut processed = bytes.len();
+                if received >= STRESS_MINIMAL_QUERY_SIZE {
+                    processed = received - STRESS_MINIMAL_QUERY_SIZE;
+                }
+                for byte in bytes.iter().take(processed) {
+                    self.data_sum_of_stream[bidir_id] = self.data_sum_of_stream[bidir_id]
+                        .wrapping_mul(101)
+                        .wrapping_add(u32::from(*byte));
+                }
+                if received >= STRESS_MINIMAL_QUERY_SIZE {
+                    response_length = (u64::from(self.data_sum_of_stream[bidir_id])
+                        % STRESS_RESPONSE_LENGTH_MAX)
+                        as usize;
+                }
+            }
+            self.data_received_on_stream[bidir_id] = received;
+        }
+
+        if fin_or_event == CallbackEvent::StreamFin
+            && (bidir_id >= STRESS_MAX_TRACKED_STREAMS
+                || self.data_received_on_stream[bidir_id] < STRESS_MINIMAL_QUERY_SIZE)
+        {
+            response_length = STRESS_DEFAULT_RESPONSE_SIZE;
+        }
+
+        while response_length > STRESS_MESSAGE_BUFFER_SIZE {
+            if connection
+                .add_to_stream(stream_id, &self.buffer, false)
+                .is_err()
+            {
+                return -1;
+            }
+            response_length -= STRESS_MESSAGE_BUFFER_SIZE;
+        }
+
+        if response_length > 0
+            && connection
+                .add_to_stream(stream_id, &self.buffer[..response_length], true)
+                .is_err()
+        {
+            return -1;
+        }
+
+        0
+    }
+}
+
+impl StreamDataCallback for StressServerCallback {
+    fn callback(
+        &mut self,
+        connection: &mut Connection,
+        stream_id: u64,
+        bytes: &[u8],
+        fin_or_event: CallbackEvent,
+        _stream_ctx: Option<&mut dyn core::any::Any>,
+    ) -> i32 {
+        if self.is_default {
+            match fin_or_event {
+                CallbackEvent::Close
+                | CallbackEvent::StatelessReset
+                | CallbackEvent::ApplicationClose
+                | CallbackEvent::VersionNegotiation
+                | CallbackEvent::AlmostReady
+                | CallbackEvent::Ready => 0,
+                _ => {
+                    let mut per_connection = StressServerCallback::new(false);
+                    let ret =
+                        per_connection.handle_event(connection, stream_id, bytes, fin_or_event);
+                    if ret == 0 {
+                        connection.set_callback(Some(Box::new(per_connection)));
+                    }
+                    ret
+                }
+            }
+        } else {
+            self.handle_event(connection, stream_id, bytes, fin_or_event)
+        }
+    }
+}
+
+struct StressClientCallback {
+    shared: Rc<RefCell<StressShared>>,
+    test_id: u64,
+    max_bidir: u64,
+    next_bidir: u64,
+    max_open_streams: usize,
+    nb_open_streams: usize,
+    stream_id: [u64; STRESS_MAX_CLIENT_STREAMS],
+    last_interaction_time: u64,
+    nb_client_streams: u32,
+    progress_observed: bool,
+}
+
+impl StressClientCallback {
+    fn new(shared: Rc<RefCell<StressShared>>, test_id: u64) -> Self {
+        Self {
+            shared,
+            test_id,
+            max_bidir: STRESS_MAX_BIDIR,
+            next_bidir: 4,
+            max_open_streams: STRESS_MAX_OPEN_STREAMS as usize,
+            nb_open_streams: 0,
+            stream_id: [u64::MAX; STRESS_MAX_CLIENT_STREAMS],
+            last_interaction_time: 0,
+            nb_client_streams: 0,
+            progress_observed: false,
+        }
+    }
+
+    fn new_control(random_ctx: &mut u64) -> Rc<RefCell<StressClientControl>> {
+        fn trigger(random_ctx: &mut u64, max_before: u32) -> u32 {
+            let value = test_uniform_random(random_ctx, u64::from(max_before) * 2) as u32;
+            if value >= max_before { 0 } else { value + 1 }
+        }
+
+        Rc::new(RefCell::new(StressClientControl {
+            message_disconnect_trigger: trigger(random_ctx, STRESS_MAX_MESSAGE_BEFORE_DROP),
+            message_migration_trigger: trigger(random_ctx, STRESS_MAX_MESSAGE_BEFORE_MIGRATE),
+        }))
+    }
+
+    fn prepare_streams(&mut self) -> crate::Result<Vec<(u64, [u8; 32])>> {
+        let mut streams = Vec::new();
+        while self.nb_open_streams < self.max_open_streams && self.next_bidir <= self.max_bidir {
+            let Some(stream_index) = self
+                .stream_id
+                .iter()
+                .take(self.max_open_streams)
+                .position(|&id| id == u64::MAX)
+            else {
+                return Err(Error::InvalidState);
+            };
+
+            let stream_id = self.next_bidir;
+            let mut buf = [0u8; 32];
+            buf[..8].copy_from_slice(&self.test_id.to_be_bytes());
+            buf[8..16].copy_from_slice(&stream_id.to_be_bytes());
+
+            self.stream_id[stream_index] = stream_id;
+            self.next_bidir += 4;
+            self.nb_open_streams += 1;
+            self.nb_client_streams = self.nb_client_streams.saturating_add(1);
+            streams.push((stream_id, buf));
+        }
+        Ok(streams)
+    }
+
+    fn start_streams(&mut self, connection: &mut Connection) -> crate::Result<()> {
+        for (stream_id, buf) in self.prepare_streams()? {
+            connection.add_to_stream(stream_id, &buf, true)?;
+        }
+        Ok(())
+    }
+}
+
+impl StreamDataCallback for StressClientCallback {
+    fn callback(
+        &mut self,
+        connection: &mut Connection,
+        stream_id: u64,
+        _bytes: &[u8],
+        length_or_event: CallbackEvent,
+        _stream_ctx: Option<&mut dyn core::any::Any>,
+    ) -> i32 {
+        match length_or_event {
+            CallbackEvent::VersionNegotiation | CallbackEvent::AlmostReady => 0,
+            CallbackEvent::Close
+            | CallbackEvent::ApplicationClose
+            | CallbackEvent::StatelessReset => {
+                connection.set_callback(None);
+                0
+            }
+            CallbackEvent::Ready => {
+                self.shared.borrow_mut().nb_connections_complete += 1;
+                0
+            }
+            _ => {
+                self.last_interaction_time = current_time();
+                self.progress_observed = true;
+                let Some(stream_index) = self
+                    .stream_id
+                    .iter()
+                    .take(self.max_open_streams)
+                    .position(|&id| id == stream_id)
+                else {
+                    return 0;
+                };
+
+                if matches!(
+                    length_or_event,
+                    CallbackEvent::StreamData | CallbackEvent::StreamFin
+                ) {
+                    self.shared.borrow_mut().sum_data_received_from_server += _bytes.len() as i32;
+                }
+
+                let mut is_finished = false;
+                match length_or_event {
+                    CallbackEvent::StreamReset | CallbackEvent::StopSending => {
+                        if connection.reset_stream(stream_id, 0).is_err() {
+                            return -1;
+                        }
+                        is_finished = true;
+                    }
+                    CallbackEvent::StreamFin => is_finished = true,
+                    _ => {}
+                }
+
+                if is_finished {
+                    if self.nb_open_streams == 0 {
+                        return -1;
+                    }
+                    self.nb_open_streams -= 1;
+                    self.stream_id[stream_index] = u64::MAX;
+                    if self.next_bidir >= self.max_bidir {
+                        if self.nb_open_streams == 0 && connection.close(0).is_err() {
+                            return -1;
+                        }
+                    } else if self.start_streams(connection).is_err() {
+                        return -1;
+                    }
+                }
+                0
+            }
+        }
+    }
+}
+
+struct StressClientContext {
+    qclient: Box<Quic>,
+    client_addr: SocketAddr,
+    client_control: Option<Rc<RefCell<StressClientControl>>>,
+    c_to_s_link: Box<TestSimLink>,
+    s_to_c_link: Box<TestSimLink>,
+    client_next_time: u64,
+}
+
+struct StressCtx {
+    shared: Rc<RefCell<StressShared>>,
+    qserver: Box<Quic>,
+    server_addr: SocketAddr,
+    simulated_time: u64,
+    nb_connections: u64,
+    next_test_id: u64,
+    random_ctx: u64,
+    clients: Vec<StressClientContext>,
+}
+
+fn stress_addr_from_index(index: i32) -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::from(index as u32)), 4321)
+}
+
+fn stress_index_from_addr(addr: SocketAddr) -> Option<usize> {
+    match addr.ip() {
+        IpAddr::V4(ip) => {
+            let index = u32::from(ip) as usize;
+            (index < STRESS_NB_CLIENTS).then_some(index)
+        }
+        IpAddr::V6(_) => None,
+    }
+}
+
+fn stress_client_eval_next_time(client: &mut StressClientContext, simulated_time: u64) -> u64 {
+    if client.qclient.current_number_connections() == 0 {
+        return simulated_time;
+    }
+
+    let now = Instant::from_ticks(simulated_time);
+    let delay = client.qclient.next_wake_delay(now, 100_000_000).max(0) as u64;
+    let mut best = simulated_time.saturating_add(delay);
+    if let Some(packet) = client.s_to_c_link.packets.front() {
+        best = best.min(packet.arrival_time.ticks());
+    }
+    if let Some(packet) = client.c_to_s_link.packets.front() {
+        best = best.min(packet.arrival_time.ticks());
+    }
+    best
+}
+
+fn stress_create_client_context(
+    client_index: usize,
+    random_ctx: &mut u64,
+    simulated_time: u64,
+    fuzzer: Option<&StressFuzzerConfig>,
+) -> crate::Result<StressClientContext> {
+    let ticket_file_name = format!("stress_ticket_{client_index:03}.bin");
+    save_empty_tickets(&ticket_file_name, Instant::from_ticks(simulated_time))?;
+
+    const TARGET_BANDWIDTH: [f64; 4] = [0.001, 0.01, 0.03, 0.1];
+    let random_latency = 1_000 + test_uniform_random(random_ctx, 99_000);
+    let bandwidth_index = test_uniform_random(random_ctx, 4) as usize;
+    let bandwidth = TARGET_BANDWIDTH[bandwidth_index];
+    let now = Instant::from_ticks(simulated_time);
+    let c_to_s_link = Box::new(TestSimLink::create(
+        bandwidth,
+        random_latency,
+        None,
+        2 * random_latency,
+        now,
+    )?);
+    let s_to_c_link = Box::new(TestSimLink::create(
+        bandwidth,
+        random_latency,
+        None,
+        2 * random_latency,
+        now,
+    )?);
+
+    let mut qclient = Quic::new(
+        8,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        [0u8; RESET_SECRET_SIZE],
+        now,
+        Some(&ticket_file_name),
+        None,
+    )
+    .ok_or(Error::Memory)?;
+    if let Some(fuzzer) = fuzzer {
+        qclient.set_fuzz(Some(fuzzer.boxed()));
+    }
+
+    Ok(StressClientContext {
+        qclient,
+        client_addr: stress_addr_from_index(client_index as i32),
+        client_control: None,
+        c_to_s_link,
+        s_to_c_link,
+        client_next_time: simulated_time,
+    })
+}
+
+fn stress_create_ctx(fuzzer: Option<StressFuzzerConfig>) -> crate::Result<StressCtx> {
+    if STRESS_NB_CLIENTS > STRESS_MAX_CLIENTS as usize {
+        return Err(Error::InvalidArgument);
+    }
+
+    let simulated_time = 0;
+    let shared = Rc::new(RefCell::new(StressShared::default()));
+    let default_cb = Box::new(StressServerCallback::new(true));
+    let qserver = Quic::new(
+        STRESS_MAX_CLIENTS,
+        Some(TEST_FILE_SERVER_CERT),
+        Some(TEST_FILE_SERVER_KEY),
+        None,
+        Some(TEST_ALPN),
+        Some(default_cb),
+        None,
+        [0u8; RESET_SECRET_SIZE],
+        Instant::from_ticks(simulated_time),
+        None,
+        Some(&STRESS_TICKET_ENCRYPT_KEY),
+    )
+    .ok_or(Error::Memory)?;
+
+    let mut random_ctx = 0xBABAC001BADDBAB1_u64;
+    let mut clients = Vec::with_capacity(STRESS_NB_CLIENTS);
+    for i in 0..STRESS_NB_CLIENTS {
+        clients.push(stress_create_client_context(
+            i,
+            &mut random_ctx,
+            simulated_time,
+            fuzzer.as_ref(),
+        )?);
+    }
+
+    Ok(StressCtx {
+        shared,
+        qserver,
+        server_addr: stress_addr_from_index(-1),
+        simulated_time,
+        nb_connections: 0,
+        next_test_id: 0,
+        random_ctx,
+        clients,
+    })
+}
+
+fn stress_packet_from_stateless(
+    sp: crate::internal::StatelessPacket,
+) -> crate::Result<TestSimPacket> {
+    let mut packet = TestSimPacket::create()?;
+    packet.length = sp.length;
+    packet.addr_from = Some(sp.addr_local);
+    packet.addr_to = Some(sp.addr_to);
+    packet.ecn_mark = sp.received_ecn;
+    packet.bytes[..sp.length].copy_from_slice(&sp.bytes[..sp.length]);
+    Ok(packet)
+}
+
+fn stress_submit_sp_packets_client(
+    client: &mut StressClientContext,
+    current_time: Instant,
+) -> crate::Result<()> {
+    while let Some(sp) = client.qclient.dequeue_stateless_packet() {
+        if sp.length > 0 {
+            let packet = stress_packet_from_stateless(sp)?;
+            client.c_to_s_link.submit(packet, current_time);
+        }
+    }
+    Ok(())
+}
+
+fn stress_submit_sp_packets_server(
+    qserver: &mut Quic,
+    clients: &mut [StressClientContext],
+    current_time: Instant,
+) -> crate::Result<()> {
+    while let Some(sp) = qserver.dequeue_stateless_packet() {
+        if sp.length > 0 {
+            let index = stress_index_from_addr(sp.addr_to).ok_or(Error::InvalidState)?;
+            let packet = stress_packet_from_stateless(sp)?;
+            clients[index].s_to_c_link.submit(packet, current_time);
+            clients[index].client_next_time =
+                stress_client_eval_next_time(&mut clients[index], current_time.ticks());
+        }
+    }
+    Ok(())
+}
+
+fn stress_handle_packet_arrival(
+    quic: &mut Quic,
+    link: &mut TestSimLink,
+    dest_addr: SocketAddr,
+    current_time: Instant,
+) -> crate::Result<()> {
+    if let Some(mut packet) = link.dequeue(current_time)
+        && packet.addr_to == Some(dest_addr)
+    {
+        quic.incoming_packet(
+            &mut packet.bytes[..packet.length],
+            &packet
+                .addr_from
+                .unwrap_or(SocketAddr::from(([0u8; 4], 0u16))),
+            &packet.addr_to.unwrap_or(SocketAddr::from(([0u8; 4], 0u16))),
+            0,
+            packet.ecn_mark,
+            current_time,
+        )?;
+    }
+    Ok(())
+}
+
+fn stress_prepare_client_packet(
+    client: &mut StressClientContext,
+    server_addr: SocketAddr,
+    current_time: Instant,
+) -> crate::Result<()> {
+    if stress_maybe_disconnect_client(client) {
+        return Ok(());
+    }
+    stress_maybe_migrate_client(client, server_addr, current_time)?;
+
+    let mut packet = TestSimPacket::create()?;
+    let prepared = client
+        .qclient
+        .prepare_next_packet(current_time, &mut packet.bytes)?;
+    if prepared.send_length > 0 {
+        let addr_to = if prepared.addr_to.ip().is_unspecified() {
+            server_addr
+        } else {
+            prepared.addr_to
+        };
+        let addr_from = if prepared.addr_from.ip().is_unspecified() {
+            client.client_addr
+        } else {
+            prepared.addr_from
+        };
+        packet.length = prepared.send_length;
+        packet.addr_to = Some(addr_to);
+        packet.addr_from = Some(addr_from);
+        client.c_to_s_link.submit(packet, current_time);
+    }
+    Ok(())
+}
+
+fn stress_maybe_disconnect_client(client: &mut StressClientContext) -> bool {
+    let Some(control) = client.client_control.as_ref() else {
+        return false;
+    };
+    let trigger = control.borrow().message_disconnect_trigger;
+    if trigger == 0 {
+        return false;
+    }
+
+    let token = {
+        let Some(cnx) = client.qclient.earliest_cnx_to_wake(Instant::from_ticks(0)) else {
+            return false;
+        };
+        let nb_sent = cnx.pkt_ctx.iter().fold(0u64, |sum, pkt_ctx| {
+            sum.saturating_add(pkt_ctx.send_sequence)
+        });
+        (cnx.state() != State::Disconnected && nb_sent > u64::from(trigger))
+            .then_some(cnx.own_token)
+            .flatten()
+    };
+
+    if let Some(token) = token {
+        client.qclient.delete_connection(token);
+        client.client_control = None;
+        true
+    } else {
+        false
+    }
+}
+
+fn stress_maybe_migrate_client(
+    client: &mut StressClientContext,
+    server_addr: SocketAddr,
+    current_time: Instant,
+) -> crate::Result<()> {
+    let Some(control) = client.client_control.as_ref().map(Rc::clone) else {
+        return Ok(());
+    };
+    let trigger = control.borrow().message_migration_trigger;
+    if trigger == 0 {
+        return Ok(());
+    }
+
+    let should_migrate = {
+        let Some(cnx) = client.qclient.earliest_cnx_to_wake(Instant::from_ticks(0)) else {
+            return Ok(());
+        };
+        cnx.state() == State::Ready
+            && cnx.pkt_ctx[PacketContext::Application as usize].send_sequence > u64::from(trigger)
+    };
+    if !should_migrate {
+        return Ok(());
+    }
+
+    let new_addr = SocketAddr::new(
+        client.client_addr.ip(),
+        client.client_addr.port().saturating_add(1),
+    );
+    if let Some(cnx) = client.qclient.earliest_cnx_to_wake(Instant::from_ticks(0)) {
+        cnx.probe_new_path(&server_addr, &new_addr, current_time)?;
+    }
+    client.client_addr = new_addr;
+    control.borrow_mut().message_migration_trigger = trigger.saturating_add(32);
+    Ok(())
+}
+
+fn stress_prepare_server_packet(
+    qserver: &mut Quic,
+    clients: &mut [StressClientContext],
+    server_addr: SocketAddr,
+    current_time: Instant,
+) -> crate::Result<()> {
+    let mut packet = TestSimPacket::create()?;
+    let prepared = qserver.prepare_next_packet(current_time, &mut packet.bytes)?;
+    if prepared.send_length > 0 {
+        let index = stress_index_from_addr(prepared.addr_to).ok_or(Error::InvalidState)?;
+        let addr_from = if prepared.addr_from.ip().is_unspecified() {
+            server_addr
+        } else {
+            prepared.addr_from
+        };
+        packet.length = prepared.send_length;
+        packet.addr_to = Some(prepared.addr_to);
+        packet.addr_from = Some(addr_from);
+        clients[index].s_to_c_link.submit(packet, current_time);
+        clients[index].client_next_time =
+            stress_client_eval_next_time(&mut clients[index], current_time.ticks());
+    }
+    Ok(())
+}
+
+fn stress_delete_disconnected_client_cnx(client: &mut StressClientContext) {
+    let token = {
+        let Some(cnx) = client.qclient.first_connection() else {
+            return;
+        };
+        (cnx.state() == State::Disconnected)
+            .then_some(cnx.own_token)
+            .flatten()
+    };
+    if let Some(token) = token {
+        client.qclient.delete_connection(token);
+        client.client_control = None;
+    }
+}
+
+fn stress_start_client_connection(ctx: &mut StressCtx, client_index: usize) -> crate::Result<()> {
+    let cnx_id_null = ConnectionId::with_size(0).ok_or(Error::Generic)?;
+    let simulated_time = ctx.simulated_time;
+    let server_addr = ctx.server_addr;
+    let test_id = ctx.next_test_id;
+    ctx.next_test_id += 1;
+
+    let client = &mut ctx.clients[client_index];
+    let control = StressClientCallback::new_control(&mut ctx.random_ctx);
+    let mut callback = StressClientCallback::new(Rc::clone(&ctx.shared), test_id);
+    let streams = callback.prepare_streams()?;
+    let cnx = client
+        .qclient
+        .create_connection(
+            cnx_id_null,
+            cnx_id_null,
+            Some(&server_addr),
+            Instant::from_ticks(simulated_time),
+            0,
+            Some(TEST_SNI),
+            Some(TEST_ALPN),
+            true,
+        )
+        .ok_or(Error::Memory)?;
+    client.client_control = Some(control);
+    cnx.set_callback(Some(Box::new(callback)));
+    for (stream_id, buf) in streams {
+        cnx.add_to_stream(stream_id, &buf, true)?;
+    }
+    cnx.start_client()?;
+    ctx.nb_connections = ctx.nb_connections.saturating_add(1);
+    Ok(())
+}
+
+fn stress_loop_poll_context(ctx: &mut StressCtx) -> crate::Result<()> {
+    let now = Instant::from_ticks(ctx.simulated_time);
+    stress_submit_sp_packets_server(&mut ctx.qserver, &mut ctx.clients, now)?;
+
+    let delay_max = 100_000_000i64;
+    let server_delay = ctx.qserver.next_wake_delay(now, delay_max).max(0) as u64;
+    let mut best_wake_time = ctx.simulated_time.saturating_add(server_delay);
+    let mut client_index = None;
+    if let Some((index, client)) = ctx
+        .clients
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, client)| client.client_next_time)
+        && client.client_next_time < best_wake_time
+    {
+        best_wake_time = client.client_next_time;
+        client_index = Some(index);
+    }
+
+    ctx.simulated_time = best_wake_time;
+    let now = Instant::from_ticks(ctx.simulated_time);
+
+    let Some(index) = client_index else {
+        return stress_prepare_server_packet(
+            &mut ctx.qserver,
+            &mut ctx.clients,
+            ctx.server_addr,
+            now,
+        );
+    };
+
+    if ctx.clients[index].qclient.current_number_connections() == 0 {
+        stress_start_client_connection(ctx, index)?;
+    } else {
+        let client_addr = ctx.clients[index].client_addr;
+        if ctx.clients[index]
+            .s_to_c_link
+            .packets
+            .front()
+            .is_some_and(|packet| packet.arrival_time <= now)
+        {
+            let client = &mut ctx.clients[index];
+            stress_handle_packet_arrival(
+                &mut client.qclient,
+                &mut client.s_to_c_link,
+                client_addr,
+                now,
+            )?;
+        }
+
+        if ctx.clients[index]
+            .c_to_s_link
+            .packets
+            .front()
+            .is_some_and(|packet| packet.arrival_time <= now)
+        {
+            let client = &mut ctx.clients[index];
+            stress_handle_packet_arrival(
+                &mut ctx.qserver,
+                &mut client.c_to_s_link,
+                ctx.server_addr,
+                now,
+            )?;
+        }
+
+        {
+            let client = &mut ctx.clients[index];
+            stress_submit_sp_packets_client(client, now)?;
+        }
+
+        let should_prepare = {
+            let client = &mut ctx.clients[index];
+            client
+                .qclient
+                .earliest_cnx_to_wake(Instant::from_ticks(0))
+                .is_some_and(|cnx| cnx.next_wake_time <= now)
+        };
+        if should_prepare {
+            let client = &mut ctx.clients[index];
+            stress_prepare_client_packet(client, ctx.server_addr, now)?;
+        }
+    }
+
+    let client = &mut ctx.clients[index];
+    stress_delete_disconnected_client_cnx(client);
+    client.client_next_time = stress_client_eval_next_time(client, ctx.simulated_time);
+    Ok(())
 }
 
 fn stress_or_fuzz_test(
     duration: u64,
     wall_time_max: u64,
-    mut fuzzer: Option<&mut dyn StressFuzzer>,
+    fuzzer: Option<StressFuzzerConfig>,
 ) -> crate::Result<()> {
-    let wall_time_start = crate::current_time();
-    let mut stress_random_ctx = 0xBABAC001BADDBAB1_u64;
-    let mut simulated_time = 0u64;
-    let mut nb_connections = 0u64;
-    let mut sim_time_next_log = 1_000_000u64;
-    let fuzz_installed = fuzzer.is_some();
+    let wall_time_start = current_time();
+    let mut stress_ctx = stress_create_ctx(fuzzer)?;
+    let mut sim_time_next_log = stress_ctx.simulated_time + 1_000_000;
 
-    let mut clients = core::array::from_fn::<_, STRESS_NB_CLIENTS, _>(|i| {
-        let random_latency = 1_000 + test_uniform_random(&mut stress_random_ctx, 99_000);
-        StressClient {
-            client_next_time: random_latency + (i as u64 * 1_000),
-            random_context: stress_random_ctx ^ ((i as u64) << 32),
-            nb_connections: 0,
-            nb_open_streams: 0,
-            connection_state: crate::State::ClientInit,
-            next_state_index: 0,
-            fuzz_installed,
-        }
-    });
-
-    while simulated_time < duration {
-        if crate::current_time().saturating_sub(wall_time_start) > wall_time_max {
-            return Err(crate::Error::InvalidState);
+    while stress_ctx.simulated_time < duration {
+        if current_time().saturating_sub(wall_time_start) > wall_time_max {
+            return Err(Error::InvalidState);
         }
 
-        let (client_index, next_time) = clients
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, client)| client.client_next_time)
-            .map(|(i, client)| (i, client.client_next_time))
-            .ok_or(crate::Error::InvalidState)?;
-        simulated_time = next_time;
-
-        if simulated_time > sim_time_next_log {
-            sim_time_next_log = simulated_time.saturating_add(1_000_000);
+        if stress_ctx.simulated_time > sim_time_next_log {
+            sim_time_next_log = stress_ctx.simulated_time.saturating_add(1_000_000);
         }
 
-        let client = &mut clients[client_index];
-        if client.nb_connections == 0 || test_uniform_random(&mut client.random_context, 16) == 0 {
-            client.nb_connections = client.nb_connections.saturating_add(1);
-            nb_connections = nb_connections.saturating_add(1);
-            client.connection_state = crate::State::ClientInit;
-            client.next_state_index = 0;
-        }
-        client.advance_connection_state();
-
-        let response_len =
-            257 + test_uniform_random(&mut stress_random_ctx, STRESS_RESPONSE_LENGTH_MAX - 257);
-        let open_delta = 1 + (response_len & 1);
-        client.nb_open_streams = (client.nb_open_streams + open_delta).min(STRESS_MAX_OPEN_STREAMS);
-        if test_uniform_random(&mut client.random_context, 4) == 0 {
-            client.nb_open_streams = client.nb_open_streams.saturating_sub(1);
-        }
-
-        if client.fuzz_installed {
-            let mut packet = [0u8; crate::MAX_PACKET_SIZE];
-            let packet_len = STRESS_FUZZ_HEADER_LENGTH + 32 + (response_len as usize % 512);
-            for (i, byte) in packet[..packet_len].iter_mut().enumerate() {
-                *byte = (client_index as u8)
-                    .wrapping_mul(31)
-                    .wrapping_add((simulated_time as u8).wrapping_add(i as u8));
-            }
-
-            let Some(fuzzer) = fuzzer.as_mut() else {
-                return Err(crate::Error::InvalidState);
-            };
-            let fuzzed_len = fuzzer.fuzz_state(
-                client.connection_state,
-                &mut packet,
-                packet_len,
-                STRESS_FUZZ_HEADER_LENGTH,
-            ) as usize;
-            if !(STRESS_FUZZ_HEADER_LENGTH..=packet.len()).contains(&fuzzed_len) {
-                return Err(crate::Error::InvalidState);
-            }
-        }
-
-        let wake_delta = 1_000 + test_uniform_random(&mut stress_random_ctx, 99_000);
-        client.client_next_time = simulated_time.saturating_add(wake_delta);
+        stress_loop_poll_context(&mut stress_ctx)?;
     }
 
-    if simulated_time < duration || nb_connections == 0 {
-        Err(crate::Error::InvalidState)
+    if stress_ctx.simulated_time < duration {
+        Err(Error::InvalidState)
     } else {
         Ok(())
     }
@@ -1017,10 +1755,16 @@ fn stress() {
 #[test]
 fn fuzz() {
     let duration: u64 = 60_000_000;
-    let mut fuzz_ctx = BasicFuzzer::new(duration);
+    let fuzz_ctx = Rc::new(RefCell::new(BasicFuzzer::new(duration)));
 
-    stress_or_fuzz_test(duration, duration, Some(&mut fuzz_ctx)).expect("fuzz_test");
+    stress_or_fuzz_test(
+        duration,
+        duration,
+        Some(StressFuzzerConfig::Basic(Rc::clone(&fuzz_ctx))),
+    )
+    .expect("fuzz_test");
 
+    let fuzz_ctx = fuzz_ctx.borrow();
     assert!(fuzz_ctx.nb_packets > 0, "fuzzer was never called");
     assert!(fuzz_ctx.nb_fuzzed > 0, "fuzzer never mutated packet bytes");
     assert!(
@@ -1038,11 +1782,16 @@ fn fuzz() {
 #[test]
 fn fuzz_initial() {
     let duration: u64 = 60_000_000;
-    let mut fuzz_ctx = InitialFuzzer::new(duration);
+    let fuzz_ctx = Rc::new(RefCell::new(InitialFuzzer::new(duration)));
 
-    stress_or_fuzz_test(2 * duration, 4 * duration, Some(&mut fuzz_ctx))
-        .expect("fuzz_initial_test");
+    stress_or_fuzz_test(
+        2 * duration,
+        4 * duration,
+        Some(StressFuzzerConfig::Initial(Rc::clone(&fuzz_ctx))),
+    )
+    .expect("fuzz_initial_test");
 
+    let fuzz_ctx = fuzz_ctx.borrow();
     let frame_count = fuzz_ctx.frame_count();
     assert!(
         fuzz_ctx.initial_fuzzing_done,

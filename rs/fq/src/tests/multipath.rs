@@ -5,6 +5,10 @@
 
 #![allow(non_snake_case)]
 
+use core::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use super::util::{
     TEST_ALPN, TEST_SNI, TestApiStreamDesc, TestDatagramCtx, ZeroRttTest, compare_text_files,
     multipath_init_params, multipath_test_add_links, multipath_test_kill_links,
@@ -17,13 +21,13 @@ use super::util::{
     tls_api_wait_for_timeout, wait_client_connection_ready, wait_client_migration_done,
     wait_multipath_ready, zero_rtt_test_one,
 };
-use crate::internal::Version;
+use crate::internal::{DatagramBufferArgument, Version};
 use crate::tls_api::{LABEL_QUIC_V1_KEY_BASE, setup_test_aead_context};
-use crate::utils::frames_uint64_encode;
+use crate::utils::{frames_uint64_decode, frames_uint64_encode};
 use crate::{
-    AES_128_GCM_SHA256, ConnectionId, ConnectionIdCallback, GROUP_SECP256R1, Instant,
-    MAX_PACKET_SIZE, PacketContext, PathStatus, RESET_SECRET_SIZE, aead_decrypt_mp,
-    aead_encrypt_mp, public_random_seed_64,
+    AES_128_GCM_SHA256, CallbackEvent, Connection, ConnectionId, ConnectionIdCallback,
+    DatagramActive, GROUP_SECP256R1, Instant, MAX_PACKET_SIZE, PacketContext, PathStatus,
+    RESET_SECRET_SIZE, StreamDataCallback, aead_decrypt_mp, aead_encrypt_mp, public_random_seed_64,
 };
 
 // ---------------------------------------------------------------------------
@@ -374,31 +378,97 @@ fn multipath_test_abandon_cycle(
 // C: `multipath_init_datagram_ctx`, `multipath_set_datagram_ready`,
 //    `multipath_verify_datagram_sent`, `multipath_datagram_send_loop`.
 
-fn multipath_init_datagram_ctx(
-    _test_ctx: &mut super::util::TestTlsApiCtx,
-    dg_ctx: &mut TestDatagramCtx,
+#[derive(Clone)]
+struct MultipathDatagramCallback {
+    dg_ctx: Rc<RefCell<TestDatagramCtx>>,
+}
+
+impl MultipathDatagramCallback {
+    fn new(dg_ctx: &Rc<RefCell<TestDatagramCtx>>) -> Self {
+        Self {
+            dg_ctx: Rc::clone(dg_ctx),
+        }
+    }
+}
+
+impl StreamDataCallback for MultipathDatagramCallback {
+    fn callback(
+        &mut self,
+        connection: &mut Connection,
+        stream_id: u64,
+        bytes: &[u8],
+        fin_or_event: CallbackEvent,
+        _stream_ctx: Option<&mut dyn Any>,
+    ) -> i32 {
+        let client_mode = usize::from(connection.client_mode);
+        match fin_or_event {
+            CallbackEvent::Datagram => multipath_datagram_recv(
+                &mut self.dg_ctx.borrow_mut(),
+                client_mode,
+                stream_id,
+                bytes,
+                connection.latest_receive_time.ticks(),
+            ),
+            CallbackEvent::DatagramAcked
+            | CallbackEvent::DatagramLost
+            | CallbackEvent::DatagramSpurious => {
+                multipath_datagram_ack(&mut self.dg_ctx.borrow_mut(), client_mode, fin_or_event)
+            }
+            _ => 0,
+        }
+    }
+
+    fn prepare_datagram<'buf, 'cnx, 'path>(
+        &mut self,
+        context: &mut DatagramBufferArgument<'buf, 'cnx, 'path>,
+        unique_path_id: u64,
+        allowed_space: usize,
+    ) -> i32 {
+        multipath_datagram_prepare(
+            &mut self.dg_ctx.borrow_mut(),
+            context,
+            unique_path_id,
+            allowed_space,
+        )
+    }
+}
+
+fn multipath_install_datagram_callback(
+    cnx: &mut Connection,
+    dg_ctx: &Rc<RefCell<TestDatagramCtx>>,
 ) {
-    *dg_ctx = TestDatagramCtx {
+    cnx.set_callback(Some(Box::new(MultipathDatagramCallback::new(dg_ctx))));
+}
+
+fn multipath_init_datagram_ctx(
+    test_ctx: &mut super::util::TestTlsApiCtx,
+    dg_ctx: &Rc<RefCell<TestDatagramCtx>>,
+) {
+    *dg_ctx.borrow_mut() = TestDatagramCtx {
         dg_max_size: MAX_PACKET_SIZE,
         dg_target: [100, 100],
         send_delay: 3_000,
         use_extended_provider_api: true,
         ..TestDatagramCtx::default()
     };
-    _test_ctx.qserver.enable_path_callbacks_default(true);
-    _test_ctx.cnx_client().enable_path_callbacks(true);
+    test_ctx
+        .qserver
+        .set_default_callback(Some(Box::new(MultipathDatagramCallback::new(dg_ctx))));
+    multipath_install_datagram_callback(test_ctx.cnx_client(), dg_ctx);
+    test_ctx.qserver.enable_path_callbacks_default(true);
+    test_ctx.cnx_client().enable_path_callbacks(true);
 }
 
 fn multipath_set_datagram_ready(
     test_ctx: &mut super::util::TestTlsApiCtx,
-    dg_ctx: &mut TestDatagramCtx,
+    dg_ctx: &Rc<RefCell<TestDatagramCtx>>,
     test_id: MultipathTestId,
 ) -> crate::Result<()> {
     if test_id == MultipathTestId::Datagram {
         test_ctx.cnx_client().mark_datagram_ready(true)?;
         test_ctx.cnx_server().mark_datagram_ready(true)?;
     } else {
-        dg_ctx.test_affinity = true;
+        dg_ctx.borrow_mut().test_affinity = true;
         test_ctx.cnx_client().mark_datagram_ready_path(0, true)?;
         test_ctx.cnx_server().mark_datagram_ready_path(0, true)?;
     }
@@ -438,57 +508,120 @@ fn multipath_verify_datagram_sent(
     }
 }
 
-fn multipath_queue_one_datagram(
-    cnx: &mut crate::internal::Connection,
+fn multipath_datagram_prepare(
     dg_ctx: &mut TestDatagramCtx,
-    dir: usize,
-    current_time: Instant,
-) -> crate::Result<bool> {
-    if dir >= 2 || !dg_ctx.is_ready[dir] || dg_ctx.dg_sent[dir] >= dg_ctx.dg_target[dir] {
-        return Ok(false);
+    context: &mut DatagramBufferArgument<'_, '_, '_>,
+    unique_path_id: u64,
+    allowed_space: usize,
+) -> i32 {
+    let (client_mode, current_time) = {
+        let connection = context.connection_mut();
+        (
+            usize::from(connection.client_mode),
+            connection.latest_progress_time.ticks(),
+        )
+    };
+
+    if client_mode >= 2 || (client_mode == 0 && allowed_space > dg_ctx.dg_max_size) {
+        return -1;
     }
 
-    let path_id = if dg_ctx.test_affinity {
-        0
-    } else {
-        dg_ctx.dg_sent[dir] & 1
-    };
-    let available = MAX_PACKET_SIZE.saturating_sub((dg_ctx.dg_sent[dir] % 6) as usize + 8);
+    if allowed_space < 24
+        || !dg_ctx.is_ready[client_mode]
+        || dg_ctx.dg_sent[client_mode] >= dg_ctx.dg_target[client_mode]
+        || (dg_ctx.test_affinity && unique_path_id != 0)
+    {
+        let _ = crate::provide_datagram_buffer_ex(context, 0, DatagramActive::NotActive);
+        return 0;
+    }
+
+    let sent_mod = (dg_ctx.dg_sent[client_mode] % 6) as usize;
+    let available = allowed_space.saturating_sub(sent_mod + 8);
     if available < 16 {
-        return Err(crate::Error::BufferTooSmall);
+        let _ = crate::provide_datagram_buffer_ex(context, 0, DatagramActive::NotActive);
+        return -1;
     }
 
-    let send_time = if dg_ctx.dg_sent[dir] == 0 {
-        current_time.ticks()
+    let active = if dg_ctx.test_affinity {
+        DatagramActive::ThisPathOnly
     } else {
-        dg_ctx.dg_time_ready[dir]
+        DatagramActive::AnyPath
     };
-    dg_ctx.dg_sent[dir] += 1;
+    let Some(payload) = crate::provide_datagram_buffer_ex(context, available, active) else {
+        return -1;
+    };
 
-    let mut payload = vec![0u8; available];
-    let rest = frames_uint64_encode(&mut payload, dg_ctx.dg_sent[dir])
-        .ok_or(crate::Error::BufferTooSmall)?;
-    let rest = frames_uint64_encode(rest, send_time).ok_or(crate::Error::BufferTooSmall)?;
-    rest.fill(b'd');
-    cnx.queue_datagram_frame(&payload)?;
-
-    dg_ctx.next_gen_time[dir] = dg_ctx.next_gen_time[dir].saturating_add(dg_ctx.send_delay);
-    dg_ctx.is_ready[dir] = false;
-
-    let receiver = 1 - dir;
-    dg_ctx.dg_recv[receiver] += 1;
-    if path_id == 0 {
-        dg_ctx.nb_recv_path_0[receiver] += 1;
+    let send_time = if dg_ctx.dg_sent[client_mode] == 0 {
+        current_time
     } else {
-        dg_ctx.nb_recv_path_other[receiver] += 1;
+        dg_ctx.dg_time_ready[client_mode]
+    };
+    dg_ctx.dg_sent[client_mode] += 1;
+
+    let Some(rest) = frames_uint64_encode(payload, dg_ctx.dg_sent[client_mode]) else {
+        return -1;
+    };
+    let Some(rest) = frames_uint64_encode(rest, send_time) else {
+        return -1;
+    };
+    rest.fill(b'd');
+
+    dg_ctx.next_gen_time[client_mode] =
+        dg_ctx.next_gen_time[client_mode].saturating_add(dg_ctx.send_delay);
+    dg_ctx.is_ready[client_mode] = false;
+    0
+}
+
+fn multipath_datagram_recv(
+    dg_ctx: &mut TestDatagramCtx,
+    client_mode: usize,
+    unique_path_id: u64,
+    bytes: &[u8],
+    current_time: u64,
+) -> i32 {
+    if client_mode >= 2 {
+        return -1;
     }
 
-    Ok(true)
+    dg_ctx.dg_recv[client_mode] += 1;
+    if bytes.len() > 16 {
+        if unique_path_id == 0 {
+            dg_ctx.nb_recv_path_0[client_mode] += 1;
+        } else {
+            dg_ctx.nb_recv_path_other[client_mode] += 1;
+        }
+
+        if let Some((tail, _number_sent)) = frames_uint64_decode(bytes)
+            && let Some((_tail, time_sent)) = frames_uint64_decode(tail)
+            && time_sent <= current_time
+        {
+            // Multipath verification only needs receive and path counters.
+        }
+    }
+    0
+}
+
+fn multipath_datagram_ack(
+    dg_ctx: &mut TestDatagramCtx,
+    client_mode: usize,
+    event: CallbackEvent,
+) -> i32 {
+    if client_mode >= 2 {
+        return -1;
+    }
+
+    match event {
+        CallbackEvent::DatagramAcked => dg_ctx.dg_acked[client_mode] += 1,
+        CallbackEvent::DatagramLost => dg_ctx.dg_nacked[client_mode] += 1,
+        CallbackEvent::DatagramSpurious => dg_ctx.dg_spurious[client_mode] += 1,
+        _ => return -1,
+    }
+    0
 }
 
 fn multipath_datagram_send_loop(
     test_ctx: &mut super::util::TestTlsApiCtx,
-    dg_ctx: &mut TestDatagramCtx,
+    dg_ctx: &Rc<RefCell<TestDatagramCtx>>,
     loss_mask: &mut u64,
     simulated_time: &mut Instant,
 ) -> crate::Result<()> {
@@ -504,16 +637,21 @@ fn multipath_datagram_send_loop(
         && test_ctx.server_ready()
     {
         let mut was_active = false;
-        let time_out = test_datagram_next_time_ready(dg_ctx);
+        let time_out = test_datagram_next_time_ready(&dg_ctx.borrow());
         nb_trials += 1;
 
         tls_api_one_sim_round(test_ctx, simulated_time, time_out, &mut was_active)?;
 
         for dir in 0..2 {
-            if !dg_ctx.is_ready[dir]
-                && test_datagram_check_ready(dg_ctx, dir, simulated_time.ticks())
-            {
-                if dg_ctx.test_affinity {
+            let (should_mark_ready, test_affinity) = {
+                let mut dg_ctx = dg_ctx.borrow_mut();
+                let should_mark_ready = !dg_ctx.is_ready[dir]
+                    && test_datagram_check_ready(&mut dg_ctx, dir, simulated_time.ticks());
+                (should_mark_ready, dg_ctx.test_affinity)
+            };
+
+            if should_mark_ready {
+                if test_affinity {
                     if dir == 0 {
                         test_ctx.cnx_server().mark_datagram_ready_path(0, true)?;
                     } else {
@@ -525,13 +663,6 @@ fn multipath_datagram_send_loop(
                     test_ctx.cnx_client().mark_datagram_ready(true)?;
                 }
             }
-
-            let queued = if dir == 0 {
-                multipath_queue_one_datagram(test_ctx.cnx_server(), dg_ctx, dir, *simulated_time)?
-            } else {
-                multipath_queue_one_datagram(test_ctx.cnx_client(), dg_ctx, dir, *simulated_time)?
-            };
-            was_active |= queued;
         }
 
         if was_active {
@@ -554,10 +685,6 @@ fn multipath_datagram_send_loop(
             if test_ctx.immediate_exit || (client_empty && server_empty) {
                 break;
             }
-        }
-
-        if dg_ctx.dg_sent[0] >= dg_ctx.dg_target[0] && dg_ctx.dg_sent[1] >= dg_ctx.dg_target[1] {
-            break;
         }
     }
 
@@ -868,22 +995,9 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
         multipath_init_callbacks(&mut test_ctx, test_id).expect("init callbacks");
     }
 
-    let mut dg_ctx = TestDatagramCtx {
-        dg_max_size: 0,
-        dg_target: [0; 2],
-        dg_sent: [0; 2],
-        dg_recv: [0; 2],
-        send_delay: 0,
-        next_gen_time: [0; 2],
-        dg_time_ready: [0; 2],
-        is_ready: [false; 2],
-        test_affinity: false,
-        use_extended_provider_api: false,
-        nb_recv_path_0: [0; 2],
-        nb_recv_path_other: [0; 2],
-    };
+    let dg_ctx = Rc::new(RefCell::new(TestDatagramCtx::default()));
     if matches!(test_id, Datagram | DgAf) {
-        multipath_init_datagram_ctx(&mut test_ctx, &mut dg_ctx);
+        multipath_init_datagram_ctx(&mut test_ctx, &dg_ctx);
     }
 
     test_ctx.qserver.set_binlog(Some(".")).ok();
@@ -926,6 +1040,9 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
         test_ctx.has_cnx_server(),
         "server connection not accepted during multipath handshake"
     );
+    if matches!(test_id, Datagram | DgAf) {
+        multipath_install_datagram_callback(test_ctx.cnx_server(), &dg_ctx);
+    }
 
     let client_multipath = test_ctx.cnx_client().is_multipath_enabled();
     let server_multipath = test_ctx.cnx_server().is_multipath_enabled();
@@ -1096,18 +1213,12 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
 
     // Trigger datagram transmission.
     if matches!(test_id, Datagram | DgAf) {
-        multipath_set_datagram_ready(&mut test_ctx, &mut dg_ctx, test_id)
-            .expect("set datagram ready");
+        multipath_set_datagram_ready(&mut test_ctx, &dg_ctx, test_id).expect("set datagram ready");
     }
 
     // Final data loop.
     let final_data_result = if matches!(test_id, Datagram | DgAf) {
-        multipath_datagram_send_loop(
-            &mut test_ctx,
-            &mut dg_ctx,
-            &mut loss_mask,
-            &mut simulated_time,
-        )
+        multipath_datagram_send_loop(&mut test_ctx, &dg_ctx, &mut loss_mask, &mut simulated_time)
     } else {
         tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)
     };
@@ -1272,7 +1383,7 @@ fn multipath_test_one(max_completion_microsec: u64, test_id: MultipathTestId) {
     }
 
     if matches!(test_id, Datagram | DgAf) {
-        multipath_verify_datagram_sent(&dg_ctx, test_id).expect("datagram verify");
+        multipath_verify_datagram_sent(&dg_ctx.borrow(), test_id).expect("datagram verify");
     }
 
     if test_id == Backup {
@@ -1673,7 +1784,9 @@ fn multipath_qlog() {
 
 /// C: `multipath_quality_test`.
 #[test]
-fn multipath_quality() {}
+fn multipath_quality() {
+    multipath_test_one(1_000_000, MultipathTestId::Quality);
+}
 
 /// C: `multipath_renew_test`.
 #[test]

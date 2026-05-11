@@ -30,11 +30,14 @@ fn cert_verify_test_one(
     .expect("cert_verify_set_ctx");
     let mut loss_mask: u64 = 0;
     let result = tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time);
-    if expect_success {
-        assert!(result.is_ok(), "expected TLS handshake to succeed");
-    } else {
-        assert!(result.is_err(), "expected TLS handshake to fail");
-    }
+    let loop_ok = result.is_ok();
+    let client_ready = loop_ok && test_ctx.client_ready();
+    let server_ready = loop_ok && test_ctx.server_ready();
+    let success = loop_ok && client_ready && server_ready;
+    assert_eq!(
+        success, expect_success,
+        "expected TLS handshake success={expect_success}, got loop_ok={loop_ok}, client_ready={client_ready}, server_ready={server_ready}",
+    );
 }
 
 /// C: `cert_verify_bad_cert_test` in `picoquictest/cert_verify_test.c`.

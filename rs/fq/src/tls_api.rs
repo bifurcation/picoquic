@@ -1839,7 +1839,11 @@ fn install_private_key_from_active_provider(
         #[cfg(feature = "sys-fusion")]
         CryptoProvider::Fusion => Err(Error::Generic),
         #[cfg(feature = "sys-mbedtls")]
-        CryptoProvider::MbedTls => Err(Error::Generic),
+        CryptoProvider::MbedTls => {
+            crate::sys::mbedtls::load_private_key_and_sign(std::path::Path::new(file_name))?;
+            material.private_key = Some(load_private_key_material(file_name)?);
+            Ok(())
+        }
     }
 }
 
@@ -3684,7 +3688,10 @@ pub fn get_public_key_from_private_file(file_name: &str) -> Result<Option<Vec<u8
         #[cfg(feature = "sys-fusion")]
         Some(CryptoProvider::Fusion) => Ok(None),
         #[cfg(feature = "sys-mbedtls")]
-        Some(CryptoProvider::MbedTls) => Err(Error::Generic),
+        Some(CryptoProvider::MbedTls) => {
+            crate::sys::mbedtls::public_key_der_from_private_file(std::path::Path::new(file_name))
+                .map(Some)
+        }
     }
 }
 
@@ -3992,6 +3999,14 @@ const PICOQUIC_KEY_EXCHANGES_NB_MAX: usize = 4;
 const GROUP_X25519: u16 = 29;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TlsProviderKind {
+    Minicrypto,
+    OpenSsl,
+    Fusion,
+    MbedTls,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum CryptoProvider {
     Minicrypto,
     #[cfg(feature = "sys-openssl")]
@@ -4000,6 +4015,50 @@ enum CryptoProvider {
     Fusion,
     #[cfg(feature = "sys-mbedtls")]
     MbedTls,
+}
+
+impl CryptoProvider {
+    fn kind(self) -> TlsProviderKind {
+        match self {
+            CryptoProvider::Minicrypto => TlsProviderKind::Minicrypto,
+            #[cfg(feature = "sys-openssl")]
+            CryptoProvider::OpenSsl => TlsProviderKind::OpenSsl,
+            #[cfg(feature = "sys-fusion")]
+            CryptoProvider::Fusion => TlsProviderKind::Fusion,
+            #[cfg(feature = "sys-mbedtls")]
+            CryptoProvider::MbedTls => TlsProviderKind::MbedTls,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsCipherSuiteProvider {
+    pub id: u16,
+    pub high_memory_suite: Option<TlsProviderKind>,
+    pub low_memory_suite: Option<TlsProviderKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsKeyExchangeProvider {
+    pub id: u16,
+    pub provider: Option<TlsProviderKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsProviderSnapshot {
+    pub cipher_suites: Vec<TlsCipherSuiteProvider>,
+    pub key_exchanges: Vec<TlsKeyExchangeProvider>,
+    pub key_exchange_secp256r1: Option<TlsProviderKind>,
+    pub crypto_random_provider: Option<TlsProviderKind>,
+    pub verify_certificate_provider: Option<TlsProviderKind>,
+    pub private_key_loader: Option<TlsProviderKind>,
+    pub sign_certificate_disposer: Option<TlsProviderKind>,
+    pub cert_chain_loader: Option<TlsProviderKind>,
+    pub public_key_loader: Option<TlsProviderKind>,
+}
+
+fn provider_kind(provider: Option<CryptoProvider>) -> Option<TlsProviderKind> {
+    provider.map(CryptoProvider::kind)
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -4169,7 +4228,6 @@ impl TlsApiState {
 
     /// Register the certificate-verification callback family.
     /// C: `picoquic_register_verify_certificate_provider_fn`.
-    #[cfg(feature = "sys-openssl")]
     fn register_verify_certificate_provider(&mut self, provider: CryptoProvider) {
         self.verify_certificate_provider = Some(provider);
     }
@@ -4259,8 +4317,63 @@ fn mbedtls_load_locked(state: &mut TlsApiState, unload: i32) {
             Some(CryptoProvider::MbedTls),
             Some(CryptoProvider::MbedTls),
             Some(CryptoProvider::MbedTls),
-            None,
+            Some(CryptoProvider::MbedTls),
         ));
+        state.register_verify_certificate_provider(CryptoProvider::MbedTls);
+    }
+}
+
+pub fn ptls_mbedtls_init() -> Result<(), Error> {
+    #[cfg(feature = "sys-mbedtls")]
+    {
+        crate::sys::mbedtls_load(false);
+        crate::sys::mbedtls::init()?;
+        Ok(())
+    }
+    #[cfg(not(feature = "sys-mbedtls"))]
+    {
+        Err(Error::Generic)
+    }
+}
+
+pub fn ptls_mbedtls_free() {
+    #[cfg(feature = "sys-mbedtls")]
+    {
+        crate::sys::mbedtls::free();
+    }
+    #[cfg(feature = "sys-mbedtls")]
+    crate::sys::mbedtls_load(true);
+}
+
+pub fn tls_provider_snapshot() -> TlsProviderSnapshot {
+    let state = tls_api_state();
+    TlsProviderSnapshot {
+        cipher_suites: state
+            .cipher_suites
+            .iter()
+            .filter(|slot| slot.high_memory_suite.is_some())
+            .map(|slot| TlsCipherSuiteProvider {
+                id: slot.id,
+                high_memory_suite: provider_kind(slot.high_memory_suite),
+                low_memory_suite: provider_kind(slot.low_memory_suite),
+            })
+            .collect(),
+        key_exchanges: state
+            .key_exchanges
+            .iter()
+            .filter(|slot| slot.provider.is_some())
+            .map(|slot| TlsKeyExchangeProvider {
+                id: slot.id,
+                provider: provider_kind(slot.provider),
+            })
+            .collect(),
+        key_exchange_secp256r1: provider_kind(state.key_exchange_secp256r1),
+        crypto_random_provider: provider_kind(state.crypto_random_provider),
+        verify_certificate_provider: provider_kind(state.verify_certificate_provider),
+        private_key_loader: provider_kind(state.private_key_loader),
+        sign_certificate_disposer: provider_kind(state.sign_certificate_disposer),
+        cert_chain_loader: provider_kind(state.cert_chain_loader),
+        public_key_loader: provider_kind(state.public_key_loader),
     }
 }
 
@@ -4798,17 +4911,22 @@ mod test {
         material.cipher_suite_id = cipher_suite_id;
         quic.tls_client_config = Some(Box::new(ConfiguredTlsClientConfig { material }));
 
-        quic.create_connection(
-            ConnectionId::default(),
-            ConnectionId::default(),
-            None,
-            Instant::from_ticks(0),
-            0,
-            None,
-            None,
-            true,
-        )
-        .expect("client connection")
+        let token = {
+            let cnx = quic
+                .create_connection(
+                    ConnectionId::default(),
+                    ConnectionId::default(),
+                    None,
+                    Instant::from_ticks(0),
+                    0,
+                    None,
+                    None,
+                    true,
+                )
+                .expect("client connection");
+            cnx.own_token.expect("client connection token")
+        };
+        quic.connections.remove(token).expect("client connection")
     }
 
     #[test]

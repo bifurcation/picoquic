@@ -1268,7 +1268,8 @@ fn mediatest_media_one(id: MediatestId, spec: &MediatestSpec) -> crate::Result<(
 pub fn mediatest_one(id: MediatestId, spec: &MediatestSpec) -> crate::Result<()> {
     if matches!(
         id,
-        MediatestId::VideoAudio
+        MediatestId::Video
+            | MediatestId::VideoAudio
             | MediatestId::VideoDataAudio
             | MediatestId::Worst
             | MediatestId::Video2Down
@@ -1408,11 +1409,16 @@ pub fn mediatest_one(id: MediatestId, spec: &MediatestSpec) -> crate::Result<()>
 // ---------------------------------------------------------------------------
 // Test entries.
 
+fn mediatest_bbr_algorithm() -> &'static crate::CongestionAlgorithm {
+    crate::register_all_congestion_control_algorithms();
+    crate::get_congestion_algorithm("bbr").expect("bbr congestion algorithm")
+}
+
 /// Basic video-only media test.  C: `mediatest_video_test`.
 #[test]
 fn mediatest_video() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.01,
         do_video: true,
         ..Default::default()
@@ -1424,7 +1430,7 @@ fn mediatest_video() {
 #[test]
 fn mediatest_video_audio() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.01,
         do_video: true,
         do_audio: true,
@@ -1437,7 +1443,7 @@ fn mediatest_video_audio() {
 #[test]
 fn mediatest_video_data_audio() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.01,
         do_video: true,
         do_audio: true,
@@ -1452,7 +1458,7 @@ fn mediatest_video_data_audio() {
 #[test]
 fn mediatest_video2_down() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.01,
         do_video: true,
         do_video2: true,
@@ -1470,7 +1476,7 @@ fn mediatest_video2_down() {
 #[test]
 fn mediatest_video2_back() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.01,
         do_video: true,
         do_video2: true,
@@ -1487,7 +1493,7 @@ fn mediatest_video2_back() {
 #[test]
 fn mediatest_video2_probe() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.1,
         do_video: true,
         do_video2: true,
@@ -1505,7 +1511,7 @@ fn mediatest_video2_probe() {
 #[test]
 fn mediatest_wifi() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.01,
         do_video: true,
         do_video2: true,
@@ -1528,7 +1534,7 @@ fn mediatest_wifi() {
 #[test]
 fn mediatest_worst() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.01,
         do_video: true,
         do_audio: true,
@@ -1543,7 +1549,7 @@ fn mediatest_worst() {
 #[test]
 fn mediatest_no_coal() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.01,
         do_video: true,
         do_audio: true,
@@ -1559,7 +1565,7 @@ fn mediatest_no_coal() {
 #[test]
 fn mediatest_suspension() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.1,
         do_video: true,
         do_video2: true,
@@ -1581,7 +1587,7 @@ fn mediatest_suspension() {
 #[test]
 fn mediatest_suspension2() {
     let spec = MediatestSpec {
-        ccalgo: crate::get_congestion_algorithm("bbr"),
+        ccalgo: Some(mediatest_bbr_algorithm()),
         bandwidth: 0.1,
         do_video: true,
         do_video2: true,

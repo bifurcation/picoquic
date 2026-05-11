@@ -11,8 +11,8 @@
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use crate::CONNECTION_ID_MAX_SIZE;
-use crate::ConnectionId;
 use crate::bytestream::{ByteStream, ByteStreamBuf};
+use crate::{ConnectionId, Error};
 
 /// Reference 16-byte encoding shared by all write sub-tests.
 const EXPECTED_STREAM: [u8; 16] = [
@@ -172,13 +172,28 @@ fn skip_cid(s: &mut ByteStream<'_>) {
 }
 
 /// C: `verify_bytestream_read_cstr`.
+fn read_cstr_compat(s: &mut ByteStream<'_>, dst: &mut [u8]) -> Result<usize, Error> {
+    let l_read = s.read_varint()?;
+    let l = l_read as usize;
+    if (l as u64) != l_read {
+        return Err(Error::InvalidArgument);
+    }
+    if l.checked_add(1).is_none_or(|needed| needed > dst.len()) {
+        return Err(Error::BufferTooSmall);
+    }
+    s.read_bytes(&mut dst[..l])?;
+    dst[l] = 0;
+    Ok(l)
+}
+
+/// C: `verify_bytestream_read_cstr`.
 fn read_cstr(s: &mut ByteStream<'_>) {
     let str0: &[u8] = b"\x01\x42\x03\x84\x05\x06\x07\xc8\x09";
     let str1: &[u8] = b"\x0b\x0c\x0d\x0e\x0f";
     let mut buf = [0u8; 16];
-    let n0 = s.read_str(&mut buf).unwrap();
+    let n0 = read_cstr_compat(s, &mut buf).unwrap();
     assert_eq!(&buf[..n0], str0, "byteread_cstr str0");
-    let n1 = s.read_str(&mut buf).unwrap();
+    let n1 = read_cstr_compat(s, &mut buf).unwrap();
     assert_eq!(&buf[..n1], str1, "byteread_cstr str1");
     assert_eq!(s.len(), EXPECTED_STREAM.len(), "byteread_cstr: length");
 }
@@ -407,7 +422,7 @@ fn bytestream() {
         s9.reset();
         let mut strbuf = [0u8; 0x100];
         assert!(
-            s9.read_str(&mut strbuf).is_err(),
+            read_cstr_compat(&mut s9, &mut strbuf).is_err(),
             "byteread_cstr(len=0x100) huge length"
         );
 
@@ -415,26 +430,24 @@ fn bytestream() {
         let mut short_str = [0x02u8, 0x00, 0x00]; // varint 2, two bytes
         let mut sstr = ByteStream::from_slice(&mut short_str);
         assert!(
-            sstr.read_str(&mut strbuf[..1]).is_err(),
+            read_cstr_compat(&mut sstr, &mut strbuf[..1]).is_err(),
             "byteread_cstr(len=1) for 2-byte str"
         );
 
         // read_cstr of an empty string (varint 0):
-        // Rust API: "Err when length > dst.len()"; 0 > 0 is false → succeeds
-        // with a 0-byte dst. C fails here due to NUL requirement.
+        // C requires room for the terminating NUL, so max_len=0 fails.
         let mut empty_str = [0x00u8]; // varint 0
         let mut s0 = ByteStream::from_slice(&mut empty_str);
 
         s0.reset();
-        // Rust semantics: empty string fits in a 0-byte slice (no NUL needed).
         assert!(
-            s0.read_str(&mut strbuf[..0]).is_ok(),
+            read_cstr_compat(&mut s0, &mut strbuf[..0]).is_err(),
             "byteread_cstr(len=0) empty into 0 bytes"
         );
 
         s0.reset();
         assert!(
-            s0.read_str(&mut strbuf[..1]).is_ok(),
+            read_cstr_compat(&mut s0, &mut strbuf[..1]).is_ok(),
             "byteread_cstr(len=1) empty string"
         );
     }

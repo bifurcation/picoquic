@@ -1393,18 +1393,20 @@ Phase 4F does not overwrite `xlate/phase4d_results.json` or
 * `xlate/function_translation_map.json` reflects the final merged Rust
   spans for the revalidated functions.
 
-## Phase 5 — Get the Rust test suite passing
+## Phase 5 — Align and revalidate the Rust tests
 
-Phase 5 starts after the implementation-mapping work has converged and
-Phase 4F has revalidated the final merged implementation state well
-enough that test failures are meaningful.  Its goal is simple: every C
-test that is in v1 scope has a faithful Rust counterpart, and
-`cargo test` is green.
+Phase 5 starts after the implementation-mapping work has converged far
+enough that test/API correspondence can be judged.  Phase 4F
+implementation revalidation may run before this point or be explicitly
+deferred; Phase 5 itself is scoped to tests.  Its goal is to make sure
+every C test that is in v1 scope has a faithful Rust counterpart, and
+that the Rust tests call the right Rust API and harness surface.
 
 Phase 5 deliberately separates test-correspondence work from ordinary
 failure debugging.  A failing Rust test is not useful evidence until we
-know the Rust test is actually checking the same behavior as the C
-test.
+know the Rust test is actually checking the same behavior as the C test
+and that this correspondence survived any parallel repair merges.
+Driving the suite green is Phase 6.
 
 ## Phase 5A — Test correspondence audit
 
@@ -1466,11 +1468,13 @@ For each `needs_fix` entry:
    with placeholders.
 4. If repair-level inspection proves Phase 5A was too conservative,
    mark the entry `ok`.
-5. If the test cannot be made faithful because implementation support
-   is still missing, mark it `blocked` with the concrete dependency.
-6. Run the relevant narrow test when obvious, then the standard cargo
-   gates: `cargo fmt`, `cargo test --no-run`, and
-   `cargo clippy --tests --all-features -- -D warnings`.
+5. If the test cannot be made faithful because the necessary Rust API or
+   test-harness surface is missing or ambiguous, mark it `blocked` with
+   the concrete dependency.  Do not mark a test blocked merely because
+   the current implementation would fail the test; that is Phase 6
+   work.
+6. Run `cargo fmt` and compile-oriented gates such as `cargo check
+   --tests` when useful.  Do not run full `cargo test` in Phase 5B.
 
 `scripts/phase5b.py` writes:
 
@@ -1487,14 +1491,97 @@ from `needs_fix` to `fixed`, `ok`, or `blocked`, and refreshes
 * No Phase 5A entries remain in `needs_fix`.
 * Every confirmed test mismatch is fixed or blocked with a concrete
   human-actionable reason.
-* The cargo build/lint gates pass after every Rust test repair batch.
+* Repaired Rust tests compile as test items and remain runnable by the
+  Rust test harness, though they may fail because implementation work is
+  still incomplete.
 
-## Phase 5C — Debug remaining failing tests
+## Phase 5C — Post-merge test revalidation
 
-Phase 5C runs the Rust test suite and debugs any failures that remain
-after the test correspondence audit and repair passes.  At this point a
-failure is assumed to be an implementation bug, a test bug that slipped
-through Phase 5A/5B, a fixture issue, or a harness issue.
+Phase 5C verifies that the final merged test tree still preserves the
+C-to-Rust test/API correspondence established by Phase 5A and Phase 5B.
+It is the test-side analogue of Phase 4F: a read-only revalidation pass
+after parallel test-repair worktrees have been merged back into the main
+branch.
+
+Phase 5C is not a test-passage phase.  It does not debug implementation
+failures and does not run the full Rust suite.  It answers whether the
+Rust tests still exist, compile as tests, call the intended Rust API or
+harness surface, and faithfully express the C test intent.
+
+### Inputs
+
+Phase 5C reads:
+
+* `xlate/test_translation_map.json` after the final test-repair merge,
+  refreshing it first if Rust test spans changed.
+* `xlate/phase5a_reviews.json` for the original test-correspondence
+  classifications.
+* `xlate/phase5b_repairs.json` and any merged worker repair artifacts
+  for the set of tests that were fixed, marked OK, blocked, or still
+  unresolved during Phase 5B.
+* The current C test sources, Rust test sources, Rust test helpers, and
+  fixtures in the merged branch.
+
+The selected worklist includes Phase 5B-touched tests plus any remaining
+Phase 5A entries classified as `needs_fix` or `blocked`.
+
+### Procedure
+
+For each selected test:
+
+1. Read the C test body, directly relevant C helpers, the Rust test,
+   Rust test helpers, fixtures, and the Phase 5A/5B rationale.
+2. Re-run a context-aware Phase 5A-style correspondence review on the
+   current merged tree.
+3. Classify the final result as:
+   * `ok` — the merged Rust test is a faithful translation of the C test
+     intent and calls the right Rust API or harness surface.
+   * `needs_fix` — a real test/API correspondence mismatch remains or a
+     worker test fix appears to have been lost during merge integration.
+   * `blocked` — the test cannot currently be made faithful and runnable
+     because the necessary Rust API or test-harness surface is missing
+     or ambiguous.
+4. Compare the final classification with the Phase 5B baseline.  Any
+   `fixed` or `ok` baseline entry that revalidates as `needs_fix` or
+   `blocked` is treated as a likely merge regression and routed back to
+   Phase 5B or a focused follow-up repair.
+
+Phase 5C should be run in parallel shards when useful.  Reviewers must
+not edit source files, update Phase 5A/5B state, or run broad test
+suites.
+
+### Artifacts
+
+`scripts/phase5c.py` writes:
+
+* `xlate/phase5c_revalidation.json` — final-tree test classifications,
+  baseline comparisons, and regression flags.
+* `xlate/phase5c_revalidation.html` — human-readable summary of final
+  OK, remaining `needs_fix`, blocked, and likely-regression entries.
+* `xlate/prompts/phase5c/` and `xlate/<agent>_logs/phase5c/` — prompts
+  and transcripts for each read-only review batch.
+
+Phase 5C does not overwrite `xlate/phase5a_reviews.json` or
+`xlate/phase5b_repairs.json`.
+
+### Acceptance gate
+
+* Every selected Phase 5B-touched, unresolved, or blocked test entry has
+  a Phase 5C final-tree result.
+* No Phase 5B `fixed` or `ok` baseline entry revalidates as `needs_fix`
+  or `blocked` without being explicitly routed to a repair follow-up.
+* Remaining `needs_fix` and `blocked` entries are listed with concrete,
+  human-actionable rationales.
+* `xlate/test_translation_map.json` reflects the final merged Rust test
+  spans for the revalidated tests.
+
+## Phase 6 — Debug remaining failing tests
+
+Phase 6 runs the Rust test suite and debugs any failures that remain
+after the test correspondence audit, repair, and revalidation passes.
+At this point a failure is assumed to be an implementation bug, a test
+bug that slipped through Phase 5A/5B/5C, a fixture issue, or a harness
+issue.
 
 For each failing Rust test:
 
@@ -1506,12 +1593,24 @@ For each failing Rust test:
 4. Run the failing test by name, then the cargo build/lint gates.
 5. Re-run the full suite periodically and at the end.
 
-`scripts/phase5c.py` writes:
+**Scope of test edits.**  The only legitimate changes to Rust test
+code in Phase 6 are fixes to translation bugs — edits that bring the
+Rust test *closer* to the C test it mirrors.  Concretely, that means
+correcting things like wrong constants, off-by-one setup, miswired
+fixtures, or harness calls whose semantics diverge from the C
+counterpart.  Any edit that moves the Rust test *away* from the C
+test's behavior is out of bounds: do not delete or relax assertions,
+loosen tolerances, skip cases, mark tests `#[ignore]`, or otherwise
+weaken coverage to turn the suite green.  If the test faithfully
+reflects the C test and is still failing, the bug is in the
+implementation (or fixture/harness) and must be fixed there.
 
-* `xlate/phase5c_failures.json` — latest cargo-test summary and per-test
+`scripts/phase6.py` writes:
+
+* `xlate/phase6_failures.json` — latest cargo-test summary and per-test
   debug status.
-* `xlate/phase5c_report.html` — human-readable failure/debug report.
-* `xlate/phase5c_runs/<timestamp>.log` — raw cargo-test output.
+* `xlate/phase6_report.html` — human-readable failure/debug report.
+* `xlate/phase6_runs/<timestamp>.log` — raw cargo-test output.
 
 ### Acceptance gate
 
@@ -1528,7 +1627,7 @@ For each failing Rust test:
 * `bindgen` — per-file allowlisted reference output (never shipped).
 * Python scripts — driver for Phase 1 module skeletons; `phase3a.py`,
   `phase4.py`, and the Phase 4A/4B/4C/4D/4E/4F and Phase 5A/5B/5C
-  map, audit, repair, revalidation, and debug drivers.
+  map, audit, repair, and revalidation drivers; Phase 6 debug driver.
 * `cargo check` and `cargo test` — inner loop, manually invoked.
 * `cargo fmt` and `cargo clippy` — style and lint gates.
 

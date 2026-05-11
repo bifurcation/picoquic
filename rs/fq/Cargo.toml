@@ -9,7 +9,7 @@ default = []
 # for the implementations it actually links.  See `src/sys/`.
 sys-picotls = []
 sys-openssl = ["dep:openssl", "dep:openssl-sys", "dep:foreign-types"]
-sys-mbedtls = []
+sys-mbedtls = ["dep:mbedtls"]
 sys-fusion = []
 
 [dependencies]
@@ -54,3 +54,4 @@ libc = "0.2"
 openssl = { version = "0.10", optional = true }
 openssl-sys = { version = "0.9", optional = true }
 foreign-types = { version = "0.3", optional = true }
+mbedtls = { version = "0.13.5", optional = true, default-features = false, features = ["std", "time", "x509"] }

@@ -46,6 +46,7 @@ REPAIRS = XLATE / "phase5b_repairs.json"
 REPAIRS_LOCK = XLATE / "phase5b_repairs.lock"
 REPORT = XLATE / "phase5b_report.html"
 PROMPTS_DIR = XLATE / "prompts" / "phase5b"
+PHASE5C_RESULTS = XLATE / "phase5c_revalidation.json"
 
 OUTCOMES = {"fixed", "ok", "blocked"}
 ALLOWED_TOOLS = (
@@ -125,6 +126,46 @@ def needs_fix_entries(
             continue
         item = dict(entry)
         item["phase5a_review"] = review
+        out.append(item)
+    out.sort(key=lambda e: (e.get("expected_rust_file", ""), e.get("rust_test_name", "")))
+    return out
+
+
+def phase5c_deficiency_entries(
+    mapping: dict,
+    reviews: dict,
+    repairs: dict,
+    phase5c_results: dict,
+    *,
+    only: str | None,
+    rust_file: str | None,
+    force: bool,
+) -> list[dict]:
+    entries_by_id = test_entry_by_id(mapping)
+    review_map = reviews.get("reviews", {})
+    repair_map = repairs.get("repairs", {})
+    out: list[dict] = []
+    for test_id, result in phase5c_results.get("results", {}).items():
+        if result.get("outcome") not in {"needs_fix", "blocked"}:
+            continue
+        entry = entries_by_id.get(test_id)
+        if not entry:
+            continue
+        if only and only not in {
+            test_id,
+            entry.get("test_name"),
+            entry.get("entry_fn"),
+            entry.get("rust_test_name"),
+        }:
+            continue
+        if rust_file and entry.get("expected_rust_file") != rust_file:
+            continue
+        prior = repair_map.get(test_id)
+        if not force and prior and prior.get("outcome") in {"fixed", "ok"}:
+            continue
+        item = dict(entry)
+        item["phase5a_review"] = review_map.get(test_id, {})
+        item["phase5c_result"] = result
         out.append(item)
     out.sort(key=lambda e: (e.get("expected_rust_file", ""), e.get("rust_test_name", "")))
     return out
@@ -231,6 +272,7 @@ def compose_prompt(batch: list[dict]) -> str:
         c = entry.get("c") or {}
         rust = entry.get("rust") or {}
         review = entry["phase5a_review"]
+        phase5c_result = entry.get("phase5c_result", {})
         rust_span = (
             f"{rust.get('file')}:{rust.get('start_line')}-{rust.get('end_line')}"
             if rust else f"{entry.get('expected_rust_file')}:missing"
@@ -246,6 +288,9 @@ def compose_prompt(batch: list[dict]) -> str:
                     f"* Rust span: `{rust_span}`",
                     f"* Phase 5A analysis: {review.get('analysis', '')}",
                     f"* Phase 5A fix note: {review.get('fix_summary', '')}",
+                    f"* Phase 5C outcome: {phase5c_result.get('outcome', '')}",
+                    f"* Phase 5C analysis: {phase5c_result.get('analysis', '')}",
+                    f"* Phase 5C fix note: {phase5c_result.get('fix_summary', '')}",
                     "",
                     "### C test body",
                     "```c",
@@ -432,9 +477,18 @@ def normalize_repairs(raw: dict, batch: list[dict]) -> dict[str, dict]:
         return [str(item)[:300] for item in value[:20]]
 
     batch_ids = {entry["test_id"] for entry in batch}
+    aliases: dict[str, str] = {}
+    for entry in batch:
+        test_id = entry["test_id"]
+        for key in ("test_id", "test_name", "entry_fn", "rust_test_name"):
+            value = entry.get(key)
+            if value:
+                aliases[str(value)] = test_id
+        if ":" in test_id:
+            aliases[test_id.rsplit(":", 1)[1]] = test_id
     by_id: dict[str, dict] = {}
     for item in raw.get("repairs", []):
-        test_id = item.get("test_id")
+        test_id = aliases.get(str(item.get("test_id")), item.get("test_id"))
         outcome = item.get("outcome")
         if test_id not in batch_ids or outcome not in OUTCOMES:
             continue
@@ -578,6 +632,8 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true", help="print selected tests without invoking an agent")
     parser.add_argument("--reclassify-blocked", action="store_true",
                         help="revisit prior blocked results using the narrowed Phase 5B standard")
+    parser.add_argument("--from-phase5c", action="store_true",
+                        help="repair Phase 5C needs_fix/blocked revalidation results")
     parser.add_argument("--force", action="store_true", help="re-run tests with existing Phase 5B results")
     parser.add_argument("--only", help="limit to one test_id, C entry function, C test name, or Rust test name")
     parser.add_argument("--rust-file", help="limit to one expected Rust test file")
@@ -602,7 +658,17 @@ def main() -> int:
         print_status(reviews, repairs)
         return 0
 
-    if args.reclassify_blocked:
+    if args.from_phase5c:
+        selected = phase5c_deficiency_entries(
+            mapping,
+            reviews,
+            repairs,
+            load_json(PHASE5C_RESULTS, {"results": {}}),
+            only=args.only,
+            rust_file=args.rust_file,
+            force=args.force,
+        )
+    elif args.reclassify_blocked:
         selected = blocked_entries(
             mapping,
             reviews,

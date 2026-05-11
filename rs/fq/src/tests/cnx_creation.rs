@@ -33,6 +33,83 @@ fn default_quic() -> Option<Box<Quic>> {
     )
 }
 
+fn assert_transport_parameters_eq(actual: &TransportParameters, expected: &TransportParameters) {
+    assert_eq!(
+        actual.initial_max_stream_data_bidi_local,
+        expected.initial_max_stream_data_bidi_local
+    );
+    assert_eq!(
+        actual.initial_max_stream_data_bidi_remote,
+        expected.initial_max_stream_data_bidi_remote
+    );
+    assert_eq!(
+        actual.initial_max_stream_data_uni,
+        expected.initial_max_stream_data_uni
+    );
+    assert_eq!(actual.initial_max_data, expected.initial_max_data);
+    assert_eq!(
+        actual.initial_max_stream_id_bidir,
+        expected.initial_max_stream_id_bidir
+    );
+    assert_eq!(
+        actual.initial_max_stream_id_unidir,
+        expected.initial_max_stream_id_unidir
+    );
+    assert_eq!(actual.max_idle_timeout, expected.max_idle_timeout);
+    assert_eq!(actual.max_packet_size, expected.max_packet_size);
+    assert_eq!(actual.max_ack_delay, expected.max_ack_delay);
+    assert_eq!(
+        actual.active_connection_id_limit,
+        expected.active_connection_id_limit
+    );
+    assert_eq!(actual.ack_delay_exponent, expected.ack_delay_exponent);
+    assert_eq!(actual.migration_disabled, expected.migration_disabled);
+    assert_eq!(actual.preferred_address.v4, expected.preferred_address.v4);
+    assert_eq!(actual.preferred_address.v6, expected.preferred_address.v6);
+    assert_eq!(
+        actual.preferred_address.connection_id,
+        expected.preferred_address.connection_id
+    );
+    assert_eq!(
+        actual.preferred_address.stateless_reset_token,
+        expected.preferred_address.stateless_reset_token
+    );
+    assert_eq!(
+        actual.max_datagram_frame_size,
+        expected.max_datagram_frame_size
+    );
+    assert_eq!(actual.enable_loss_bit, expected.enable_loss_bit);
+    assert_eq!(actual.enable_time_stamp, expected.enable_time_stamp);
+    assert_eq!(actual.min_ack_delay, expected.min_ack_delay);
+    assert_eq!(actual.do_grease_quic_bit, expected.do_grease_quic_bit);
+    assert_eq!(
+        actual.version_negotiation.current,
+        expected.version_negotiation.current
+    );
+    assert_eq!(
+        actual.version_negotiation.previous,
+        expected.version_negotiation.previous
+    );
+    assert_eq!(
+        actual.version_negotiation.received,
+        expected.version_negotiation.received
+    );
+    assert_eq!(
+        actual.version_negotiation.supported,
+        expected.version_negotiation.supported
+    );
+    assert_eq!(actual.enable_bdp_frame, expected.enable_bdp_frame);
+    assert_eq!(actual.initial_max_path_id, expected.initial_max_path_id);
+    assert_eq!(
+        actual.address_discovery_mode,
+        expected.address_discovery_mode
+    );
+    assert_eq!(
+        actual.is_reset_stream_at_enabled,
+        expected.is_reset_stream_at_enabled
+    );
+}
+
 /// C: `create_cnx_test` in `picoquictest/cnx_creation_test.c`.
 ///
 /// Builds 7 connections covering the IPv4 / IPv6 / per-port / per-CID
@@ -202,7 +279,7 @@ fn create_cnx() {
 ///   don't need one).
 /// * [`Quic::load_token_file`] with a bad file should fail; a bad directory
 ///   is platform-dependent.
-/// * Resetting transport parameters to `None` (→ `Default`) succeeds.
+/// * Resetting transport parameters to `None` restores initialized defaults.
 #[test]
 fn create_quic() {
     let bad_file = "no_such_file_should_exist.pem";
@@ -318,11 +395,26 @@ fn create_quic() {
         }
     }
 
-    // Resetting transport parameters to their defaults must succeed.
+    // Resetting transport parameters to their initialized defaults must succeed.
     // C: `picoquic_set_default_tp(quic, NULL)` — NULL resets to defaults.
     {
         let mut quic = default_quic().expect("create quic");
-        quic.set_default_tp(&TransportParameters::default())
-            .expect("set_default_tp with default params");
+        let mut expected = TransportParameters::default();
+        crate::internal::init_transport_parameters(&mut expected);
+
+        let custom = TransportParameters {
+            initial_max_data: 7,
+            max_packet_size: 9,
+            ack_delay_exponent: 1,
+            enable_loss_bit: 0,
+            ..expected.clone()
+        };
+        quic.set_default_tp(&custom)
+            .expect("set_default_tp with custom params");
+        assert_eq!(quic.default_tp().initial_max_data, custom.initial_max_data);
+
+        quic.set_default_tp(None::<&TransportParameters>)
+            .expect("set_default_tp None must reset initialized defaults");
+        assert_transport_parameters_eq(quic.default_tp(), &expected);
     }
 }

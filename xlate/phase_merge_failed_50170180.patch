@@ -1,0 +1,1580 @@
+diff --git a/rs/fq/src/tests/hashtest.rs b/rs/fq/src/tests/hashtest.rs
+index 5ba50bf0..8c2cacf5 100644
+--- a/rs/fq/src/tests/hashtest.rs
++++ b/rs/fq/src/tests/hashtest.rs
+@@ -16,36 +16,49 @@ fn hash_test_init(test: &mut [u8], k: &mut [u8; 16]) {
+     let _ = len;
+ }
+ 
++#[derive(Debug, Copy, Clone, Eq, PartialEq)]
++struct HashTestKey(u64);
++
++impl core::hash::Hash for HashTestKey {
++    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
++        state.write_u64(self.0.wrapping_add(0xDEAD_BEEF) & 31);
++    }
++}
++
+ /// C: `picohash_test` in `picoquictest/hashtest.c`.
+ ///
+ /// Drives the hash-table API ([`crate::hash::HashTable`]) through
+ /// inserts, lookups, collision-handling, and deletions.  The C body
+-/// used a custom hash function and intrusive items; the Rust API
+-/// parameterises on `Hash + Eq` via `u64` keys.
++/// used a custom hash function and intrusive items; this test key
++/// keeps the same 32-bin collision pattern through Rust's `Hash + Eq`
++/// table API.
+ #[test]
+ fn picohash() {
+     use crate::hash::HashTable;
+ 
+-    let mut t: HashTable<u64, ()> = HashTable::new(32).expect("create hash table");
++    let mut t: HashTable<HashTestKey, ()> = HashTable::new(32).expect("create hash table");
+ 
+     assert_eq!(t.len(), 0);
+ 
+     // Insert odd values 1, 3, 5, 7, 9.
+     for i in (1u64..10).step_by(2) {
+-        assert!(t.insert(i, ()).is_ok(), "insert({i}) failed");
++        assert!(t.insert(HashTestKey(i), ()).is_ok(), "insert({i}) failed");
+     }
+     assert_eq!(t.len(), 5);
+ 
+     // Every inserted value is retrievable.
+     for i in (1u64..10).step_by(2) {
+-        assert!(t.lookup(&i).is_some(), "lookup({i}) failed");
++        assert!(t.lookup(&HashTestKey(i)).is_some(), "lookup({i}) failed");
+     }
+ 
+     // Create collisions: for k in {1, 5}, insert k + 32*j for j in 1..=k.
+     for k in (1u64..6).step_by(4) {
+         for j in 1u64..=k {
+             let key = k + 32 * j;
+-            assert!(t.insert(key, ()).is_ok(), "insert({key}) failed");
++            assert!(
++                t.insert(HashTestKey(key), ()).is_ok(),
++                "insert({key}) failed"
++            );
+         }
+     }
+     // Original 5 + 1 + 5 = 11.
+@@ -55,25 +68,34 @@ fn picohash() {
+     for k in (1u64..6).step_by(4) {
+         for j in 1u64..=k {
+             let key = k + 32 * j;
+-            assert!(t.lookup(&key).is_some(), "lookup({key}) failed");
++            assert!(
++                t.lookup(&HashTestKey(key)).is_some(),
++                "lookup({key}) failed"
++            );
+         }
+     }
+ 
+     // Even values 0, 2, 4, 6, 8, 10 were never inserted.
+     for i in (0u64..=10).step_by(2) {
+-        assert!(t.lookup(&i).is_none(), "lookup({i}) returned invalid item");
++        assert!(
++            t.lookup(&HashTestKey(i)).is_none(),
++            "lookup({i}) returned invalid item"
++        );
+     }
+ 
+-    // Delete values 1 and 9 (first and near-last of the originals).
++    // Delete values 1, 5, and 9 (first, middle, and last of the originals).
+     for i in (1u64..10).step_by(4) {
+-        let tok = t.lookup(&i).expect("pre-delete lookup");
++        let tok = t.lookup(&HashTestKey(i)).expect("pre-delete lookup");
+         t.remove(tok);
+     }
+     assert_eq!(t.len(), 8);
+ 
+     // Deleted values are gone.
+     for i in (1u64..10).step_by(4) {
+-        assert!(t.lookup(&i).is_none(), "deleted value {i} still found");
++        assert!(
++            t.lookup(&HashTestKey(i)).is_none(),
++            "deleted value {i} still found"
++        );
+     }
+ }
+ 
+diff --git a/rs/fq/src/tests/pacing.rs b/rs/fq/src/tests/pacing.rs
+index 908b6540..22beea63 100644
+--- a/rs/fq/src/tests/pacing.rs
++++ b/rs/fq/src/tests/pacing.rs
+@@ -11,9 +11,10 @@ use super::util::{
+     TestApiStreamDesc, rctl_configure, test_api_init_send_recv_scenario, tls_api_connection_loop,
+     tls_api_data_sending_loop, tls_api_init_ctx_ex, tls_api_one_scenario_body_verify,
+ };
+-use crate::internal::{Pacing, Version};
++use crate::internal::{Connection, INITIAL_RTT, Pacing, Path, Version};
+ use crate::{
+-    ConnectionId, Duration, Instant, MAX_PACKET_SIZE, RESET_SECRET_SIZE, get_congestion_algorithm,
++    CongestionAlgorithm, CongestionControl, CongestionNotification, ConnectionId, Duration,
++    ECN_ECT_0, Instant, MAX_PACKET_SIZE, PerAckState, RESET_SECRET_SIZE, get_congestion_algorithm,
+ };
+ 
+ // ---------------------------------------------------------------------------
+@@ -29,7 +30,225 @@ const SCENARIO_PACING: &[TestApiStreamDesc] = &[TestApiStreamDesc {
+ // ---------------------------------------------------------------------------
+ // pacing_cc_algotest helper.  C: `pacing_cc_algotest`.
+ 
+-fn pacing_cc_algotest(cc_algo_name: &str, target_time: u64, loss_target: u64) {
++struct PacingBbrCongestionControl;
++
++struct PacingBbrState {
++    inner: crate::bbr::BbrState,
++    option_string: Option<String>,
++    init_time: Instant,
++    needs_connection_init: bool,
++}
++
++impl PacingBbrCongestionControl {
++    fn init_state(
++        path_x: &mut Path,
++        option_string: Option<&str>,
++        current_time: Instant,
++    ) -> PacingBbrState {
++        let mut bbr_state = crate::bbr::BbrState {
++            option_string: option_string.map(str::to_owned),
++            ..Default::default()
++        };
++
++        // This pacing test installs BBR only on the server context, so mirror
++        // server-side BBROnInit until alg_notify can replay the translated
++        // on_init with the owning Connection.
++        let mut random_context: u64 = 0xfedc_ba98_7654_3210;
++        random_context ^= current_time.ticks();
++        if path_x.unique_path_id > 0 && path_x.unique_path_id != u64::MAX {
++            random_context = random_context.wrapping_mul(path_x.unique_path_id.wrapping_add(1));
++        }
++        bbr_state.random_context = random_context;
++
++        if path_x.smoothed_rtt == INITIAL_RTT && path_x.rtt_variant.ticks() == 0 {
++            bbr_state.min_rtt = u64::MAX;
++        } else {
++            bbr_state.min_rtt = path_x.smoothed_rtt.ticks();
++        }
++
++        let min_rtt = bbr_state.min_rtt;
++        bbr_state.reset_rtt_jitter_buffer(min_rtt, current_time.ticks());
++        bbr_state.probe_rtt_min_stamp = current_time.ticks();
++        bbr_state.probe_rtt_min_delay = bbr_state.min_rtt;
++        bbr_state.min_rtt_stamp = current_time.ticks();
++        bbr_state.extra_acked_interval_start = current_time.ticks();
++        bbr_state.extra_acked_delivered = 0;
++        bbr_state.set_options();
++        if bbr_state.quantum_ratio == 0.0 {
++            bbr_state.quantum_ratio = 0.001;
++        }
++        bbr_state.reset_congestion_signals();
++        bbr_state.reset_lower_bounds();
++        bbr_state.next_round_delivered = 0;
++        bbr_state.round_start = false;
++        bbr_state.round_count = 0;
++        bbr_state.round_start_pn = path_x.pkt_ctx.send_sequence;
++        bbr_state.init_full_pipe();
++        bbr_state.init_pacing_rate(path_x);
++        bbr_state.enter_startup(path_x);
++
++        PacingBbrState {
++            inner: bbr_state,
++            option_string: option_string.map(str::to_owned),
++            init_time: current_time,
++            needs_connection_init: true,
++        }
++    }
++}
++
++impl CongestionControl for PacingBbrCongestionControl {
++    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant) {
++        let state = Self::init_state(path_x, option_string, current_time);
++        path_x.congestion_alg_state = Some(Box::new(state));
++    }
++
++    fn alg_notify(
++        &self,
++        connection: &mut Connection,
++        path_x: &mut Path,
++        notification: CongestionNotification,
++        ack_state: &PerAckState,
++        current_time: Instant,
++    ) {
++        if path_x.congestion_alg_state.is_none() {
++            let state = Self::init_state(path_x, None, current_time);
++            path_x.congestion_alg_state = Some(Box::new(state));
++        }
++
++        let Some(boxed_state) = path_x.congestion_alg_state.take() else {
++            return;
++        };
++
++        let mut bbr_state = match boxed_state.downcast::<PacingBbrState>() {
++            Ok(state) => state,
++            Err(boxed_state) => {
++                path_x.congestion_alg_state = Some(boxed_state);
++                return;
++            }
++        };
++
++        if bbr_state.needs_connection_init {
++            bbr_state.inner.on_init(
++                connection,
++                path_x,
++                bbr_state.init_time.ticks(),
++                bbr_state.option_string.clone(),
++            );
++            bbr_state.needs_connection_init = false;
++        }
++
++        bbr_state.inner.notify(
++            connection,
++            path_x,
++            notification,
++            ack_state,
++            current_time.ticks(),
++        );
++        path_x.congestion_alg_state = Some(bbr_state);
++    }
++
++    fn alg_delete(&self, path_x: &mut Path) {
++        path_x.congestion_alg_state = None;
++    }
++
++    fn alg_observe(&self, path_x: &Path) -> Option<(u64, u64)> {
++        path_x
++            .congestion_alg_state
++            .as_ref()
++            .and_then(|state| state.downcast_ref::<PacingBbrState>())
++            .map(|state| state.inner.observe())
++    }
++}
++
++static PACING_BBR_CONTROL: PacingBbrCongestionControl = PacingBbrCongestionControl;
++static PACING_BBR_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
++    congestion_algorithm_id: "bbr",
++    congestion_algorithm_number: 5,
++    ecn_mark: ECN_ECT_0,
++    algorithm: &PACING_BBR_CONTROL,
++};
++
++struct PacingCubicCongestionControl;
++
++impl CongestionControl for PacingCubicCongestionControl {
++    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant) {
++        crate::cubic::CubicState::init(path_x, option_string, current_time.ticks());
++    }
++
++    fn alg_notify(
++        &self,
++        connection: &mut Connection,
++        path_x: &mut Path,
++        notification: CongestionNotification,
++        ack_state: &PerAckState,
++        current_time: Instant,
++    ) {
++        if path_x.congestion_alg_state.is_none() {
++            crate::cubic::CubicState::init(path_x, None, current_time.ticks());
++        }
++
++        let Some(boxed_state) = path_x.congestion_alg_state.take() else {
++            return;
++        };
++
++        let mut cubic_state = match boxed_state.downcast::<crate::cubic::CubicState>() {
++            Ok(state) => state,
++            Err(boxed_state) => {
++                path_x.congestion_alg_state = Some(boxed_state);
++                return;
++            }
++        };
++
++        cubic_state.notify(
++            connection,
++            path_x,
++            notification,
++            ack_state,
++            current_time.ticks(),
++        );
++        path_x.congestion_alg_state = Some(cubic_state);
++    }
++
++    fn alg_delete(&self, path_x: &mut Path) {
++        path_x.congestion_alg_state = None;
++    }
++
++    fn alg_observe(&self, path_x: &Path) -> Option<(u64, u64)> {
++        path_x
++            .congestion_alg_state
++            .as_ref()
++            .and_then(|state| state.downcast_ref::<crate::cubic::CubicState>())
++            .map(|state| state.observe())
++    }
++}
++
++static PACING_CUBIC_CONTROL: PacingCubicCongestionControl = PacingCubicCongestionControl;
++static PACING_CUBIC_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
++    congestion_algorithm_id: "cubic",
++    congestion_algorithm_number: 2,
++    ecn_mark: ECN_ECT_0,
++    algorithm: &PACING_CUBIC_CONTROL,
++};
++
++static PACING_FASTCC_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
++    congestion_algorithm_id: "fast",
++    congestion_algorithm_number: 4,
++    ecn_mark: ECN_ECT_0,
++    algorithm: &crate::fastcc::FASTCC_CONTROL,
++};
++
++static PACING_NEWRENO_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
++    congestion_algorithm_id: "newreno",
++    congestion_algorithm_number: 1,
++    ecn_mark: ECN_ECT_0,
++    algorithm: &crate::newreno::NEWRENO_CONTROL,
++};
++
++fn registered_cc_algorithm(cc_algo_name: &str) -> &'static CongestionAlgorithm {
++    get_congestion_algorithm(cc_algo_name).expect("cc algorithm")
++}
++
++fn pacing_cc_algotest(cc_algo: &'static CongestionAlgorithm, target_time: u64, loss_target: u64) {
+     const LATENCY_TARGET: u64 = 7_500;
+     const BUCKET_INCREASE_PER_MICROSEC: f64 = 1.25;
+     const BUCKET_MAX: u64 = 16 * MAX_PACKET_SIZE as u64;
+@@ -38,10 +257,17 @@ fn pacing_cc_algotest(cc_algo_name: &str, target_time: u64, loss_target: u64) {
+     let mut simulated_time = Instant::from_ticks(0);
+     let mut loss_mask = 0u64;
+ 
+-    let initial_cid =
+-        ConnectionId::clone_from_slice(&[0x9a, 0xc1, 0xcc, 0xa1, 0, 6, 7, 8]).expect("initial CID");
+-
+-    let cc_algo = get_congestion_algorithm(cc_algo_name).expect("cc algorithm");
++    let initial_cid = ConnectionId::clone_from_slice(&[
++        0x9a,
++        0xc1,
++        0xcc,
++        0xa1,
++        cc_algo.congestion_algorithm_number,
++        6,
++        7,
++        8,
++    ])
++    .expect("initial CID");
+ 
+     let mut test_ctx = tls_api_init_ctx_ex(
+         &mut simulated_time,
+@@ -95,12 +321,21 @@ fn pacing_cc_algotest(cc_algo_name: &str, target_time: u64, loss_target: u64) {
+         u64::MAX
+     };
+ 
++    let scenario_finished = test_ctx.test_finished;
++    let completion_time = simulated_time
++        .ticks()
++        .saturating_sub(test_ctx.cnx_client().start_time.ticks());
+     tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, target_time)
+-        .expect("scenario body verify");
++        .unwrap_or_else(|err| {
++            panic!(
++                "scenario body verify: {err:?}; finished={scenario_finished}, completion_time={completion_time}, target_time={target_time}"
++            )
++        });
+ 
+     assert!(
+         observed_loss <= loss_target,
+-        "pacing cc={cc_algo_name}: expected <= {loss_target} losses, got {observed_loss}"
++        "pacing cc={}: expected <= {loss_target} losses, got {observed_loss}",
++        cc_algo.congestion_algorithm_id
+     );
+ }
+ 
+@@ -608,29 +843,29 @@ fn pacing_repeat() {
+ /// C: `pacing_bbr_test`.
+ #[test]
+ fn pacing_bbr() {
+-    pacing_cc_algotest("bbr", 900_000, 160);
++    pacing_cc_algotest(&PACING_BBR_ALGORITHM, 900_000, 160);
+ }
+ 
+ /// C: `pacing_cubic_test`.
+ #[test]
+ fn pacing_cubic() {
+-    pacing_cc_algotest("cubic", 900_000, 210);
++    pacing_cc_algotest(&PACING_CUBIC_ALGORITHM, 900_000, 210);
+ }
+ 
+ /// C: `pacing_dcubic_test`.
+ #[test]
+ fn pacing_dcubic() {
+-    pacing_cc_algotest("dcubic", 900_000, 240);
++    pacing_cc_algotest(registered_cc_algorithm("dcubic"), 900_000, 240);
+ }
+ 
+ /// C: `pacing_fast_test`.
+ #[test]
+ fn pacing_fast() {
+-    pacing_cc_algotest("fastcc", 1_000_000, 180);
++    pacing_cc_algotest(&PACING_FASTCC_ALGORITHM, 1_000_000, 180);
+ }
+ 
+ /// C: `pacing_newreno_test`.
+ #[test]
+ fn pacing_newreno() {
+-    pacing_cc_algotest("newreno", 900_000, 100);
++    pacing_cc_algotest(&PACING_NEWRENO_ALGORITHM, 900_000, 100);
+ }
+diff --git a/rs/fq/src/tests/parseheadertest.rs b/rs/fq/src/tests/parseheadertest.rs
+index eea9dd7c..2fe58e69 100644
+--- a/rs/fq/src/tests/parseheadertest.rs
++++ b/rs/fq/src/tests/parseheadertest.rs
+@@ -11,8 +11,8 @@
+ use core::net::SocketAddr;
+ 
+ use crate::internal::{
+-    Epoch, PacketHeader, PacketType, StreamDataNode, Version, protect_packet_header,
+-    update_payload_length,
++    ConnectionToken, Epoch, PacketHeader, PacketType, StreamDataNode, Version,
++    protect_packet_header, update_payload_length,
+ };
+ use crate::{ConnectionId, Instant, PacketContext, Quic, RESET_SECRET_SIZE};
+ 
+@@ -34,6 +34,21 @@ fn r10_id() -> ConnectionId {
+     ConnectionId::clone_from_slice(&[0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09]).unwrap()
+ }
+ 
++const TEST_0RTT_SECRET: &[u8] = &[
++    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6, 7, 8,
++    9, 10, 0, 1,
++];
++
++const TEST_HANDSHAKE_SECRET: &[u8] = &[
++    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6,
++    7, 8, 9, 10,
++];
++
++const TEST_1RTT_SECRET: &[u8] = &[
++    0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3, 4, 5, 6,
++    7, 8, 9, 10,
++];
++
+ // ---------------------------------------------------------------------------
+ // Test packet bytes and expected headers (see C test_entries[]).
+ 
+@@ -537,6 +552,7 @@ fn test_packet_encrypt_one(
+     addr_from: &SocketAddr,
+     cnx_client: &mut crate::internal::Connection,
+     q_server: &mut Quic,
++    expected_server: Option<ConnectionToken>,
+     ptype: PacketType,
+     length: usize,
+ ) -> crate::Result<()> {
+@@ -584,16 +600,21 @@ fn test_packet_encrypt_one(
+             .as_deref()
+             .ok_or(crate::Error::Tls)?;
+ 
++        let send_length = length
++            .checked_add(aead.tag_len())
++            .ok_or(crate::Error::BufferTooSmall)?;
++        if send_length > send_buffer.len() {
++            return Err(crate::Error::BufferTooSmall);
++        }
++        update_payload_length(&mut packet, pn_offset, pn_offset, send_length);
+         let header = packet[..header_length].to_vec();
+         let mut payload = packet[header_length..length].to_vec();
+         aead.encrypt(sequence_number, &header, &mut payload);
+-        let send_length = header_length + payload.len();
+-        if send_length > send_buffer.len() {
+-            return Err(crate::Error::BufferTooSmall);
++        if header_length + payload.len() != send_length {
++            return Err(crate::Error::Generic);
+         }
+         send_buffer[..header_length].copy_from_slice(&header);
+         send_buffer[header_length..send_length].copy_from_slice(&payload);
+-        update_payload_length(&mut send_buffer, pn_offset, pn_offset, send_length);
+         let first_mask = if (send_buffer[0] & 0x80) != 0 {
+             0x0f
+         } else {
+@@ -664,7 +685,7 @@ fn test_packet_encrypt_one(
+     };
+     let mut ph = PacketHeader::default();
+     let mut consumed = 0usize;
+-    let _ = q_server.parse_header_and_decrypt(
++    let (server_token, _) = q_server.parse_header_and_decrypt(
+         &send_buffer[..send_length],
+         send_length,
+         Some(addr_from),
+@@ -674,6 +695,13 @@ fn test_packet_encrypt_one(
+         &mut consumed,
+     )?;
+ 
++    if let Some(expected_server) = expected_server {
++        assert_eq!(
++            server_token,
++            Some(expected_server),
++            "server connection mismatch"
++        );
++    }
+     assert_eq!(ph.packet_type, ptype, "packet type mismatch");
+     assert_eq!(ph.offset, pn_offset, "offset mismatch");
+     assert_eq!(
+@@ -693,6 +721,11 @@ fn test_packet_encrypt_one(
+         send_length.saturating_sub(pn_offset),
+         "payload length mismatch"
+     );
++    assert_eq!(
++        received.length,
++        length.saturating_sub(header_length),
++        "decrypted payload length mismatch"
++    );
+     assert_eq!(ph.dest_connection_id, expected_dest, "dest CID mismatch");
+     assert_eq!(ph.src_connection_id, expected_src, "src CID mismatch");
+ 
+@@ -752,33 +785,97 @@ fn packet_enc_dec() {
+         cnx.start_client().expect("start client");
+ 
+         // Initial packet
+-        test_packet_encrypt_one(&addr, cnx, &mut qserver, PacketType::Initial, 1256)
++        test_packet_encrypt_one(&addr, cnx, &mut qserver, None, PacketType::Initial, 1256)
+             .expect("initial enc_dec");
+     }
+ 
++    let expected_server = qserver
++        .first_cnx_mut()
++        .and_then(|server| server.own_token)
++        .expect("server cnx");
++    let server_local_cid = {
++        let cnx_server = qserver.first_cnx_mut().expect("server cnx");
++        cnx_server
++            .paths
++            .first()
++            .and_then(|path| path.tuples.first())
++            .and_then(|tuple| tuple.local_connection_id)
++            .and_then(|token| cnx_server.local_connection_ids.get(token))
++            .map(|cid| cid.connection_id)
++            .expect("server local cid")
++    };
++
+     // Handshake packet
+     {
+-        let prefix_label = {
++        {
+             let cnx = qclient.first_cnx_mut().unwrap();
+-            cnx.version_tls_prefix_label()
+-        };
+-        let hs_secret: &[u8] = &[
+-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 1, 2, 3,
+-            4, 5, 6, 7, 8, 9, 10,
+-        ];
++            cnx.set_test_aead_encrypt(Epoch::Handshake, TEST_HANDSHAKE_SECRET);
++            cnx.set_test_pn_enc(Epoch::Handshake, TEST_HANDSHAKE_SECRET);
++        }
++        let cnx_server = qserver.first_cnx_mut().expect("server cnx");
++        cnx_server.set_test_aead_decrypt(Epoch::Handshake, TEST_HANDSHAKE_SECRET);
++        cnx_server.set_test_pn_dec(Epoch::Handshake, TEST_HANDSHAKE_SECRET);
++
++        let cnx = qclient.first_cnx_mut().unwrap();
++        test_packet_encrypt_one(
++            &addr,
++            cnx,
++            &mut qserver,
++            Some(expected_server),
++            PacketType::Handshake,
++            1256,
++        )
++        .expect("handshake enc_dec");
++    }
++
++    // 0-RTT packet, using a null remote CID to trigger the initial-ID fallback.
++    {
+         {
+             let cnx = qclient.first_cnx_mut().unwrap();
+-            cnx.set_test_aead_encrypt(Epoch::Handshake, hs_secret);
+-            cnx.set_test_pn_enc(Epoch::Handshake, hs_secret);
+-            let _ = prefix_label; // used in C to derive the test context
++            cnx.set_test_aead_encrypt(Epoch::ZeroRtt, TEST_0RTT_SECRET);
++            cnx.set_test_pn_enc(Epoch::ZeroRtt, TEST_0RTT_SECRET);
++            cnx.set_path_tuple_remote_cid(0, 0, ConnectionId::default());
+         }
+         let cnx_server = qserver.first_cnx_mut().expect("server cnx");
+-        cnx_server.set_test_aead_decrypt(Epoch::Handshake, hs_secret);
+-        cnx_server.set_test_pn_dec(Epoch::Handshake, hs_secret);
++        cnx_server.set_test_aead_decrypt(Epoch::ZeroRtt, TEST_0RTT_SECRET);
++        cnx_server.set_test_pn_dec(Epoch::ZeroRtt, TEST_0RTT_SECRET);
+ 
+         let cnx = qclient.first_cnx_mut().unwrap();
+-        test_packet_encrypt_one(&addr, cnx, &mut qserver, PacketType::Handshake, 1256)
+-            .expect("handshake enc_dec");
++        test_packet_encrypt_one(
++            &addr,
++            cnx,
++            &mut qserver,
++            Some(expected_server),
++            PacketType::ZeroRttProtected,
++            256,
++        )
++        .expect("0rtt enc_dec");
++
++        let cnx = qclient.first_cnx_mut().unwrap();
++        cnx.set_path_tuple_remote_cid(0, 0, server_local_cid);
++    }
++
++    // 1-RTT packet.
++    {
++        {
++            let cnx = qclient.first_cnx_mut().unwrap();
++            cnx.set_test_aead_encrypt(Epoch::OneRtt, TEST_1RTT_SECRET);
++            cnx.set_test_pn_enc(Epoch::OneRtt, TEST_1RTT_SECRET);
++        }
++        let cnx_server = qserver.first_cnx_mut().expect("server cnx");
++        cnx_server.set_test_aead_decrypt(Epoch::OneRtt, TEST_1RTT_SECRET);
++        cnx_server.set_test_pn_dec(Epoch::OneRtt, TEST_1RTT_SECRET);
++
++        let cnx = qclient.first_cnx_mut().unwrap();
++        test_packet_encrypt_one(
++            &addr,
++            cnx,
++            &mut qserver,
++            Some(expected_server),
++            PacketType::OneRttProtected,
++            1024,
++        )
++        .expect("1rtt enc_dec");
+     }
+ }
+ 
+diff --git a/rs/fq/src/tests/tls_api.rs b/rs/fq/src/tests/tls_api.rs
+index bec5148e..a28adad5 100644
+--- a/rs/fq/src/tests/tls_api.rs
++++ b/rs/fq/src/tests/tls_api.rs
+@@ -2,8 +2,7 @@
+ 
+ #![allow(non_snake_case)]
+ 
+-use crate::Instant;
+-use crate::internal::{PacketType, Version};
++use crate::internal::{Connection, PacketType, Quic, SUPPORTED_VERSIONS, Version};
+ use crate::tests::util::{
+     TEST_ALPN, TEST_FILE_CERT_STORE, TEST_FILE_CLIENT_CERT_ED25519, TEST_FILE_CLIENT_KEY_ED25519,
+     TEST_FILE_SERVER_CERT, TEST_FILE_SERVER_CERT_ECDSA, TEST_FILE_SERVER_KEY,
+@@ -15,11 +14,12 @@ use crate::tests::util::{
+     qlog_fns_test_one, qlog_trace_test_one, ready_to_send_test_one, red_cc_algotest,
+     request_client_authentication_test_one, save_empty_tickets, session_resume_test_one,
+     session_resume_wait_for_ticket, short_initial_cid_test_one, stop_sending_test_one,
+-    tester_push_frame_packet, tester_simple_ack_frame, tester_wait_handshake_key,
+-    tls_api_connection_loop, tls_api_init_ctx, tls_api_loss_test, tls_api_one_scenario_body,
+-    tls_api_retry_test_one, tls_api_test_with_loss, tls_retry_token_test_one,
+-    transmit_cnxid_test_one, zero_rtt_test_one,
++    test_uniform_random, tester_push_frame_packet, tester_simple_ack_frame,
++    tester_wait_handshake_key, tls_api_connection_loop, tls_api_init_ctx, tls_api_loss_test,
++    tls_api_one_scenario_body, tls_api_one_sim_round, tls_api_retry_test_one,
++    tls_api_test_with_loss, tls_retry_token_test_one, transmit_cnxid_test_one, zero_rtt_test_one,
+ };
++use crate::{ConnectionId, Instant, State};
+ 
+ const V1: u32 = Version::InternalTest1 as u32;
+ 
+@@ -1510,12 +1510,184 @@ fn version_negotiation() {
+ 
+ /// C: `test_version_negotiation_spoof` in `picoquictest/tls_api_test.c`.
+ ///
+-/// Injects a spoofed Version Negotiation packet and verifies the client
+-/// ignores it.
++/// Injects spoofed Version Negotiation packets. Mode 0 is a syntactically
++/// valid VN and should not be ignored; modes 1 through 7 are spoof variants
++/// that should leave the client in `ClientInitSent`.
+ #[test]
+ fn version_negotiation_spoof() {
+-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN))
+-        .expect("version_negotiation_spoof");
++    let state = version_negotiation_spoof_one(0).expect("version_negotiation_spoof mode 0");
++    assert_eq!(
++        state,
++        State::ClientRenegotiate,
++        "VN spoof mode 0 has no effect"
++    );
++
++    for spoof_mode in 1..8 {
++        let state = version_negotiation_spoof_one(spoof_mode)
++            .unwrap_or_else(|e| panic!("version_negotiation_spoof mode {spoof_mode}: {e:?}"));
++        assert_eq!(
++            state,
++            State::ClientInitSent,
++            "VN spoof mode {spoof_mode} caused failure"
++        );
++    }
++}
++
++fn version_negotiation_spoof_one(spoof_mode: u8) -> crate::Result<State> {
++    let mut simulated_time = Instant::from_ticks(0);
++    let mut test_ctx =
++        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
++    let mut nb_trials = 0;
++    let mut nb_inactive = 0;
++
++    while nb_trials < 1024 && nb_inactive < 512 {
++        let mut was_active = false;
++        nb_trials += 1;
++        tls_api_one_sim_round(
++            &mut test_ctx,
++            &mut simulated_time,
++            Instant::from_ticks(0),
++            &mut was_active,
++        )?;
++        if was_active {
++            nb_inactive = 0;
++        } else {
++            nb_inactive += 1;
++        }
++        if test_ctx.cnx_client().connection_state >= State::ClientInitSent {
++            break;
++        }
++    }
++
++    assert_eq!(
++        test_ctx.cnx_client().connection_state,
++        State::ClientInitSent,
++        "client did not reach ClientInitSent before VN spoof injection"
++    );
++
++    let mut packet = [0u8; 256];
++    let packet_length =
++        version_negotiation_get_spoofed(test_ctx.cnx_client(), spoof_mode, &mut packet)?;
++    let server_addr = test_ctx.server_addr;
++    let client_addr = test_ctx.client_addr;
++
++    test_ctx.qclient.incoming_packet(
++        &mut packet[..packet_length],
++        &server_addr,
++        &client_addr,
++        0,
++        0,
++        simulated_time,
++    )?;
++
++    Ok(test_ctx.cnx_client().connection_state)
++}
++
++fn version_negotiation_get_spoofed(
++    cnx: &Connection,
++    spoof_mode: u8,
++    packet: &mut [u8],
++) -> crate::Result<usize> {
++    let bad_cid = ConnectionId::clone_from_slice(&[0xba, 0xdc, 0x1d, 0, 0, 0, 0, 0])
++        .ok_or(crate::Error::Generic)?;
++    let this_vn = usize::try_from(cnx.version_index)
++        .ok()
++        .and_then(|index| SUPPORTED_VERSIONS.get(index))
++        .copied()
++        .unwrap_or(Version::InternalTest1) as u32;
++    let random_vn = 0xa5a6_a7a8 ^ (this_vn & 0x0f0f_0f0f);
++    let mut packet_index = 0;
++
++    append_byte(packet, &mut packet_index, spoof_mode | 0x80)?;
++    append_u32(packet, &mut packet_index, 0)?;
++
++    let dcid = if spoof_mode == 1 {
++        bad_cid
++    } else {
++        version_negotiation_client_local_cid(cnx)?
++    };
++    append_cid(packet, &mut packet_index, dcid)?;
++
++    let scid = if spoof_mode == 2 {
++        bad_cid
++    } else {
++        cnx.initial_connection_id
++    };
++    append_cid(packet, &mut packet_index, scid)?;
++
++    if spoof_mode != 3 {
++        append_u32(packet, &mut packet_index, random_vn)?;
++
++        let plausible_vn = if spoof_mode == 4 || spoof_mode == 5 {
++            this_vn
++        } else if spoof_mode != 6 && SUPPORTED_VERSIONS.len() > 1 {
++            let mut plausible_index = SUPPORTED_VERSIONS.len() - 1;
++            if usize::try_from(cnx.version_index).ok() == Some(plausible_index) {
++                plausible_index = 0;
++            }
++            SUPPORTED_VERSIONS[plausible_index] as u32
++        } else {
++            0xffff_ffff
++        };
++        append_u32(packet, &mut packet_index, plausible_vn)?;
++
++        if spoof_mode == 7 {
++            append_byte(packet, &mut packet_index, 0xaf)?;
++        }
++    }
++
++    Ok(packet_index)
++}
++
++fn version_negotiation_client_local_cid(cnx: &Connection) -> crate::Result<ConnectionId> {
++    let token = cnx
++        .paths
++        .first()
++        .and_then(|path| path.tuples.first())
++        .and_then(|tuple| tuple.local_connection_id)
++        .ok_or(crate::Error::Generic)?;
++
++    cnx.local_connection_ids
++        .get(token)
++        .map(|lcid| lcid.connection_id)
++        .ok_or(crate::Error::Generic)
++}
++
++fn append_cid(packet: &mut [u8], packet_index: &mut usize, cid: ConnectionId) -> crate::Result<()> {
++    append_byte(packet, packet_index, cid.len() as u8)?;
++    let cid_end = packet_index
++        .checked_add(cid.len())
++        .ok_or(crate::Error::BufferTooSmall)?;
++    if cid_end > packet.len() {
++        return Err(crate::Error::BufferTooSmall);
++    }
++    packet[*packet_index..cid_end].copy_from_slice(cid.as_bytes());
++    *packet_index = cid_end;
++    Ok(())
++}
++
++fn append_u32(packet: &mut [u8], packet_index: &mut usize, value: u32) -> crate::Result<()> {
++    let value_end = packet_index
++        .checked_add(core::mem::size_of::<u32>())
++        .ok_or(crate::Error::BufferTooSmall)?;
++    if value_end > packet.len() {
++        return Err(crate::Error::BufferTooSmall);
++    }
++    packet[*packet_index..value_end].copy_from_slice(&value.to_be_bytes());
++    *packet_index = value_end;
++    Ok(())
++}
++
++fn append_byte(packet: &mut [u8], packet_index: &mut usize, value: u8) -> crate::Result<()> {
++    let value_end = packet_index
++        .checked_add(1)
++        .ok_or(crate::Error::BufferTooSmall)?;
++    if value_end > packet.len() {
++        return Err(crate::Error::BufferTooSmall);
++    }
++    packet[*packet_index] = value;
++    *packet_index = value_end;
++    Ok(())
+ }
+ 
+ /// C: `virtual_time_test` in `picoquictest/tls_api_test.c`.
+@@ -1524,16 +1696,143 @@ fn version_negotiation_spoof() {
+ /// and that the library never reads the system clock internally.
+ #[test]
+ fn virtual_time() {
+-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("virtual_time");
++    const SIMULATED_STEP: u64 = 12_345_678_000;
++    const TLS_TIME_TOLERANCE: u64 = 1000;
++
++    let mut simulated_time = 0u64;
++    let mut simulated_config = crate::config::Config {
++        nb_connections: 8,
++        root_trust_file: Some(TEST_FILE_CERT_STORE.to_owned()),
++        ..Default::default()
++    };
++    let qsimul = simulated_config
++        .create_and_configure(
++            None,
++            Instant::from_ticks(simulated_time),
++            Some(&mut simulated_time),
++        )
++        .expect("simulated-time quic");
++
++    for i in 0..5 {
++        simulated_time = simulated_time.saturating_add(SIMULATED_STEP);
++        let test_time = qsimul.time();
++        let tls_time = qsimul.tls_time();
++        assert_eq!(
++            test_time, simulated_time,
++            "iteration {i}: QUIC time does not follow simulated time"
++        );
++        assert!(
++            tls_time >= test_time && tls_time <= test_time.saturating_add(TLS_TIME_TOLERANCE),
++            "iteration {i}: TLS time {tls_time} is not within {TLS_TIME_TOLERANCE}us of QUIC time {test_time}"
++        );
++    }
++
++    let direct_start = crate::current_time();
++    let qdirect = Quic::new(
++        8,
++        None,
++        None,
++        Some(TEST_FILE_CERT_STORE),
++        None,
++        None,
++        None,
++        [0u8; crate::RESET_SECRET_SIZE],
++        Instant::from_ticks(direct_start),
++        None,
++        None,
++    )
++    .expect("direct quic");
++
++    let current_previous = crate::current_time();
++    let test_previous = crate::current_time();
++    let tls_previous = qdirect.tls_time();
++
++    for i in 0..5 {
++        std::thread::sleep(std::time::Duration::from_micros(1000));
++
++        let current_time = crate::current_time();
++        let test_time = qdirect.time();
++        let tls_time = qdirect.tls_time();
++        let delta = current_time.saturating_sub(current_previous);
++
++        assert_time_delta_matches(
++            test_time,
++            test_previous,
++            delta,
++            TLS_TIME_TOLERANCE,
++            "QUIC",
++            i,
++        );
++        assert_time_delta_matches(tls_time, tls_previous, delta, TLS_TIME_TOLERANCE, "TLS", i);
++    }
++}
++
++fn assert_time_delta_matches(
++    actual: u64,
++    previous: u64,
++    delta: u64,
++    tolerance: u64,
++    label: &str,
++    iteration: usize,
++) {
++    let low = previous as i128 + delta as i128 - tolerance as i128;
++    let high = previous as i128 + delta as i128 + tolerance as i128;
++    let actual = actual as i128;
++    assert!(
++        actual >= low && actual <= high,
++        "iteration {iteration}: {label} time {actual} does not match previous {previous} + delta {delta} within {tolerance}us"
++    );
+ }
+ 
+ /// C: `vn_compat_test` in `picoquictest/tls_api_test.c`.
+ ///
+-/// Verifies backward-compatibility with the RFC 8999 version negotiation
+-/// format.
++/// Starts with QUIC v1, requests compatible upgrades to v2 and v2 draft, and
++/// verifies that an incompatible InternalTest1 target is rejected.
+ #[test]
+ fn vn_compat() {
+-    tls_api_test_with_loss(None, V1, Some(TEST_SNI), Some(TEST_ALPN)).expect("vn_compat");
++    vn_compat_test_one(Version::V1 as u32, Version::V2 as u32).expect("vn_compat V1 -> V2");
++    vn_compat_test_one(Version::V1 as u32, Version::V2Draft as u32)
++        .expect("vn_compat V1 -> V2 draft");
++    assert!(
++        vn_compat_test_one(Version::V1 as u32, Version::InternalTest1 as u32).is_err(),
++        "vn_compat V1 -> InternalTest1 unexpectedly succeeded"
++    );
++}
++
++fn vn_compat_test_one(current: u32, target: u32) -> crate::Result<()> {
++    let mut simulated_time = Instant::from_ticks(0);
++    let mut test_ctx =
++        tls_api_init_ctx(&mut simulated_time, current, None).ok_or(crate::Error::Generic)?;
++
++    test_ctx.cnx_client().set_desired_version(target);
++
++    let mut loss_mask = 0u64;
++    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
++
++    let client_version = test_ctx
++        .qclient
++        .first_cnx_mut()
++        .and_then(connection_supported_version)
++        .ok_or(crate::Error::Generic)?;
++    let server_version = test_ctx
++        .qserver
++        .first_cnx_mut()
++        .and_then(connection_supported_version)
++        .ok_or(crate::Error::Generic)?;
++
++    if client_version != target || server_version != target {
++        return Err(crate::Error::Generic);
++    }
++
++    Ok(())
++}
++
++fn connection_supported_version(cnx: &mut Connection) -> Option<u32> {
++    let version_index = usize::try_from(cnx.version_index).ok()?;
++    SUPPORTED_VERSIONS
++        .get(version_index)
++        .copied()
++        .map(|version| version as u32)
+ }
+ 
+ /// C: `zero_rtt_test` in `picoquictest/tls_api_test.c`.
+@@ -1559,12 +1858,27 @@ fn zero_rtt_bad_param() {
+ 
+ /// C: `zero_rtt_delay_test` in `picoquictest/tls_api_test.c`.
+ ///
+-/// Zero-RTT test with an extra 100 ms delay before the handshake begins,
+-/// to exercise delayed 0-RTT acceptance.
++/// Verifies the 0-RTT ticket-age boundary: a ticket older than the nominal
++/// delay by one second is rejected, while one two seconds inside the boundary
++/// is accepted.
+ #[test]
+ fn zero_rtt_delay() {
++    const NOMINAL_DELAY_SEC: u64 = 100_000;
++    const NOMINAL_DELAY: u64 = NOMINAL_DELAY_SEC * 1_000_000;
++
++    assert!(
++        zero_rtt_test_one(&ZeroRttTest {
++            long_data: true,
++            extra_delay: NOMINAL_DELAY + 1_000_000,
++            ..Default::default()
++        })
++        .is_err(),
++        "zero_rtt_delay accepted ticket age {NOMINAL_DELAY_SEC} seconds + 1 second"
++    );
++
+     zero_rtt_test_one(&ZeroRttTest {
+-        extra_delay: 100_000,
++        long_data: true,
++        extra_delay: NOMINAL_DELAY - 2_000_000,
+         ..Default::default()
+     })
+     .expect("zero_rtt_delay");
+@@ -1616,17 +1930,20 @@ fn zero_rtt_loss() {
+ /// stress 0-RTT recovery.
+ #[test]
+ fn zero_rtt_many_losses() {
+-    let mut seed = 0xdead_beef_cafe_1234u64;
+-    for _ in 0..50 {
+-        seed = seed
+-            .wrapping_mul(6364136223846793005)
+-            .wrapping_add(1442695040888963407);
+-        let mask = seed >> 56;
++    let mut random_context = 0x1055_ca45_c001_babau64;
++    for i in 0..50 {
++        let mut loss_mask = 0u64;
++        for _ in 0..64 {
++            loss_mask <<= 1;
++            if test_uniform_random(&mut random_context, 1000) < 300 {
++                loss_mask |= 1;
++            }
++        }
+         zero_rtt_test_one(&ZeroRttTest {
+-            early_loss: mask,
++            early_loss: loss_mask,
+             ..Default::default()
+         })
+-        .expect("zero_rtt_many_losses");
++        .unwrap_or_else(|e| panic!("zero_rtt_many_losses i={i}, mask={loss_mask:016x}: {e:?}"));
+     }
+ }
+ 
+diff --git a/rs/fq/src/tests/util.rs b/rs/fq/src/tests/util.rs
+index c6d6f88d..37a7200b 100644
+--- a/rs/fq/src/tests/util.rs
++++ b/rs/fq/src/tests/util.rs
+@@ -802,6 +802,18 @@ impl TestTlsApiCtx {
+     pub fn has_cnx_server(&self) -> bool {
+         !self.qserver.connections.is_empty()
+     }
++
++    fn server_received_stream_data(&mut self) -> bool {
++        self.qserver
++            .first_cnx_mut()
++            .map(|cnx| {
++                cnx.streams.iter().any(|stream| {
++                    stream.fin_offset > 0
++                        || stream.stream_data_nodes.iter().any(|node| node.length > 0)
++                })
++            })
++            .unwrap_or(false)
++    }
+ }
+ 
+ /// Initialise a TLS-API test context with the `_ex` variant that
+@@ -907,7 +919,15 @@ pub fn wait_client_connection_ready(
+             nb_inactive += 1;
+         }
+     }
+-    Ok(())
++
++    if matches!(
++        test_ctx.qclient.first_cnx_mut().map(|c| c.connection_state),
++        Some(crate::State::Ready)
++    ) {
++        Ok(())
++    } else {
++        Err(crate::Error::Generic)
++    }
+ }
+ 
+ /// Register the stream scenario on the test context so that the
+@@ -1630,6 +1650,16 @@ pub fn tls_api_one_scenario_body_connect(
+     wait_client_connection_ready(test_ctx, simulated_time)
+ }
+ 
++const TEST_TICKET_ENCRYPT_KEY: [u8; 32] = [
++    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
++    26, 27, 28, 29, 30, 31,
++];
++
++const TEST_TICKET_BADCRYPT_KEY: [u8; 32] = [
++    255, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
++    26, 27, 28, 29, 30, 31,
++];
++
+ /// Create a TLS-API test context from an explicit initial CID and
+ /// optional ticket file.  Uses `TEST_SNI` / `TEST_ALPN` internally.
+ /// C: `tls_api_init_ctx_ex`.
+@@ -1660,16 +1690,26 @@ fn tls_api_init_ctx_ex_named(
+     ticket_file: Option<&str>,
+     initial_cid: Option<&ConnectionId>,
+ ) -> Option<Box<TestTlsApiCtx>> {
+-    const VERIFIER_ENCRYPT_KEY: [u8; RESET_SECRET_SIZE] = {
+-        let mut k = [0u8; RESET_SECRET_SIZE];
+-        let mut i = 0usize;
+-        while i < RESET_SECRET_SIZE {
+-            k[i] = i as u8;
+-            i += 1;
+-        }
+-        k
+-    };
++    tls_api_init_ctx_ex_named_with_ticket_key(
++        simulated_time,
++        proposed_version,
++        sni,
++        alpn,
++        ticket_file,
++        initial_cid,
++        Some(TEST_TICKET_ENCRYPT_KEY.as_slice()),
++    )
++}
+ 
++fn tls_api_init_ctx_ex_named_with_ticket_key(
++    simulated_time: &mut Instant,
++    proposed_version: u32,
++    sni: Option<&str>,
++    alpn: Option<&str>,
++    ticket_file: Option<&str>,
++    initial_cid: Option<&ConnectionId>,
++    ticket_encryption_key: Option<&[u8]>,
++) -> Option<Box<TestTlsApiCtx>> {
+     let version = if proposed_version == 0 {
+         Version::InternalTest1 as u32
+     } else {
+@@ -1704,7 +1744,7 @@ fn tls_api_init_ctx_ex_named(
+         [0u8; RESET_SECRET_SIZE],
+         *simulated_time,
+         None,
+-        Some(&VERIFIER_ENCRYPT_KEY),
++        ticket_encryption_key,
+     )?;
+ 
+     {
+@@ -2222,10 +2262,19 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
+                 Instant::from_ticks(simulated_time.ticks().saturating_add(_zrt.extra_delay));
+         }
+ 
+-        let mut test_ctx = tls_api_init_ctx(
++        let ticket_encryption_key = if pass == 1 && _zrt.use_badcrypt {
++            TEST_TICKET_BADCRYPT_KEY.as_slice()
++        } else {
++            TEST_TICKET_ENCRYPT_KEY.as_slice()
++        };
++        let mut test_ctx = tls_api_init_ctx_ex_named_with_ticket_key(
+             &mut simulated_time,
+             proposed_version,
++            Some(TEST_SNI),
++            Some(TEST_ALPN),
+             Some(TICKET_FILE_NAME),
++            None,
++            Some(ticket_encryption_key),
+         )
+         .ok_or(crate::Error::Generic)?;
+ 
+@@ -2255,7 +2304,10 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
+                 .saturating_add(1);
+         }
+         if _zrt.propose_ech {
+-            test_ctx.qclient.client_zero_share = true;
++            test_ctx.qclient.ech_configure(None, None)?;
++            if !test_ctx.qclient.ech_client_enabled || test_ctx.qclient.client_zero_share {
++                return Err(crate::Error::Generic);
++            }
+         }
+ 
+         test_ctx.cnx_client().start_client()?;
+@@ -2276,32 +2328,14 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
+                 } else {
+                     b"test0rtt".to_vec()
+                 };
+-                let _ = test_ctx
++                test_ctx
+                     .cnx_client()
+-                    .add_to_stream(stream_id, &payload, true);
++                    .add_to_stream(stream_id, &payload, true)?;
+             }
+ 
+             if _zrt.early_loss > 0 {
+                 loss_mask = _zrt.early_loss;
+             }
+-
+-            let accept_zero_rtt = !_zrt.use_badcrypt && !_zrt.hardreset && !_zrt.change_params;
+-            let sent = if _zrt.long_data { 17 } else { 1 };
+-            {
+-                let cnx = test_ctx.cnx_client();
+-                cnx.nb_zero_rtt_sent = sent;
+-                cnx.nb_zero_rtt_acked = if accept_zero_rtt && _zrt.early_loss == 0 {
+-                    sent
+-                } else {
+-                    0
+-                };
+-                cnx.zero_rtt_data_accepted = accept_zero_rtt;
+-                cnx.is_0rtt_accepted = accept_zero_rtt;
+-                cnx.max_early_data_size = usize::MAX;
+-                if accept_zero_rtt {
+-                    cnx.psk_cipher_suite_id = 0x1301;
+-                }
+-            }
+         }
+ 
+         tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
+@@ -2319,10 +2353,7 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
+                 let server_psk = test_ctx
+                     .qserver
+                     .first_cnx_mut()
+-                    .map(|c| {
+-                        c.psk_cipher_suite_id = c.psk_cipher_suite_id.max(0x1301);
+-                        c.tls_is_psk_handshake()
+-                    })
++                    .map(|c| c.tls_is_psk_handshake())
+                     .unwrap_or(true);
+                 if !client_psk || !server_psk {
+                     return Err(crate::Error::Generic);
+@@ -2332,10 +2363,6 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
+         }
+ 
+         if pass == 1 && _zrt.do_multipath {
+-            test_ctx.cnx_client().is_multipath_enabled = true;
+-            if let Some(cnx) = test_ctx.qserver.first_cnx_mut() {
+-                cnx.is_multipath_enabled = true;
+-            }
+             let server_mp = test_ctx
+                 .qserver
+                 .first_cnx_mut()
+@@ -2355,6 +2382,11 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
+         tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)?;
+ 
+         if pass == 1 {
++            let server_received_stream_data = test_ctx.server_received_stream_data();
++            let server_zero_rtt_received = test_ctx
++                .qserver
++                .first_cnx_mut()
++                .map(|cnx| cnx.nb_zero_rtt_received);
+             let cnx = test_ctx.cnx_client();
+             if !_zrt.use_badcrypt && !_zrt.hardreset && !_zrt.change_params {
+                 if cnx.nb_zero_rtt_sent == 0 {
+@@ -2363,11 +2395,19 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
+                 if _zrt.early_loss == 0 && cnx.nb_zero_rtt_acked != cnx.nb_zero_rtt_sent {
+                     return Err(crate::Error::Generic);
+                 }
++                if _zrt.early_loss == 0
++                    && _zrt.no_coal
++                    && server_zero_rtt_received
++                        .is_some_and(|received| cnx.nb_zero_rtt_sent != received)
++                {
++                    return Err(crate::Error::Generic);
++                }
+                 if _zrt.long_data && cnx.nb_zero_rtt_sent < 3 {
+                     return Err(crate::Error::Generic);
+                 }
+             } else if cnx.nb_zero_rtt_sent == 0
+                 || ((_zrt.early_loss > 0 || _zrt.change_params) && cnx.nb_zero_rtt_acked != 0)
++                || !server_received_stream_data
+                 || cnx.did_receive_short_initial
+             {
+                 return Err(crate::Error::Generic);
+@@ -2375,17 +2415,7 @@ pub fn zero_rtt_test_one(_zrt: &ZeroRttTest) -> crate::Result<()> {
+         }
+ 
+         if test_ctx.qclient.stored_tickets.is_empty() {
+-            let ticket = [0x5a_u8; 48];
+-            let tp = test_ctx.cnx_client().local_parameters.clone();
+-            test_ctx.qclient.store_ticket(
+-                Some(TEST_SNI),
+-                Some(TEST_ALPN),
+-                Version::InternalTest1 as u32,
+-                test_ctx.server_addr.ip(),
+-                test_ctx.client_addr.ip(),
+-                &ticket,
+-                &tp,
+-            )?;
++            return Err(crate::Error::Generic);
+         }
+         test_ctx
+             .qclient
+@@ -3914,6 +3944,97 @@ pub struct WifiTestSpec {
+     pub queue_max_delay: u64,
+ }
+ 
++struct WifiCubicCongestionControl;
++
++impl crate::CongestionControl for WifiCubicCongestionControl {
++    fn alg_init(
++        &self,
++        path_x: &mut crate::internal::Path,
++        option_string: Option<&str>,
++        current_time: Instant,
++    ) {
++        crate::cubic::CubicState::init(path_x, option_string, current_time.ticks());
++    }
++
++    fn alg_notify(
++        &self,
++        connection: &mut Connection,
++        path_x: &mut crate::internal::Path,
++        notification: crate::CongestionNotification,
++        ack_state: &crate::PerAckState,
++        current_time: Instant,
++    ) {
++        if path_x.congestion_alg_state.is_none() {
++            crate::cubic::CubicState::init(path_x, None, current_time.ticks());
++        }
++
++        let Some(boxed_state) = path_x.congestion_alg_state.take() else {
++            return;
++        };
++
++        let mut cubic_state = match boxed_state.downcast::<crate::cubic::CubicState>() {
++            Ok(state) => state,
++            Err(boxed_state) => {
++                path_x.congestion_alg_state = Some(boxed_state);
++                return;
++            }
++        };
++
++        cubic_state.notify(
++            connection,
++            path_x,
++            notification,
++            ack_state,
++            current_time.ticks(),
++        );
++        path_x.congestion_alg_state = Some(cubic_state);
++    }
++
++    fn alg_delete(&self, path_x: &mut crate::internal::Path) {
++        path_x.congestion_alg_state = None;
++    }
++
++    fn alg_observe(&self, path_x: &crate::internal::Path) -> Option<(u64, u64)> {
++        path_x
++            .congestion_alg_state
++            .as_ref()
++            .and_then(|state| state.downcast_ref::<crate::cubic::CubicState>())
++            .map(|state| state.observe())
++    }
++}
++
++static WIFI_CUBIC_CONTROL: WifiCubicCongestionControl = WifiCubicCongestionControl;
++static WIFI_CUBIC_ALGORITHM: crate::CongestionAlgorithm = crate::CongestionAlgorithm {
++    congestion_algorithm_id: "cubic",
++    congestion_algorithm_number: 2,
++    ecn_mark: crate::ECN_ECT_0,
++    algorithm: &WIFI_CUBIC_CONTROL,
++};
++
++fn wifi_congestion_algorithm(
++    ccalgo_id: &str,
++) -> crate::Result<&'static crate::CongestionAlgorithm> {
++    if ccalgo_id == "cubic" {
++        Ok(&WIFI_CUBIC_ALGORITHM)
++    } else {
++        crate::register_all_congestion_control_algorithms();
++        crate::get_congestion_algorithm(ccalgo_id).ok_or(crate::Error::Generic)
++    }
++}
++
++fn wifi_set_connection_congestion_algorithm(
++    connection: &mut Connection,
++    algo: &'static crate::CongestionAlgorithm,
++    option_string: Option<&str>,
++    current_time: Instant,
++) {
++    connection.set_congestion_algorithm_ex(algo, option_string);
++    for path_x in &mut connection.paths {
++        algo.algorithm.alg_delete(path_x);
++        algo.algorithm.alg_init(path_x, option_string, current_time);
++    }
++}
++
+ /// Run one wifi-test scenario.  `test_id` is the C enum discriminant used to
+ /// seed the initial connection ID.
+ /// C: `wifi_test_one` in `picoquictest/wifitest.c`.
+@@ -3934,13 +4055,16 @@ pub fn wifi_test_one(_test_id: u32, _spec: &WifiTestSpec) -> crate::Result<()> {
+     )
+     .ok_or(crate::Error::Generic)?;
+ 
+-    let algo = crate::get_congestion_algorithm(_spec.ccalgo_id).ok_or(crate::Error::Generic)?;
++    let algo = wifi_congestion_algorithm(_spec.ccalgo_id)?;
+     test_ctx
+         .qserver
+         .set_default_congestion_algorithm_ex(algo, _spec.cc_algo_option);
+-    test_ctx
+-        .cnx_client()
+-        .set_congestion_algorithm_ex(algo, _spec.cc_algo_option);
++    wifi_set_connection_congestion_algorithm(
++        test_ctx.cnx_client(),
++        algo,
++        _spec.cc_algo_option,
++        simulated_time,
++    );
+ 
+     test_ctx.c_to_s_link.microsec_latency = _spec.latency;
+     test_ctx.s_to_c_link.microsec_latency = _spec.latency;
+diff --git a/rs/fq/src/tests/util_test.rs b/rs/fq/src/tests/util_test.rs
+index 48dd9ff9..30f77e29 100644
+--- a/rs/fq/src/tests/util_test.rs
++++ b/rs/fq/src/tests/util_test.rs
+@@ -20,36 +20,48 @@ const EXPECTED_CIDS: &[(&[u8], &str)] = &[
+ /// C: `util_connection_id_print_test` in `picoquictest/util_test.c`.
+ ///
+ /// `picoquic_print_connection_id_hexa(buf, sizeof, &cid)` formats
+-/// the connection-id bytes as lowercase hex.  Rust callers do this
+-/// inline with `core::fmt::Write` over `cid.as_bytes()`.
++/// the connection-id bytes as lowercase hex and reports failure when
++/// the output sink cannot accept the bytes.
+ #[test]
+ fn connection_id_print() {
+-    use core::fmt::Write;
+     for (bytes, expected) in EXPECTED_CIDS {
+         let cid = ConnectionId::clone_from_slice(bytes).expect("CID under cap");
+         let mut got = String::new();
+-        for b in cid.as_bytes() {
+-            write!(&mut got, "{b:02x}").unwrap();
+-        }
++        crate::utils::print_connection_id_hexa(&mut got, &cid).expect("CID hex print");
+         assert_eq!(got, *expected, "CID hex round-trip");
+     }
++
++    struct FailingWrite;
++
++    impl core::fmt::Write for FailingWrite {
++        fn write_str(&mut self, _s: &str) -> core::fmt::Result {
++            Err(core::fmt::Error)
++        }
++    }
++
++    let cid = ConnectionId::clone_from_slice(EXPECTED_CIDS[0].0).expect("CID under cap");
++    let mut failing = FailingWrite;
++    assert!(
++        crate::utils::print_connection_id_hexa(&mut failing, &cid).is_err(),
++        "CID hex print should fail when the sink rejects output",
++    );
+ }
+ 
+ /// C: `util_connection_id_parse_test` in `picoquictest/util_test.c`.
+ ///
+ /// Parse a hex string back into a [`ConnectionId`].  Picoquic exposes
+-/// `picoquic_parse_connection_id_hexa(text, len, &cid)`; the Rust
+-/// equivalent is a small `from_str_radix` loop over byte pairs.
++/// `picoquic_parse_connection_id_hexa(text, len, &cid)`, returning the
++/// decoded byte length while filling the output connection ID.
+ #[test]
+ fn connection_id_parse() {
+     for (bytes, hex) in EXPECTED_CIDS {
+-        let mut decoded = [0u8; 20];
+-        let n = hex.len() / 2;
+-        for i in 0..n {
+-            decoded[i] = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).expect("hex byte");
+-        }
+-        let parsed = ConnectionId::clone_from_slice(&decoded[..n]).expect("CID under cap");
++        let parsed = crate::utils::parse_connection_id_hexa(hex).expect("CID hex parse");
+         let expected = ConnectionId::clone_from_slice(bytes).expect("CID under cap");
++        assert_eq!(
++            parsed.as_bytes().len(),
++            expected.as_bytes().len(),
++            "CID parsed length for {hex}",
++        );
+         assert_eq!(parsed, expected, "CID parse roundtrip for {hex}");
+     }
+ }
+@@ -82,28 +94,22 @@ fn util_uint8_to_str() {
+ ///
+ /// The C body verifies [`crate::utils::constant_time_memcmp`]
+ /// returns equal/unequal for matching/differing 16-byte slices over
+-/// a 1 MB working set, plus rough timing measurements (skipped — the
+-/// timing portion was always informational and noise-prone).  We
+-/// keep just the correctness loop.
++/// a 1 MB working set, plus full-buffer one-byte mismatches.  The
++/// rough timing measurements are skipped; that portion was always
++/// informational and noise-prone.
+ #[test]
+ fn util_memcmp() {
+     use core::cmp::Ordering;
+ 
++    use super::util::test_random;
+     use crate::utils::constant_time_memcmp;
+ 
+-    let nb_words = (1 << 17) / 8;
++    let nb_words = (1 << 20) / 8;
+     let l_total = nb_words * 8;
+     let mut x = vec![0u8; l_total];
+-    // Borrow a deterministic test RNG so the data isn't all zeros.
+     let mut seed = 0xbabac001u64;
+-    let next = |seed: &mut u64| -> u64 {
+-        *seed = seed
+-            .wrapping_mul(6364136223846793005)
+-            .wrapping_add(1442695040888963407);
+-        *seed
+-    };
+     for chunk in x[32..].chunks_mut(8) {
+-        chunk.copy_from_slice(&next(&mut seed).to_le_bytes());
++        chunk.copy_from_slice(&test_random(&mut seed).to_le_bytes());
+     }
+     x[16..32].copy_from_slice(&[0xff; 16]);
+ 
+@@ -138,6 +144,19 @@ fn util_memcmp() {
+             j += 16;
+         }
+     }
++
++    // Full-buffer difference detection: one changed byte at each of
++    // the 16 interval positions used by the C timing loop.
++    for offset in 0..16 {
++        let mut y = x.clone();
++        let changed = 1 + ((offset * l_total) / 16);
++        y[changed] ^= 0xff;
++        assert_ne!(
++            constant_time_memcmp(&x, &y),
++            Ordering::Equal,
++            "unexpected full-buffer match at offset={offset}, byte={changed}",
++        );
++    }
+ }
+ 
+ /// C: `util_sprintf_test` in `picoquictest/util_test.c`.
+diff --git a/rs/fq/src/tests/wifitest.rs b/rs/fq/src/tests/wifitest.rs
+index 8d4c6ddf..0904a89b 100644
+--- a/rs/fq/src/tests/wifitest.rs
++++ b/rs/fq/src/tests/wifitest.rs
+@@ -21,7 +21,6 @@ const WIFI_TEST_CUBIC_LONG: u32 = 7;
+ const WIFI_TEST_BBR_LONG: u32 = 8;
+ const WIFI_TEST_BBR_SHADOW: u32 = 9;
+ const WIFI_TEST_BBR_MANY: u32 = 10;
+-const WIFI_TEST_BBR1: u32 = 11;
+ const WIFI_TEST_BBR1_HARD: u32 = 12;
+ const WIFI_TEST_BBR1_LONG: u32 = 13;
+ 
+@@ -111,7 +110,9 @@ fn wifi_bbr() {
+ #[test]
+ fn wifi_bbr1() {
+     let spec = default_spec("bbr1", SUSPENSION_BASIC, 2_800_000);
+-    wifi_test_one(WIFI_TEST_BBR1, &spec).expect("wifi_bbr1");
++    // C's `wifi_bbr1_test` configures BBR1 but reuses `wifi_test_bbr`
++    // as the CID seed passed to `wifi_test_one`.
++    wifi_test_one(WIFI_TEST_BBR, &spec).expect("wifi_bbr1");
+ }
+ 
+ /// C: `wifi_bbr1_hard_test` in `picoquictest/wifitest.c`.

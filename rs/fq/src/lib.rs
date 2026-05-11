@@ -292,6 +292,19 @@ pub enum SpinbitVersion {
     On = 3,
 }
 
+impl SpinbitVersion {
+    /// Convert a raw C `picoquic_spinbit_version_enum` value.
+    pub fn from_raw(value: u64) -> Result<Self, Error> {
+        match value {
+            0 => Ok(Self::Basic),
+            1 => Ok(Self::Random),
+            2 => Ok(Self::Null),
+            3 => Ok(Self::On),
+            _ => Err(Error::InvalidArgument),
+        }
+    }
+}
+
 /// Loss-bit support level.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -2002,6 +2015,15 @@ impl Quic {
         Ok(())
     }
 
+    /// C-shaped raw setter for tests and FFI-style callers that still carry
+    /// integer `picoquic_spinbit_version_enum` values.
+    pub fn set_default_spinbit_policy_raw(
+        &mut self,
+        default_spinbit_policy: u64,
+    ) -> Result<(), Error> {
+        self.set_default_spinbit_policy(SpinbitVersion::from_raw(default_spinbit_policy)?)
+    }
+
     /// Default loss-bit policy applied to new connections.
     pub fn set_default_lossbit_policy(&mut self, default_lossbit_policy: LossbitVersion) {
         self.default_lossbit_policy = default_lossbit_policy;
@@ -2149,6 +2171,12 @@ impl Connection {
         }
         self.spin_policy = spinbit_policy;
         Ok(())
+    }
+
+    /// C-shaped raw setter for tests and FFI-style callers that still carry
+    /// integer `picoquic_spinbit_version_enum` values.
+    pub fn set_spinbit_policy_raw(&mut self, spinbit_policy: u64) -> Result<(), Error> {
+        self.set_spinbit_policy(SpinbitVersion::from_raw(spinbit_policy)?)
     }
 }
 
@@ -4202,6 +4230,20 @@ impl Connection {
             is_pure_ack: is_pure_ack as i32,
         });
         Ok(())
+    }
+
+    /// Queue a connection-level frame using the C pointer+length shape.
+    pub fn queue_misc_frame_with_length(
+        &mut self,
+        bytes: &[u8],
+        length: usize,
+        is_pure_ack: bool,
+        pc: PacketContext,
+    ) -> Result<(), Error> {
+        if length > bytes.len() {
+            return Err(Error::InvalidArgument);
+        }
+        self.queue_misc_frame(&bytes[..length], is_pure_ack, pc)
     }
 
     /// Queue a datagram frame for transmission.

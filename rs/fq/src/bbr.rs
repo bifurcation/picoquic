@@ -364,8 +364,7 @@ impl BbrState {
         if self.bw > self.bw_lo {
             self.bw = self.bw_lo;
         }
-        // TODO: remove the bw_hi != 0 guard once variables are properly
-        // initialised (mirrors the C-side TODO at bbr.c:1100).
+        // Preserve C's bw_hi != 0 guard while bw_hi can still be uninitialised.
         if self.bw > self.bw_hi && self.bw_hi != 0 {
             self.bw = self.bw_hi;
         }

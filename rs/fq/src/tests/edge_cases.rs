@@ -17,12 +17,14 @@ use super::util::{
 use crate::errors::{InternalError, TransportError};
 use crate::frames::FrameType;
 use crate::internal::{
-    Epoch, MICROSEC_HANDSHAKE_MAX, PacketType, StreamDataNode, Version, pad_to_target_length,
-    protect_packet_header, skip_frame, update_payload_length,
+    Epoch, MICROSEC_HANDSHAKE_MAX, PacketType, StreamDataBufferArgument, StreamDataNode, Version,
+    connection_wake_key, pad_to_target_length, protect_packet_header, skip_frame,
+    update_payload_length,
 };
 use crate::{
     CallbackEvent, Connection, ConnectionId, Duration, Error, INITIAL_MTU_IPV6, Instant,
     MAX_PACKET_SIZE, PacketContext, PmtudPolicy, State, StreamDataCallback,
+    provide_stream_data_buffer,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -307,19 +309,41 @@ fn reset_loop_stream_rank(connection: &Connection, stream_id: u64) -> Option<usi
     (rank < 4).then_some(rank as usize)
 }
 
-fn reset_loop_prepare_to_send(state: &mut ResetLoopState, stream_rank: usize, space: usize) -> i32 {
+fn reset_loop_prepare_to_send(
+    state: &mut ResetLoopState,
+    stream_rank: usize,
+    context: &mut StreamDataBufferArgument<'_>,
+) -> i32 {
     if stream_rank >= state.data_sent.len() {
         return -1;
     }
 
-    let _is_fin =
+    let space = context.allowed_space;
+    let is_fin =
         state.data_sent[stream_rank].saturating_add(space as u64) > RESET_LOOP_TARGET_BYTES;
+    let Some(buffer) = provide_stream_data_buffer(context, space, is_fin, !is_fin) else {
+        return -1;
+    };
+    buffer.fill(b'a'.saturating_add(stream_rank as u8));
     state.prepare_to_send[stream_rank] = state.prepare_to_send[stream_rank].saturating_add(1);
     state.data_sent[stream_rank] = state.data_sent[stream_rank].saturating_add(space as u64);
     0
 }
 
 impl StreamDataCallback for ResetLoopCallback {
+    fn prepare_to_send<'a>(
+        &mut self,
+        connection: &mut Connection,
+        stream_id: u64,
+        context: &mut StreamDataBufferArgument<'a>,
+        _stream_ctx: Option<&mut dyn core::any::Any>,
+    ) -> i32 {
+        let Some(stream_rank) = reset_loop_stream_rank(connection, stream_id) else {
+            return -1;
+        };
+        reset_loop_prepare_to_send(&mut self.state.borrow_mut(), stream_rank, context)
+    }
+
     fn callback(
         &mut self,
         connection: &mut Connection,
@@ -351,12 +375,7 @@ impl StreamDataCallback for ResetLoopCallback {
                 }
                 0
             }
-            CallbackEvent::PrepareToSend => {
-                let Some(stream_rank) = reset_loop_stream_rank(connection, stream_id) else {
-                    return -1;
-                };
-                reset_loop_prepare_to_send(&mut self.state.borrow_mut(), stream_rank, bytes.len())
-            }
+            CallbackEvent::PrepareToSend => -1,
             CallbackEvent::StreamReset => {
                 let Some(stream_rank) = reset_loop_stream_rank(connection, stream_id) else {
                     return -1;
@@ -1430,7 +1449,7 @@ fn ec9a_reinsert_server_by_wake_time(
     let (tree_token, old_token) = test_ctx
         .qserver
         .connection_wake_tree
-        .insert(next_time.ticks(), token)?;
+        .insert(connection_wake_key(next_time, token), token)?;
     let cnx = test_ctx
         .qserver
         .connections

@@ -11,7 +11,7 @@ use crate::internal::{INTEROP_VERSION_LATEST, Version, format_32};
 use crate::tls_api::{
     HASH_SIZE_MAX, LABEL_HP, LABEL_IV, LABEL_KEY, LABEL_QUIC_V1_KEY_BASE, LABEL_V1_TRAFFIC_UPDATE,
     create_retry_protection_context, encode_retry_protection, hash_create, hkdf_expand_label,
-    rotate_app_secret, setup_initial_master_secret, setup_initial_secrets,
+    pn_encrypt, rotate_app_secret, setup_initial_master_secret, setup_initial_secrets,
     test_pn_enc_from_raw_key, verify_retry_protection,
 };
 use crate::utils::format_connection_id;
@@ -309,7 +309,8 @@ fn pn_ctr() {
     let cipher = test_pn_enc_from_raw_key(&KEY).expect("create CTR cipher");
 
     // Verify the AES-128-ECB keystream against the NIST test vector.
-    let keystream = cipher.mask(IV);
+    let mut keystream = [0u8; 16];
+    pn_encrypt(cipher.as_ref(), &IV, &mut keystream);
     assert_eq!(
         keystream, EXPECTED,
         "AES-128 keystream does not match expected"
@@ -319,12 +320,21 @@ fn pn_ctr() {
     // verify the XOR relationship with the keystream, then round-trip.
     let mut i = 1usize;
     while i <= 16 {
-        let in_bytes: Vec<u8> = vec![i as u8; i];
-        let out_bytes: Vec<u8> = in_bytes
-            .iter()
-            .zip(EXPECTED.iter())
-            .map(|(a, b)| a ^ b)
-            .collect();
+        let mut in_bytes = [0u8; 16];
+        in_bytes[..i].fill(i as u8);
+
+        let mut mask = [0u8; 16];
+        pn_encrypt(cipher.as_ref(), &IV, &mut mask[..i]);
+        assert_eq!(
+            &mask[..i],
+            &EXPECTED[..i],
+            "CTR prefix mask mismatch at i={i}"
+        );
+
+        let mut out_bytes = [0u8; 16];
+        for j in 0..i {
+            out_bytes[j] = in_bytes[j] ^ mask[j];
+        }
 
         for j in 0..i {
             assert_eq!(
@@ -335,39 +345,58 @@ fn pn_ctr() {
         }
 
         // Re-encrypt the ciphertext to recover plaintext.
-        let decoded: Vec<u8> = out_bytes
-            .iter()
-            .zip(EXPECTED.iter())
-            .map(|(a, b)| a ^ b)
-            .collect();
-        assert_eq!(&decoded, &in_bytes, "CTR roundtrip failed at i={i}");
+        let mut decode_mask = [0u8; 16];
+        pn_encrypt(cipher.as_ref(), &IV, &mut decode_mask[..i]);
+        let mut decoded = [0u8; 16];
+        for j in 0..i {
+            decoded[j] = out_bytes[j] ^ decode_mask[j];
+        }
+        assert_eq!(
+            &decoded[..i],
+            &in_bytes[..i],
+            "CTR roundtrip failed at i={i}"
+        );
+
+        // C also verifies in-place encryption by using out_bytes as both
+        // input and output for the second XOR.
+        let mut in_place = out_bytes;
+        let mut in_place_mask = [0u8; 16];
+        pn_encrypt(cipher.as_ref(), &IV, &mut in_place_mask[..i]);
+        for j in 0..i {
+            in_place[j] ^= in_place_mask[j];
+        }
+        assert_eq!(
+            &in_place[..i],
+            &in_bytes[..i],
+            "CTR in-place roundtrip failed at i={i}"
+        );
 
         i *= 2;
     }
 
     // Verify PN encryption against the test packet vectors.
     let sample_clear: [u8; 16] = PACKET_CLEAR_PN[5..21].try_into().unwrap();
-    let enc_mask = cipher.mask(sample_clear);
-    let encrypted_pn: Vec<u8> = PACKET_CLEAR_PN[1..5]
-        .iter()
-        .zip(enc_mask.iter())
-        .map(|(a, b)| a ^ b)
-        .collect();
+    let mut enc_mask = [0u8; 4];
+    pn_encrypt(cipher.as_ref(), &sample_clear, &mut enc_mask);
+    let mut encrypted_pn = [0u8; 4];
+    for j in 0..4 {
+        encrypted_pn[j] = PACKET_CLEAR_PN[1 + j] ^ enc_mask[j];
+    }
     assert_eq!(
-        &encrypted_pn,
+        &encrypted_pn[..],
         &PACKET_ENCRYPTED_PN[1..5],
         "PN encryption does not match expected"
     );
 
     let sample_enc: [u8; 16] = PACKET_ENCRYPTED_PN[5..21].try_into().unwrap();
-    let dec_mask = cipher.mask(sample_enc);
-    let decrypted_pn: Vec<u8> = PACKET_ENCRYPTED_PN[1..5]
-        .iter()
-        .zip(dec_mask.iter())
-        .map(|(a, b)| a ^ b)
-        .collect();
+    let mut dec_mask = [0u8; 4];
+    pn_encrypt(cipher.as_ref(), &sample_enc, &mut dec_mask);
+    let mut decrypted_pn = [0u8; 4];
+    for j in 0..4 {
+        decrypted_pn[j] = PACKET_ENCRYPTED_PN[1 + j] ^ dec_mask[j];
+    }
     assert_eq!(
-        &decrypted_pn,
+        &decrypted_pn[..],
         &PACKET_CLEAR_PN[1..5],
         "PN decryption does not match expected"
     );
@@ -642,14 +671,14 @@ fn draft17_vector() {
             &server_secret, &draft17_test_server_initial_secret,
             "server initial secret mismatch"
         );
+
+        // Integration test: verify that the AEAD contexts are set up correctly
+        // for the known CID and version.
+        aead_vector_test_one(draft17_test_cnx_id, INTEROP_VERSION_LATEST as u32);
     }
     // (If the interop version salt no longer matches the draft-17 vector, skip the
     // master-secret check — this mirrors the C test's `else if memcmp(...) != 0` path
     // which logs a message but does not fail.)
-
-    // Integration test: verify that the AEAD contexts are set up correctly
-    // for the known CID and version.
-    aead_vector_test_one(draft17_test_cnx_id, INTEROP_VERSION_LATEST as u32);
 }
 
 /// C: `retry_protection_vector_test` in `picoquictest/cleartext_aead_test.c`.
@@ -676,6 +705,14 @@ fn retry_protection_vector() {
     let retry_protection_test_odcid =
         ConnectionId::clone_from_slice(&[81, 82, 83, 84, 85, 86, 87, 88]).unwrap();
 
+    #[rustfmt::skip]
+    let retry_protection_key_25: [u8; 32] = [
+        0x65, 0x6e, 0x61, 0xe3, 0x36, 0xae, 0x94, 0x17,
+        0xf7, 0xf0, 0xed, 0xd8, 0xd7, 0x8d, 0x46, 0x1e,
+        0x2a, 0xa7, 0x08, 0x4a, 0xba, 0x7a, 0x14, 0xc1,
+        0xe9, 0xf7, 0x26, 0xd5, 0x57, 0x09, 0x16, 0x9a,
+    ];
+
     // Pseudo-packet = ODCID_LENGTH | ODCID_BYTES | retry_protection_test_input.
     let retry_protection_pseudo_packet: Vec<u8> = {
         let mut v = Vec::with_capacity(1 + 8 + retry_protection_test_input.len());
@@ -690,6 +727,11 @@ fn retry_protection_vector() {
         0xf9, 0x50, 0xf8, 0x85, 0x71, 0x4b, 0xae, 0x7a,
         0xf1, 0xe2, 0x86, 0x7d, 0xd8, 0xf7, 0x83, 0x92,
     ];
+    #[rustfmt::skip]
+    let retry_protection_test_iv: [u8; 12] = [
+        0x4d, 0x16, 0x11, 0xd0, 0x55, 0x13, 0xa5, 0x52,
+        0xc5, 0x87, 0xd5, 0x75,
+    ];
 
     // Draft-25 retry packet vector.
     let retry_protection_odcid_draft25 =
@@ -701,15 +743,21 @@ fn retry_protection_vector() {
         0xfd, 0x93, 0xdf, 0x40, 0x48, 0xc4, 0x46, 0xa6,
     ];
 
-    // Obtain the QUIC-v1 retry integrity key via the version parameters.
-    let v1_params = Version::V1.parameters();
-    let retry_key = v1_params.version_retry_key;
-    let prefix_label = v1_params.tls_prefix_label;
+    // C uses the draft-25 retry integrity key directly, not the QUIC-v1 key.
+    let retry_key = &retry_protection_key_25;
+    let prefix_label = LABEL_QUIC_V1_KEY_BASE;
+    let assert_retry_iv = |phase: &str| {
+        let mut iv = [0u8; 12];
+        hkdf_expand_label(LABEL_IV, prefix_label, retry_key, &mut iv)
+            .expect("derive retry protection IV");
+        assert_eq!(iv, retry_protection_test_iv, "{phase} IV mismatch");
+    };
 
     // Phase 1: low-level AEAD encrypt/decrypt against the known checksum.
     {
         let protection_ctx = create_retry_protection_context(true, retry_key, prefix_label)
             .expect("create protection ctx");
+        assert_retry_iv("protection");
 
         // Encrypt empty plaintext; the only output is the 16-byte AEAD tag.
         let mut tag: Vec<u8> = Vec::new();
@@ -724,6 +772,7 @@ fn retry_protection_vector() {
         // Verify: decrypt the tag (should succeed with 0 plaintext bytes).
         let verification_ctx = create_retry_protection_context(false, retry_key, prefix_label)
             .expect("create verification ctx");
+        assert_retry_iv("verification");
 
         let mut tag_verify = tag.clone();
         verification_ctx

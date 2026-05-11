@@ -520,7 +520,7 @@ def _rust_impl_type_for_offset(impls: list[RustImplSpan], offset: int) -> str | 
 
 def collect_rust_functions() -> list[FunctionSpan]:
     out: list[FunctionSpan] = []
-    fn_re = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<|\()")
+    fn_re = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?=<|\()")
     for src in sorted(RS_SRC.rglob("*.rs")):
         text = src.read_text(errors="replace")
         offsets = line_offsets(text)
@@ -577,18 +577,18 @@ MANUAL_C_ALIASES: dict[str, list[str]] = {
     "binlog_picotls_ticket_ex": ["tls_ticket"],
     "picoquic_parse_long_packet_header": ["parse_long_packet_header_inner"],
     "picoquic_parse_short_packet_header": ["parse_short_packet_header_inner"],
-    "picoquic_incoming_version_negotiation": ["incoming_packet_ex"],
+    "picoquic_incoming_version_negotiation": ["incoming_version_negotiation"],
     "picoquic_ignore_incoming_handshake": ["ignore_incoming_handshake"],
     "picoquic_incoming_client_initial": ["incoming_client_initial"],
-    "picoquic_incoming_retry": ["incoming_packet_ex"],
-    "picoquic_incoming_server_initial": ["incoming_packet_ex"],
-    "picoquic_incoming_server_handshake": ["incoming_packet_ex"],
+    "picoquic_incoming_retry": ["incoming_retry"],
+    "picoquic_incoming_server_initial": ["incoming_server_initial"],
+    "picoquic_incoming_server_handshake": ["incoming_server_handshake"],
     "picoquic_incoming_client_handshake": ["incoming_client_handshake"],
-    "picoquic_incoming_stateless_reset": ["incoming_packet_ex"],
+    "picoquic_incoming_stateless_reset": ["incoming_stateless_reset"],
     "picoquic_incoming_0rtt": ["incoming_0rtt"],
     "picoquic_incoming_1rtt": ["incoming_1rtt"],
-    "picoquic_incoming_not_decrypted": ["incoming_packet_ex"],
-    "picoquic_incoming_segment": ["incoming_packet_ex"],
+    "picoquic_incoming_not_decrypted": ["incoming_not_decrypted"],
+    "picoquic_incoming_segment": ["incoming_segment"],
 }
 
 MANUAL_C_ALIAS_IMPLS: dict[str, dict[str, str]] = {
@@ -1241,22 +1241,22 @@ def build_function_map(previous: dict[str, Any] | None = None) -> dict[str, Any]
     for c_fn in c_functions:
         evidence = ""
         rust_match: FunctionSpan | None = None
-        for candidate in c_name_candidate_list(c_fn.name):
-            matches = by_name.get(candidate)
-            rust_match = _prefer_rust_match(matches or [], preferred_impl_for_c(c_fn, candidate))
+        ref_names = [c_fn.name]
+        for ref_name in c_name_candidate_list(c_fn.name):
+            if ref_name not in ref_names:
+                ref_names.append(ref_name)
+        for ref_name in ref_names:
+            refs = by_ref.get(ref_name, [])
+            rust_match = _prefer_rust_match(refs, preferred_impl_for_c(c_fn, ref_name))
             if rust_match is not None:
-                evidence = f"name_match:{candidate}"
+                evidence = f"rust_doc_c_ref:{ref_name}"
                 break
         if rust_match is None:
-            ref_names = [c_fn.name]
-            for ref_name in c_name_candidate_list(c_fn.name):
-                if ref_name not in ref_names:
-                    ref_names.append(ref_name)
-            for ref_name in ref_names:
-                refs = by_ref.get(ref_name, [])
-                rust_match = _prefer_rust_match(refs, preferred_impl_for_c(c_fn, ref_name))
+            for candidate in c_name_candidate_list(c_fn.name):
+                matches = by_name.get(candidate)
+                rust_match = _prefer_rust_match(matches or [], preferred_impl_for_c(c_fn, candidate))
                 if rust_match is not None:
-                    evidence = f"rust_doc_c_ref:{ref_name}"
+                    evidence = f"name_match:{candidate}"
                     break
 
         prev = prev_entries.get(c_id(c_fn), {})

@@ -157,11 +157,12 @@ of `needs_fix`; use `--no-confirm-resolutions` only for diagnostics.
 `phase4f.py` does not edit Rust or overwrite Phase 4D/4E artifacts; it
 compares final merged outcomes against the worker repair baseline.
 
-## Phase 5A/5B/5C: test audit, test repair, and failure debugging
+## Phase 5A/5B/5C/6: test audit, test repair, revalidation, and failure debugging
 
 After Phase 4 implementation repair has converged, Phase 5 verifies
-that the Rust tests line up with the C tests and then drives the suite
-green:
+that the Rust tests line up with the C tests, repairs test/API
+correspondence mismatches, and revalidates the merged result.  Phase 6
+then drives the suite green:
 
 ```sh
 python3 scripts/phase5a.py --status     # summarize test map/audit progress
@@ -169,8 +170,10 @@ python3 scripts/phase5a.py --replay-logs --no-refresh-map
 python3 scripts/phase5a.py              # audit C/Rust test correspondence
 python3 scripts/phase5b.py --status     # summarize test-repair progress
 python3 scripts/phase5b.py              # repair Phase 5A needs_fix entries
-python3 scripts/phase5c.py --refresh-failures --status
-python3 scripts/phase5c.py --refresh-failures
+python3 scripts/phase5c.py --status     # summarize final-tree revalidation
+python3 scripts/phase5c.py              # revalidate tests after worker merges
+python3 scripts/phase6.py --refresh-failures --status
+python3 scripts/phase6.py --refresh-failures
 ```
 
 Artifacts:
@@ -179,13 +182,17 @@ Artifacts:
 |--------------|----------|
 | `phase5a.py` | `xlate/test_translation_map.json`, `xlate/phase5a_reviews.json`, `xlate/phase5a_report.html` |
 | `phase5b.py` | `xlate/phase5b_repairs.json`, `xlate/phase5b_report.html`; repairs test mismatches and updates `xlate/phase5a_reviews.json` |
-| `phase5c.py` | `xlate/phase5c_failures.json`, `xlate/phase5c_report.html`, `xlate/phase5c_runs/<timestamp>.log` |
+| `phase5c.py` | `xlate/phase5c_revalidation.json`, `xlate/phase5c_revalidation.html`; read-only final-tree revalidation |
+| `phase6.py` | `xlate/phase6_failures.json`, `xlate/phase6_report.html`, `xlate/phase6_runs/<timestamp>.log` |
 
 `phase5a.py` supports read-only parallel shards with `--shard-count`
 and `--shard-index`; `--replay-logs` reprocesses previous Phase 5A
 transcripts through the current parser before spending agent time on
 remaining pending tests.  `phase5b.py` supports file-owned repair
-buckets with `--bucket-count` and `--bucket-index`.
+buckets with `--bucket-count` and `--bucket-index`.  `phase5c.py` is
+read-only and supports `--shard-count` / `--shard-index` for parallel
+post-merge revalidation.  `phase6.py` is the first Phase 5/6 script
+that intentionally runs cargo test.
 
 ## Helpers / diagnostics
 

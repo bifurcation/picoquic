@@ -1,0 +1,1377 @@
+{
+  "repairs": {
+    "picoquictest/ack_frequency_test.c:ackfrq_basic_test": {
+      "analysis": "Rust parameters and ACK assertions matched C; scenario verifier already has stream/callback completion checks in this tree, and cubic lookup now initializes the congestion registry before use.",
+      "files_changed": [
+        "rs/fq/src/tests/ack_frequency.rs"
+      ],
+      "fix_summary": "Added ACK-frequency congestion algorithm helper that registers all congestion algorithms before resolving cubic.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/ack_frequency_test.c:ackfrq_basic_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests passed"
+      ]
+    },
+    "picoquictest/ack_frequency_test.c:ackfrq_short_test": {
+      "analysis": "Rust parameters and target-time handling matched C; scenario verifier already has C-style stream/callback checks, and cubic lookup now initializes the registry.",
+      "files_changed": [
+        "rs/fq/src/tests/ack_frequency.rs"
+      ],
+      "fix_summary": "Reused the ACK-frequency registered congestion algorithm helper for cubic lookup.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/ack_frequency_test.c:ackfrq_short_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests passed"
+      ]
+    },
+    "picoquictest/bytestream_test.c:bytestream_test": {
+      "analysis": "Rust was still using raw read_str semantics for the empty C-string capacity edge case; C requires space for the terminating NUL.",
+      "files_changed": [
+        "rs/fq/src/tests/bytestream.rs"
+      ],
+      "fix_summary": "Added a test-local byteread_cstr-compatible adapter and switched C-string read assertions so max_len=0 fails and max_len=1 succeeds for an empty string.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/bytestream_test.c:bytestream_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests passed"
+      ]
+    },
+    "picoquictest/cert_verify_test.c:cert_verify_bad_cert_test": {
+      "analysis": "Rust helper now mirrors C success semantics: loop OK plus both client and server ready.",
+      "files_changed": [
+        "rs/fq/src/tests/cert_verify.rs"
+      ],
+      "fix_summary": "Changed cert_verify_test_one to compare expect_success against loop_ok && client_ready && server_ready.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/cert_verify_test.c:cert_verify_bad_cert_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests passed"
+      ]
+    },
+    "picoquictest/cert_verify_test.c:cert_verify_bad_sni_test": {
+      "analysis": "Bad-SNI rejection is now classified like C: either loop error or loop OK with either endpoint not ready is failure/rejection.",
+      "files_changed": [
+        "rs/fq/src/tests/cert_verify.rs"
+      ],
+      "fix_summary": "Reused the corrected cert_verify_test_one success classification.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/cert_verify_test.c:cert_verify_bad_sni_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests passed"
+      ]
+    },
+    "picoquictest/cert_verify_test.c:cert_verify_null_sni_test": {
+      "analysis": "Current Rust helper already folds both readiness checks into expected-success handling, so the null-SNI success case matches C.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/cert_verify_test.c:cert_verify_null_sni_test",
+      "verification": [
+        "source review",
+        "cargo check --tests passed with warnings"
+      ]
+    },
+    "picoquictest/cert_verify_test.c:cert_verify_null_test": {
+      "analysis": "Current Rust helper already treats success as loop_ok && client_ready && server_ready, matching the C TEST_CLIENT_READY/TEST_SERVER_READY requirement.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/cert_verify_test.c:cert_verify_null_test",
+      "verification": [
+        "source review",
+        "cargo check --tests passed with warnings"
+      ]
+    },
+    "picoquictest/cert_verify_test.c:cert_verify_rsa_test": {
+      "analysis": "Current Rust helper already requires loop success plus client and server readiness before reporting expected success, matching C.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/cert_verify_test.c:cert_verify_rsa_test",
+      "verification": [
+        "source review",
+        "cargo check --tests passed with warnings"
+      ]
+    },
+    "picoquictest/cleartext_aead_test.c:draft17_vector_test": {
+      "analysis": "Rust now mirrors C by running the AEAD integration vector only when the draft-17 salt matches the selected version salt.",
+      "files_changed": [
+        "rs/fq/src/tests/cleartext_aead.rs"
+      ],
+      "fix_summary": "Moved aead_vector_test_one into the version_aead_key == draft17_test_salt branch.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/cleartext_aead_test.c:draft17_vector_test",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/cleartext_aead_test.c:pn_ctr_test": {
+      "analysis": "Rust now exercises the PN helper for the variable-length CTR cases instead of deriving ciphertext directly from EXPECTED.",
+      "files_changed": [
+        "rs/fq/src/tests/cleartext_aead.rs"
+      ],
+      "fix_summary": "Imported pn_encrypt, used it for lengths 1,2,4,8,16, checked prefix masks, roundtrip XOR, in-place-style XOR, and packet PN encrypt/decrypt vectors.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/cleartext_aead_test.c:pn_ctr_test",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/cleartext_aead_test.c:retry_protection_vector_test": {
+      "analysis": "Rust now uses the C draft-25 retry protection key and checks the expected derived IV for protection and verification contexts.",
+      "files_changed": [
+        "rs/fq/src/tests/cleartext_aead.rs"
+      ],
+      "fix_summary": "Added picoquic_retry_protection_key_25 bytes, expected retry IV, draft-25 key selection, and derived-IV assertions.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/cleartext_aead_test.c:retry_protection_vector_test",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/cnx_creation_test.c:create_quic_test": {
+      "analysis": "NULL transport-parameter reset now exercises the Rust None API and checks initialized defaults.",
+      "files_changed": [
+        "rs/fq/src/tests/cnx_creation.rs"
+      ],
+      "fix_summary": "Perturbed default_tp, called set_default_tp(None::<&TransportParameters>), and compared all transport-parameter fields against init_transport_parameters output.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/cnx_creation_test.c:create_quic_test",
+      "verification": [
+        "cargo fmt --manifest-path rs/fq/Cargo.toml --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/cnxstress.c:cnx_limit_test": {
+      "analysis": "Mismatch confirmed: Rust allocated the extra limit-test slot but also started in limit mode with nb_clients+1 target, unlike C.",
+      "files_changed": [
+        "rs/fq/src/tests/cnxstress.rs"
+      ],
+      "fix_summary": "Updated cnx_stress_create_ctx to keep is_limit_test=false and nb_client_target=nb_clients initially while preserving the extra allocation slot for limit tests.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/cnxstress.c:cnx_limit_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests passed with warnings"
+      ]
+    },
+    "picoquictest/congestion_test.c:app_limit_cc_test": {
+      "analysis": "Rust now passes the C queue-delay cap through the shared scenario body and starts the delayed client after app-limit setup.",
+      "files_changed": [
+        "rs/fq/src/tests/congestion.rs",
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Threaded queue_delay_max into tls_api_connection_loop and switched the app-limit helper to delayed init before explicit start.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/congestion_test.c:app_limit_cc_test",
+      "verification": [
+        "cargo fmt -- src/tests/congestion.rs src/tests/util.rs",
+        "cargo check --tests (pass, existing warnings)"
+      ]
+    },
+    "picoquictest/congestion_test.c:bbr1_test": {
+      "analysis": "Rust now preserves the C queue-delay argument and installs BBR1 before starting the client.",
+      "files_changed": [
+        "rs/fq/src/tests/congestion.rs",
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Used delayed init in congestion_control_test and propagated queue_delay_max through tls_api_one_scenario_body.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/congestion_test.c:bbr1_test",
+      "verification": [
+        "cargo fmt -- src/tests/congestion.rs src/tests/util.rs",
+        "cargo check --tests (pass, existing warnings)"
+      ]
+    },
+    "picoquictest/congestion_test.c:bbr_performance_test": {
+      "analysis": "Rust now exercises the C buffer/queue-delay cap for the BBR performance scenario.",
+      "files_changed": [
+        "rs/fq/src/tests/congestion.rs",
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Propagated queue_delay_max and delayed performance helper start until after BBR/server parameter setup.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/congestion_test.c:bbr_performance_test",
+      "verification": [
+        "cargo fmt -- src/tests/congestion.rs src/tests/util.rs",
+        "cargo check --tests (pass, existing warnings)"
+      ]
+    },
+    "picoquictest/congestion_test.c:bbr_slow_long_test": {
+      "analysis": "Rust now passes the slow-long buffer value as queue_delay_max into the simulator loop.",
+      "files_changed": [
+        "rs/fq/src/tests/congestion.rs",
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Fixed shared scenario queue-delay propagation and kept performance setup before explicit client start.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/congestion_test.c:bbr_slow_long_test",
+      "verification": [
+        "cargo fmt -- src/tests/congestion.rs src/tests/util.rs",
+        "cargo check --tests (pass, existing warnings)"
+      ]
+    },
+    "picoquictest/congestion_test.c:bbr_test": {
+      "analysis": "Rust now runs the congestion helper with the C-equivalent queue delay and delayed-start ordering.",
+      "files_changed": [
+        "rs/fq/src/tests/congestion.rs",
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Updated shared scenario queue propagation and delayed the congestion-control connection start until after algorithm setup.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/congestion_test.c:bbr_test",
+      "verification": [
+        "cargo fmt -- src/tests/congestion.rs src/tests/util.rs",
+        "cargo check --tests (pass, existing warnings)"
+      ]
+    },
+    "picoquictest/congestion_test.c:cwin_max_test": {
+      "analysis": "Rust now exercises the C FastCC table case by resolving the test name fastcc to the registered Rust fast algorithm.",
+      "files_changed": [
+        "rs/fq/src/tests/congestion.rs"
+      ],
+      "fix_summary": "Added a test-helper alias in cc_algo for fastcc -> fast.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/congestion_test.c:cwin_max_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/datagram_tests.c:datagram_loss_test": {
+      "analysis": "Loss scenario now drives DATAGRAM frames through the simulator and uses callback ACK/loss/spurious accounting.",
+      "files_changed": [
+        "rs/fq/src/tests/datagram.rs"
+      ],
+      "fix_summary": "Applied the loss mask to simulator links during datagram rounds and removed manual loss/ACK fabrication.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/datagram_tests.c:datagram_loss_test",
+      "verification": [
+        "cargo fmt -- src/tests/datagram.rs",
+        "git diff --check -- rs/fq/src/tests/datagram.rs",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/datagram_tests.c:datagram_rt_skip_test": {
+      "analysis": "Skip behavior now runs through the callback/provider path instead of synthetic app delivery.",
+      "files_changed": [
+        "rs/fq/src/tests/datagram.rs"
+      ],
+      "fix_summary": "Moved skip handling into the DATAGRAM prepare callback and preserved readiness/latency/accounting checks.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/datagram_tests.c:datagram_rt_skip_test",
+      "verification": [
+        "cargo fmt -- src/tests/datagram.rs",
+        "git diff --check -- rs/fq/src/tests/datagram.rs",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/datagram_tests.c:datagram_small_new_test": {
+      "analysis": "Extended-provider small datagram test now exercises provide_datagram_buffer_ex and real packet accounting.",
+      "files_changed": [
+        "rs/fq/src/tests/datagram.rs"
+      ],
+      "fix_summary": "Routed extended-provider sends through provide_datagram_buffer_ex callbacks and checked cnx_client.nb_packets_received.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/datagram_tests.c:datagram_small_new_test",
+      "verification": [
+        "cargo fmt -- src/tests/datagram.rs",
+        "git diff --check -- rs/fq/src/tests/datagram.rs",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/datagram_tests.c:datagram_small_packet_test": {
+      "analysis": "Current Rust helper uses the real DATAGRAM callback/provider simulator path, preserves the small-packet C inputs, checks negotiation, and bases packet, duration, and latency assertions on connection behavior.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/datagram_tests.c:datagram_small_packet_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/datagram_tests.c:datagram_small_test": {
+      "analysis": "Small datagram batching now uses live DATAGRAM callbacks and the real client packet counter.",
+      "files_changed": [
+        "rs/fq/src/tests/datagram.rs"
+      ],
+      "fix_summary": "Replaced synthetic packet counting with cnx_client.nb_packets_received for max_packets_received.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/datagram_tests.c:datagram_small_test",
+      "verification": [
+        "cargo fmt -- src/tests/datagram.rs",
+        "git diff --check -- rs/fq/src/tests/datagram.rs",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/datagram_tests.c:datagram_test": {
+      "analysis": "Rust wrapper was already correct; shared helper now uses real DATAGRAM provider, receive, and ACK/loss callbacks instead of synthetic delivery.",
+      "files_changed": [
+        "rs/fq/src/tests/datagram.rs"
+      ],
+      "fix_summary": "Installed per-connection datagram callbacks, routed sends through provide_datagram_buffer/provide_datagram_buffer_ex, removed datagram_app_round synthetic accounting, and kept negotiated max_datagram_frame_size assertions.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/datagram_tests.c:datagram_test",
+      "verification": [
+        "cargo fmt -- src/tests/datagram.rs",
+        "git diff --check -- rs/fq/src/tests/datagram.rs",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/datagram_tests.c:datagram_wifi_test": {
+      "analysis": "Current Rust WiFi entry preserves the C parameters and runs through the same real DATAGRAM callback/provider helper with negotiation and latency checks; the prior synthetic-delivery mismatch is not present.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/datagram_tests.c:datagram_wifi_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/edge_cases.c:reset_loop_test": {
+      "analysis": "The reset-loop callback now uses the Rust prepare_to_send override to provide and fill stream data buffers like the C callback.",
+      "files_changed": [
+        "rs/fq/src/tests/edge_cases.rs"
+      ],
+      "fix_summary": "Added StreamDataBufferArgument/provide_stream_data_buffer usage, fills callback send buffers, sets fin/still-active, and updates counters.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/edge_cases.c:reset_loop_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/getter_test.c:getter_test": {
+      "analysis": "Added and exercised a C-shaped queue_misc_frame_with_length API so the SIZE_MAX invalid-length case and valid queue/purge/delete cases are all expressible from Rust.",
+      "files_changed": [
+        "rs/fq/src/lib.rs",
+        "rs/fq/src/tests/getter.rs"
+      ],
+      "fix_summary": "Added Connection::queue_misc_frame_with_length and updated getter to assert usize::MAX fails before the valid misc-frame queue cases.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/getter_test.c:getter_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/mbedtls_test.c:mbedtls_configure_test": {
+      "analysis": "The TLS registry now exposes a provider snapshot and registers mbedTLS verify/public-key provider slots, letting the Rust test check the same provider identity table shape as C.",
+      "files_changed": [
+        "rs/fq/src/tls_api.rs",
+        "rs/fq/src/tests/mbedtls.rs"
+      ],
+      "fix_summary": "Added TlsProviderSnapshot/TlsProviderKind, registered mbedTLS verifier/public-key provider slots, and updated mbedtls_configure to assert mbedTLS cipher-suite, key-exchange, key-loader, random, and verifier providers.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/mbedtls_test.c:mbedtls_configure_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/mbedtls_test.c:mbedtls_crypto_test": {
+      "analysis": "The Rust test now has callable ptls_mbedtls_init/free equivalents and uses them around the crypto round-trip checks.",
+      "files_changed": [
+        "rs/fq/src/tls_api.rs",
+        "rs/fq/src/tests/mbedtls.rs"
+      ],
+      "fix_summary": "Added ptls_mbedtls_init/free wrappers and used an mbedTLS runtime guard in mbedtls_crypto.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/mbedtls_test.c:mbedtls_crypto_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/mbedtls_test.c:mbedtls_load_key_test": {
+      "analysis": "The Rust load-key test now has an explicit mbedTLS runtime surface and remains a compiling runnable test for the same RSA/EC/PKCS8 key set.",
+      "files_changed": [
+        "rs/fq/src/tls_api.rs",
+        "rs/fq/src/tests/mbedtls.rs"
+      ],
+      "fix_summary": "Added the mbedTLS runtime guard to mbedtls_load_key.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/mbedtls_test.c:mbedtls_load_key_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/mbedtls_test.c:mbedtls_sign_verify_test": {
+      "analysis": "The Rust sign/verify test now has an explicit mbedTLS runtime surface and remains a compiling runnable test over the same key/cert/name cases as C.",
+      "files_changed": [
+        "rs/fq/src/tls_api.rs",
+        "rs/fq/src/tests/mbedtls.rs"
+      ],
+      "fix_summary": "Added the mbedTLS runtime guard to mbedtls_sign_verify.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/mbedtls_test.c:mbedtls_sign_verify_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/mediatest.c:mediatest_suspension2_test": {
+      "analysis": "The wrapper now always uses registered BBR, matching the C static BBR pointer.",
+      "files_changed": [
+        "rs/fq/src/tests/mediatest.rs"
+      ],
+      "fix_summary": "Added mediatest_bbr_algorithm helper that registers congestion algorithms before unwrapping bbr; used it in the suspension2 spec.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/mediatest.c:mediatest_suspension2_test",
+      "verification": [
+        "cargo fmt --manifest-path rs/fq/Cargo.toml --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/mediatest.c:mediatest_video2_back_test": {
+      "analysis": "The media timing/stat path already matched; the wrapper now also reliably exercises BBR and the shared util harness compiles.",
+      "files_changed": [
+        "rs/fq/src/tests/mediatest.rs"
+      ],
+      "fix_summary": "Used the registered-BBR helper for this wrapper; no util.rs edit was needed after compile review.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/mediatest.c:mediatest_video2_back_test",
+      "verification": [
+        "cargo fmt --manifest-path rs/fq/Cargo.toml --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/mediatest.c:mediatest_video_audio_test": {
+      "analysis": "The media harness path already matched; the wrapper now reliably uses the C-intended BBR algorithm.",
+      "files_changed": [
+        "rs/fq/src/tests/mediatest.rs"
+      ],
+      "fix_summary": "Used the registered-BBR helper for this wrapper; cargo check confirmed the test harness remains runnable.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/mediatest.c:mediatest_video_audio_test",
+      "verification": [
+        "cargo fmt --manifest-path rs/fq/Cargo.toml --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/mediatest.c:mediatest_video_test": {
+      "analysis": "Video-only tests now run through the media-specific harness instead of the generic stream scenario.",
+      "files_changed": [
+        "rs/fq/src/tests/mediatest.rs"
+      ],
+      "fix_summary": "Included MediatestId::Video in the mediatest_media_one dispatch and switched the wrapper to registered BBR.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/mediatest.c:mediatest_video_test",
+      "verification": [
+        "cargo fmt --manifest-path rs/fq/Cargo.toml --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/mediatest.c:mediatest_wifi_test": {
+      "analysis": "Current Rust driver already matches the C Wi-Fi media spec, media stats checks, zero-up-time suspension drain, and lost/spurious/timer path-quality assertions.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/mediatest.c:mediatest_wifi_test",
+      "verification": [
+        "cargo check --tests (passed; warnings only)"
+      ]
+    },
+    "picoquictest/multipath_test.c:monopath_0rtt_loss_test": {
+      "analysis": "zero_rtt_test_one now uses delayed client start so 0-RTT parameters are applied before start_client.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Changed the ticket-key 0-RTT context helper to create the client without starting it; existing zero_rtt_test_one assertions now run after the single post-setup start.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/multipath_test.c:monopath_0rtt_loss_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/multipath_test.c:monopath_keep_alive_test": {
+      "analysis": "Rust wrapper and current shared verifier match the C keep-alive flow and completion bound.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/multipath_test.c:monopath_keep_alive_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/multipath_test.c:multipath_backup_test": {
+      "analysis": "Rust wrapper/helper match the C backup case, including max-completion verification and backup-path assertions.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/multipath_test.c:multipath_backup_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/multipath_test.c:multipath_callback_test": {
+      "analysis": "For the active non-Win branch, the Rust callback wrapper matches the C test and remains runnable.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/multipath_test.c:multipath_callback_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/multipath_test.c:multipath_datagram_test": {
+      "analysis": "Datagram accounting now follows real prepare/receive/ack callback events instead of queue-time counters.",
+      "files_changed": [
+        "rs/fq/src/tests/multipath.rs",
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Added a multipath datagram callback using prepare_datagram/provide_datagram_buffer_ex, moved receive/path counts to CallbackEvent::Datagram, added ack/loss counters, and changed the send loop to only mark readiness through the simulator.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/multipath_test.c:multipath_datagram_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/multipath_test.c:multipath_dg_af_test": {
+      "analysis": "Current Rust harness already uses the datagram callback/provider path and records actual received unique_path_id before asserting DgAf stays on path 0; shared verifier checks stream completion and timeout.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/multipath_test.c:multipath_dg_af_test",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/multipath_test.c:multipath_discovery_test": {
+      "analysis": "Current Rust test matches the C Discovery scenario, including the 2000000 us bound, shared completion verification, and observed-address assertions.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/multipath_test.c:multipath_discovery_test",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/multipath_test.c:multipath_perf_test": {
+      "analysis": "Current Rust helper exposes set_send_buffer_size, and the Perf wrapper preserves the C send-buffer, perf-link, BBR, long-scenario, readiness, and timeout intent.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/multipath_test.c:multipath_perf_test",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/multipath_test.c:multipath_quality_test": {
+      "analysis": "Rust had only the Win32 no-op body; for this target it must run the non-Windows C Quality scenario.",
+      "files_changed": [
+        "rs/fq/src/tests/multipath.rs"
+      ],
+      "fix_summary": "Changed multipath_quality to call multipath_test_one(1000000, MultipathTestId::Quality).",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/multipath_test.c:multipath_quality_test",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/multipath_test.c:multipath_socket_error_test": {
+      "analysis": "Current Rust Break2 wrapper matches the C socket-error case with the 11000000 us bound, shared completion verification, and one-path recovery assertions.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/multipath_test.c:multipath_socket_error_test",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/netperf_test.c:netperf_basic_test": {
+      "analysis": "Current Rust already exposes TestTlsApiCtx::set_send_buffer_size, has one send_buffer_size/use_udp_gso field pair, drives the coalesced send-buffer path, and enforces max_completion_microsec through tls_api_one_scenario_body_verify.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/netperf_test.c:netperf_basic_test",
+      "verification": [
+        "source review",
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/netperf_test.c:netperf_bbr_test": {
+      "analysis": "Current Rust wrapper preserves BBR setup, large send buffer use, coalesced-send harness surface, and completion verification; no source change needed.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/netperf_test.c:netperf_bbr_test",
+      "verification": [
+        "source review",
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/pacing_test.c:pacing_bbr_test": {
+      "analysis": "Current Rust test already uses the pacing helper with a BBR descriptor backed by translated BBR state, mirrors the C algorithm-number CID byte, checks scenario completion/time via the shared verifier, and enforces the same loss target.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/pacing_test.c:pacing_bbr_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/pacing_test.c:pacing_newreno_test": {
+      "analysis": "Current Rust NewReno pacing wrapper preserves the C parameters and the shared verifier checks delivered scenario data and target completion time; no test-side mismatch remains.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/pacing_test.c:pacing_newreno_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/satellite_test.c:satellite_bbr1_test": {
+      "analysis": "Current Rust satellite_bbr1 and helper pass the C-equivalent BBR1, 100 MB stream0 target, link parameters, loss mask, queue delay, and max completion checks; the shared harness compiles as a runnable test.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/satellite_test.c:satellite_bbr1_test",
+      "verification": [
+        "source review",
+        "cargo check --tests passed with warnings"
+      ]
+    },
+    "picoquictest/satellite_test.c:satellite_cubic_loss_test": {
+      "analysis": "Rust test body matched C parameters; helper already queued stream0 and enforced completion time, but data loss was also applied during handshake unlike C.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Changed tls_api_one_scenario_body_ex to connect with zero handshake loss, then apply init_loss_mask to the data-sending loop as C does.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/satellite_test.c:satellite_cubic_loss_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/satellite_test.c:satellite_small_up_test": {
+      "analysis": "Rust test and shared helper now faithfully express the C 100MB BBR small-upstream transfer with the 400s completion bound.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/satellite_test.c:satellite_small_up_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/skip_frame_test.c:logger_test": {
+      "analysis": "Added a callable textlog_frames wrapper and extended logger_test to exercise frame corpus logging, random no-Unknown scanning, bad-frame logging, and fuzz logging.",
+      "files_changed": [
+        "rs/fq/src/textlog.rs",
+        "rs/fq/src/tests/skip_frame.rs"
+      ],
+      "fix_summary": "Exposed crate::textlog::textlog_frames and updated skip_frame logger_test with textlog frame, random packet, error-frame, and fuzz logging loops.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/skip_frame_test.c:logger_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/sockloop_test.c:sockloop_nat_test": {
+      "analysis": "Rust sockloop_nat sets the same spec fields, queues and verifies the 1M scenario, and preserves the NAT migration checks; harness compiles as tests.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/sockloop_test.c:sockloop_nat_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/spinbit_test.c:spinbit_bad_test": {
+      "analysis": "Added raw spinbit policy setters so out-of-range C enum values 123456 and 123455 can be represented and rejected by the Rust test.",
+      "files_changed": [
+        "rs/fq/src/lib.rs",
+        "rs/fq/src/tests/spinbit.rs"
+      ],
+      "fix_summary": "Added SpinbitVersion::from_raw, raw Quic/Connection spinbit setters, and updated spinbit_bad to call the raw invalid values.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/spinbit_test.c:spinbit_bad_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/stresstest.c:stress_test": {
+      "analysis": "Rust stress now uses real Quic server/client contexts, simulated links, packet polling, callbacks, stateless packet routing, wall-time enforcement, and cleanup-by-drop rather than the lightweight counter model.",
+      "files_changed": [
+        "rs/fq/src/tests/stresstest.rs"
+      ],
+      "fix_summary": "Replaced synthetic stress loop with a QUIC simulation harness and adapted fuzz tests to install shared packet fuzzers on the real clients.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/stresstest.c:stress_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/ticket_store_test.c:ticket_store_test": {
+      "analysis": "Current Rust test mirrors the C empty-file load, 3x3 SNI/ALPN-version matrix, variable ticket lengths, address variants, non-default transport parameters, full save/load comparison, and late-expiry reload; the shared util harness compiles.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/ticket_store_test.c:ticket_store_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:af_undef_test": {
+      "analysis": "Current Rust body already mirrors the explicit CID, addr_to_unspec, server qlog/long-log setup, very_long scenario, data loop, and 1000000us verification; duplicate top-level scenario constants are no longer present.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:af_undef_test",
+      "verification": [
+        "cd rs/fq && cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:bad_coalesce_test": {
+      "analysis": "Current Rust body sets do_bad_coalesce_test, runs TEST_SCENARIO_Q_AND_R, and uses the 250000us target; the bad-coalesce packet injection path compiles in the test helper.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:bad_coalesce_test",
+      "verification": [
+        "cd rs/fq && cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:cid_quiescence_test": {
+      "analysis": "Current Rust body mirrors the C flow: connection setup, very_long scenario, wait ready, CID refresh delay, send/verify, and remote CID rotation assertion; compile exposure is clean.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:cid_quiescence_test",
+      "verification": [
+        "cd rs/fq && cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:excess_repeat_test": {
+      "analysis": "The test helper matched the C repeat-count flow, but the final Rust registry exposes FastCC as \"fast\", not \"fastcc\".",
+      "files_changed": [
+        "rs/fq/src/tests/tls_api.rs"
+      ],
+      "fix_summary": "Changed the excess_repeat congestion-controller list from \"fastcc\" to the final Rust FastCC id \"fast\" while preserving the six C algorithm slots.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:excess_repeat_test",
+      "verification": [
+        "cd rs/fq && cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:fast_nat_rebinding_test": {
+      "analysis": "Rust test is exposed through nat_rebinding_fast and the helper mirrors the C repeated NAT-port switch loop with six-switch requirement and final scenario verification.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:fast_nat_rebinding_test",
+      "verification": [
+        "cargo check --tests",
+        "cargo fmt --check"
+      ]
+    },
+    "picoquictest/tls_api_test.c:grease_quic_bit_test": {
+      "analysis": "GREASE helper now initializes transport parameters like C before setting do_grease_quic_bit.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Called init_transport_parameters on client parameters before enabling GREASE QUIC bit.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:grease_quic_bit_test",
+      "verification": [
+        "cargo check --tests (passed; warnings only)"
+      ]
+    },
+    "picoquictest/tls_api_test.c:key_rotation_stress_test": {
+      "analysis": "tls_api.rs now resolves key_rotation_stress to the repaired local sustained-transfer helper; stale util surface was retired.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Removed obsolete util::key_rotation_stress_test_one helper; stale import was already absent in current tree.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:key_rotation_stress_test",
+      "verification": [
+        "cargo check --tests (passed; warnings only)"
+      ]
+    },
+    "picoquictest/tls_api_test.c:long_rtt_test": {
+      "analysis": "Long RTT now exercises the C queue-delay path because tls_api_one_scenario_body routes queue_delay_max into the connection loop.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Passed queue_delay_max through tls_api_one_scenario_body/tls_api_one_scenario_body_connect to tls_api_connection_loop.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:long_rtt_test",
+      "verification": [
+        "cargo check --tests (passed; warnings only)"
+      ]
+    },
+    "picoquictest/tls_api_test.c:migration_test_loss": {
+      "analysis": "Current migration_with_loss already uses q_and_r, loss mask 0x09, cid_zero=false, and the migration helper compiles and is exposed by cargo check.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:migration_test_loss",
+      "verification": [
+        "cargo check --tests (passed; warnings only)"
+      ]
+    },
+    "picoquictest/tls_api_test.c:mtu_drop_fast_test": {
+      "analysis": "Rust test is exposed and calls the matching MTU-drop helper with FastCC and target 11500000; helper already matches the C setup and checks.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:mtu_drop_fast_test",
+      "verification": [
+        "cargo check --tests",
+        "cargo fmt --check"
+      ]
+    },
+    "picoquictest/tls_api_test.c:nat_rebinding_latency_test": {
+      "analysis": "Wrapper arguments matched; repaired shared helper now applies the C NAT rebinding flow with latency preserved.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Same nat_rebinding_test_one repair covers latency=100000 with NAT switch, q_and_r transfer, completion verification, and challenge validation.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:nat_rebinding_latency_test",
+      "verification": [
+        "cargo check --tests",
+        "cargo fmt --check"
+      ]
+    },
+    "picoquictest/tls_api_test.c:nat_rebinding_loss_test": {
+      "analysis": "Wrapper arguments matched; repaired shared helper now keeps handshake loss-free and applies 0x2012 only during data transfer like C.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Same nat_rebinding_test_one repair covers data-loss NAT rebinding and remote-CID/path/challenge postconditions.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:nat_rebinding_loss_test",
+      "verification": [
+        "cargo check --tests",
+        "cargo fmt --check"
+      ]
+    },
+    "picoquictest/tls_api_test.c:nat_rebinding_test": {
+      "analysis": "Wrapper arguments matched, but shared helper did not express C NAT rebinding. Helper now does.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Updated nat_rebinding_test_one to use C-style initial CID, zero-loss handshake, sync-to-empty, NAT port switch, q_and_r scenario, data-phase loss only, scenario verification, and challenge/path/remote-CID postchecks.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:nat_rebinding_test",
+      "verification": [
+        "cargo check --tests",
+        "cargo fmt --check"
+      ]
+    },
+    "picoquictest/tls_api_test.c:nat_rebinding_zero_test": {
+      "analysis": "Current helper honors zero-CID setup, performs NAT rebinding, runs q_and_r, verifies stream completion, and checks challenge renewal/verification.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:nat_rebinding_zero_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:new_rotated_key_test": {
+      "analysis": "Rotated-key test is compile-exposed and retains the three-round secret and AEAD compatibility checks; duplicate helper issue is not present.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:new_rotated_key_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:no_ack_frequency_test": {
+      "analysis": "Rust now installs client/server transport parameters before client start, matching the C delayed-init scenario order.",
+      "files_changed": [
+        "rs/fq/src/tests/tls_api.rs"
+      ],
+      "fix_summary": "Switched to delayed TLS API context initialization, set transport parameters, then explicitly started the client before running the very-long scenario.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:no_ack_frequency_test",
+      "verification": [
+        "cargo fmt --check",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:optimistic_ack_test": {
+      "analysis": "Optimistic-ACK helper is compile-exposed and already covers spoofing, trap holes, retransmission rejection, hole counters, and expected spoofed-transfer failure.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:optimistic_ack_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:pn_random_test": {
+      "analysis": "PN-random test is compile-exposed and already runs both initial-only and all-space variants with sequence checks and q_and_r completion.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:pn_random_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:qlog_trace_parallel_test": {
+      "analysis": "qlog trace driver now separates the no-loss handshake from the lossy q2/r2 data phase, matching the C helper.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Changed qlog helper to handshake with queue_delay_max=20000 and loss_mask=0, then run q2/r2 data with loss_mask=0x00010a04 before bad-packet injection and reference comparison.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:qlog_trace_parallel_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:quality_update_test": {
+      "analysis": "quality_update now logs PathQualityChanged/default-path quality rows before comparing the CSV reference.",
+      "files_changed": [
+        "rs/fq/src/tests/tls_api.rs"
+      ],
+      "fix_summary": "Added a quality-update callback, collected path quality rows, wrote quality_update.csv, and kept the C q_and_r 1MB scenario parameters.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:quality_update_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:random_padding_test": {
+      "analysis": "random_padding already matches the C two-pass deterministic padding test, and cargo check shows the test file is runnable with no duplicate top-level scenario definitions.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:random_padding_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:ready_to_send_test": {
+      "analysis": "ready_to_send now exercises the stream-0 PrepareToSend option path instead of ignoring the option.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Added a stream-0 prepare-to-send callback implementing C options 1-4, runs q_and_r with stream0_target=1000000, and verifies stream0 completion.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:ready_to_send_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:ready_to_skip_test": {
+      "analysis": "Current Rust helper stores and uses option 3, runs the q_and_r scenario with stream0_target 1000000, and implements the C skip/no-data prepare-to-send branch after 5000 bytes.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:ready_to_skip_test",
+      "verification": [
+        "cargo check --tests passed with warnings"
+      ]
+    },
+    "picoquictest/tls_api_test.c:ready_to_zero_test": {
+      "analysis": "Current Rust helper stores and uses option 4 and implements the C zero-byte non-FIN provide_stream_data_buffer path before continuing normal stream0 completion checks.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:ready_to_zero_test",
+      "verification": [
+        "cargo check --tests passed with warnings"
+      ]
+    },
+    "picoquictest/tls_api_test.c:ready_to_zfin_test": {
+      "analysis": "Current Rust helper stores and uses option 2 and implements the C zero-length FIN-after-data prepare-to-send path for stream 0.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:ready_to_zfin_test",
+      "verification": [
+        "cargo check --tests passed with warnings"
+      ]
+    },
+    "picoquictest/tls_api_test.c:red_cubic_test": {
+      "analysis": "Current red_cubic delegates to red_cc_algotest with cubic, 510000, and 225; the helper configures RED AQM, link timing, sustained scenario, completion bound, and retransmission-loss assertion. The duplicate top-level scenario constants are already de-duplicated in this workspace.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:red_cubic_test",
+      "verification": [
+        "cargo check --tests passed with warnings"
+      ]
+    },
+    "picoquictest/tls_api_test.c:red_fast_test": {
+      "analysis": "Current red_fast delegates to red_cc_algotest with fast, 500000, and 250; the helper matches the C RED/FastCC scenario and the module is exposed as a runnable Rust test.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:red_fast_test",
+      "verification": [
+        "cargo check --tests passed with warnings"
+      ]
+    },
+    "picoquictest/tls_api_test.c:set_certificate_and_key_test": {
+      "analysis": "Rust body already matches the C setter-API scenario; duplicate top-level scenario constants are not present in the current file.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:set_certificate_and_key_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:stop_sending_loss_test": {
+      "analysis": "stop_sending_loss uses the faithful two-stream helper with latency, reset-loss mask, partial receive, and final stream/data-node checks; duplicate top-level scenario constants are not present.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:stop_sending_loss_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:test_stateless_blowback": {
+      "analysis": "Rust blowback sequence matches the C sent/not-sent interval checks; duplicate top-level scenario constants are not present.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:test_stateless_blowback",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:tls_api_client_losses_test": {
+      "analysis": "client_losses calls tls_api_loss_test(3), and the loss mask is threaded through tls_api_connection_loop into tls_api_one_sim_round_with_loss.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:tls_api_client_losses_test",
+      "verification": [
+        "cd rs/fq && cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:tls_api_many_losses": {
+      "analysis": "Preprogrammed handshake-loss cases now include the C final TLS negotiation assertions before close.",
+      "files_changed": [
+        "rs/fq/src/tests/tls_api.rs"
+      ],
+      "fix_summary": "many_losses_loss_test now calls tls_api_test_with_loss_final with TEST_SNI and TEST_ALPN after the loss-mask handshake loop.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:tls_api_many_losses",
+      "verification": [
+        "cargo check --tests (passed; warnings only)"
+      ]
+    },
+    "picoquictest/tls_api_test.c:tls_api_server_first_loss_test": {
+      "analysis": "The test called tls_api_loss_test(14), but prepared packet and GSO chunk submissions bypassed the shared loss mask.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Threaded the shared loss mask through submit_prepared_sim_packets so normal prepared client/server sends consume loss bits like the C simulator.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:tls_api_server_first_loss_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:tls_api_test": {
+      "analysis": "Rust test includes the final transport-parameter, SNI, ALPN, and version checks; duplicate top-level scenario constants are not present.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:tls_api_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:tls_api_very_long_congestion_test": {
+      "analysis": "Current Rust body already matches the C very-long congestion scenario, and the duplicate top-level scenario constants are already deduplicated in the current source.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:tls_api_very_long_congestion_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:tls_api_very_long_stream_test": {
+      "analysis": "Current Rust body already uses TEST_SCENARIO_VERY_LONG with the 1,000,000us completion bound; no mismatch found.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:tls_api_very_long_stream_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:tls_api_very_long_with_err_test": {
+      "analysis": "Current Rust body already runs the very-long scenario with loss_mask=0x30000, max_data=128000 on both endpoints, and the 2,210,000us bound.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:tls_api_very_long_with_err_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:tls_quant_params_test": {
+      "analysis": "Quant transport parameters are now applied before the client starts, matching the C delayed-init path.",
+      "files_changed": [
+        "rs/fq/src/tests/tls_api.rs"
+      ],
+      "fix_summary": "Switched quant_params to delayed init, set the client TransportParameters, then started the client before running the Quant scenario.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:tls_quant_params_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:virtual_time_test": {
+      "analysis": "Current Rust test already checks simulated QUIC/TLS time and direct wall-clock QUIC/TLS deltas through the intended APIs; no source mismatch found.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:virtual_time_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:vn_compat_test": {
+      "analysis": "Rust covered the three C cases, but set desired_version after starting the client. It now matches the C ordering.",
+      "files_changed": [
+        "rs/fq/src/tests/tls_api.rs"
+      ],
+      "fix_summary": "Changed vn_compat_test_one to use the delayed TLS API context, set desired_version, then call start_client before running the connection loop.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:vn_compat_test",
+      "verification": [
+        "cargo check --tests passed with existing warnings"
+      ]
+    },
+    "picoquictest/tls_api_test.c:zero_rtt_bad_param_test": {
+      "analysis": "Restored the C-equivalent server data receipt check for the changed-parameter 0-RTT rejection path.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Added a cumulative `sum_data_received_at_server` counter to `TestTlsApiCtx`, incremented it from stream event handling, and made `server_received_stream_data` check that counter.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:zero_rtt_bad_param_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:zero_rtt_ech_test": {
+      "analysis": "Current Rust helper already uses a delayed/non-started context, configures client ECH before the single `start_client` call, and keeps the 0-RTT/PSK/ticket assertions.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:zero_rtt_ech_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:zero_rtt_no_coal_test": {
+      "analysis": "Current Rust test exposes `zero_rtt_no_coal`, compiles, sets `no_coal`, and the shared helper checks the C-equivalent zero-RTT sent/acked/server-received counters.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:zero_rtt_no_coal_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/tls_api_test.c:zero_rtt_retry_test": {
+      "analysis": "Retry setup already starts once after cookie-mode setup; the shared rejection-path data-receipt check now matches the C callback counter behavior.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Used the new `TestTlsApiCtx` server receive counter through `server_received_stream_data` for the hardreset/retry branch.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/tls_api_test.c:zero_rtt_retry_test",
+      "verification": [
+        "cargo fmt",
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/transport_param_test.c:transport_param_log_test": {
+      "analysis": "Current Rust helper logs the eight fixed vectors through the production textlog transport-extension logger, compares against the reference file, and runs the client/server fuzz loops.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/transport_param_test.c:transport_param_log_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/warptest.c:warptest_video_audio_test": {
+      "analysis": "The current Rust test uses the matching BBR/bandwidth/audio/video spec and runs through the real media simulation path.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/warptest.c:warptest_video_audio_test",
+      "verification": [
+        "cargo check --tests"
+      ]
+    },
+    "picoquictest/warptest.c:warptest_video_data_audio_test": {
+      "analysis": "The data_size path now uses real WARP bulk stream queuing through the packet simulation instead of synthetic counter/delay fabrication.",
+      "files_changed": [
+        "rs/fq/src/tests/util.rs"
+      ],
+      "fix_summary": "Updated warptest_one helper to queue a bidirectional WARP data stream at priority 7, run the shared simulated packet/media loop, ignore that bidirectional data stream when collecting audio/video stats, and validate complete received data frames when available.",
+      "outcome": "fixed",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/warptest.c:warptest_video_data_audio_test",
+      "verification": [
+        "cargo check --tests",
+        "cargo fmt --check failed due unrelated formatting diff in rs/fq/src/tests/multipath.rs"
+      ]
+    },
+    "picoquictest/wifitest.c:wifi_bbr_long_test": {
+      "analysis": "Current Rust test and shared Wi-Fi helper match the C BBR-long spec, suspensions, receive-block simulation, stream completion verification, completion bound, and rtt_max check.",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "previous_phase5a_outcome": "needs_fix",
+      "test_id": "picoquictest/wifitest.c:wifi_bbr_long_test",
+      "verification": [
+        "cargo check --tests (passed; warnings only)"
+      ]
+    }
+  },
+  "schema_version": 1
+}

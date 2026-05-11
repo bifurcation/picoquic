@@ -1,0 +1,3035 @@
+diff --git a/rs/fq/src/internal.rs b/rs/fq/src/internal.rs
+index 0e32b931..aff7420c 100644
+--- a/rs/fq/src/internal.rs
++++ b/rs/fq/src/internal.rs
+@@ -73,6 +73,10 @@ use crate::{Duration, Instant};
+ /// Stable across operations on other connections.
+ pub type ConnectionToken = Token<Connection>;
+ 
++pub(crate) fn connection_wake_key(next_wake_time: Instant, token: ConnectionToken) -> (u64, usize) {
++    (next_wake_time.ticks(), token.slot_idx())
++}
++
+ /// Token into the per-`Quic` registered-token replay-protection arena.
+ pub type RegisteredTokenToken = Token<RegisteredToken>;
+ 
+@@ -90,9 +94,9 @@ pub type PathToken = Token<Path>;
+ use crate::logger::LoggerRef;
+ use crate::{
+     AlpnSelect, CallbackEvent, CongestionAlgorithm, CongestionNotification, ConnectionId,
+-    ConnectionIdCallback, Fuzz, LossbitVersion, PacketContext, PathStatus, PerAckState,
+-    PmtudPolicy, RESET_SECRET_SIZE, SpinbitVersion, State, StreamDataCallback, StreamDirectReceive,
+-    TransportParameters,
++    ConnectionIdCallback, DatagramActive, Fuzz, LossbitVersion, PacketContext, PathStatus,
++    PerAckState, PmtudPolicy, RESET_SECRET_SIZE, SpinbitVersion, State, StreamDataCallback,
++    StreamDirectReceive, TransportParameters,
+ };
+ 
+ // ---------------------------------------------------------------------------
+@@ -1886,9 +1890,15 @@ pub trait AutoQlog {
+ 
+ /// C: `performance_log_fn` — emit a per-connection
+ /// performance log row.  `should_delete` is `true` on connection
+-/// teardown.  Callback is read-only over `quic` / `connection`.
++/// teardown.  A missing `connection` is the Rust shape for C's
++/// `cnx == NULL` cleanup call.
+ pub trait PerformanceLog {
+-    fn emit(&mut self, quic: &Quic, connection: &Connection, should_delete: bool) -> i32;
++    fn emit(
++        &mut self,
++        connection: Option<&Connection>,
++        should_delete: bool,
++        is_last_connection: bool,
++    ) -> i32;
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -2049,11 +2059,13 @@ pub struct Quic {
+     /// matters.
+     pub connections: Arena<Connection>,
+ 
+-    /// Per-connection wake-up scheduler keyed by `next_wake_time`.
++    /// Per-connection wake-up scheduler keyed by `(next_wake_time, slot)`.
+     /// Splay-tree access locality matters here — the next-to-fire
+     /// connection is usually adjacent to the one we just touched.
++    /// The slot tie-breaker lets multiple connections share the same
++    /// wake time, matching the C intrusive tree's one node per connection.
+     /// C: `connection_wake_tree`.
+-    pub connection_wake_tree: SplayTree<u64, ConnectionToken>,
++    pub connection_wake_tree: SplayTree<(u64, usize), ConnectionToken>,
+ 
+     /// In-progress (currently being serviced) connection.  C:
+     /// `*mut Connection` re-entrancy slot.
+@@ -3915,6 +3927,8 @@ impl Quic {
+             .collect();
+         let was_half_open = cnx.is_half_open;
+ 
++        let _ = self.perflog(Some(token), false);
++
+         for membership in local_cid_memberships {
+             self.connection_by_id.remove(membership);
+         }
+@@ -4437,32 +4451,194 @@ impl Connection {
+         send_buffer: &mut [u8],
+         next_wake_time: &mut Instant,
+     ) -> Result<usize, crate::Error> {
++        self.prepare_path_control_packet_for_tuple(
++            path_x,
++            0,
++            packet,
++            current_time,
++            send_buffer,
++            send_buffer.len(),
++            next_wake_time,
++        )
++    }
++
++    /// Format a path-control packet for the selected tuple.
++    ///
++    /// C: `picoquic_prepare_path_control_packet` (picoquic/paths.c:151-232).
++    #[allow(clippy::too_many_arguments)]
++    pub fn prepare_path_control_packet_for_tuple(
++        &mut self,
++        path_x: &mut Path,
++        tuple_index: usize,
++        packet: &mut Packet,
++        current_time: Instant,
++        send_buffer: &mut [u8],
++        send_buffer_max: usize,
++        next_wake_time: &mut Instant,
++    ) -> Result<usize, crate::Error> {
++        if tuple_index >= path_x.tuples.len() {
++            packet.length = 0;
++            return Ok(0);
++        }
++
++        let packet_type = PacketType::OneRttProtected;
++        let pc = PacketContext::Application;
++        let checksum_overhead = self.get_checksum_length(Epoch::OneRtt);
++        let send_buffer_min_max = send_buffer_max.min(path_x.send_mtu).min(send_buffer.len());
++        if send_buffer_min_max <= checksum_overhead {
++            packet.length = 0;
++            return Ok(0);
++        }
++
+         let mut more_data = 0;
+         let mut is_pure_ack = 1;
+-        let mut padding_needed = 0;
+-        let total = send_buffer.len();
+-        let tail = self
+-            .prepare_path_challenge_frames(
+-                path_x,
+-                send_buffer,
+-                &mut more_data,
+-                &mut is_pure_ack,
+-                &mut padding_needed,
+-                current_time,
+-                next_wake_time,
++        let mut is_challenge_padding_needed = 0;
++        let mut ret = 0;
++        let mut send_length = 0usize;
++        let bytes_limit = send_buffer_min_max
++            .saturating_sub(checksum_overhead)
++            .min(packet.bytes.len());
++        let path_idx = self
++            .paths
++            .iter()
++            .position(|path| path.unique_path_id == path_x.unique_path_id)
++            .unwrap_or(0);
++        let (pkt_send_sequence, first_pending_seq) = if self.is_multipath_enabled {
++            (
++                path_x.pkt_ctx.send_sequence,
++                path_x.pkt_ctx.pending.keys().next().copied(),
+             )
+-            .ok_or(crate::Error::BufferTooSmall)?;
+-        let mut written = total - tail.len();
+-        if padding_needed != 0 && written < MIN_SEGMENT_SIZE && written < total {
+-            let target = MIN_SEGMENT_SIZE.min(total);
+-            send_buffer[written..target].fill(0);
+-            written = target;
++        } else {
++            let pkt_ctx = &self.pkt_ctx[pc as usize];
++            (
++                pkt_ctx.send_sequence,
++                pkt_ctx.pending.keys().next().copied(),
++            )
++        };
++        let mut header_length = self.predict_packet_header_length_at(
++            packet_type,
++            path_idx,
++            tuple_index,
++            pkt_send_sequence,
++            first_pending_seq,
++        );
++        let mut length = header_length;
++
++        packet.packet_context = pc;
++        packet.packet_type = packet_type;
++        packet.offset = header_length;
++        packet.sequence_number = pkt_send_sequence;
++        packet.send_time = current_time;
++        packet.send_path = Some(Self::path_token_for_path(path_x));
++
++        if length <= bytes_limit {
++            let mut pn_offset = 0usize;
++            let mut pn_length = 0usize;
++            length = self.create_packet_header_at(
++                packet_type,
++                pkt_send_sequence,
++                path_idx,
++                tuple_index,
++                header_length,
++                &mut packet.bytes,
++                &mut pn_offset,
++                &mut pn_length,
++            );
++            header_length = length;
++            packet.offset = header_length;
++
++            let mut offset = length;
++            let tail_len = {
++                let tail = &mut packet.bytes[offset..bytes_limit];
++                match self.prepare_tuple_challenge_frames(
++                    path_x,
++                    tuple_index,
++                    tail,
++                    &mut more_data,
++                    &mut is_pure_ack,
++                    &mut is_challenge_padding_needed,
++                    current_time,
++                    next_wake_time,
++                ) {
++                    Some(next) => next.len(),
++                    None => {
++                        ret = crate::errors::InternalError::FrameBufferTooSmall as i32;
++                        tail.len()
++                    }
++                }
++            };
++            offset = bytes_limit.saturating_sub(tail_len);
++            length = offset;
++
++            if ret == 0 && self.is_address_discovery_provider && !path_x.tuples.is_empty() {
++                let selected_index = tuple_index.min(path_x.tuples.len() - 1);
++                let mut tuple = path_x.tuples.remove(selected_index);
++                {
++                    let tail = &mut packet.bytes[offset..bytes_limit];
++                    let _ = prepare_observed_address_frame(
++                        tail,
++                        path_x,
++                        &mut tuple,
++                        current_time,
++                        next_wake_time,
++                        &mut more_data,
++                        &mut is_pure_ack,
++                    );
++                }
++                path_x.tuples.insert(selected_index, tuple);
++            }
++        }
++
++        if ret == 0 && length > header_length {
++            if is_challenge_padding_needed != 0 && length < ENFORCED_INITIAL_MTU {
++                length = pad_to_target_length(
++                    &mut packet.bytes,
++                    length,
++                    send_buffer_min_max.saturating_sub(checksum_overhead),
++                );
++            } else {
++                length = self.pad_to_policy(
++                    &mut packet.bytes,
++                    length,
++                    send_buffer_min_max.saturating_sub(checksum_overhead) as u32,
++                );
++            }
++        } else {
++            length = 0;
++        }
++        packet.length = length;
++
++        let final_tuple_index = tuple_index.min(path_x.tuples.len() - 1);
++        let mut tuple = path_x.tuples.remove(final_tuple_index);
++        self.finalize_and_protect_packet_tuple(
++            packet,
++            ret,
++            length,
++            header_length,
++            checksum_overhead,
++            &mut send_length,
++            send_buffer,
++            send_buffer_min_max,
++            path_x,
++            current_time,
++            &mut tuple,
++        );
++        path_x.tuples.insert(final_tuple_index, tuple);
++
++        if send_length > 0 {
++            *next_wake_time = current_time;
++            self.next_wake_time = current_time;
++            if ret == 0 && self.is_still_logging() {
++                crate::logger::Log::cc_dump(self, current_time);
++            }
+         }
+-        packet.length = written;
+-        packet.packet_context = PacketContext::Application;
+-        packet.packet_type = PacketType::OneRttProtected;
+         packet.is_ack_eliciting = is_pure_ack == 0;
+-        Ok(written)
++
++        if ret == 0 {
++            Ok(send_length)
++        } else {
++            Err(crate::internal::sender_status_to_error(ret))
++        }
+     }
+ 
+     /// Append PATH_CHALLENGE frames into `bytes` for `path_x`.
+@@ -4636,6 +4812,46 @@ impl Connection {
+         current_time: Instant,
+         next_wake_time: &mut Instant,
+     ) -> Option<(PathToken, usize)> {
++        let nb_paths = self.paths.len();
++
++        for path_idx in 0..nb_paths {
++            if self.paths[path_idx].path_is_demoted {
++                continue;
++            }
++
++            let path_ptr: *mut Path = &raw mut self.paths[path_idx];
++            // SAFETY: `path_ptr` points to the selected path entry.  The
++            // helper mirrors the C API that takes both `cnx` and `path_x`;
++            // it only mutates that path and disjoint connection flags.
++            if let Some(tuple_idx) = unsafe {
++                self.check_path_control_needed(&mut *path_ptr, current_time, next_wake_time)
++            } {
++                self.paths[path_idx].challenger = self.paths[path_idx].challenger.saturating_add(1);
++                return Some((
++                    PathToken::synthetic(path_idx as u32, path_idx as u32),
++                    tuple_idx,
++                ));
++            }
++
++            if nb_paths > 0
++                && self.paths[path_idx]
++                    .tuples
++                    .first()
++                    .is_some_and(|tuple| tuple.challenge_verified)
++                && self.paths[path_idx].nb_retransmit > 0
++                && self.connection_state == State::Ready
++                && self.paths[path_idx].bytes_in_transit == 0
++            {
++                self.paths[path_idx].is_multipath_probe_needed = true;
++                self.paths[path_idx].challenger = self.paths[path_idx].challenger.saturating_add(1);
++                return Some((PathToken::synthetic(path_idx as u32, path_idx as u32), 0));
++            }
++        }
++
++        if nb_paths == 1 && !self.paths[0].tuples.is_empty() {
++            return Some((PathToken::synthetic(0, 0), 0));
++        }
++
+         for (path_idx, path) in self.paths.iter_mut().enumerate() {
+             if path.path_is_demoted || path.path_abandon_received {
+                 continue;
+@@ -5794,7 +6010,7 @@ impl Connection {
+             }
+             if let Ok((tree_token, old_token)) = quic
+                 .connection_wake_tree
+-                .insert(current_time.ticks(), token)
++                .insert(connection_wake_key(current_time, token), token)
+             {
+                 new_membership = Some(tree_token);
+                 if let Some(old_token) = old_token
+@@ -6290,8 +6506,9 @@ impl Quic {
+             .position(|c| c.initial_connection_id == connection.initial_connection_id)
+             .map(|idx| ConnectionToken::synthetic(idx as u32, idx as u32));
+         if let Some(token) = token
+-            && let Ok((tree_token, old)) =
+-                self.connection_wake_tree.insert(next_time.ticks(), token)
++            && let Ok((tree_token, old)) = self
++                .connection_wake_tree
++                .insert(connection_wake_key(next_time, token), token)
+         {
+             connection.connection_wake_membership = Some(tree_token);
+             if let Some(old_token) = old
+@@ -7103,7 +7320,13 @@ pub fn remove_header_protection_inner(
+     let mut sample = [0u8; 16];
+     sample.copy_from_slice(&bytes[sample_offset..sample_offset + 16]);
+     let mask = pn_enc.mask(sample);
+-    let first_mask = if (bytes[0] & 0x80) != 0 { 0x0f } else { 0x1f };
++    let first_mask = if (bytes[0] & 0x80) != 0 {
++        0x0f
++    } else if is_loss_bit_enabled_incoming {
++        0x07
++    } else {
++        0x1f
++    };
+     bytes[0] ^= mask[0] & first_mask;
+ 
+     if is_loss_bit_enabled_incoming && (bytes[0] & 0x80) == 0 {
+@@ -7129,6 +7352,11 @@ pub fn remove_header_protection_inner(
+         (1u64 << (8 * pn_length)) - 1
+     };
+     ph.packet_number_full = get_packet_number64(sack_list_last, ph.packet_number_mask, truncated);
++    ph.has_reserved_bit_set = if (bytes[0] & 0x80) == 0 {
++        !is_loss_bit_enabled_incoming && (bytes[0] & 0x18) != 0
++    } else {
++        (bytes[0] & 0x0c) != 0
++    };
+     let copy_len = length.min(decrypted_bytes.len());
+     decrypted_bytes[..copy_len].copy_from_slice(&bytes[..copy_len]);
+     0
+@@ -13011,6 +13239,70 @@ pub struct StreamDataBufferArgument<'a> {
+     pub app_buffer: &'a [u8],
+ }
+ 
++// ---------------------------------------------------------------------------
++// Datagram data buffer (callback argument for "prepare datagram").
++
++pub struct DatagramBufferArgument<'buf, 'cnx, 'path> {
++    pub(crate) connection: &'cnx mut Connection,
++    pub(crate) path_x: Option<&'path mut Path>,
++    pub(crate) bytes: &'buf mut [u8],
++    pub(crate) byte_index: usize,
++    pub(crate) allowed_space: usize,
++    pub(crate) after_data: usize,
++    pub(crate) is_active: i32,
++    pub(crate) is_old_api: bool,
++    pub(crate) was_called: bool,
++}
++
++impl<'buf, 'cnx, 'path> DatagramBufferArgument<'buf, 'cnx, 'path> {
++    pub(crate) fn new(
++        connection: &'cnx mut Connection,
++        path_x: &'path mut Path,
++        bytes: &'buf mut [u8],
++        byte_index: usize,
++        allowed_space: usize,
++    ) -> Self {
++        Self {
++            connection,
++            path_x: Some(path_x),
++            bytes,
++            byte_index,
++            allowed_space,
++            after_data: 0,
++            is_active: 0,
++            is_old_api: false,
++            was_called: false,
++        }
++    }
++
++    pub fn connection_mut(&mut self) -> &mut Connection {
++        &mut *self.connection
++    }
++
++    pub(crate) fn set_datagram_active(&mut self, is_active: DatagramActive) {
++        let bits = is_active as u8;
++        self.is_active = i32::from(bits & 1);
++        self.was_called = true;
++
++        if !self.is_old_api {
++            self.connection.is_datagram_ready = (bits & 1) != 0;
++            if let Some(path) = self.path_x.as_mut() {
++                path.is_datagram_ready = (bits >> 1) != 0;
++            }
++        }
++    }
++
++    pub(crate) fn invoke_prepare_datagram(&mut self, unique_path_id: u64) -> i32 {
++        let Some(mut callback) = self.connection.callback_fn.take() else {
++            return 0;
++        };
++        let allowed_space = self.allowed_space;
++        let ret = callback.prepare_datagram(self, unique_path_id, allowed_space);
++        self.connection.callback_fn = Some(callback);
++        ret
++    }
++}
++
+ fn encode_varint_at(bytes: &mut [u8], off: &mut usize, value: u64) -> bool {
+     let encoded = varint_encode(&mut bytes[*off..], value);
+     if encoded == 0 {
+@@ -14969,21 +15261,56 @@ pub fn format_ready_datagram_frame<'a>(
+     ret: &mut i32,
+ ) -> Option<&'a mut [u8]> {
+     *ret = 0;
+-    if !connection.is_datagram_ready && !path_x.is_datagram_ready && connection.datagrams.is_empty()
++
++    let mut byte_index = 0;
++    if !encode_varint_at(
++        bytes,
++        &mut byte_index,
++        crate::frames::FrameType::DatagramL as u64,
++    ) || bytes.len().saturating_sub(byte_index) < 16
+     {
++        *more_data = 1;
+         return Some(bytes);
+     }
+-    if connection.datagrams.is_empty() {
+-        connection.is_datagram_ready = false;
+-        path_x.is_datagram_ready = false;
+-        return Some(bytes);
+-    }
+-    let tail = format_first_datagram_frame(connection, bytes, 0, more_data, is_pure_ack)?;
+-    if connection.datagrams.is_empty() {
+-        connection.is_datagram_ready = false;
+-        path_x.is_datagram_ready = false;
++
++    let allowed_space = (bytes.len() - byte_index)
++        .min(connection.remote_parameters.max_datagram_frame_size as usize);
++    let unique_path_id = if connection.are_path_callbacks_enabled {
++        path_x.unique_path_id
++    } else {
++        0
++    };
++
++    let mut context =
++        DatagramBufferArgument::new(connection, path_x, bytes, byte_index, allowed_space);
++    let callback_ret = context.invoke_prepare_datagram(unique_path_id);
++
++    if callback_ret != 0 {
++        crate::logger::Log::app_message(
++            context.connection_mut(),
++            format_args!(
++                "Prepare datagram returns error 0x{:x}",
++                crate::errors::TransportError::InternalError as u64
++            ),
++        );
++        *ret = context
++            .connection_mut()
++            .connection_error(crate::errors::TransportError::InternalError as u64, 0);
++        context.after_data = 0;
++    } else {
++        if context.after_data > 0 {
++            *is_pure_ack = 0;
++        }
++        if context.is_old_api || !context.was_called {
++            *more_data |= i32::from(context.connection.is_datagram_ready);
++        } else {
++            *more_data |= context.is_active;
++        }
+     }
+-    Some(tail)
++
++    let after_data = context.after_data;
++    let DatagramBufferArgument { bytes, .. } = context;
++    Some(&mut bytes[after_data..])
+ }
+ 
+ pub fn decode_datagram_frame_header<'a>(
+@@ -16895,6 +17222,70 @@ impl Connection {
+         }
+     }
+ 
++    pub fn predict_packet_header_length_at(
++        &self,
++        packet_type: PacketType,
++        path_idx: usize,
++        tuple_idx: usize,
++        send_sequence: u64,
++        first_pending_seq: Option<u64>,
++    ) -> usize {
++        let path = self.paths.get(path_idx);
++        let tuple = path.and_then(|p| p.tuples.get(tuple_idx).or_else(|| p.tuples.first()));
++        let unique_path_id = path.map(|p| p.unique_path_id).unwrap_or(0);
++        let remote_cid_index = tuple
++            .and_then(|t| t.remote_connection_id_index)
++            .unwrap_or(0);
++        let remote_cid_len = self
++            .remote_connection_id_stashes
++            .iter()
++            .find(|s| s.unique_path_id == unique_path_id)
++            .and_then(|s| s.connection_ids.get(remote_cid_index))
++            .map(|r| r.connection_id.len())
++            .unwrap_or(8);
++        let local_cid_len = tuple
++            .and_then(|t| t.local_connection_id)
++            .and_then(|tok| self.local_connection_ids.get(tok))
++            .map(|l| l.connection_id.len())
++            .unwrap_or(self.local_cid_length as usize);
++
++        if packet_type == PacketType::OneRttProtected {
++            let delta = if let Some(first) = first_pending_seq {
++                send_sequence.saturating_sub(first) as i64
++            } else {
++                send_sequence as i64
++            };
++            let pn_l = if delta >= 262144 {
++                4usize
++            } else if send_sequence >= 1024 {
++                3
++            } else if send_sequence >= 16 {
++                2
++            } else {
++                1
++            };
++            1 + remote_cid_len + pn_l
++        } else {
++            let dest_cid_len = if self.client_mode
++                && (packet_type == PacketType::Initial
++                    || packet_type == PacketType::ZeroRttProtected)
++                && remote_cid_len == 0
++            {
++                self.initial_connection_id.len()
++            } else {
++                remote_cid_len
++            };
++
++            let mut header_length = 1 + 4 + 2 + dest_cid_len + local_cid_len + 2 + 4;
++            if packet_type == PacketType::Initial {
++                let token_len = self.retry_token.len();
++                let vlen = encode_varint_length(token_len as u64);
++                header_length += vlen + token_len;
++            }
++            header_length
++        }
++    }
++
+     /// Like [`create_packet_header`] but addresses the path and tuple by index
+     /// instead of by `&mut` reference.  This avoids the split-borrow problem
+     /// that arises when the path and tuple live inside `&mut self`.
+@@ -16904,32 +17295,29 @@ impl Connection {
+         packet_type: PacketType,
+         sequence_number: u64,
+         path_idx: usize,
+-        _tuple_idx: usize,
++        tuple_idx: usize,
+         header_length: usize,
+         bytes: &mut [u8],
+         pn_offset: &mut usize,
+         pn_length: &mut usize,
+     ) -> usize {
+         // Get remote and local CIDs.
+-        let unique_path_id = self
+-            .paths
+-            .get(path_idx)
+-            .map(|p| p.unique_path_id)
++        let path = self.paths.get(path_idx);
++        let tuple = path.and_then(|p| p.tuples.get(tuple_idx).or_else(|| p.tuples.first()));
++        let unique_path_id = path.map(|p| p.unique_path_id).unwrap_or(0);
++        let remote_cid_index = tuple
++            .and_then(|t| t.remote_connection_id_index)
+             .unwrap_or(0);
+ 
+         let remote_cid = self
+             .remote_connection_id_stashes
+             .iter()
+             .find(|s| s.unique_path_id == unique_path_id)
+-            .and_then(|s| s.connection_ids.first())
++            .and_then(|s| s.connection_ids.get(remote_cid_index))
+             .map(|r| r.connection_id)
+             .unwrap_or_default();
+ 
+-        let local_cid_tok = self
+-            .paths
+-            .get(path_idx)
+-            .and_then(|p| p.tuples.first())
+-            .and_then(|t| t.local_connection_id);
++        let local_cid_tok = tuple.and_then(|t| t.local_connection_id);
+         // When no local CID token is set, fall back to a zero-filled CID of
+         // `local_cid_length` bytes — matching the behaviour of
+         // `predict_packet_header_length_for_pc` which uses `self.local_cid_length`
+@@ -18062,7 +18450,7 @@ impl Connection {
+         ret
+     }
+ 
+-    fn pkt_ctx_backlog_empty(&self, pkt_ctx: &PacketContextState) -> bool {
++    pub(crate) fn pkt_ctx_backlog_empty(&self, pkt_ctx: &PacketContextState) -> bool {
+         let mut backlog_empty = true;
+ 
+         for packet_token in pkt_ctx.pending.values().copied() {
+diff --git a/rs/fq/src/lib.rs b/rs/fq/src/lib.rs
+index 376ab2ab..f2097156 100644
+--- a/rs/fq/src/lib.rs
++++ b/rs/fq/src/lib.rs
+@@ -427,7 +427,7 @@ impl ConnectionId {
+ // Full bodies live in `crate::internal`; pull them in for use within
+ // this module's signatures (no re-export — callers reach them as
+ // `crate::internal::*`).
+-use crate::internal::{Connection, ConnectionToken, Path, Quic};
++use crate::internal::{Connection, ConnectionToken, Path, Quic, connection_wake_key};
+ 
+ // ---------------------------------------------------------------------------
+ // Application callback events.
+@@ -522,6 +522,21 @@ pub trait StreamDataCallback {
+         fin_or_event: CallbackEvent,
+         stream_ctx: Option<&mut dyn core::any::Any>,
+     ) -> i32;
++
++    fn prepare_datagram<'buf, 'cnx, 'path>(
++        &mut self,
++        context: &mut crate::internal::DatagramBufferArgument<'buf, 'cnx, 'path>,
++        unique_path_id: u64,
++        _allowed_space: usize,
++    ) -> i32 {
++        self.callback(
++            context.connection_mut(),
++            unique_path_id,
++            &[],
++            CallbackEvent::PrepareDatagram,
++            None,
++        )
++    }
+ }
+ 
+ /// ALPN-selection callback.  Returns the index of the chosen ALPN
+@@ -815,18 +830,19 @@ impl core::fmt::Debug for CongestionAlgorithm {
+ /// [`register_congestion_control_algorithms`] (or its
+ /// `_all_` convenience wrapper) is called.
+ pub fn congestion_control_algorithms() -> &'static [&'static CongestionAlgorithm] {
+-    CC_ALGORITHM_REGISTRY
+-        .get()
+-        .map(|v| v.as_slice())
+-        .unwrap_or(&[])
++    match CC_ALGORITHM_REGISTRY.read() {
++        Ok(registry) => *registry,
++        Err(poisoned) => *poisoned.into_inner(),
++    }
+ }
+ 
+ /// Process-wide congestion-control algorithm registry.  Filled by
+-/// [`register_congestion_control_algorithms`].  `OnceLock` is used
+-/// so the registry can be set once (or never) without locking on
+-/// every read after the first call to `congestion_control_algorithms`.
+-static CC_ALGORITHM_REGISTRY: std::sync::OnceLock<Vec<&'static CongestionAlgorithm>> =
+-    std::sync::OnceLock::new();
++/// [`register_congestion_control_algorithms`].  Each registration
++/// replaces the current slice, matching the C globals
++/// `picoquic_congestion_control_algorithms` and
++/// `picoquic_nb_congestion_control_algorithms`.
++static CC_ALGORITHM_REGISTRY: std::sync::RwLock<&'static [&'static CongestionAlgorithm]> =
++    std::sync::RwLock::new(&[]);
+ 
+ struct BaselineCongestionControl;
+ 
+@@ -883,12 +899,6 @@ static NEWRENO_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+     ecn_mark: ECN_ECT_0,
+     algorithm: &newreno::NEWRENO_CONTROL,
+ };
+-static RENO_ALIAS_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+-    congestion_algorithm_id: "reno",
+-    congestion_algorithm_number: 1,
+-    ecn_mark: ECN_ECT_0,
+-    algorithm: &newreno::NEWRENO_CONTROL,
+-};
+ static CUBIC_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+     congestion_algorithm_id: "cubic",
+     congestion_algorithm_number: 2,
+@@ -907,12 +917,6 @@ static FAST_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+     ecn_mark: ECN_ECT_0,
+     algorithm: &fastcc::FASTCC_CONTROL,
+ };
+-static FASTCC_ALIAS_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+-    congestion_algorithm_id: "fastcc",
+-    congestion_algorithm_number: 4,
+-    ecn_mark: ECN_ECT_0,
+-    algorithm: &fastcc::FASTCC_CONTROL,
+-};
+ static BBR_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+     congestion_algorithm_id: "bbr",
+     congestion_algorithm_number: 5,
+@@ -937,13 +941,11 @@ static C4_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
+     ecn_mark: ECN_ECT_1,
+     algorithm: &c4::C4_CONTROL,
+ };
+-static ALL_CC_ALGORITHMS: [&CongestionAlgorithm; 10] = [
++static ALL_CC_ALGORITHMS: [&CongestionAlgorithm; 8] = [
+     &NEWRENO_ALGORITHM,
+-    &RENO_ALIAS_ALGORITHM,
+     &CUBIC_ALGORITHM,
+     &DCUBIC_ALGORITHM,
+     &FAST_ALGORITHM,
+-    &FASTCC_ALIAS_ALGORITHM,
+     &BBR_ALGORITHM,
+     &PRAGUE_ALGORITHM,
+     &BBR1_ALGORITHM,
+@@ -2601,6 +2603,42 @@ impl Connection {
+         }
+     }
+ 
++    /// Select an available unique path ID for path creation.
++    /// C: `picoquic_find_avalaible_unique_path_id`
++    /// (picoquic/quicctx.c:1651-1684).
++    pub fn find_avalaible_unique_path_id(&mut self, requested_id: u64) -> u64 {
++        if !self.is_multipath_enabled {
++            return if requested_id != 0 && requested_id != u64::MAX {
++                u64::MAX
++            } else {
++                0
++            };
++        }
++
++        let mut unique_path_id = requested_id;
++        if requested_id == u64::MAX && (self.client_mode || self.paths.is_empty()) {
++            while self.unique_path_id_next <= self.max_path_id_remote
++                && self.unique_path_id_next <= self.max_path_id_local
++                && self.unique_path_id_next <= self.max_path_id_in_connection_id_lists
++            {
++                let candidate = self.unique_path_id_next;
++                self.unique_path_id_next = self.unique_path_id_next.saturating_add(1);
++                unique_path_id = candidate;
++                if self
++                    .find_or_create_local_connection_id_list(candidate, false)
++                    .is_some()
++                    && self.find_path_by_unique_id(candidate) < 0
++                {
++                    break;
++                }
++                if candidate == u64::MAX {
++                    break;
++                }
++            }
++        }
++        unique_path_id
++    }
++
+     /// Check whether the connection can create a new path now.
+     /// C: `picoquic_check_new_path_allowed` (picoquic/quicctx.c:2300-2342).
+     pub fn check_new_path_allowed(&self, to_preferred_address: bool) -> Result<(), Error> {
+@@ -3543,6 +3581,100 @@ pub struct PreparedCnxPacket {
+ }
+ 
+ impl Connection {
++    fn reinsert_self_by_wake_time(&mut self, next_time: Instant) {
++        self.next_wake_time = next_time;
++        let Some(token) = self.own_token else {
++            return;
++        };
++        if self.quic_ptr.is_null() {
++            return;
++        }
++
++        // SAFETY: `quic_ptr` is the owning context installed when this
++        // connection was created.  This mirrors C's `cnx->quic` scheduler
++        // update; the only connection entry touched through the context is
++        // either this connection's wake token or a distinct token displaced
++        // by the splay insert.
++        unsafe {
++            let quic = &mut *self.quic_ptr;
++            if !quic.connections.contains(token) {
++                return;
++            }
++            if let Some(old_membership) = self.connection_wake_membership.take() {
++                quic.connection_wake_tree.remove(old_membership);
++            }
++            if let Ok((tree_token, old_token)) = quic
++                .connection_wake_tree
++                .insert(connection_wake_key(next_time, token), token)
++            {
++                self.connection_wake_membership = Some(tree_token);
++                if let Some(old_token) = old_token
++                    && old_token != token
++                    && let Some(old_connection) = quic.connections.get_mut(old_token)
++                {
++                    old_connection.connection_wake_membership = None;
++                }
++            }
++        }
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    fn intercept_masked_packet_if_needed(
++        &mut self,
++        current_time: Instant,
++        send_buffer: &mut [u8],
++        send_length: &mut usize,
++        send_msg_size: &mut Option<usize>,
++        addr_to: &mut SocketAddr,
++        addr_from: &mut SocketAddr,
++        if_index: &mut i32,
++    ) -> i32 {
++        if *if_index != RESERVED_IF_INDEX as i32 || *send_length == 0 || self.quic_ptr.is_null() {
++            return 0;
++        }
++
++        // SAFETY: `quic_ptr` is the owning context for this connection.
++        // The mask callback is a context-level hook matching the C
++        // `picomask_intercept_fn` call; the hook may update the output
++        // datagram metadata but must not invalidate this connection.
++        unsafe {
++            let quic = &mut *self.quic_ptr;
++            if quic.mask_ctx.is_none() || quic.mask_fns.is_none() {
++                return 0;
++            }
++
++            let mask_fns = quic.mask_fns.take().expect("checked mask_fns");
++            let mut mask_ctx = quic.mask_ctx.take();
++            let mut msg_size = send_msg_size.unwrap_or(0);
++            let mut p_addr_to = Some(*addr_to);
++            let mut p_addr_from = Some(*addr_from);
++            let ret = mask_fns.intercept(
++                quic,
++                mask_ctx.as_deref_mut(),
++                current_time,
++                send_buffer,
++                send_length,
++                &mut msg_size,
++                &mut p_addr_to,
++                &mut p_addr_from,
++                if_index,
++            );
++
++            quic.mask_ctx = mask_ctx;
++            quic.mask_fns = Some(mask_fns);
++            if let Some(updated) = p_addr_to {
++                *addr_to = updated;
++            }
++            if let Some(updated) = p_addr_from {
++                *addr_from = updated;
++            }
++            if send_msg_size.is_some() {
++                *send_msg_size = Some(msg_size);
++            }
++            ret
++        }
++    }
++
+     /// Prepare the next packet on this connection (the `_ex`
+     /// flavour reports GSO segment size when the packet is a
+     /// coalesced train).
+@@ -3567,113 +3699,242 @@ impl Connection {
+         }
+ 
+         if ret == 0 {
+-            if self.path_demotion_needed {
+-                self.delete_abandoned_paths(current_time, &mut next_wake_time);
+-            }
+-            if self.tuple_demotion_needed {
+-                self.delete_demoted_tuples(current_time, &mut next_wake_time);
+-            }
+-
+-            if let Some((path_token, tuple_index)) =
+-                self.select_next_path_tuple(current_time, &mut next_wake_time)
+-            {
++            let mut send_msg_size_value = 0usize;
++            if let Some((
++                path_token,
++                tuple_index,
++                selected_addr_to,
++                selected_addr_from,
++                selected_if_index,
++            )) = self.picoquic_handle_send_paths(
++                current_time,
++                &mut next_wake_time,
++                send_buffer.len(),
++                Some(&mut send_msg_size_value),
++            ) {
+                 let path_idx = path_token.slot_idx();
+-                if let Some(path) = self.paths.get(path_idx)
+-                    && let Some(tuple) = path.tuples.get(tuple_index)
+-                {
+-                    addr_to = tuple.peer_addr;
+-                    addr_from = tuple.local_addr;
+-                    if_index = tuple.if_index as i32;
+-                    send_msg_size = Some(path.send_mtu);
+-                    if send_buffer.len() > path.send_mtu {
+-                        self.is_sending_large_buffer = true;
+-                    }
+-                }
+-
++                addr_to = selected_addr_to;
++                addr_from = selected_addr_from;
++                if_index = selected_if_index;
++                send_msg_size = Some(send_msg_size_value);
+                 let initial_next_time = next_wake_time;
+                 let mut coalesced_packet_size = 0usize;
+-                let mut is_initial_sent = 0;
+-                let packet_max = send_buffer.len();
++                let selected_tuple_is_first = tuple_index == 0;
+ 
+-                while ret == 0 && send_length < send_buffer.len() {
+-                    next_wake_time = initial_next_time;
+-                    let available = packet_max.saturating_sub(coalesced_packet_size);
+-                    if available == 0 {
++                while ret == 0 {
++                    let mut is_initial_sent = 0;
++                    let mut packet_max = send_buffer.len().saturating_sub(send_length);
++                    let packet_buffer_start = send_length;
++                    if packet_max == 0 {
+                         break;
+                     }
+-                    let mut packet = crate::internal::Connection::empty_sender_packet(current_time);
+-                    let mut segment_length = 0usize;
+-                    let packet_buffer_start = send_length.saturating_add(coalesced_packet_size);
+-                    let packet_buffer_end = packet_buffer_start
+-                        .saturating_add(available)
+-                        .min(send_buffer.len());
+-                    if packet_buffer_start >= packet_buffer_end {
+-                        break;
++                    coalesced_packet_size = 0;
++                    next_wake_time = initial_next_time;
++
++                    if let Some(msg_size) = send_msg_size
++                        && msg_size > 0
++                        && send_length > 0
++                        && packet_max > msg_size
++                    {
++                        packet_max = msg_size;
+                     }
+ 
+-                    // SAFETY: `path_ptr` points into `self.paths[path_idx]`.
+-                    // This mirrors the C call shape (`cnx` plus `path_x`).
+-                    // The selected path is the only path mutably modified by
+-                    // this segment-formatting call.
+-                    let path_ptr: *mut Path = &raw mut self.paths[path_idx];
+-                    ret = unsafe {
+-                        self.prepare_segment(
+-                            &mut *path_ptr,
+-                            &mut packet,
+-                            current_time,
+-                            &mut send_buffer[packet_buffer_start..packet_buffer_end],
+-                            available,
+-                            &mut segment_length,
+-                            &mut next_wake_time,
+-                            &mut is_initial_sent,
+-                        )
+-                    };
++                    while ret == 0 {
++                        let mut available = packet_max;
++                        let mut segment_length = 0usize;
++
++                        if coalesced_packet_size > 0 {
++                            packet_max = self
++                                .paths
++                                .get(path_idx)
++                                .map(|path| path.send_mtu)
++                                .unwrap_or(packet_max);
++                            if packet_max
++                                < coalesced_packet_size
++                                    .saturating_add(crate::internal::MIN_SEGMENT_SIZE)
++                            {
++                                break;
++                            }
++                            available = packet_max.saturating_sub(coalesced_packet_size);
++                        }
++
++                        let packet_buffer_offset =
++                            packet_buffer_start.saturating_add(coalesced_packet_size);
++                        let packet_buffer_end = packet_buffer_offset
++                            .saturating_add(available)
++                            .min(send_buffer.len());
++                        if selected_tuple_is_first && packet_buffer_offset >= packet_buffer_end {
++                            break;
++                        }
++
++                        let mut packet =
++                            crate::internal::Connection::empty_sender_packet(current_time);
++                        let path_ptr: *mut Path = &raw mut self.paths[path_idx];
++
++                        if !selected_tuple_is_first {
++                            let path_control_max =
++                                send_buffer.len().saturating_sub(packet_buffer_start);
++                            // SAFETY: `path_ptr` points into the selected
++                            // path.  The path-control helper mirrors the C
++                            // call that receives both `cnx` and `path_x`.
++                            ret = unsafe {
++                                match self.prepare_path_control_packet_for_tuple(
++                                    &mut *path_ptr,
++                                    tuple_index,
++                                    &mut packet,
++                                    current_time,
++                                    &mut send_buffer[packet_buffer_start..],
++                                    path_control_max,
++                                    &mut next_wake_time,
++                                ) {
++                                    Ok(path_control_length) => {
++                                        if path_control_length > 0 {
++                                            send_length =
++                                                send_length.saturating_add(path_control_length);
++                                        }
++                                        0
++                                    }
++                                    Err(error) => Self::status_from_error(error),
++                                }
++                            };
++                        } else {
++                            // SAFETY: `path_ptr` points into `self.paths[path_idx]`.
++                            // This mirrors the C call shape (`cnx` plus `path_x`).
++                            // The selected path is the only path mutably modified by
++                            // this segment-formatting call.
++                            ret = unsafe {
++                                self.prepare_segment(
++                                    &mut *path_ptr,
++                                    &mut packet,
++                                    current_time,
++                                    &mut send_buffer[packet_buffer_offset..packet_buffer_end],
++                                    available,
++                                    &mut segment_length,
++                                    &mut next_wake_time,
++                                    &mut is_initial_sent,
++                                )
++                            };
++                        }
+ 
+-                    if ret == 0 {
+-                        coalesced_packet_size =
+-                            coalesced_packet_size.saturating_add(segment_length);
+-                        if packet.length == 0
+-                            || packet.packet_type == crate::internal::PacketType::OneRttProtected
+-                            || segment_length == 0
++                        if ret == 0 {
++                            if selected_tuple_is_first {
++                                coalesced_packet_size =
++                                    coalesced_packet_size.saturating_add(segment_length);
++                            }
++                            if packet.length == 0
++                                || packet.packet_type
++                                    == crate::internal::PacketType::OneRttProtected
++                            {
++                                break;
++                            } else if segment_length == 0 {
++                                crate::logger::Log::app_message(
++                                    self,
++                                    format_args!(
++                                        "Send bug: segment length = {}, packet length = {}\n",
++                                        segment_length, packet.length
++                                    ),
++                                );
++                                break;
++                            }
++                        } else {
++                            if coalesced_packet_size != 0 {
++                                ret = 0;
++                            }
++                            break;
++                        }
++
++                        if self
++                            .quic_ref()
++                            .map(|q| q.dont_coalesce_init)
++                            .unwrap_or(false)
++                            || !selected_tuple_is_first
+                         {
+                             break;
+                         }
+-                    } else if coalesced_packet_size != 0 {
+-                        ret = 0;
+-                        break;
+-                    } else {
++                    }
++
++                    if ret != 0 {
+                         break;
+                     }
+ 
+-                    if self
+-                        .quic_ref()
+-                        .map(|q| q.dont_coalesce_init)
+-                        .unwrap_or(false)
++                    if is_initial_sent != 0
++                        && self.connection_state < State::ClientAlmostReady
++                        && coalesced_packet_size > 0
++                        && coalesced_packet_size < crate::internal::ENFORCED_INITIAL_MTU
+                     {
+-                        break;
++                        let padding = packet_max.saturating_sub(coalesced_packet_size);
++                        let start = packet_buffer_start.saturating_add(coalesced_packet_size);
++                        let end = start.saturating_add(padding).min(send_buffer.len());
++                        if start < end {
++                            crate::internal::public_random(&mut send_buffer[start..end]);
++                            coalesced_packet_size =
++                                coalesced_packet_size.saturating_add(end - start);
++                        }
+                     }
+-                }
+ 
+-                if is_initial_sent != 0
+-                    && self.connection_state < State::ClientAlmostReady
+-                    && coalesced_packet_size > 0
+-                    && coalesced_packet_size < crate::internal::ENFORCED_INITIAL_MTU
+-                {
+-                    let padding = packet_max.saturating_sub(coalesced_packet_size);
+-                    let start = coalesced_packet_size;
+-                    let end = start.saturating_add(padding).min(send_buffer.len());
+-                    crate::internal::public_random(&mut send_buffer[start..end]);
+-                    coalesced_packet_size = end;
+-                }
++                    if coalesced_packet_size > packet_max {
++                        crate::logger::Log::app_message(
++                            self,
++                            format_args!(
++                                "BUFFER OVERFLOW? Packet size {} larger than {}",
++                                coalesced_packet_size, packet_max
++                            ),
++                        );
++                    }
++
++                    if coalesced_packet_size > 0 {
++                        self.max_mtu_sent = self.max_mtu_sent.max(coalesced_packet_size);
++                        self.nb_packets_sent = self.nb_packets_sent.saturating_add(1);
++                        let unique_path_id = self
++                            .paths
++                            .get(path_idx)
++                            .map(|path| path.unique_path_id)
++                            .unwrap_or(0);
++                        crate::logger::Log::pdu(
++                            self,
++                            false,
++                            current_time,
++                            &addr_to,
++                            &addr_from,
++                            coalesced_packet_size,
++                            unique_path_id,
++                            0,
++                        );
++                    }
++
++                    if coalesced_packet_size > 0 || self.connection_state == State::Disconnected {
++                        next_wake_time = current_time;
++                        self.next_wake_time = current_time;
++                    }
+ 
+-                if coalesced_packet_size > 0 {
+-                    self.max_mtu_sent = self.max_mtu_sent.max(coalesced_packet_size);
+-                    self.nb_packets_sent = self.nb_packets_sent.saturating_add(1);
+-                    next_wake_time = current_time;
++                    send_length = send_length.saturating_add(coalesced_packet_size);
++
++                    ret = self.intercept_masked_packet_if_needed(
++                        current_time,
++                        send_buffer,
++                        &mut send_length,
++                        &mut send_msg_size,
++                        &mut addr_to,
++                        &mut addr_from,
++                        &mut if_index,
++                    );
++                    if ret < 0 || send_length == 0 {
++                        break;
++                    }
++
++                    let Some(msg_size) = send_msg_size else {
++                        break;
++                    };
++                    if coalesced_packet_size > msg_size {
++                        send_msg_size = Some(coalesced_packet_size);
++                    } else if coalesced_packet_size != msg_size
++                        || send_length.saturating_add(msg_size) > send_buffer.len()
++                    {
++                        break;
++                    }
+                 }
+-                send_length = send_length.saturating_add(coalesced_packet_size);
+ 
+-                if send_length > 0 {
++                if send_length > 0 && path_idx < self.paths.len() {
+                     let path_ptr: *const Path = &raw const self.paths[path_idx];
+                     // SAFETY: immutable borrow of selected path for statistics
+                     // after segment formatting has completed.
+@@ -3691,7 +3952,7 @@ impl Connection {
+         if ret == 0 {
+             self.program_app_wake_time(&mut next_wake_time);
+         }
+-        self.next_wake_time = next_wake_time;
++        self.reinsert_self_by_wake_time(next_wake_time);
+ 
+         if ret == 0 {
+             Ok(PreparedCnxPacket {
+@@ -3838,6 +4099,32 @@ fn enqueue_output_stream_token(connection: &mut Connection, token: internal::Str
+     connection.output_streams.insert(pos, token);
+ }
+ 
++fn can_insert_output_stream(
++    client_mode: bool,
++    max_stream_id_bidir_remote: u64,
++    max_stream_id_unidir_remote: u64,
++    stream_id: u64,
++) -> bool {
++    use crate::stream::{Role, StreamId};
++
++    let sid = StreamId(stream_id);
++    let local_role = if client_mode {
++        Role::Client
++    } else {
++        Role::Server
++    };
++    if !sid.is_local(local_role) {
++        return true;
++    }
++
++    let max_stream_id_remote = if sid.is_bidir() {
++        max_stream_id_bidir_remote
++    } else {
++        max_stream_id_unidir_remote
++    };
++    stream_id <= max_stream_id_remote
++}
++
+ impl Connection {
+     fn find_stream_for_writing(
+         &mut self,
+@@ -3991,14 +4278,20 @@ impl Connection {
+         let stream_token = self.find_stream_for_writing(stream_id)?;
+         let has_callback = self.callback_fn.is_some();
+         let mut should_enqueue = false;
++        let mut should_reinsert = false;
+ 
+         {
+             let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
+ 
+             if is_active {
+-                if !stream.fin_requested && !stream.reset_requested && has_callback {
++                let can_set_active_after_reset =
++                    !stream.reset_requested || !stream.sack_list.check(0, stream.reliable_size);
++                if !stream.fin_requested && can_set_active_after_reset && has_callback {
+                     stream.app_stream_ctx = v_stream_ctx;
+-                    stream.is_active = true;
++                    if !stream.is_active {
++                        stream.is_active = true;
++                        should_reinsert = true;
++                    }
+                     if !stream.is_output_stream {
+                         stream.is_output_stream = true;
+                         should_enqueue = true;
+@@ -4015,6 +4308,9 @@ impl Connection {
+         if should_enqueue {
+             enqueue_output_stream_token(self, stream_token);
+         }
++        if should_reinsert {
++            self.reinsert_self_by_wake_time(self.quic_time());
++        }
+         Ok(())
+     }
+ 
+@@ -4065,14 +4361,14 @@ impl Connection {
+         } else if self.high_priority_stream_id == stream_id {
+             self.high_priority_stream_id = u64::MAX;
+         }
+-        self.set_stream_priority(
+-            stream_id,
+-            if is_high_priority {
+-                0
+-            } else {
+-                DEFAULT_STREAM_PRIORITY
+-            },
+-        )
++        let stream_priority = if is_high_priority {
++            0
++        } else {
++            self.quic_ref()
++                .map(|quic| quic.default_stream_priority)
++                .unwrap_or(DEFAULT_STREAM_PRIORITY)
++        };
++        self.set_stream_priority(stream_id, stream_priority)
+     }
+ 
+     /// Override the priority used for outbound datagrams on this
+@@ -4184,7 +4480,14 @@ impl Connection {
+         app_stream_ctx: Option<Box<dyn core::any::Any>>,
+     ) -> Result<(), Error> {
+         let stream_token = self.find_stream_for_writing(stream_id)?;
++        let can_enqueue = can_insert_output_stream(
++            self.client_mode,
++            self.max_stream_id_bidir_remote,
++            self.max_stream_id_unidir_remote,
++            stream_id,
++        );
+         let mut should_enqueue = false;
++        let mut should_reinsert = false;
+ 
+         {
+             let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
+@@ -4213,11 +4516,13 @@ impl Connection {
+                     offset,
+                     bytes: data.to_vec(),
+                 });
++                should_reinsert = true;
+             }
+ 
+             stream.is_active = false;
+             stream.app_stream_ctx = app_stream_ctx;
+             if !stream.is_output_stream
++                && can_enqueue
+                 && (!stream.send_queue.is_empty() || (stream.fin_requested && !stream.fin_sent))
+             {
+                 stream.is_output_stream = true;
+@@ -4229,6 +4534,9 @@ impl Connection {
+         if should_enqueue {
+             enqueue_output_stream_token(self, stream_token);
+         }
++        if should_reinsert {
++            self.reinsert_self_by_wake_time(self.quic_time());
++        }
+         Ok(())
+     }
+ 
+@@ -4245,35 +4553,39 @@ impl Connection {
+         local_stream_error: u64,
+         reliable_size: u64,
+     ) -> Result<(), Error> {
++        let mut result = Ok(());
++        let mut output_stream_token = None;
++
+         if reliable_size > 0 && !self.is_reset_stream_at_enabled {
+-            return Err(Error::Protocol(
++            result = Err(Error::Protocol(
+                 InternalError::IllegalTransportExtension as u64,
+             ));
+-        }
+-        let stream_token = self
+-            .find_stream(stream_id)
+-            .ok_or(Error::Protocol(InternalError::InvalidStreamId as u64))?;
+-        let mut should_enqueue = false;
+-        {
+-            let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
+-            stream.app_stream_ctx = None;
+-            if stream.fin_sent && !stream.sack_list.check(0, stream.fin_offset) {
+-                return Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
+-            }
+-            if !stream.reset_requested {
+-                stream.local_error = local_stream_error;
+-                stream.reset_requested = true;
+-                stream.reliable_size = reliable_size;
+-                if !stream.is_output_stream {
+-                    stream.is_output_stream = true;
+-                    should_enqueue = true;
++        } else if let Some(stream_token) = self.find_stream(stream_id) {
++            if let Some(stream) = self.streams.get_mut(stream_token) {
++                stream.app_stream_ctx = None;
++                if stream.fin_sent && !stream.sack_list.check(0, stream.fin_offset) {
++                    result = Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
++                } else if !stream.reset_requested {
++                    stream.local_error = local_stream_error;
++                    stream.reset_requested = true;
++                    stream.reliable_size = reliable_size;
++                    if !stream.is_output_stream {
++                        stream.is_output_stream = true;
++                        output_stream_token = Some(stream_token);
++                    }
+                 }
++            } else {
++                result = Err(Error::Memory);
+             }
++        } else {
++            result = Err(Error::Protocol(InternalError::InvalidStreamId as u64));
+         }
+-        if should_enqueue {
++
++        if let Some(stream_token) = output_stream_token {
+             enqueue_output_stream_token(self, stream_token);
+         }
+-        Ok(())
++        self.reinsert_self_by_wake_time(self.quic_time());
++        result
+     }
+ 
+     /// Open the flow-control window for an inbound stream up to the
+@@ -4283,7 +4595,9 @@ impl Connection {
+         stream_id: u64,
+         expected_data_size: u64,
+     ) -> Result<(), Error> {
+-        if self.connection_state != State::Ready {
++        if self.connection_state != State::Ready
++            || self.quic_ref().map(|quic| quic.max_data_limit).unwrap_or(0) != 0
++        {
+             return Ok(());
+         }
+ 
+@@ -4297,8 +4611,6 @@ impl Connection {
+                 return Ok(());
+             }
+             stream.maxdata_local = max_required;
+-            stream.maxdata_local_acked = max_required;
+-            stream.max_stream_updated = false;
+             max_required
+         };
+         self.max_stream_data_local = self.max_stream_data_local.max(new_stream_max);
+@@ -4338,29 +4650,34 @@ impl Connection {
+ 
+     /// Send a STOP_SENDING frame for this stream.
+     pub fn stop_sending(&mut self, stream_id: u64, local_stream_error: u64) -> Result<(), Error> {
+-        let stream_token = self
+-            .find_stream(stream_id)
+-            .ok_or(Error::Protocol(InternalError::InvalidStreamId as u64))?;
+-        let mut should_enqueue = false;
+-        {
+-            let stream = self.streams.get_mut(stream_token).ok_or(Error::Memory)?;
+-            stream.app_stream_ctx = None;
+-            if stream.reset_received {
+-                return Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
+-            }
+-            if !stream.stop_sending_requested {
+-                stream.local_stop_error = local_stream_error;
+-                stream.stop_sending_requested = true;
+-                if !stream.is_output_stream {
+-                    stream.is_output_stream = true;
+-                    should_enqueue = true;
++        let mut result = Ok(());
++        let mut output_stream_token = None;
++
++        if let Some(stream_token) = self.find_stream(stream_id) {
++            if let Some(stream) = self.streams.get_mut(stream_token) {
++                stream.app_stream_ctx = None;
++                if stream.reset_received {
++                    result = Err(Error::Protocol(InternalError::StreamAlreadyClosed as u64));
++                } else if !stream.stop_sending_requested {
++                    stream.local_stop_error = local_stream_error;
++                    stream.stop_sending_requested = true;
++                    if !stream.is_output_stream {
++                        stream.is_output_stream = true;
++                        output_stream_token = Some(stream_token);
++                    }
+                 }
++            } else {
++                result = Err(Error::Memory);
+             }
++        } else {
++            result = Err(Error::Protocol(InternalError::InvalidStreamId as u64));
+         }
+-        if should_enqueue {
++
++        if let Some(stream_token) = output_stream_token {
+             enqueue_output_stream_token(self, stream_token);
+         }
+-        Ok(())
++        self.reinsert_self_by_wake_time(self.quic_time());
++        result
+     }
+ 
+     /// Drop a stream from local bookkeeping (rejecting further peer
+@@ -4395,7 +4712,14 @@ impl Connection {
+ 
+     /// Toggle datagram readiness for this connection.
+     pub fn mark_datagram_ready(&mut self, is_ready: bool) -> Result<(), Error> {
++        let was_ready = self.is_datagram_ready;
+         self.is_datagram_ready = is_ready;
++        if !was_ready && is_ready {
++            if self.remote_parameters.max_datagram_frame_size == 0 {
++                return Err(Error::Generic);
++            }
++            self.reinsert_self_by_wake_time(self.quic_time());
++        }
+         Ok(())
+     }
+ 
+@@ -4405,34 +4729,92 @@ impl Connection {
+         unique_path_id: u64,
+         is_path_ready: bool,
+     ) -> Result<(), Error> {
+-        if let Some(path) = self
++        let Some(path_index) = self
+             .paths
+-            .iter_mut()
+-            .find(|p| p.unique_path_id == unique_path_id)
+-        {
+-            path.is_datagram_ready = is_path_ready;
+-            Ok(())
+-        } else {
+-            Err(Error::InvalidArgument)
++            .iter()
++            .position(|p| p.unique_path_id == unique_path_id)
++        else {
++            return Err(Error::InvalidArgument);
++        };
++
++        let was_ready = self.paths[path_index].is_datagram_ready;
++        self.paths[path_index].is_datagram_ready = is_path_ready;
++        if !was_ready && is_path_ready {
++            if self.remote_parameters.max_datagram_frame_size == 0 {
++                return Err(Error::Generic);
++            }
++            self.reinsert_self_by_wake_time(self.quic_time());
+         }
++        Ok(())
+     }
+ }
+ 
+ /// C: `provide_datagram_buffer`.  Old API, prefer
+ /// [`provide_datagram_buffer_ex`].
+ pub fn provide_datagram_buffer<'a>(
+-    context: &'a mut crate::internal::StreamDataBufferArgument<'a>,
++    context: &'a mut crate::internal::DatagramBufferArgument<'_, '_, '_>,
+     length: usize,
+ ) -> Option<&'a mut [u8]> {
+-    provide_stream_data_buffer(context, length, false, false)
++    provide_datagram_buffer_ex(context, length, DatagramActive::NotActive)
+ }
+ 
+ pub fn provide_datagram_buffer_ex<'a>(
+-    context: &'a mut crate::internal::StreamDataBufferArgument<'a>,
++    context: &'a mut crate::internal::DatagramBufferArgument<'_, '_, '_>,
+     length: usize,
+-    _is_active: DatagramActive,
++    is_active: DatagramActive,
+ ) -> Option<&'a mut [u8]> {
+-    provide_stream_data_buffer(context, length, false, false)
++    context.set_datagram_active(is_active);
++
++    if length == 0 || length > context.allowed_space {
++        return None;
++    }
++
++    let payload_start = {
++        let after_length =
++            crate::internal::varint_encode(&mut context.bytes[context.byte_index..], length as u64)
++                .checked_add(context.byte_index)
++                .filter(|&after_length| after_length != context.byte_index);
++
++        if let Some(after_length) = after_length
++            && let Some(after_data) = after_length.checked_add(length)
++            && after_data <= context.bytes.len()
++        {
++            context.after_data = after_data;
++            after_length
++        } else {
++            let encoded = crate::internal::varint_encode(
++                context.bytes,
++                crate::frames::FrameType::Datagram as u64,
++            );
++            if encoded == 0 {
++                return None;
++            }
++
++            let mut payload_start = encoded;
++            let tail = payload_start.checked_add(length)?;
++            if tail > context.bytes.len() {
++                return None;
++            }
++
++            if tail < context.bytes.len() {
++                let delta = context.bytes.len() - tail;
++                context.bytes[..delta].fill(crate::frames::FrameType::Padding as u8);
++                let encoded = crate::internal::varint_encode(
++                    &mut context.bytes[delta..],
++                    crate::frames::FrameType::Datagram as u64,
++                );
++                if encoded == 0 {
++                    return None;
++                }
++                payload_start = delta + encoded;
++            }
++
++            context.after_data = payload_start + length;
++            payload_start
++        }
++    };
++
++    context.bytes.get_mut(payload_start..context.after_data)
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -4467,7 +4849,23 @@ impl Connection {
+ 
+     /// Enable keep-alives at the given interval (microseconds).
+     pub fn enable_keep_alive(&mut self, interval: Duration) {
+-        self.keep_alive_interval = interval;
++        if interval.ticks() == 0 {
++            let mut idle_timeout = self.idle_timeout.ticks();
++            if idle_timeout == 0 {
++                idle_timeout = self
++                    .local_parameters
++                    .max_idle_timeout
++                    .ticks()
++                    .saturating_mul(1000);
++            }
++            if let Some(path) = self.paths.first() {
++                let pto_floor = 3u64.saturating_mul(path.retransmit_timer.ticks());
++                idle_timeout = idle_timeout.max(pto_floor);
++            }
++            self.keep_alive_interval = Duration::from_ticks(idle_timeout / 2);
++        } else {
++            self.keep_alive_interval = interval;
++        }
+     }
+ 
+     /// Disable any previously-enabled keep-alive.
+@@ -4564,24 +4962,35 @@ impl Connection {
+ /// typically file-scope statics, mirroring how
+ /// `register_all_cc_algorithms.c` builds the list.
+ pub fn register_congestion_control_algorithms(alg: &'static [&'static CongestionAlgorithm]) {
+-    // Best-effort set: if the registry was already initialised, this is a no-op
+-    // (OnceLock semantics).
+-    let _ = CC_ALGORITHM_REGISTRY.set(alg.to_vec());
++    match CC_ALGORITHM_REGISTRY.write() {
++        Ok(mut registry) => *registry = alg,
++        Err(poisoned) => *poisoned.into_inner() = alg,
++    }
+ }
+ 
+ /// Convenience wrapper around
+ /// [`register_congestion_control_algorithms`] that pulls in every
+ /// algorithm shipped with the crate.
+ pub fn register_all_congestion_control_algorithms() {
+-    let _ = CC_ALGORITHM_REGISTRY.set(ALL_CC_ALGORITHMS.to_vec());
++    register_congestion_control_algorithms(&ALL_CC_ALGORITHMS);
+ }
+ 
+ /// Look up a registered algorithm by name (`alg_id`).
+ pub fn get_congestion_algorithm(alg_id: &str) -> Option<&'static CongestionAlgorithm> {
+-    congestion_control_algorithms()
++    let algorithms = congestion_control_algorithms();
++    let alg = algorithms
+         .iter()
+         .copied()
+-        .find(|a| a.congestion_algorithm_id == alg_id)
++        .find(|a| a.congestion_algorithm_id == alg_id);
++
++    if alg.is_none() && alg_id == "reno" {
++        algorithms
++            .iter()
++            .copied()
++            .find(|a| a.congestion_algorithm_id == "newreno")
++    } else {
++        alg
++    }
+ }
+ 
+ impl Quic {
+@@ -4604,20 +5013,15 @@ impl Quic {
+     }
+ 
+     /// Convenience: select the default algorithm by name (looking up
+-    /// in the registry).  Returns `Err` when no registered algorithm
+-    /// matches `alg_name`.
++    /// in the registry).  Unknown names mirror the C NULL lookup result
++    /// by clearing the default algorithm and option string.
+     pub fn set_default_congestion_algorithm_by_name(
+         &mut self,
+         alg_name: &str,
+     ) -> Result<(), Error> {
+-        match get_congestion_algorithm(alg_name) {
+-            Some(alg) => {
+-                self.default_congestion_alg = Some(alg);
+-                self.default_congestion_alg_option_string = None;
+-                Ok(())
+-            }
+-            None => Err(Error::InvalidArgument),
+-        }
++        self.default_congestion_alg = get_congestion_algorithm(alg_name);
++        self.default_congestion_alg_option_string = None;
++        Ok(())
+     }
+ }
+ 
+@@ -4625,8 +5029,7 @@ impl Connection {
+     /// Override the congestion-control algorithm for this
+     /// connection.
+     pub fn set_congestion_algorithm(&mut self, algo: &'static CongestionAlgorithm) {
+-        self.congestion_alg = Some(algo);
+-        self.congestion_alg_option_string = None;
++        self.set_congestion_algorithm_ex(algo, None);
+     }
+ 
+     /// Same as [`Self::set_congestion_algorithm`] but passes
+@@ -4636,8 +5039,31 @@ impl Connection {
+         alg: &'static CongestionAlgorithm,
+         alg_option_string: Option<&str>,
+     ) {
++        if let Some(old_alg) = self.congestion_alg {
++            for path in &mut self.paths {
++                old_alg.algorithm.alg_delete(path);
++            }
++        }
++
+         self.congestion_alg = Some(alg);
+         self.congestion_alg_option_string = alg_option_string.map(|s| s.to_owned());
++
++        let opt_owned = self.congestion_alg_option_string.clone();
++        let option = opt_owned.as_deref();
++        let current_time = self.quic_time();
++
++        if let Some(new_alg) = self.congestion_alg {
++            for i in 0..self.paths.len() {
++                // SAFETY: `path_ptr` points to one path inside this
++                // connection.  Congestion-control init is allowed to mutate
++                // that path and disjoint connection fields, matching the C
++                // call shape that passes both `cnx` and `path[i]`.
++                let path_ptr: *mut Path = &raw mut self.paths[i];
++                new_alg
++                    .algorithm
++                    .alg_init(self, unsafe { &mut *path_ptr }, option, current_time);
++            }
++        }
+     }
+ 
+     /// Set the priority limit above which streams bypass congestion
+@@ -4666,7 +5092,7 @@ impl Connection {
+     ) {
+         self.pacing_decrease_threshold = decrease_threshold;
+         self.pacing_increase_threshold = increase_threshold;
+-        self.is_pacing_update_requested = true;
++        self.is_pacing_update_requested = decrease_threshold.min(increase_threshold) != u64::MAX;
+     }
+ 
+     /// Current pacing rate (bytes per second).
+@@ -4811,10 +5237,18 @@ pub fn reset_tls_api(flags: u64) {
+     crate::tls_api::tls_api_reset(flags);
+ }
+ 
++/// Return the AES-128-GCM-SHA-256 TLS cipher-suite identifier for the
++/// requested memory mode.
++///
++/// The C API returns an opaque `ptls_cipher_suite_t *`; the Rust
++/// provider registry exposes the registered IANA suite ID instead.
++/// C: `picoquic_get_aes128gcm_sha256_v`.
++pub fn picoquic_get_aes128gcm_sha256_v(use_low_memory: bool) -> Option<u16> {
++    crate::tls_api::picoquic_get_cipher_suite_by_id_v(i32::from(AES_128_GCM_SHA256), use_low_memory)
++}
++
+ /// True when the minicrypto implementation is the active cipher suite
+-/// for AES-128-GCM-SHA-256.  C: comparison of
+-/// `picoquic_get_aes128gcm_sha256_v(use_low_memory)` against the
+-/// address of `ptls_minicrypto_aes128gcmsha256`.
++/// for AES-128-GCM-SHA-256.
+ pub fn is_minicrypto_aes128gcm_sha256(use_low_memory: bool) -> bool {
+     crate::tls_api::is_minicrypto_aes128gcm_sha256(use_low_memory)
+ }
+@@ -4835,7 +5269,26 @@ impl Connection {
+     /// Returns `true` when the send backlog for this connection is empty.
+     /// C: `picoquic_is_cnx_backlog_empty`.
+     pub fn is_cnx_backlog_empty(&self) -> bool {
+-        self.nb_bytes_queued == 0 && self.misc_frames.is_empty() && self.output_streams.is_empty()
++        let mut backlog_empty = true;
++
++        if self.connection_state < State::Ready {
++            backlog_empty = self
++                .pkt_ctx_backlog_empty(&self.pkt_ctx[PacketContext::Initial as usize])
++                && self.pkt_ctx_backlog_empty(&self.pkt_ctx[PacketContext::Handshake as usize]);
++        }
++
++        if self.is_multipath_enabled {
++            backlog_empty = backlog_empty
++                && self
++                    .paths
++                    .iter()
++                    .all(|path| self.pkt_ctx_backlog_empty(&path.pkt_ctx));
++        } else if backlog_empty {
++            backlog_empty =
++                self.pkt_ctx_backlog_empty(&self.pkt_ctx[PacketContext::Application as usize]);
++        }
++
++        backlog_empty
+     }
+ 
+     /// Return the next available local stream ID.  `is_unidirectional`
+@@ -5587,7 +6040,10 @@ impl Quic {
+             return;
+         };
+ 
+-        if let Ok((tree_token, old)) = self.connection_wake_tree.insert(next_time.ticks(), token) {
++        if let Ok((tree_token, old)) = self
++            .connection_wake_tree
++            .insert(connection_wake_key(next_time, token), token)
++        {
+             if let Some(cnx) = self.connections.get_mut(token) {
+                 cnx.connection_wake_membership = Some(tree_token);
+             }
+@@ -5712,6 +6168,13 @@ impl Quic {
+                 new_context_created: false,
+             };
+         }
++        if ph.has_reserved_bit_set {
++            return ParsedSegment {
++                ret: InternalError::PacketHeaderParsing as i32,
++                connection: None,
++                new_context_created: false,
++            };
++        }
+         if self.enforce_client_only
+             || self.server_busy
+             || self.current_number_connections >= self.tentative_max_number_connections
+@@ -5756,6 +6219,7 @@ impl Quic {
+         let is_address_blocked = !self.is_port_blocking_disabled && check_addr_blocked(addr_from);
+         let mut has_good_token = false;
+         let mut has_bad_token = false;
++        let mut is_new_token = false;
+         let mut verified_token = None;
+         if !ph.token_bytes.is_empty() {
+             let token_bytes = ph.token_bytes.clone();
+@@ -5769,13 +6233,19 @@ impl Quic {
+             ) {
+                 Ok(token) => {
+                     has_good_token = true;
++                    is_new_token = token.is_new_token;
+                     verified_token = Some(token);
+                 }
+-                Err(_) => has_bad_token = true,
++                Err(_) => {
++                    has_bad_token = true;
++                    is_new_token = token_bytes.len() <= 128
++                        && token_bytes.len() >= 8
++                        && token_bytes[0] & 0x80 != 0;
++                }
+             }
+         }
+ 
+-        if has_bad_token {
++        if has_bad_token && !is_new_token {
+             return ParsedSegment {
+                 ret: InternalError::InvalidToken as i32,
+                 connection: None,
+@@ -6074,7 +6544,7 @@ impl Quic {
+                 );
+                 InternalError::Retry as i32
+             }
+-            Err(error) => Self::parse_error_status(error),
++            Err(_) => InternalError::Memory as i32,
+         }
+     }
+ 
+diff --git a/rs/fq/src/packet_loop.rs b/rs/fq/src/packet_loop.rs
+index 2297d2b1..780188f0 100644
+--- a/rs/fq/src/packet_loop.rs
++++ b/rs/fq/src/packet_loop.rs
+@@ -20,7 +20,8 @@
+ //!   compatibility.  Builds a [`LoopParam`] on the stack and forwards.
+ //! * [`run_v2`] — takes a [`LoopParam`] directly.
+ //! * [`NetworkThreadCtx::run`] — takes a fully-populated
+-//!   [`NetworkThreadCtx`]; the threaded entry point.
++//!   [`NetworkThreadCtx`] plus the associated [`Quic`]; the v3
++//!   entry point.
+ //!
+ //! Plus the threading helpers ([`NetworkThreadCtx::spawn`] et al.)
+ //! that wrap `pthread_create` / `CreateThread`.
+@@ -57,7 +58,10 @@
+ //!   callback_ctx` companion folds into the trait implementor's
+ //!   state.  The C `(cb_mode, void* callback_argv)` tagged-union
+ //!   pair becomes the typed [`LoopEvent`] enum — each variant
+-//!   carries the payload type the C `cb_mode` implied.
++//!   carries the payload type the C `cb_mode` implied.  The server
++//!   thread fan-out wraps one supplied boxed trait object in shared
++//!   forwarding adapters so every thread sees the same callback/hook,
++//!   matching the C function-pointer reuse.
+ //! * `SocketCtx* s_ctx` is used as both a single object
+ //!   ([`SocketCtx::close`]) and a fixed-size array
+ //!   ([`open_sockets`] writes up to `PACKET_LOOP_SOCKETS_MAX`
+@@ -73,8 +77,10 @@
+ //!   set of unrelated booleans (see `config.rs` for the
+ //!   established convention).
+ //! * `volatile int` fields in [`NetworkThreadCtx`]
+-//!   become plain `i32` / `bool` — `Send`/`Sync` is out of v1 scope,
+-//!   so the volatile semantics have nowhere to land.
++//!   become plain `i32` / `bool`.  The threaded entry point keeps
++//!   the C back-pointer shape at one small unsafe boundary because
++//!   the translated `Quic` and callback graph are intentionally not
++//!   `Send` in v1.
+ //! * `sockaddr_storage` fields fold into `Option<SocketAddr>`,
+ //!   matching the [`socks`] convention (`AF_UNSPEC` ↔ `None`).
+ //! * The Windows-only fields (`overlap`, `WSARecvMsg`, `WSASendMsg`,
+@@ -91,6 +97,8 @@
+ 
+ use core::net::SocketAddr;
+ 
++use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
++use std::sync::{Arc, Mutex};
+ use std::thread::JoinHandle;
+ 
+ use crate::Error;
+@@ -316,6 +324,90 @@ pub trait PacketLoopCbFn {
+     fn callback(&mut self, quic: &mut Quic, event: LoopEvent<'_>) -> Result<(), Error>;
+ }
+ 
++struct SharedCallback<T: ?Sized> {
++    inner: Arc<Mutex<Box<T>>>,
++}
++
++impl<T: ?Sized> SharedCallback<T> {
++    fn new(callback: Box<T>) -> Self {
++        Self {
++            inner: Arc::new(Mutex::new(callback)),
++        }
++    }
++
++    fn lock(&self) -> std::sync::MutexGuard<'_, Box<T>> {
++        match self.inner.lock() {
++            Ok(guard) => guard,
++            Err(poisoned) => poisoned.into_inner(),
++        }
++    }
++}
++
++impl<T: ?Sized> Clone for SharedCallback<T> {
++    fn clone(&self) -> Self {
++        Self {
++            inner: Arc::clone(&self.inner),
++        }
++    }
++}
++
++impl StreamDataCallback for SharedCallback<dyn StreamDataCallback> {
++    fn callback(
++        &mut self,
++        connection: &mut crate::internal::Connection,
++        stream_id: u64,
++        bytes: &[u8],
++        fin_or_event: crate::CallbackEvent,
++        stream_ctx: Option<&mut dyn core::any::Any>,
++    ) -> i32 {
++        self.lock()
++            .callback(connection, stream_id, bytes, fin_or_event, stream_ctx)
++    }
++
++    fn prepare_datagram<'buf, 'cnx, 'path>(
++        &mut self,
++        context: &mut crate::internal::DatagramBufferArgument<'buf, 'cnx, 'path>,
++        unique_path_id: u64,
++        allowed_space: usize,
++    ) -> i32 {
++        self.lock()
++            .prepare_datagram(context, unique_path_id, allowed_space)
++    }
++}
++
++impl AlpnSelect for SharedCallback<dyn AlpnSelect> {
++    fn select(&mut self, quic: &mut Quic, list: &[&[u8]]) -> Option<usize> {
++        self.lock().select(quic, list)
++    }
++}
++
++impl PacketLoopCbFn for SharedCallback<dyn PacketLoopCbFn> {
++    fn callback(&mut self, quic: &mut Quic, event: LoopEvent<'_>) -> Result<(), Error> {
++        self.lock().callback(quic, event)
++    }
++}
++
++impl CustomThreadCreateFn for SharedCallback<dyn CustomThreadCreateFn> {
++    fn create(
++        &mut self,
++        thread_fn: Box<dyn FnOnce() + Send + 'static>,
++    ) -> Result<JoinHandle<()>, OsError> {
++        self.lock().create(thread_fn)
++    }
++}
++
++impl CustomThreadDeleteFn for SharedCallback<dyn CustomThreadDeleteFn> {
++    fn delete(&mut self, thread: JoinHandle<()>) {
++        self.lock().delete(thread);
++    }
++}
++
++impl CustomThreadSetnameFn for SharedCallback<dyn CustomThreadSetnameFn> {
++    fn set_name(&mut self, thread_name: &str) {
++        self.lock().set_name(thread_name);
++    }
++}
++
+ // ---------------------------------------------------------------------------
+ // Loop options + parameters.
+ 
+@@ -446,9 +538,13 @@ pub trait CustomThreadDeleteFn {
+ /// Rust wake-up channel and thread handle carry the cross-thread
+ /// synchronization used by this translation.
+ pub struct NetworkThreadCtx {
+-    // The C `picoquic_quic_t* quic` back-pointer is represented at
+-    // the foreground entry point by passing `&mut Quic` into the
+-    // private loop helper together with this context.
++    // C `picoquic_quic_t* quic` back-pointer, stored as an address so
++    // the public context remains a plain Rust owner.  Foreground callers
++    // pass `&mut Quic` directly into `run`; background teardown uses this
++    // address to clear `quic.v_thread_ctx`, mirroring C.
++    quic_ctx: Option<usize>,
++    owned_quic: Option<Box<Quic>>,
++    thread_state: Option<Arc<NetworkThreadState>>,
+     /// Loop parameters, optionally owned (`is_param_allocated`).
+     /// Phase 1 collapses the C borrowed-or-owned discriminant into
+     /// a single `Option<Box<…>>`; the borrowed case stores `None`
+@@ -504,6 +600,9 @@ pub struct NetworkThreadCtx {
+ impl Default for NetworkThreadCtx {
+     fn default() -> Self {
+         NetworkThreadCtx {
++            quic_ctx: None,
++            owned_quic: None,
++            thread_state: None,
+             param: None,
+             loop_callback: None,
+             thread_delete_fn: None,
+@@ -523,6 +622,17 @@ impl Default for NetworkThreadCtx {
+     }
+ }
+ 
++#[derive(Debug, Copy, Clone)]
++struct NetworkThreadCtxPtr(usize);
++
++#[derive(Debug, Default)]
++struct NetworkThreadState {
++    ready: AtomicBool,
++    should_close: AtomicBool,
++    closed: AtomicBool,
++    return_code: AtomicI32,
++}
++
+ fn af_for_addr(addr: &SocketAddr) -> i32 {
+     if addr.is_ipv4() { AF_INET } else { AF_INET6 }
+ }
+@@ -572,10 +682,11 @@ fn return_code(error: &Error) -> i32 {
+ }
+ 
+ fn store_loop_result(thread_ctx: &mut NetworkThreadCtx, result: &Result<(), Error>) {
+-    thread_ctx.return_code = match result {
++    let code = match result {
+         Ok(()) => 0,
+         Err(error) => return_code(error),
+     };
++    thread_ctx.set_return_code(code);
+ }
+ 
+ fn loop_callback(
+@@ -656,6 +767,7 @@ pub fn packet_loop_open_socket<S: Socket>(
+     Ok(())
+ }
+ 
++#[cfg(not(unix))]
+ fn recv_from_sockets<S: Socket>(
+     s_ctx: &mut [SocketCtx<S>],
+     nb_sockets_available: usize,
+@@ -689,9 +801,21 @@ fn recv_from_sockets<S: Socket>(
+ /// as undefined.
+ ///
+ /// C: `picoquic/sockloop.c:picoquic_close_network_wake_up`.
+-#[allow(dead_code)]
+ fn close_network_wake_up(thread_ctx: &mut NetworkThreadCtx) {
+     if thread_ctx.wake_up_defined {
++        #[cfg(unix)]
++        {
++            for fd in &mut thread_ctx.wake_up_pipe_fd {
++                if *fd >= 0 {
++                    // SAFETY: `fd` is one end of the wake-up pipe opened by
++                    // `open_network_wake_up` and is not used after this close.
++                    unsafe {
++                        libc::close(*fd);
++                    }
++                    *fd = -1;
++                }
++            }
++        }
+         thread_ctx.wake_up_sender = None;
+         thread_ctx.wake_up_receiver = None;
+         thread_ctx.wake_up_defined = false;
+@@ -699,20 +823,36 @@ fn close_network_wake_up(thread_ctx: &mut NetworkThreadCtx) {
+ }
+ 
+ /// Open the wake-up channel for a network thread context.
+-/// Replaces the C `pipe()` call with an `mpsc` channel; both
+-/// sender and receiver are stored in `thread_ctx` so the foreground
+-/// loop (`wait_for_wake_up`) can block on the receiver.
++/// Uses the same pipe-backed wake-up path as the C POSIX loop when
++/// available; non-Unix builds retain the channel fallback.
+ /// On success sets `wake_up_defined = true`; `_ret` is left
+ /// unchanged (mirrors C where `*ret` is only written on failure).
+ ///
+ /// C: `picoquic/sockloop.c:picoquic_open_network_wake_up` (line 1705–1725).
+-#[allow(dead_code)]
+-fn open_network_wake_up(thread_ctx: &mut NetworkThreadCtx, _ret: &mut i32) {
++fn open_network_wake_up(thread_ctx: &mut NetworkThreadCtx, ret: &mut i32) {
+     thread_ctx.wake_up_defined = false;
+-    let (sender, receiver) = std::sync::mpsc::channel();
+-    thread_ctx.wake_up_sender = Some(sender);
+-    thread_ctx.wake_up_receiver = Some(receiver);
+-    thread_ctx.wake_up_defined = true;
++    thread_ctx.wake_up_pipe_fd = [-1, -1];
++
++    #[cfg(unix)]
++    {
++        let mut pipe_fd = [-1; 2];
++        // SAFETY: `pipe_fd` points to two writable `c_int` slots that libc
++        // initializes on success.
++        if unsafe { libc::pipe(pipe_fd.as_mut_ptr()) } != 0 {
++            *ret = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
++        } else {
++            thread_ctx.wake_up_pipe_fd = pipe_fd;
++            thread_ctx.wake_up_defined = true;
++        }
++    }
++
++    #[cfg(not(unix))]
++    {
++        let (sender, receiver) = std::sync::mpsc::channel();
++        thread_ctx.wake_up_sender = Some(sender);
++        thread_ctx.wake_up_receiver = Some(receiver);
++        thread_ctx.wake_up_defined = true;
++    }
+ }
+ 
+ /// Populate a `pollfd` array for the poll-based packet loop.
+@@ -720,11 +860,6 @@ fn open_network_wake_up(thread_ctx: &mut NetworkThreadCtx, _ret: &mut i32) {
+ /// subsequent slots hold the open socket fds; unused trailing slots are set
+ /// to `-1` so `poll(2)` ignores them.
+ ///
+-/// In the Rust translation the internal loop uses `mpsc` channels rather
+-/// than `poll(2)`, so `thread_ctx.wake_up_pipe_fd[0]` is always `-1`.
+-/// Callers that drive their own `poll(2)` loop should use a real pipe
+-/// and set `wake_up_pipe_fd[0]` accordingly.
+-///
+ /// C: `picoquic/sockloop.c:picoquic_packet_loop_set_fds` (line 884–905,
+ /// `#elif defined(PICOQUIC_WITH_POLL)` branch).
+ #[cfg(unix)]
+@@ -736,7 +871,7 @@ pub fn packet_loop_set_fds<S: crate::socks::Socket>(
+ ) {
+     for entry in poll_list.iter_mut() {
+         *entry = libc::pollfd {
+-            fd: 0,
++            fd: -1,
+             events: 0,
+             revents: 0,
+         };
+@@ -896,6 +1031,7 @@ pub fn packet_loop_poll<S: Socket>(
+     Ok(None)
+ }
+ 
++#[cfg(not(unix))]
+ fn wait_for_wake_up(thread_ctx: &mut NetworkThreadCtx, delta_t: i64) -> bool {
+     let Some(receiver) = thread_ctx.wake_up_receiver.as_ref() else {
+         return false;
+@@ -975,11 +1111,17 @@ fn run_packet_loop<S: Socket>(
+     let mut gso_enabled = !param.do_not_use_gso;
+     let mut sc_duration = SystemCallDuration::default();
+     let mut result = Ok(());
++    #[cfg(unix)]
++    let mut poll_list = [libc::pollfd {
++        fd: -1,
++        events: 0,
++        revents: 0,
++    }; PACKET_LOOP_SOCKETS_MAX + 1];
+ 
+-    thread_ctx.thread_is_ready = true;
+-    thread_ctx.thread_is_closed = false;
++    thread_ctx.set_thread_ready(true);
++    thread_ctx.set_thread_closed(false);
+ 
+-    while result.is_ok() && !thread_ctx.thread_should_close {
++    while result.is_ok() && !thread_ctx.should_close() {
+         let mut delta_t = 0;
+         let current_time = Instant::from_ticks(crate::current_time());
+         if !loop_immediate {
+@@ -1008,12 +1150,66 @@ fn run_packet_loop<S: Socket>(
+         loop_immediate = false;
+ 
+         let previous_time = current_time;
+-        let is_wake_up_event = wait_for_wake_up(thread_ctx, delta_t);
+-        let recv_result = if is_wake_up_event {
+-            Ok(None)
+-        } else {
+-            recv_from_sockets(&mut s_ctx, nb_sockets_available, &mut recv_buffer)
++
++        #[cfg(unix)]
++        let (is_wake_up_event, recv_info) = {
++            let mut is_wake_up_event = false;
++            packet_loop_set_fds(&mut poll_list, &s_ctx, nb_sockets_available, thread_ctx);
++            let poll_result = packet_loop_poll(
++                &mut s_ctx,
++                nb_sockets_available,
++                &mut poll_list,
++                &mut recv_buffer,
++                delta_t,
++                &mut is_wake_up_event,
++                thread_ctx,
++            );
++            let recv_info = match poll_result {
++                Ok(Some(info)) => Some((
++                    info.socket_rank,
++                    RecvInfo {
++                        addr_from: info.addr_from,
++                        addr_dest: info.addr_dest,
++                        dest_if: info.dest_if,
++                        received_ecn: info.received_ecn,
++                        bytes_recv: info.bytes_recv,
++                    },
++                )),
++                Ok(None) => None,
++                Err(error) => {
++                    result = if thread_ctx.should_close() {
++                        Ok(())
++                    } else {
++                        Err(error)
++                    };
++                    break;
++                }
++            };
++            (is_wake_up_event, recv_info)
+         };
++
++        #[cfg(not(unix))]
++        let (is_wake_up_event, recv_info) = {
++            let is_wake_up_event = wait_for_wake_up(thread_ctx, delta_t);
++            let recv_result = if is_wake_up_event {
++                Ok(None)
++            } else {
++                recv_from_sockets(&mut s_ctx, nb_sockets_available, &mut recv_buffer)
++            };
++            let recv_info = match recv_result {
++                Ok(info) => info,
++                Err(error) => {
++                    result = if thread_ctx.should_close() {
++                        Ok(())
++                    } else {
++                        Err(error)
++                    };
++                    break;
++                }
++            };
++            (is_wake_up_event, recv_info)
++        };
++
+         let current_time = Instant::from_ticks(crate::current_time());
+ 
+         if options.do_system_call_duration
+@@ -1029,24 +1225,14 @@ fn run_packet_loop<S: Socket>(
+             break;
+         }
+ 
+-        let recv_info = match recv_result {
+-            Ok(info) => info,
+-            Err(error) => {
+-                result = if thread_ctx.thread_should_close {
+-                    Ok(())
+-                } else {
+-                    Err(error)
+-                };
++        if is_wake_up_event {
++            if let Err(error) =
++                loop_callback(&mut thread_ctx.loop_callback, quic, LoopEvent::WakeUp)
++            {
++                result = Err(error);
+                 break;
+             }
+-        };
+-
+-        if is_wake_up_event
+-            && let Err(error) =
+-                loop_callback(&mut thread_ctx.loop_callback, quic, LoopEvent::WakeUp)
+-        {
+-            result = Err(error);
+-            break;
++            continue;
+         }
+ 
+         let mut simulate_nat = false;
+@@ -1233,8 +1419,8 @@ fn run_packet_loop<S: Socket>(
+         }
+     }
+ 
+-    thread_ctx.thread_is_ready = false;
+-    thread_ctx.thread_is_closed = true;
++    thread_ctx.set_thread_ready(false);
++    thread_ctx.set_thread_closed(true);
+ 
+     for ctx in s_ctx.iter_mut().take(nb_sockets) {
+         ctx.close();
+@@ -1245,7 +1431,7 @@ fn run_packet_loop<S: Socket>(
+     {
+         result = Ok(());
+     }
+-    if thread_ctx.thread_should_close && result.is_err() {
++    if thread_ctx.should_close() && result.is_err() {
+         result = Ok(());
+     }
+     store_loop_result(thread_ctx, &result);
+@@ -1270,12 +1456,8 @@ impl Quic {
+         let mut thread_ctx = NetworkThreadCtx::default();
+         thread_ctx.param = Some(Box::new(*param));
+         thread_ctx.loop_callback = loop_callback;
+-        let mut owned_param = thread_ctx.param.take().ok_or(Error::Memory)?;
+-        let result = run_packet_loop::<crate::socks_socket2::Socket2Udp>(
+-            self,
+-            &mut owned_param,
+-            &mut thread_ctx,
+-        );
++        let result = thread_ctx.run(self);
++        let owned_param = thread_ctx.param.take().ok_or(Error::Memory)?;
+         *param = *owned_param;
+         thread_ctx.param = Some(owned_param);
+         result
+@@ -1311,40 +1493,80 @@ impl Quic {
+ // NetworkThreadCtx: background-thread management and the v3 entry point.
+ 
+ impl NetworkThreadCtx {
++    fn set_thread_ready(&mut self, value: bool) {
++        if let Some(state) = self.thread_state.as_ref() {
++            state.ready.store(value, Ordering::Release);
++        } else {
++            self.thread_is_ready = value;
++        }
++    }
++
++    fn set_thread_closed(&mut self, value: bool) {
++        if let Some(state) = self.thread_state.as_ref() {
++            state.closed.store(value, Ordering::Release);
++        } else {
++            self.thread_is_closed = value;
++        }
++    }
++
++    fn set_return_code(&mut self, value: i32) {
++        if let Some(state) = self.thread_state.as_ref() {
++            state.return_code.store(value, Ordering::Release);
++        } else {
++            self.return_code = value;
++        }
++    }
++
++    fn should_close(&self) -> bool {
++        self.thread_should_close
++            || self
++                .thread_state
++                .as_ref()
++                .is_some_and(|state| state.should_close.load(Ordering::Acquire))
++    }
++
++    fn refresh_thread_state(&mut self) {
++        if let Some(state) = self.thread_state.as_ref() {
++            self.thread_is_ready = state.ready.load(Ordering::Acquire);
++            self.thread_should_close = state.should_close.load(Ordering::Acquire);
++            self.thread_is_closed = state.closed.load(Ordering::Acquire);
++            self.return_code = state.return_code.load(Ordering::Acquire);
++        }
++    }
++
+     /// Run the packet loop using `self` as the fully-populated thread
+     /// context.  C: `void* packet_loop_v3(void* v_ctx)`.
+     ///
+     /// The C entry returns its `void*` exit code only to satisfy the
+-    /// thread-function prototype; callers read the result back from
+-    /// `return_code`.
+-    pub fn run(&mut self) {
++    /// thread-function prototype; callers read the integer status back
++    /// from `return_code`.  Rust also returns the rich [`Error`] for
++    /// foreground callers.
++    pub fn run(&mut self, quic: &mut Quic) -> Result<(), Error> {
+         if let Some(thread_name) = self.thread_name.as_deref()
+             && let Some(setname) = self.thread_setname_fn.as_mut()
+         {
+             setname.set_name(thread_name);
+         }
+-        self.thread_is_ready = true;
+-        self.thread_is_closed = false;
+-        self.return_code = 0;
+ 
+-        if self.wake_up_defined {
+-            loop {
+-                if self.thread_should_close {
+-                    break;
+-                }
+-                let Some(receiver) = self.wake_up_receiver.as_ref() else {
+-                    break;
+-                };
+-                match receiver.recv_timeout(std::time::Duration::from_millis(1)) {
+-                    Ok(()) => {}
+-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+-                }
+-            }
+-        }
++        let Some(mut param) = self.param.take() else {
++            let result = Err(Error::InvalidArgument);
++            self.set_thread_ready(false);
++            self.set_thread_closed(true);
++            store_loop_result(self, &result);
++            return result;
++        };
+ 
+-        self.thread_is_ready = false;
+-        self.thread_is_closed = true;
++        let result = run_packet_loop::<crate::socks_socket2::Socket2Udp>(quic, &mut param, self);
++        self.param = Some(param);
++
++        if self.thread_is_closed {
++            result
++        } else {
++            self.set_thread_ready(false);
++            self.set_thread_closed(true);
++            store_loop_result(self, &result);
++            result
++        }
+     }
+ 
+     /// Spawn a packet loop on its own OS thread using the platform
+@@ -1377,40 +1599,152 @@ impl NetworkThreadCtx {
+         thread_name: Option<&str>,
+         loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+     ) -> Result<Box<Self>, OsError> {
+-        let (sender, receiver) = std::sync::mpsc::channel();
++        let quic_ptr = quic as *mut Quic as usize;
++        Self::spawn_custom_from_ptr(
++            quic_ptr,
++            None,
++            param,
++            thread_create_fn,
++            thread_delete_fn,
++            thread_setname_fn,
++            thread_name,
++            loop_callback,
++        )
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    fn spawn_custom_owned(
++        mut quic: Box<Quic>,
++        param: LoopParam,
++        thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
++        thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
++        thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
++        thread_name: Option<&str>,
++        loop_callback: Option<Box<dyn PacketLoopCbFn>>,
++    ) -> Result<Box<Self>, OsError> {
++        let quic_ptr = (&mut *quic) as *mut Quic as usize;
++        Self::spawn_custom_from_ptr(
++            quic_ptr,
++            Some(quic),
++            param,
++            thread_create_fn,
++            thread_delete_fn,
++            thread_setname_fn,
++            thread_name,
++            loop_callback,
++        )
++    }
++
++    #[allow(clippy::too_many_arguments)]
++    fn spawn_custom_from_ptr(
++        quic_ptr: usize,
++        owned_quic: Option<Box<Quic>>,
++        param: LoopParam,
++        thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
++        thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
++        thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
++        thread_name: Option<&str>,
++        loop_callback: Option<Box<dyn PacketLoopCbFn>>,
++    ) -> Result<Box<Self>, OsError> {
++        let thread_state = Arc::new(NetworkThreadState::default());
+         let mut thread_ctx = Box::new(NetworkThreadCtx::default());
++        let thread_ctx_ptr = (&mut *thread_ctx) as *mut NetworkThreadCtx as usize;
++        // SAFETY: `quic_ptr` is produced either from the caller's live
++        // `&mut Quic` or from the boxed `Quic` moved into this context below.
++        // In both cases the pointee remains valid until `Drop` joins the
++        // spawned packet-loop thread and clears `v_thread_ctx`.
++        unsafe {
++            (*(quic_ptr as *mut Quic)).v_thread_ctx =
++                Some(Box::new(NetworkThreadCtxPtr(thread_ctx_ptr)));
++        }
++        thread_ctx.quic_ctx = Some(quic_ptr);
++        thread_ctx.owned_quic = owned_quic;
++        thread_ctx.thread_state = Some(thread_state.clone());
+         thread_ctx.param = Some(Box::new(param));
+         thread_ctx.loop_callback = loop_callback;
+         thread_ctx.thread_delete_fn = thread_delete_fn;
+         thread_ctx.thread_setname_fn = thread_setname_fn;
+         thread_ctx.thread_name = thread_name.map(str::to_owned);
+-        thread_ctx.wake_up_pipe_fd = [-1, -1];
+-        thread_ctx.wake_up_sender = Some(sender);
+-        thread_ctx.wake_up_receiver = None;
+-        thread_ctx.wake_up_defined = true;
++        let mut ret = 0;
++        open_network_wake_up(&mut thread_ctx, &mut ret);
++        if !thread_ctx.wake_up_defined {
++            thread_ctx.quic_ctx = None;
++            // SAFETY: same pointer validity as the installation above.
++            unsafe {
++                (*(quic_ptr as *mut Quic)).v_thread_ctx = None;
++            }
++            return Err(OsError(ret));
++        }
++        #[cfg(not(unix))]
++        let receiver = {
++            let Some(receiver) = thread_ctx.wake_up_receiver.take() else {
++                thread_ctx.quic_ctx = None;
++                // SAFETY: same pointer validity as the installation above.
++                unsafe {
++                    (*(quic_ptr as *mut Quic)).v_thread_ctx = None;
++                }
++                return Err(OsError(-1));
++            };
++            receiver
++        };
+         thread_ctx.is_threaded = true;
+ 
+-        let name_for_thread = thread_ctx.thread_name.clone();
+         let thread_fn: Box<dyn FnOnce() + Send + 'static> = Box::new(move || {
+-            if let Some(name) = name_for_thread {
+-                let _ = name;
++            let thread_ctx = thread_ctx_ptr as *mut NetworkThreadCtx;
++            let quic = quic_ptr as *mut Quic;
++            // SAFETY: `spawn_custom` allocates `thread_ctx` in a `Box` before
++            // spawning and returns that same box to the caller, so the allocation
++            // address is stable until `Drop` joins the thread.  The C API this
++            // translates requires the application to serialize non-callback QUIC
++            // access while the packet-loop thread is running; the Rust API keeps
++            // that contract because the translated `Quic` and callback graph are
++            // not `Send` in v1.
++            unsafe {
++                let thread_ctx = &mut *thread_ctx;
++                #[cfg(not(unix))]
++                {
++                    thread_ctx.wake_up_receiver = Some(receiver);
++                }
++                let _ = thread_ctx.run(&mut *quic);
++                #[cfg(not(unix))]
++                {
++                    thread_ctx.wake_up_receiver = None;
++                }
+             }
+-            while receiver.recv().is_ok() {}
+         });
+ 
+-        let handle = if let Some(mut create_fn) = thread_create_fn {
+-            create_fn.create(thread_fn)?
++        let handle_result = if let Some(mut create_fn) = thread_create_fn {
++            create_fn.create(thread_fn)
+         } else if let Some(name) = thread_ctx.thread_name.clone() {
+             std::thread::Builder::new()
+                 .name(name)
+                 .spawn(thread_fn)
+-                .map_err(|error| OsError(error.raw_os_error().unwrap_or(-1)))?
++                .map_err(|error| OsError(error.raw_os_error().unwrap_or(-1)))
+         } else {
+-            internal_thread_create(thread_fn)?
++            internal_thread_create(thread_fn)
++        };
++        let handle = match handle_result {
++            Ok(handle) => handle,
++            Err(error) => {
++                // SAFETY: same pointer validity as the installation above.
++                unsafe {
++                    (*(quic_ptr as *mut Quic)).v_thread_ctx = None;
++                }
++                thread_ctx.is_threaded = false;
++                thread_ctx.quic_ctx = None;
++                return Err(error);
++            }
+         };
+         thread_ctx.pthread = Some(handle);
+-        thread_ctx.thread_is_ready = true;
+-        let _ = quic.time();
++        for _ in 0..2000 {
++            if thread_state.ready.load(Ordering::Acquire)
++                || thread_state.closed.load(Ordering::Acquire)
++            {
++                break;
++            }
++            std::thread::sleep(std::time::Duration::from_millis(1));
++        }
++        thread_ctx.refresh_thread_state();
+         Ok(thread_ctx)
+     }
+ 
+@@ -1424,18 +1758,43 @@ impl NetworkThreadCtx {
+         if !self.wake_up_defined {
+             return Err(OsError(-1));
+         }
+-        let Some(sender) = self.wake_up_sender.as_ref() else {
+-            return Err(OsError(-1));
+-        };
+-        sender.send(()).map_err(|_| OsError(32))
++        #[cfg(unix)]
++        {
++            if self.wake_up_pipe_fd[1] < 0 {
++                return Err(OsError(-1));
++            }
++            let byte = [0u8; 1];
++            // SAFETY: the write end is owned by this context while
++            // `wake_up_defined` is true, and `byte` is a valid one-byte buffer.
++            let written =
++                unsafe { libc::write(self.wake_up_pipe_fd[1], byte.as_ptr().cast(), byte.len()) };
++            if written == 1 {
++                Ok(())
++            } else if written == 0 {
++                Err(OsError(32))
++            } else {
++                Err(OsError(
++                    std::io::Error::last_os_error().raw_os_error().unwrap_or(-1),
++                ))
++            }
++        }
++        #[cfg(not(unix))]
++        {
++            let Some(sender) = self.wake_up_sender.as_ref() else {
++                return Err(OsError(-1));
++            };
++            sender.send(()).map_err(|_| OsError(32))
++        }
+     }
+ }
+ 
+ impl Drop for NetworkThreadCtx {
+     fn drop(&mut self) {
+         self.thread_should_close = true;
+-        self.wake_up_defined = false;
+-        self.wake_up_sender = None;
++        if let Some(state) = self.thread_state.as_ref() {
++            state.should_close.store(true, Ordering::Release);
++        }
++        let _ = self.wake_up();
+         if let Some(handle) = self.pthread.take() {
+             if let Some(delete_fn) = self.thread_delete_fn.as_mut() {
+                 delete_fn.delete(handle);
+@@ -1443,7 +1802,25 @@ impl Drop for NetworkThreadCtx {
+                 internal_thread_delete(handle);
+             }
+         }
++        close_network_wake_up(self);
++        self.refresh_thread_state();
++        if let Some(quic) = self.owned_quic.as_deref_mut() {
++            quic.v_thread_ctx = None;
++            self.quic_ctx = None;
++        } else if let Some(quic_ptr) = self.quic_ctx.take() {
++            // SAFETY: `quic_ctx` is installed by `spawn_custom` from the live
++            // `&mut Quic` passed by the caller.  This mirrors C teardown, which
++            // requires deleting the network thread before freeing its QUIC
++            // context.
++            unsafe {
++                let quic = &mut *(quic_ptr as *mut Quic);
++                quic.v_thread_ctx = None;
++            }
++        }
+         self.thread_is_closed = true;
++        if let Some(state) = self.thread_state.as_ref() {
++            state.closed.store(true, Ordering::Release);
++        }
+     }
+ }
+ 
+@@ -1464,7 +1841,9 @@ impl Drop for NetworkThreadCtx {
+ pub fn internal_thread_create(
+     thread_fn: Box<dyn FnOnce() + Send + 'static>,
+ ) -> Result<JoinHandle<()>, OsError> {
+-    Ok(std::thread::spawn(thread_fn))
++    std::thread::Builder::new()
++        .spawn(thread_fn)
++        .map_err(|error| OsError(error.raw_os_error().unwrap_or(-1)))
+ }
+ 
+ /// Default implementation of [`CustomThreadDeleteFn`].
+@@ -1495,7 +1874,19 @@ impl Quic {
+     /// C: `struct st_network_thread_ctx_t* get_thread_ctx(picoquic_quic_t*)`.
+     pub fn thread_ctx(&mut self) -> Option<&mut NetworkThreadCtx> {
+         let b = self.v_thread_ctx.as_mut()?;
+-        b.as_mut().downcast_mut::<NetworkThreadCtx>()
++        if b.is::<NetworkThreadCtx>() {
++            return b.as_mut().downcast_mut::<NetworkThreadCtx>();
++        }
++        let ctx_ptr = b.as_mut().downcast_mut::<NetworkThreadCtxPtr>()?.0;
++        if ctx_ptr == 0 {
++            None
++        } else {
++            // SAFETY: `NetworkThreadCtxPtr` is only installed by
++            // `spawn_custom`, which points it at the returned boxed context.
++            // The caller must follow the same lifetime rule as C: do not ask
++            // the QUIC context for its thread context after deleting it.
++            unsafe { Some(&mut *(ctx_ptr as *mut NetworkThreadCtx)) }
++        }
+     }
+ 
+     /// Build a server-side QUIC context with the extra hooks
+@@ -1551,12 +1942,12 @@ impl Config {
+     pub fn start_server_threads(
+         &mut self,
+         current_time: Instant,
+-        mut alpn_select_fn: Option<Box<dyn AlpnSelect>>,
+-        mut default_callback: Option<Box<dyn StreamDataCallback>>,
+-        mut loop_callback: Option<Box<dyn PacketLoopCbFn>>,
+-        mut thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
+-        mut thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
+-        mut thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
++        alpn_select_fn: Option<Box<dyn AlpnSelect>>,
++        default_callback: Option<Box<dyn StreamDataCallback>>,
++        loop_callback: Option<Box<dyn PacketLoopCbFn>>,
++        thread_create_fn: Option<Box<dyn CustomThreadCreateFn>>,
++        thread_delete_fn: Option<Box<dyn CustomThreadDeleteFn>>,
++        thread_setname_fn: Option<Box<dyn CustomThreadSetnameFn>>,
+         thread_ctxs: &mut [Option<Box<NetworkThreadCtx>>],
+     ) -> Result<usize, Error> {
+         let nb_threads = if self.nb_threads > thread_ctxs.len() as i32 {
+@@ -1567,9 +1958,8 @@ impl Config {
+             self.nb_threads as usize
+         };
+ 
+-        if self.ticket_encryption_key.is_none() {
+-            let mut key = vec![0u8; 16];
+-            if let Some(mut quic) = Quic::new(
++        if self.ticket_encryption_key.is_none()
++            && let Some(mut quic) = Quic::new(
+                 1,
+                 None,
+                 None,
+@@ -1581,19 +1971,37 @@ impl Config {
+                 current_time,
+                 None,
+                 None,
+-            ) {
+-                rand_core::RngCore::fill_bytes(&mut *quic.rng, &mut key);
+-            }
++            )
++        {
++            let mut key = vec![0u8; 16];
++            rand_core::RngCore::fill_bytes(&mut *quic.rng, &mut key);
+             self.ticket_encryption_key = Some(key);
+         }
+ 
++        let alpn_select_fn: Option<SharedCallback<dyn AlpnSelect>> =
++            alpn_select_fn.map(SharedCallback::new);
++        let default_callback: Option<SharedCallback<dyn StreamDataCallback>> =
++            default_callback.map(SharedCallback::new);
++        let loop_callback: Option<SharedCallback<dyn PacketLoopCbFn>> =
++            loop_callback.map(SharedCallback::new);
++        let thread_create_fn: Option<SharedCallback<dyn CustomThreadCreateFn>> =
++            thread_create_fn.map(SharedCallback::new);
++        let thread_delete_fn: Option<SharedCallback<dyn CustomThreadDeleteFn>> =
++            thread_delete_fn.map(SharedCallback::new);
++        let thread_setname_fn: Option<SharedCallback<dyn CustomThreadSetnameFn>> =
++            thread_setname_fn.map(SharedCallback::new);
++
+         let mut created = 0usize;
+         for slot in thread_ctxs.iter_mut().take(nb_threads) {
+             let qserver = Quic::create_server(
+                 self,
+                 current_time,
+-                default_callback.take(),
+-                alpn_select_fn.take(),
++                default_callback
++                    .as_ref()
++                    .map(|callback| Box::new((*callback).clone()) as Box<dyn StreamDataCallback>),
++                alpn_select_fn
++                    .as_ref()
++                    .map(|callback| Box::new((*callback).clone()) as Box<dyn AlpnSelect>),
+             )?;
+ 
+             let local_port = if self.local_port != 0 {
+@@ -1612,15 +2020,22 @@ impl Config {
+                 ..LoopParam::default()
+             };
+ 
+-            let mut qserver = qserver;
+-            let thread_ctx = NetworkThreadCtx::spawn_custom(
+-                &mut qserver,
++            let thread_ctx = NetworkThreadCtx::spawn_custom_owned(
++                qserver,
+                 param,
+-                thread_create_fn.take(),
+-                thread_delete_fn.take(),
+-                thread_setname_fn.take(),
++                thread_create_fn
++                    .as_ref()
++                    .map(|callback| Box::new((*callback).clone()) as Box<dyn CustomThreadCreateFn>),
++                thread_delete_fn
++                    .as_ref()
++                    .map(|callback| Box::new((*callback).clone()) as Box<dyn CustomThreadDeleteFn>),
++                thread_setname_fn.as_ref().map(|callback| {
++                    Box::new((*callback).clone()) as Box<dyn CustomThreadSetnameFn>
++                }),
+                 None,
+-                loop_callback.take(),
++                loop_callback
++                    .as_ref()
++                    .map(|callback| Box::new((*callback).clone()) as Box<dyn PacketLoopCbFn>),
+             )
+             .map_err(|_| Error::Generic)?;
+             *slot = Some(thread_ctx);
+diff --git a/rs/fq/src/performance_log.rs b/rs/fq/src/performance_log.rs
+index e321ac20..fd08d017 100644
+--- a/rs/fq/src/performance_log.rs
++++ b/rs/fq/src/performance_log.rs
+@@ -11,6 +11,7 @@ use std::fs::OpenOptions;
+ use std::io::Write;
+ use std::path::{Path, PathBuf};
+ 
++use crate::internal::ConnectionToken;
+ use crate::internal::PerformanceLog;
+ use crate::utils::print_connection_id_hexa;
+ use crate::{Connection, Error, Quic};
+@@ -285,16 +286,22 @@ impl PerflogCtx {
+ impl PerformanceLog for PerflogCtx {
+     /// C: `picoquic_perflog`.  Records the connection's metrics, and
+     /// flushes to disk when this is the last connection on the
+-    /// context (or on context teardown).
+-    fn emit(&mut self, quic: &Quic, connection: &Connection, should_delete: bool) -> i32 {
+-        self.record(connection);
+-        // C check: cnx_list == cnx && cnx_last == cnx — i.e. the
+-        // connection being closed is the only one on this context.
+-        // In Rust we count entries in the connection arena; teardown
+-        // (`should_delete`) is also a flush trigger.
+-        let last_one = quic.connections.len() <= 1;
+-        if (last_one || should_delete) && self.save().is_err() {
+-            return -1;
++    /// context.  The final `cnx == NULL, should_delete == 1` call only
++    /// releases context state; it does not force a save in the C code.
++    fn emit(
++        &mut self,
++        connection: Option<&Connection>,
++        should_delete: bool,
++        is_last_connection: bool,
++    ) -> i32 {
++        if let Some(connection) = connection {
++            self.record(connection);
++            if is_last_connection && self.save().is_err() {
++                return -1;
++            }
++        }
++        if should_delete {
++            self.items.clear();
+         }
+         0
+     }
+@@ -329,6 +336,34 @@ fn file_set_header(perflog_file_name: &Path) {
+ }
+ 
+ impl Quic {
++    /// Route the installed performance-log callback and model the
++    /// `should_delete` cleanup side effects.
++    ///
++    /// C: `picoquic_perflog`.
++    pub(crate) fn perflog(
++        &mut self,
++        connection: Option<ConnectionToken>,
++        should_delete: bool,
++    ) -> i32 {
++        let Some(mut perflog_fn) = self.perflog_fn.take() else {
++            return 0;
++        };
++
++        let is_last_connection = connection.is_some() && self.connections.len() <= 1;
++        let ret = perflog_fn.emit(
++            connection.and_then(|token| self.connections.get(token)),
++            should_delete,
++            is_last_connection,
++        );
++
++        if should_delete {
++            self.v_perflog_ctx = None;
++        } else {
++            self.perflog_fn = Some(perflog_fn);
++        }
++        ret
++    }
++
+     /// Attach a performance log to this QUIC context, writing CSV
+     /// rows to `perflog_file_name` whenever the connection list
+     /// drains.  If the file is empty (or missing), a CSV header row
+@@ -363,5 +398,14 @@ impl Quic {
+     }
+ }
+ 
++impl Drop for Quic {
++    fn drop(&mut self) {
++        while let Some(token) = { self.connections.iter().find_map(|cnx| cnx.own_token) } {
++            self.delete_connection(token);
++        }
++        let _ = self.perflog(None, true);
++    }
++}
++
+ #[cfg(test)]
+ mod test {}
+diff --git a/rs/fq/src/socks_socket2.rs b/rs/fq/src/socks_socket2.rs
+index 6413052e..451d82ee 100644
+--- a/rs/fq/src/socks_socket2.rs
++++ b/rs/fq/src/socks_socket2.rs
+@@ -91,9 +91,19 @@ impl Socket for Socket2Udp {
+     }
+ 
+     fn recv(&mut self, buffer: &mut [u8]) -> Result<RecvInfo, Error> {
+-        use std::io::Read;
+-        let bytes_recv = self.0.read(buffer).map_err(|_| Error::Generic)?;
++        let uninit_buffer = unsafe {
++            // SAFETY: `recv_from` writes at most `buffer.len()` initialized
++            // bytes into the same allocation, and `u8` has no invalid bit
++            // patterns. The initialized prefix remains readable through
++            // `buffer` after the call returns.
++            &mut *(buffer as *mut [u8] as *mut [core::mem::MaybeUninit<u8>])
++        };
++        let (bytes_recv, addr_from) = self
++            .0
++            .recv_from(uninit_buffer)
++            .map_err(|_| Error::Generic)?;
+         Ok(RecvInfo {
++            addr_from: addr_from.as_socket(),
+             bytes_recv,
+             ..RecvInfo::default()
+         })
+diff --git a/rs/fq/src/splay.rs b/rs/fq/src/splay.rs
+index e7368bce..f8b984e5 100644
+--- a/rs/fq/src/splay.rs
++++ b/rs/fq/src/splay.rs
+@@ -7,7 +7,7 @@
+ //!
+ //! ## API shape
+ //!
+-//! `SplayTree<K, V>` is a slotmap-backed ordered map.  `K: Ord`
++//! `SplayTree<K, V>` is a slotmap-backed ordered tree.  `K: Ord`
+ //! provides comparison; `V` is the stored value (typically a
+ //! token into another arena).  Callers handle [`SplayToken`]s
+ //! returned by `insert`/`find`; the parent/left/right linkage
+@@ -408,16 +408,11 @@ impl<K: Ord, V> SplayTree<K, V> {
+     // Public API
+ 
+     /// Insert `(key, value)`, splay it to the root, and return its
+-    /// token.  If `key` was already present, the previous value is
+-    /// replaced and returned in the `Ok` payload.
++    /// token.  Matching C `picosplay_insert`, equal keys are preserved
++    /// as distinct nodes and insertion descends right on equality.
+     ///
+     /// Returns [`Error::Memory`] on slot-vector allocation failure.
+     pub fn insert(&mut self, key: K, value: V) -> Result<(SplayToken, Option<V>), Error> {
+-        if let Some(tok) = self.find(&key) {
+-            let old = core::mem::replace(self.value_of_mut(tok.idx), value);
+-            return Ok((tok, Some(old)));
+-        }
+-
+         if self.root.is_none() {
+             let idx = self.alloc_slot(key, value)?;
+             self.root = Some(idx);
+@@ -455,6 +450,19 @@ impl<K: Ord, V> SplayTree<K, V> {
+         Ok((self.token_of(idx), None))
+     }
+ 
++    /// Insert or replace `(key, value)` as a map-style operation.
++    ///
++    /// This is intentionally separate from [`SplayTree::insert`], which
++    /// mirrors C `picosplay_insert` and preserves duplicate keys.
++    pub fn upsert(&mut self, key: K, value: V) -> Result<(SplayToken, Option<V>), Error> {
++        if let Some(tok) = self.find(&key) {
++            let old = core::mem::replace(self.value_of_mut(tok.idx), value);
++            return Ok((tok, Some(old)));
++        }
++
++        self.insert(key, value)
++    }
++
+     /// Look up `key`, splaying the matching node to the root.
+     /// Returns its token, or `None` on miss.  C: `picosplay_find`.
+     pub fn find(&mut self, key: &K) -> Option<SplayToken> {
+@@ -672,4 +680,43 @@ impl<K: Ord, V> Default for SplayTree<K, V> {
+ }
+ 
+ #[cfg(test)]
+-mod test {}
++mod test {
++    use super::SplayTree;
++
++    #[test]
++    fn insert_preserves_duplicate_keys() {
++        let mut tree = SplayTree::new();
++
++        let (first, old) = tree.insert(7, "first").unwrap();
++        assert!(old.is_none());
++        let (second, old) = tree.insert(7, "second").unwrap();
++        assert!(old.is_none());
++
++        assert_ne!(first, second);
++        assert_eq!(tree.len(), 2);
++        assert_eq!(tree.get(first), Some(&"first"));
++        assert_eq!(tree.get(second), Some(&"second"));
++
++        let found = tree.find(&7).unwrap();
++        assert_eq!(found, second);
++
++        assert_eq!(tree.remove_by_key(&7), Some("second"));
++        assert_eq!(tree.len(), 1);
++        let found = tree.find(&7).unwrap();
++        assert_eq!(found, first);
++    }
++
++    #[test]
++    fn upsert_replaces_existing_key() {
++        let mut tree = SplayTree::new();
++
++        let (first, old) = tree.upsert(3, "old").unwrap();
++        assert!(old.is_none());
++        let (second, old) = tree.upsert(3, "new").unwrap();
++
++        assert_eq!(first, second);
++        assert_eq!(old, Some("old"));
++        assert_eq!(tree.len(), 1);
++        assert_eq!(tree.get(second), Some(&"new"));
++    }
++}

@@ -124,15 +124,21 @@ fn getter() {
         let _ = test_ctx.cnx_client().set_local_addr(&zero);
     }
 
-    // queue_misc_frame: the Rust slice API cannot express the C SIZE_MAX
-    // invalid-length case without an explicit test hook. The valid queue,
-    // purge, delete-last, and singleton cases still mirror the C test.
+    // queue_misc_frame: exercise the C pointer+length shape, including the
+    // invalid SIZE_MAX length case.
     {
         let mf = [crate::frames::FrameType::MaxStreamsBidir as u8, 0x41, 0];
         assert!(
             test_ctx
                 .cnx_client()
-                .queue_misc_frame(&mf, false, PacketContext::Initial)
+                .queue_misc_frame_with_length(&mf, usize::MAX, false, PacketContext::Initial)
+                .is_err(),
+            "SIZE_MAX queue_misc_frame length should fail"
+        );
+        assert!(
+            test_ctx
+                .cnx_client()
+                .queue_misc_frame_with_length(&mf, mf.len(), false, PacketContext::Initial)
                 .is_ok(),
             "queue_misc_frame should succeed"
         );
@@ -146,13 +152,13 @@ fn getter() {
         assert!(
             test_ctx
                 .cnx_client()
-                .queue_misc_frame(&mf, false, PacketContext::Initial)
+                .queue_misc_frame_with_length(&mf, mf.len(), false, PacketContext::Initial)
                 .is_ok()
         );
         assert!(
             test_ctx
                 .cnx_client()
-                .queue_misc_frame(&mf, false, PacketContext::Initial)
+                .queue_misc_frame_with_length(&mf, mf.len(), false, PacketContext::Initial)
                 .is_ok()
         );
         test_ctx.cnx_client().delete_last_misc_frame();
@@ -307,7 +313,7 @@ fn getter() {
     register_all_congestion_control_algorithms();
     {
         let alg_cases = [
-            ("reno", Some(("reno", 1))),
+            ("reno", Some(("newreno", 1))),
             ("cubic", Some(("cubic", 2))),
             ("dcubic", Some(("dcubic", 3))),
             ("fast", Some(("fast", 4))),

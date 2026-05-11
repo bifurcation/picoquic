@@ -8,9 +8,9 @@ entries before approving Phase 4B.
 
 ## Summary
 
-* `implemented`: 1340
+* `implemented`: 1410
 * `required_missing`: 0
-* `expected_omission`: 267
+* `expected_omission`: 197
 * `blocked`: 0
 
 Total in-scope C functions: 1607
@@ -33,203 +33,75 @@ Total in-scope C functions: 1607
 
 | C function | C span | Rust span | Action | Proposed destination | Reason |
 | --- | --- | --- | --- | --- | --- |
-| `picoquic_bbr_delete` | `picoquic/bbr.c:616-623` | - | `expected_omission` | `rs/fq/src/bbr.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
-
 | `picoquic_bbr1_delete` | `picoquic/bbr1.c:481-488` | - | `expected_omission` | `rs/fq/src/bbr1.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
 
-| `c4_delete` | `picoquic/c4.c:1111-1118` | - | `expected_omission` | `rs/fq/src/c4.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
-
-| `cubic_delete` | `picoquic/cubic.c:551-558` | - | `expected_omission` | `rs/fq/src/cubic.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
-
 | `ech_dispose_opener_callback` | `picoquic/ech.c:269-278` | - | `expected_omission` | `rs/fq/src/ech.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
-
-| `picoquic_is_stream_acked` | `picoquic/frames.c:117-132` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
 
 | `picoquic_flow_control_check_stream_offset` | `picoquic/frames.c:204-228` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
 
 | `picoquic_skip_reset_stream_frame` | `picoquic/frames.c:236-250` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_decode_reset_stream_frame` | `picoquic/frames.c:373-394` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_reset_stream_frame` | `picoquic/frames.c:396-425` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_check_reset_stream_needs_repeat` | `picoquic/frames.c:427-449` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_skip_reset_stream_at_frame` | `picoquic/frames.c:459-478` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_reset_stream_at_frame` | `picoquic/frames.c:507-526` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_reset_stream_at_frame` | `picoquic/frames.c:528-558` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_check_reset_stream_at_needs_repeat` | `picoquic/frames.c:560-587` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_skip_new_connection_id_frame` | `picoquic/frames.c:622-636` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_parse_new_connection_id_frame` | `picoquic/frames.c:638-659` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_new_connection_id_frame` | `picoquic/frames.c:661-727` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_new_cid_frame` | `picoquic/frames.c:729-771` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_check_new_cid_needs_repeat` | `picoquic/frames.c:773-810` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_skip_retire_connection_id_frame` | `picoquic/frames.c:864-877` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_parse_retire_connection_id_frame` | `picoquic/frames.c:879-898` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_retire_connection_id_frame` | `picoquic/frames.c:900-932` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_check_retire_connection_id_needs_repeat` | `picoquic/frames.c:938-970` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_retire_connection_id_frame` | `picoquic/frames.c:972-1007` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_skip_new_token_frame` | `picoquic/frames.c:1045-1048` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_decode_new_token_frame` | `picoquic/frames.c:1050-1081` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_stop_sending_frame` | `picoquic/frames.c:1115-1155` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_skip_stop_sending_frame` | `picoquic/frames.c:1157-1163` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_check_stop_sending_needs_repeat` | `picoquic/frames.c:1166-1192` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_stream_data_chunk_callback` | `picoquic/frames.c:1262-1289` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
-
-| `picoquic_stream_data_callback` | `picoquic/frames.c:1291-1306` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
 
 | `add_chunk_node` | `picoquic/frames.c:1308-1343` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
 
-| `picoquic_stream_network_input` | `picoquic/frames.c:1407-1517` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
-
-| `picoquic_is_last_stream_frame` | `picoquic/frames.c:1519-1525` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
-
 | `picoquic_queue_data_repeat_delete` | `picoquic/frames.c:2174-2186` | - | `expected_omission` | `rs/fq/src/internal.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
 
-| `picoquic_parse_crypto_hs_frame` | `picoquic/frames.c:2526-2538` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_crypto_stream_from_ptype` | `picoquic/frames.c:2576-2598` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
-
-| `picoquic_process_ack_of_crypto_frame` | `picoquic/frames.c:2600-2624` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_check_crypto_frame_needs_repeat` | `picoquic/frames.c:2626-2652` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_check_spurious_retransmission` | `picoquic/frames.c:2757-2840` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_dequeue_old_retransmitted_packets` | `picoquic/frames.c:2842-2863` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
 
-| `process_decoded_packet_data` | `picoquic/frames.c:3174-3230` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
-
 | `picoquic_find_acked_packet` | `picoquic/frames.c:3232-3251` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
 
 | `picoquic_process_ack_of_ack_body` | `picoquic/frames.c:3253-3350` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_process_ack_of_path_ack_frame` | `picoquic/frames.c:3372-3410` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_process_ack_range` | `picoquic/frames.c:3852-3918` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame/stream dispatch helper likely folded into Rust connection or frame processing |
-
-| `picoquic_decode_ack_frame` | `picoquic/frames.c:3920-4071` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_connection_close_frame` | `picoquic/frames.c:4395-4424` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_decode_application_close_frame` | `picoquic/frames.c:4447-4473` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_decode_max_data_frame` | `picoquic/frames.c:4503-4515` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_max_data_frame` | `picoquic/frames.c:4517-4539` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_max_stream_data_frame` | `picoquic/frames.c:4568-4600` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_max_stream_data_frame` | `picoquic/frames.c:4602-4629` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_max_streams_frame` | `picoquic/frames.c:4724-4761` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_max_streams_frame` | `picoquic/frames.c:4763-4791` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_check_max_streams_frame_needs_repeat` | `picoquic/frames.c:4793-4821` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_path_challenge_frame` | `picoquic/frames.c:4902-4987` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_path_response_frame` | `picoquic/frames.c:5004-5063` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_blocked_frame` | `picoquic/frames.c:5106-5113` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_stream_blocked_frame` | `picoquic/frames.c:5116-5131` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_streams_blocked_frame` | `picoquic/frames.c:5134-5150` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_skip_0len_frame` | `picoquic/frames.c:5153-5160` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_handshake_done_frame` | `picoquic/frames.c:5162-5189` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_skip_datagram_frame` | `picoquic/frames.c:5204-5227` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_decode_datagram_frame` | `picoquic/frames.c:5247-5286` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_skip_ack_frequency_frame` | `picoquic/frames.c:5526-5537` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_decode_ack_frequency_frame` | `picoquic/frames.c:5552-5592` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_skip_immediate_ack_frame` | `picoquic/frames.c:5642-5648` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_immediate_ack_frame` | `picoquic/frames.c:5650-5667` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_skip_time_stamp_frame` | `picoquic/frames.c:5680-5687` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_parse_time_stamp_frame` | `picoquic/frames.c:5689-5694` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_decode_time_stamp_frame` | `picoquic/frames.c:5696-5717` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_parse_path_abandon_frame` | `picoquic/frames.c:5752-5759` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_decode_path_abandon_frame` | `picoquic/frames.c:5761-5828` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_parse_path_available_or_backup_frame` | `picoquic/frames.c:5921-5928` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_path_available_or_backup_frame` | `picoquic/frames.c:5930-5970` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_path_available_or_backup_frame_need_repeat` | `picoquic/frames.c:5972-5997` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_skip_max_path_id_frame` | `picoquic/frames.c:6028-6033` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_parse_max_path_id_frame` | `picoquic/frames.c:6035-6040` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_decode_max_path_id_frame` | `picoquic/frames.c:6042-6066` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_max_path_id_frame_needs_repeat` | `picoquic/frames.c:6068-6088` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_max_path_id_frame` | `picoquic/frames.c:6091-6112` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_skip_paths_blocked_frame` | `picoquic/frames.c:6144-6149` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_parse_paths_blocked_frame` | `picoquic/frames.c:6151-6156` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_paths_blocked_frame` | `picoquic/frames.c:6158-6176` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_paths_blocked_frame_needs_repeat` | `picoquic/frames.c:6178-6198` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_paths_blocked_frame` | `picoquic/frames.c:6201-6222` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_skip_path_cid_blocked_frame` | `picoquic/frames.c:6278-6285` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_parse_path_cid_blocked_frame` | `picoquic/frames.c:6287-6294` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
-| `picoquic_decode_path_cid_blocked_frame` | `picoquic/frames.c:6296-6315` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_path_cid_blocked_frame_needs_repeat` | `picoquic/frames.c:6317-6353` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_path_cid_blocked_frame` | `picoquic/frames.c:6355-6380` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
 | `picoquic_skip_observed_address_frame` | `picoquic/frames.c:6467-6477` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_observed_address_frame` | `picoquic/frames.c:6494-6535` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_process_ack_of_observed_address_frame` | `picoquic/frames.c:6537-6553` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_skip_bdp_frame` | `picoquic/frames.c:6559-6568` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_parse_bdp_frame` | `picoquic/frames.c:6570-6587` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
-
-| `picoquic_decode_bdp_frame` | `picoquic/frames.c:6589-6635` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
 | `picoquic_skip_stream_frame` | `picoquic/frames.c:6992-7008` | - | `expected_omission` | `rs/fq/src/internal.rs` | C frame-specific helper likely folded into Rust frame dispatch; verify before adding a direct item |
 
@@ -251,11 +123,11 @@ Total in-scope C functions: 1607
 
 | `textlog_time` | `picoquic/logger.c:41-50` | - | `expected_omission` | `rs/fq/src/logger.rs` | C textlog detail helper folded into Rust logger/textlog traits and methods |
 
+| `textlog_prefix_initial_cid64` | `picoquic/logger.c:52-57` | - | `expected_omission` | `rs/fq/src/logger.rs` | C textlog detail helper folded into Rust logger/textlog traits and methods |
+
 | `textlog_address` | `picoquic/logger.c:59-88` | - | `expected_omission` | `rs/fq/src/logger.rs` | C textlog detail helper folded into Rust logger/textlog traits and methods |
 
 | `textlog_packet_address` | `picoquic/logger.c:90-117` | - | `expected_omission` | `rs/fq/src/logger.rs` | C textlog detail helper folded into Rust logger/textlog traits and methods |
-
-| `textlog_ptype_name` | `picoquic/logger.c:193-224` | - | `expected_omission` | `rs/fq/src/logger.rs` | C textlog detail helper folded into Rust logger/textlog traits and methods |
 
 | `textlog_frame_names` | `picoquic/logger.c:226-363` | - | `expected_omission` | `rs/fq/src/logger.rs` | C textlog detail helper folded into Rust logger/textlog traits and methods |
 
@@ -411,8 +283,6 @@ Total in-scope C functions: 1607
 
 | `picoquic_issued_ticket_key_to_item` | `picoquic/quicctx.c:419-424` | - | `expected_omission` | `rs/fq/src/lib.rs` | C collection/index callback helper; Rust collection ownership and keying should cover this without a direct function |
 
-| `picoquic_delete_issued_ticket` | `picoquic/quicctx.c:461-483` | - | `expected_omission` | `rs/fq/src/lib.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
-
 | `picoquic_registered_token_compare` | `picoquic/quicctx.c:528-549` | - | `expected_omission` | `rs/fq/src/lib.rs` | C collection/index callback helper; Rust collection ownership and keying should cover this without a direct function |
 
 | `picoquic_registered_token_value` | `picoquic/quicctx.c:557-560` | - | `expected_omission` | `rs/fq/src/lib.rs` | C collection/index callback helper; Rust collection ownership and keying should cover this without a direct function |
@@ -447,8 +317,6 @@ Total in-scope C functions: 1607
 
 | `picoquic_stream_node_delete` | `picoquic/quicctx.c:3448-3455` | - | `expected_omission` | `rs/fq/src/lib.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
 
-| `picoquic_delete_local_cnxid_listed` | `picoquic/quicctx.c:3868-3925` | - | `expected_omission` | `rs/fq/src/lib.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
-
 | `picoquic_sack_node_value` | `picoquic/sacks.c:35-40` | - | `expected_omission` | `rs/fq/src/internal.rs` | C collection/index callback helper; Rust collection ownership and keying should cover this without a direct function |
 
 | `picoquic_sack_item_value` | `picoquic/sacks.c:42-45` | - | `expected_omission` | `rs/fq/src/internal.rs` | C collection/index callback helper; Rust collection ownership and keying should cover this without a direct function |
@@ -458,8 +326,6 @@ Total in-scope C functions: 1607
 | `picoquic_sack_node_create` | `picoquic/sacks.c:55-58` | - | `expected_omission` | `rs/fq/src/internal.rs` | C collection/index callback helper; Rust collection ownership and keying should cover this without a direct function |
 
 | `picoquic_sack_node_delete` | `picoquic/sacks.c:60-66` | - | `expected_omission` | `rs/fq/src/internal.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
-
-| `picoquic_sack_delete_item` | `picoquic/sacks.c:109-119` | - | `expected_omission` | `rs/fq/src/internal.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
 
 | `picoquic_sack_list_free` | `picoquic/sacks.c:449-457` | - | `expected_omission` | `rs/fq/src/internal.rs` | name suggests C allocation/lifetime cleanup; verify Rust ownership/Drop covers it |
 
@@ -477,15 +343,9 @@ Total in-scope C functions: 1607
 
 | `picoquic_register_verify_certificate_fn` | `picoquic/tls_api.c:339-346` | - | `expected_omission` | `rs/fq/src/tls_api.rs` | C TLS/provider callback or registry hook folded into Rust TLS provider traits and state |
 
-| `picoquic_register_explain_crypto_error_fn` | `picoquic/tls_api.c:348-353` | - | `expected_omission` | `rs/fq/src/tls_api.rs` | C TLS/provider callback or registry hook folded into Rust TLS provider traits and state |
-
 | `picoquic_register_keyex_from_key_file_fn` | `picoquic/tls_api.c:360-365` | - | `expected_omission` | `rs/fq/src/tls_api.rs` | C TLS/provider callback or registry hook folded into Rust TLS provider traits and state |
 
-| `picoquic_set_cipher_suite_list` | `picoquic/tls_api.c:367-389` | - | `expected_omission` | `rs/fq/src/tls_api.rs` | C TLS/provider callback or registry hook folded into Rust TLS provider traits and state |
-
 | `picoquic_set_cipher_suite_in_ctx` | `picoquic/tls_api.c:391-425` | - | `expected_omission` | `rs/fq/src/tls_api.rs` | C TLS/provider callback or registry hook folded into Rust TLS provider traits and state |
-
-| `picoquic_set_key_exchange_in_ctx` | `picoquic/tls_api.c:549-571` | - | `expected_omission` | `rs/fq/src/tls_api.rs` | C TLS/provider callback or registry hook folded into Rust TLS provider traits and state |
 
 | `picoquic_set_random_provider_in_ctx` | `picoquic/tls_api.c:594-598` | - | `expected_omission` | `rs/fq/src/tls_api.rs` | C TLS/provider callback or registry hook folded into Rust TLS provider traits and state |
 

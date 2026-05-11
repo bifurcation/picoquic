@@ -1,0 +1,2262 @@
+diff --git a/rs/fq/src/internal.rs b/rs/fq/src/internal.rs
+index 0e32b931..2ecf0eea 100644
+--- a/rs/fq/src/internal.rs
++++ b/rs/fq/src/internal.rs
+@@ -1921,6 +1921,17 @@ pub struct Quic {
+     /// Server-side TLS configuration (set when this `Quic` is
+     /// being used to accept inbound connections).
+     pub tls_server_config: Option<Box<dyn crate::tls::DynServerConfig>>,
++    /// DER-encoded server certificate chain installed on the master
++    /// TLS context.  C: `ptls_context_t::certificates`.
++    pub tls_certificate_chain: Vec<Vec<u8>>,
++    /// Cipher suites currently installed in the master TLS context.
++    /// Mirrors `ptls_context_t::cipher_suites`: empty means no suite
++    /// is available after a failed restriction attempt.
++    pub tls_cipher_suites: Vec<u16>,
++    /// Key-exchange groups currently installed in the master TLS context.
++    /// Mirrors `ptls_context_t::key_exchanges`; failed restriction attempts
++    /// leave the previous list installed.
++    pub tls_key_exchanges: Vec<u16>,
+     /// Application-supplied TLS callbacks (ALPN selection, ticket
+     /// store, certificate verification).  Replaces the C-style
+     /// `register_*` global function-pointer registry.
+@@ -2129,6 +2140,12 @@ pub struct Quic {
+     pub rtt_update_delta: Duration,
+     pub pacing_rate_update_delta: u64,
+ 
++    /// Open SSLKEYLOGFILE sink, if key logging is installed on
++    /// this context.  C stores this behind `tls_master_ctx->log_event`;
++    /// it is deliberately separate from `f_log`, which is the text
++    /// packet-log sink.
++    pub key_log: Option<Box<dyn Write>>,
++
+     /// Open text-log sink, if a textlog is installed on this
+     /// context.  C: `FILE* F_log` plus the `should_close_log` flag
+     /// for whether the C side owned the handle.  In Rust, the
+@@ -3108,13 +3125,27 @@ impl Quic {
+         // Build a null path/tuple for the initial path.
+         let default_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
+         let peer_addr = addr_to.copied().unwrap_or(default_addr);
++        let initial_local_connection_id = if self.local_connection_id_length == 0 {
++            ConnectionId::default()
++        } else {
++            let mut selected = None;
++            for _ in 0..32 {
++                let mut generated = ConnectionId::default();
++                self.create_local_cnx_id(&mut generated, initial_cnx_id);
++                if self.connection_by_id.lookup(&generated).is_none() {
++                    selected = Some(generated);
++                    break;
++                }
++            }
++            selected.ok_or(crate::Error::Generic)?
++        };
+         let mut local_connection_ids = Arena::new();
+         let initial_lcid_token = local_connection_ids.insert(LocalConnectionId {
+             connection_by_id_membership: None,
+             path_id: 0,
+             sequence: 0,
+             create_time: start_time,
+-            connection_id: initial_cnx_id,
++            connection_id: initial_local_connection_id,
+             is_acked: false,
+         })?;
+         let initial_tuple = Tuple {
+@@ -3802,12 +3833,13 @@ impl Quic {
+         self.insert_cnx_in_list(token);
+ 
+         {
+-            let cid = self
+-                .connections
+-                .get(token)
+-                .map(|c| c.initial_connection_id)
+-                .unwrap_or(initial_cnx_id);
+-            if !cid.is_empty() {
++            if self.local_connection_id_length > 0 {
++                let cid = self
++                    .connections
++                    .get(token)
++                    .and_then(|c| c.local_connection_ids.get(initial_lcid_token))
++                    .map(|l_cid| l_cid.connection_id)
++                    .unwrap_or(initial_local_connection_id);
+                 if self.connection_by_id.lookup(&cid).is_some() {
+                     self.delete_connection(token);
+                     return Err(crate::Error::Generic);
+diff --git a/rs/fq/src/lib.rs b/rs/fq/src/lib.rs
+index 376ab2ab..fe8eb288 100644
+--- a/rs/fq/src/lib.rs
++++ b/rs/fq/src/lib.rs
+@@ -389,9 +389,27 @@ impl ConnectionId {
+         self.id_len == 0
+     }
+ 
+-    /// Hash with a 16-byte seed.  C: `connection_id_hash`.
+-    pub fn hash_with_seed(&self, seed: &[u8; 16]) -> u64 {
+-        crate::siphash::siphash(self.as_bytes(), seed)
++    /// Hash connection IDs for picohash tables.  C:
++    /// `picoquic_connection_id_hash`.
++    pub fn hash_with_seed(&self, _seed: &[u8; 16]) -> u64 {
++        let bytes = self.as_bytes();
++        let mut val64 = 0u64;
++        let mut i = 0usize;
++
++        while i < bytes.len() && i < 8 {
++            val64 = (val64 << 8).wrapping_add(bytes[i] as u64);
++            i += 1;
++        }
++
++        while i < bytes.len() {
++            let top = val64 >> 56;
++            val64 = (val64 << 8)
++                .wrapping_add(bytes[i] as u64)
++                .wrapping_add(top.wrapping_mul(0x10001));
++            i += 1;
++        }
++
++        val64
+     }
+ 
+     /// Fold the first up-to-8 bytes of the id into a `u64`.
+@@ -427,7 +445,7 @@ impl ConnectionId {
+ // Full bodies live in `crate::internal`; pull them in for use within
+ // this module's signatures (no re-export — callers reach them as
+ // `crate::internal::*`).
+-use crate::internal::{Connection, ConnectionToken, Path, Quic};
++use crate::internal::{Connection, ConnectionToken, DEFAULT_CRYPTO_EPOCH_LENGTH, Path, Quic};
+ 
+ // ---------------------------------------------------------------------------
+ // Application callback events.
+@@ -474,18 +492,62 @@ pub enum CallbackEvent {
+ // ---------------------------------------------------------------------------
+ // Time management.
+ 
+-/// Wall-clock microseconds since the Unix epoch.
++/// Monotonic microseconds from a stable process-local epoch.
+ ///
+-/// The C body reads the OS clock; in Rust this requires the `std`
+-/// feature (`std::time::SystemTime`).  The `cfg`-gated split lands
+-/// when the crate gains its `std` feature and the rest of the
+-/// `no_std + alloc` plumbing.
++/// C: `picoquic_current_time` uses `CLOCK_MONOTONIC` on the selected
++/// Unix target.  Rust's `std::time::Instant` exposes monotonic elapsed
++/// time without exposing the OS clock epoch, so the first call becomes
++/// this process's fixed epoch.
+ pub fn current_time() -> u64 {
+-    use std::time::{SystemTime, UNIX_EPOCH};
+-    SystemTime::now()
+-        .duration_since(UNIX_EPOCH)
+-        .map(|d| d.as_micros() as u64)
+-        .unwrap_or(0)
++    static CURRENT_TIME_BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
++
++    let elapsed = CURRENT_TIME_BASE
++        .get_or_init(std::time::Instant::now)
++        .elapsed()
++        .as_micros();
++    u64::try_from(elapsed).unwrap_or(u64::MAX)
++}
++
++/// Result of [`picoquic_select`].
++///
++/// C: `picoquic_select` returns the same receive metadata and timestamp as
++/// `picoquic_select_ex`, but keeps the selected socket rank local.
++#[derive(Debug, Copy, Clone)]
++pub struct PicoquicSelectInfo {
++    pub addr_from: Option<core::net::SocketAddr>,
++    pub addr_dest: Option<core::net::SocketAddr>,
++    pub dest_if: i32,
++    pub received_ecn: u8,
++    pub bytes_recv: usize,
++    pub current_time: Instant,
++}
++
++impl From<crate::socks::SelectInfo> for PicoquicSelectInfo {
++    fn from(info: crate::socks::SelectInfo) -> Self {
++        Self {
++            addr_from: info.addr_from,
++            addr_dest: info.addr_dest,
++            dest_if: info.dest_if,
++            received_ecn: info.received_ecn,
++            bytes_recv: info.bytes_recv,
++            current_time: info.current_time,
++        }
++    }
++}
++
++/// Socket-select wrapper.  C: `picoquic_select`.
++///
++/// Delegates to the translated `picoquic_select_ex` behavior in
++/// [`crate::socks::select`] and deliberately discards the socket rank, matching
++/// the C wrapper's local `socket_rank` variable.
++pub fn picoquic_select<S: crate::socks::Socket>(
++    sockets: &mut [S],
++    buffer: &mut [u8],
++    delta_t: i64,
++) -> Result<PicoquicSelectInfo, Error> {
++    let select_ex_info = crate::socks::select(sockets, buffer, delta_t)?;
++    let _socket_rank = select_ex_info.socket_rank;
++    Ok(select_ex_info.into())
+ }
+ 
+ impl Quic {
+@@ -1009,8 +1071,8 @@ pub const fn mtu_overhead(addr: &SocketAddr) -> u32 {
+ /// C: `is_handshake_error`.  Returns `true` when the given
+ /// error code is a TLS handshake error.
+ pub fn is_handshake_error(error_code: u64) -> bool {
+-    // TLS handshake errors occupy the range 0x0100..=0x01ff
+-    (error_code >> 8) == 1
++    (error_code & 0xff00) == errors::transport_crypto_error(0) as u64
++        || error_code == TransportError::TlsHandshakeFailed as u64
+ }
+ 
+ // `error_name` lives on [`crate::errors::InternalError::name`].
+@@ -1093,7 +1155,7 @@ impl Quic {
+     /// `1` → log every packet, `0` → log only the first
+     /// [`LOG_PACKET_MAX_SEQUENCE`] packets per connection.
+     pub fn set_log_level(&mut self, log_level: i32) {
+-        self.use_long_log = log_level != 0;
++        self.use_long_log = log_level > 0;
+         for connection in self.connections.iter_mut() {
+             connection.use_long_log = self.use_long_log;
+         }
+@@ -1122,7 +1184,13 @@ impl Quic {
+     /// Configure packet-number randomisation: `0` (no
+     /// randomisation), `1` (Initial PNs only), `2` (all PN spaces).
+     pub fn set_random_initial(&mut self, random_initial: i32) {
+-        self.random_initial = random_initial as u8;
++        self.random_initial = if random_initial > 1 {
++            2
++        } else if random_initial > 0 {
++            1
++        } else {
++            0
++        };
+     }
+ 
+     /// Toggle packet-train mode (groups outbound packets into
+@@ -1139,22 +1207,107 @@ impl Quic {
+ 
+     /// Set (or clear, with `None`) the keylog destination file.
+     pub fn set_key_log_file(&mut self, keylog_filename: Option<&str>) {
+-        // Open or clear the SSL keylog file.  When a path is given, open it
+-        // for appending; errors are silently ignored (matching the C behaviour
+-        // of falling back to no logging rather than crashing).
++        // C closes the previous FILE before trying the new fopen.  If
++        // reopening fails, the log-event callback remains installed but has
++        // no active file; model that as a present context with `key_log = None`.
+         use std::fs::OpenOptions;
+-        match keylog_filename {
+-            Some(path) => {
+-                if let Ok(f) = OpenOptions::new().create(true).append(true).open(path) {
+-                    self.f_log = Some(Box::new(f));
++
++        self.key_log = None;
++        if let Some(path) = keylog_filename
++            && let Ok(f) = OpenOptions::new().create(true).append(true).open(path)
++        {
++            self.key_log = Some(Box::new(f));
++        }
++    }
++
++    pub(crate) fn tls_key_log_label(secret_is_server: bool, epoch: usize) -> Option<&'static str> {
++        match (secret_is_server, epoch) {
++            (false, 1) => Some("CLIENT_EARLY_TRAFFIC_SECRET"),
++            (false, 2) => Some("CLIENT_HANDSHAKE_TRAFFIC_SECRET"),
++            (false, 3) => Some("CLIENT_TRAFFIC_SECRET_0"),
++            (true, 2) => Some("SERVER_HANDSHAKE_TRAFFIC_SECRET"),
++            (true, 3) => Some("SERVER_TRAFFIC_SECRET_0"),
++            _ => None,
++        }
++    }
++}
++
++fn write_hex(writer: &mut dyn std::io::Write, bytes: &[u8]) -> std::io::Result<()> {
++    const HEX: &[u8; 16] = b"0123456789abcdef";
++
++    for byte in bytes {
++        writer.write_all(&[HEX[(byte >> 4) as usize], HEX[(byte & 0x0f) as usize]])?;
++    }
++    Ok(())
++}
++
++fn write_ssl_key_log_line(
++    writer: &mut dyn std::io::Write,
++    label: &str,
++    client_random: &[u8; 32],
++    secret: &[u8],
++) -> std::io::Result<()> {
++    writer.write_all(label.as_bytes())?;
++    writer.write_all(b" ")?;
++    write_hex(writer, client_random)?;
++    writer.write_all(b" ")?;
++    write_hex(writer, secret)?;
++    writer.write_all(b"\n")?;
++    writer.flush()
++}
++
++impl Connection {
++    pub(crate) fn consume_tls_key_log_events(&mut self, session: &mut dyn crate::tls::Session) {
++        let events = session.take_key_log_events();
++        if events.is_empty() {
++            return;
++        }
++
++        let quic_ptr = self.quic_ptr;
++        for event in events {
++            if event.epoch == 3 {
++                let secret_len = event.secret.len().min(self.app_secret_enc.len());
++                if secret_len > 0 {
++                    self.app_secret_len = secret_len;
++                    if event.is_enc {
++                        self.app_secret_enc[..secret_len]
++                            .copy_from_slice(&event.secret[..secret_len]);
++                    } else {
++                        self.app_secret_dec[..secret_len]
++                            .copy_from_slice(&event.secret[..secret_len]);
++                    }
+                 }
+             }
+-            None => {
+-                self.f_log = None;
++
++            let Some(label) =
++                Quic::tls_key_log_label(self.client_mode != event.is_enc, event.epoch)
++            else {
++                continue;
++            };
++
++            if quic_ptr.is_null() {
++                continue;
++            }
++
++            // SAFETY: `quic_ptr` is the owning context back-pointer installed
++            // when the connection is inserted in `Quic::connections`.  This
++            // method only mutates `key_log`, a context field disjoint from the
++            // connection arena slot borrowed as `self`, and v1 assumes
++            // serialized access to a `Quic` context.
++            let key_log = unsafe { &mut (*quic_ptr).key_log };
++            if let Some(writer) = key_log.as_mut() {
++                let _ = write_ssl_key_log_line(
++                    writer.as_mut(),
++                    label,
++                    &event.client_random,
++                    &event.secret,
++                );
+             }
+         }
+     }
++}
+ 
++impl Quic {
+     /// Read `SSLKEYLOGFILE` from the process environment (gated
+     /// behind the build-time `WITHOUT_SSLKEYLOG` opt-out and the
+     /// per-context `is_sslkeylog_enabled` flag) and install it via
+@@ -1318,9 +1471,75 @@ pub(crate) fn create_random_cnx_id(quic: &mut Quic, id_length: u8) -> Connection
+     cnx_id
+ }
+ 
++#[cfg(feature = "sys-openssl")]
++struct OpenSslRootCertificateCallbacks {
++    registration: crate::sys::openssl::CertificateVerifierRegistration,
++    fallback: Option<Box<dyn crate::tls::TlsCallbacks>>,
++}
++
++#[cfg(feature = "sys-openssl")]
++impl OpenSslRootCertificateCallbacks {
++    fn verify_with_store(&self, certs: &[&[u8]]) -> Result<(), Error> {
++        let Some((&leaf_der, intermediates)) = certs.split_first() else {
++            return Err(Error::Generic);
++        };
++        let leaf = openssl::x509::X509::from_der(leaf_der).map_err(|_| Error::Generic)?;
++        let mut chain = openssl::stack::Stack::new().map_err(|_| Error::Generic)?;
++        for &cert_der in intermediates {
++            let cert = openssl::x509::X509::from_der(cert_der).map_err(|_| Error::Generic)?;
++            chain.push(cert).map_err(|_| Error::Generic)?;
++        }
++        let mut store_ctx = openssl::x509::X509StoreContext::new().map_err(|_| Error::Generic)?;
++        let verified = store_ctx
++            .init(&self.registration.verifier.store, &leaf, &chain, |ctx| {
++                ctx.verify_cert()
++            })
++            .map_err(|_| Error::Generic)?;
++        if verified {
++            Ok(())
++        } else {
++            Err(Error::Generic)
++        }
++    }
++}
++
++#[cfg(feature = "sys-openssl")]
++impl crate::tls::TlsCallbacks for OpenSslRootCertificateCallbacks {
++    fn select_alpn(&mut self, list: &[&[u8]]) -> Option<usize> {
++        self.fallback
++            .as_mut()
++            .and_then(|callbacks| callbacks.select_alpn(list))
++    }
++
++    fn lookup_ticket(&mut self, sni: &str, alpn: &str) -> Option<Vec<u8>> {
++        self.fallback
++            .as_mut()
++            .and_then(|callbacks| callbacks.lookup_ticket(sni, alpn))
++    }
++
++    fn store_ticket(&mut self, sni: &str, alpn: &str, ticket: &[u8]) {
++        if let Some(callbacks) = self.fallback.as_mut() {
++            callbacks.store_ticket(sni, alpn, ticket);
++        }
++    }
++
++    fn verify_certificate(&mut self, certs: &[&[u8]]) -> Result<(), Error> {
++        match self.verify_with_store(certs) {
++            Ok(()) => Ok(()),
++            Err(err) => {
++                if let Some(callbacks) = self.fallback.as_mut() {
++                    callbacks.verify_certificate(certs)
++                } else {
++                    Err(err)
++                }
++            }
++        }
++    }
++}
++
+ impl Quic {
+     /// Build a QUIC context with the supplied certificate paths,
+-    /// default callbacks, and reset seed.
++    /// default callbacks, and optional reset seed.
+     ///
+     /// Pointer-shape choices, derived from `quic/quicctx.c:634` and
+     /// `quic/sockloop.c:2009`:
+@@ -1331,8 +1550,9 @@ impl Quic {
+     ///   one `Option<Box<dyn StreamDataCallback>>`.
+     /// * `connection_id_callback` + `connection_id_callback_data` collapse to
+     ///   `Option<Box<dyn ConnectionIdCallback>>`.
+-    /// * `reset_seed[16]` is `[u8; RESET_SECRET_SIZE]` taken by
+-    ///   value (the C body deep-copies it into the context).
++    /// * `reset_seed[16]` is nullable in C.  Callers can pass
++    ///   `Some(seed)` to deep-copy an explicit seed, or `None` to let
++    ///   the context generate one.
+     /// * `ticket_encryption_key` + `ticket_encryption_key_length`
+     ///   collapse to a borrowed `Option<&[u8]>`.
+     /// * The C `p_simulated_time: uint64_t*` parameter is dropped
+@@ -1351,7 +1571,7 @@ impl Quic {
+         default_alpn: Option<&str>,
+         default_callback: Option<Box<dyn StreamDataCallback>>,
+         cnx_id_callback: Option<Box<dyn ConnectionIdCallback>>,
+-        reset_seed: [u8; RESET_SECRET_SIZE],
++        reset_seed: impl Into<Option<[u8; RESET_SECRET_SIZE]>>,
+         current_time: Instant,
+         ticket_file_name: Option<&str>,
+         ticket_encryption_key: Option<&[u8]>,
+@@ -1403,6 +1623,14 @@ impl Quic {
+         impl rand_core::CryptoRng for SystemRandom {}
+ 
+         let mut rng = SystemRandom;
++        let reset_seed = match reset_seed.into() {
++            Some(reset_seed) => reset_seed,
++            None => {
++                let mut reset_seed = [0u8; RESET_SECRET_SIZE];
++                rand_core::RngCore::fill_bytes(&mut rng, &mut reset_seed);
++                reset_seed
++            }
++        };
+         let mut retry_seed = [0u8; crate::internal::RETRY_SECRET_SIZE];
+         rand_core::RngCore::fill_bytes(&mut rng, &mut retry_seed);
+         let mut hash_seed = [0u8; 16];
+@@ -1413,6 +1641,9 @@ impl Quic {
+         let mut quic = Box::new(internal::Quic {
+             tls_client_config: None,
+             tls_server_config: None,
++            tls_certificate_chain: Vec::new(),
++            tls_cipher_suites: Vec::new(),
++            tls_key_exchanges: Vec::new(),
+             tls_callbacks: None,
+             default_callback_fn: default_callback,
+             default_callback_ctx: None,
+@@ -1514,6 +1745,7 @@ impl Quic {
+             max_data_limit: 0,
+             rtt_update_delta: crate::Duration::from_ticks(0),
+             pacing_rate_update_delta: 0,
++            key_log: None,
+             f_log: None,
+             binlog_dir: None,
+             qlog_dir: None,
+@@ -1551,39 +1783,57 @@ impl Quic {
+     // implement.
+ 
+     /// Toggle low-memory mode (smaller buffers, more aggressive
+-    /// reclaim).
++    /// reclaim), then refresh the default TLS cipher-suite selection.
+     pub fn set_low_memory_mode(&mut self, low_memory_mode: bool) -> Result<(), Error> {
+         self.use_low_memory = low_memory_mode;
+-        Ok(())
++        self.set_cipher_suite(0)
+     }
+ 
+     /// Configure the server cookie / retry-token mode.
+     pub fn set_cookie_mode(&mut self, cookie_mode: i32) {
+-        self.check_token = (cookie_mode & 1) != 0;
+-        self.force_check_token = (cookie_mode & 2) != 0;
+-        self.provide_token = (cookie_mode & 4) != 0;
++        self.force_check_token = (cookie_mode & 1) != 0;
++        self.provide_token = (cookie_mode & 2) != 0;
++        self.check_token = self.force_check_token
++            || self.max_half_open_before_retry <= self.current_number_half_open;
+     }
+ 
+     /// Restrict TLS cipher-suite selection to the given IANA ID.
+     pub fn set_cipher_suite(&mut self, cipher_suite_id: u16) -> Result<(), Error> {
+-        match cipher_suite_id {
+-            0 | AES_128_GCM_SHA256 | AES_256_GCM_SHA384 | CHACHA20_POLY1305_SHA256 => Ok(()),
+-            _ => Err(Error::InvalidArgument),
++        crate::tls_api::tls_api_init();
++        self.tls_cipher_suites = crate::tls_api::picoquic_cipher_suite_list(
++            i32::from(cipher_suite_id),
++            self.use_low_memory,
++        );
++        if self.tls_cipher_suites.is_empty() {
++            Err(Error::InvalidArgument)
++        } else {
++            Ok(())
+         }
+     }
+ 
+     /// Restrict TLS key-exchange selection to the given IANA group.
+     pub fn set_key_exchange(&mut self, key_exchange_id: u16) -> Result<(), Error> {
+-        match key_exchange_id {
+-            0 | GROUP_SECP256R1 => Ok(()),
+-            _ => Err(Error::InvalidArgument),
+-        }
++        crate::tls_api::tls_api_init();
++        let key_exchanges = crate::tls_api::picoquic_key_exchange_list(i32::from(key_exchange_id))?;
++        self.tls_key_exchanges = key_exchanges;
++        Ok(())
+     }
+ 
+     /// Replace the default transport parameters used for new
+-    /// connections.
+-    pub fn set_default_tp(&mut self, tp: &TransportParameters) -> Result<(), Error> {
+-        self.default_tp = tp.clone();
++    /// connections, or reset them to picoquic's initialized defaults
++    /// when `tp` is `None`.
++    ///
++    /// C: `picoquic_set_default_tp` — copies a non-NULL TP pointer and
++    /// calls `picoquic_init_transport_parameters` for NULL.
++    pub fn set_default_tp<'a>(
++        &mut self,
++        tp: impl Into<Option<&'a TransportParameters>>,
++    ) -> Result<(), Error> {
++        if let Some(tp) = tp.into() {
++            self.default_tp = tp.clone();
++        } else {
++            crate::internal::init_transport_parameters(&mut self.default_tp);
++        }
+         Ok(())
+     }
+ 
+@@ -1636,22 +1886,49 @@ impl Quic {
+     /// Install the TLS certificate chain.  The context takes
+     /// ownership of `certs` (each entry is one DER-encoded
+     /// certificate).
+-    pub fn set_tls_certificate_chain(&mut self, _certs: Vec<Vec<u8>>) {
+-        // Delegates to TLS backend configuration; complex.
++    /// C: `picoquic_set_tls_certificate_chain`.
++    pub fn set_tls_certificate_chain(&mut self, certs: Vec<Vec<u8>>) {
++        self.tls_certificate_chain = certs;
+     }
+ 
+     /// Install the TLS root certificate set.  The C `int` return
+     /// distinguished load vs. store failure (`-1` / `-2`); Phase 1
+     /// collapses both into [`Error::Generic`] pending refinement in
+     /// Phase 4.
+-    pub fn set_tls_root_certificates(&mut self, _certs: Vec<Vec<u8>>) -> Result<(), Error> {
+-        // Delegates to TLS backend configuration; complex.
+-        Ok(())
++    pub fn set_tls_root_certificates(&mut self, certs: Vec<Vec<u8>>) -> Result<(), Error> {
++        crate::tls_api::tls_api_init();
++
++        #[cfg(feature = "sys-openssl")]
++        {
++            if !crate::tls_api::is_openssl_verify_certificate_provider() {
++                return Err(Error::Generic);
++            }
++            let mut registration =
++                crate::sys::openssl::picoquic_openssl_get_certificate_verifier(None)
++                    .ok_or(Error::Generic)?;
++            let cert_refs: Vec<&[u8]> = certs.iter().map(|cert| cert.as_slice()).collect();
++            (crate::sys::openssl::OPENSSL_PROVIDER_REGISTRATION
++                .verify_certificate_provider
++                .root_certificate_setter)(&mut registration.verifier, &cert_refs)?;
++            let fallback = self.tls_callbacks.take();
++            self.tls_callbacks = Some(Box::new(OpenSslRootCertificateCallbacks {
++                registration,
++                fallback,
++            }));
++            self.is_cert_store_not_empty = true;
++            Ok(())
++        }
++
++        #[cfg(not(feature = "sys-openssl"))]
++        {
++            let _ = certs;
++            Err(Error::Generic)
++        }
+     }
+ 
+-    /// Install a no-op certificate verifier (test / interop only).
++    /// Clear the certificate-verification callback bundle. C: `picoquic_set_null_verifier`.
+     pub fn set_null_verifier(&mut self) {
+-        // Delegates to TLS backend; complex.
++        self.tls_callbacks = None;
+     }
+ 
+     /// Install the TLS private key (caller-owned bytes; the context
+@@ -1690,10 +1967,6 @@ impl Quic {
+         &mut self,
+         default_spinbit_policy: SpinbitVersion,
+     ) -> Result<(), Error> {
+-        // SpinbitVersion::On is server-only and must not be set as a default.
+-        if default_spinbit_policy == SpinbitVersion::On {
+-            return Err(Error::InvalidArgument);
+-        }
+         self.default_spin_policy = default_spinbit_policy;
+         Ok(())
+     }
+@@ -1701,11 +1974,15 @@ impl Quic {
+     /// Default loss-bit policy applied to new connections.
+     pub fn set_default_lossbit_policy(&mut self, default_lossbit_policy: LossbitVersion) {
+         self.default_lossbit_policy = default_lossbit_policy;
++        self.default_tp.enable_loss_bit = default_lossbit_policy as i32;
+     }
+ 
+     /// Default multipath option (per the multipath QUIC draft).
+     pub fn set_default_multipath_option(&mut self, multipath_option: i32) {
+         self.default_multipath_option = multipath_option as u32;
++        if (multipath_option & 1) != 0 {
++            self.default_tp.initial_max_path_id = 2;
++        }
+     }
+ 
+     /// Default address-discovery mode (per the address-discovery
+@@ -1746,9 +2023,25 @@ impl Quic {
+     }
+ 
+     /// Cap the maximum stream data control window across this
+-    /// context.
++    /// context. C: `picoquic_set_max_data_control`.
+     pub fn set_max_data_control(&mut self, max_data: u64) {
+         self.max_data_limit = max_data;
++        self.default_tp.initial_max_data = max_data;
++
++        for connection in self.connections.iter_mut() {
++            let can_update_connection = {
++                let tls_stream = &connection.tls_stream[crate::internal::Epoch::Initial as usize];
++                connection.client_mode
++                    && connection.connection_state == State::ClientInit
++                    && tls_stream.sent_offset == 0
++                    && tls_stream.send_queue.is_empty()
++            };
++
++            if can_update_connection {
++                connection.local_parameters.initial_max_data = max_data;
++                connection.maxdata_local = max_data;
++            }
++        }
+     }
+ 
+     /// Default idle-timeout (in milliseconds) advertised on new
+@@ -1761,8 +2054,38 @@ impl Quic {
+ impl Connection {
+     /// Replace the local transport parameters for this connection
+     /// before the handshake completes.
++    /// C: `picoquic_set_transport_parameters`.
+     pub fn set_transport_parameters(&mut self, tp: &TransportParameters) {
+         self.local_parameters = tp.clone();
++
++        let mtu_max = self.quic_ref().map(|quic| quic.mtu_max).unwrap_or(0);
++        if mtu_max > 0
++            && self.local_parameters.max_packet_size == 0
++            && let Some(peer_addr) = self
++                .paths
++                .first()
++                .and_then(|path| path.tuples.first())
++                .map(|tuple| tuple.peer_addr)
++        {
++            self.local_parameters.max_packet_size =
++                mtu_max.saturating_sub(mtu_overhead(&peer_addr));
++        }
++
++        let role_bit = u64::from(!self.client_mode);
++        self.maxdata_local = self.local_parameters.initial_max_data;
++        self.max_stream_id_bidir_local = (self
++            .local_parameters
++            .initial_max_stream_id_bidir
++            .wrapping_sub(1)
++            << 2)
++            | role_bit;
++        self.max_stream_id_unidir_local = (self
++            .local_parameters
++            .initial_max_stream_id_unidir
++            .wrapping_sub(1)
++            << 2)
++            | 2
++            | role_bit;
+     }
+ 
+     /// Borrow the local (`get_local = true`) or remote transport
+@@ -1776,10 +2099,15 @@ impl Connection {
+     }
+ 
+     /// Export TLS keying material to `out` using `label`.  Returns
+-    /// the number of bytes written.
+-    pub fn export_secret(&mut self, _label: &str, _out: &mut [u8]) -> Result<usize, Error> {
+-        // Delegates to TLS backend; complex.
+-        Err(Error::Generic)
++    /// the number of bytes written.  C: `picoquic_export_secret`.
++    pub fn export_secret(&mut self, label: &str, out: &mut [u8]) -> Result<usize, Error> {
++        if out.is_empty() {
++            return Err(Error::InvalidArgument);
++        }
++
++        let session = self.tls_ctx.as_ref().ok_or(Error::InvalidState)?;
++        session.export_keying_material(label.as_bytes(), &[], out)?;
++        Ok(out.len())
+     }
+ 
+     /// Per-connection spin-bit policy override.
+@@ -1802,7 +2130,10 @@ impl Quic {
+     /// Default per-connection crypto-epoch length (in encrypted
+     /// bytes before triggering a key update).
+     pub fn set_default_crypto_epoch_length(&mut self, crypto_epoch_length_max: u64) {
+-        self.crypto_epoch_length_max = crypto_epoch_length_max;
++        self.crypto_epoch_length_max = match crypto_epoch_length_max {
++            0 => DEFAULT_CRYPTO_EPOCH_LENGTH,
++            _ => crypto_epoch_length_max,
++        };
+     }
+ 
+     /// Retrieve the configured default crypto-epoch length.
+@@ -1818,25 +2149,49 @@ impl Quic {
+ 
+     /// Returns `true` when `cid` was issued by this context.
+     pub fn is_local_cid(&self, cid: &ConnectionId) -> bool {
+-        self.connection_by_id.contains_key(cid)
++        if cid.len() != self.local_connection_id_length as usize {
++            return false;
++        }
++
++        let Some(hash_token) = self.connection_by_id.lookup(cid) else {
++            return false;
++        };
++        let Some(&connection_token) = self.connection_by_id.get(hash_token) else {
++            return false;
++        };
++        self.connections
++            .get(connection_token)
++            .is_some_and(|connection| {
++                connection.local_connection_id_lists.iter().any(|list| {
++                    list.connection_ids.iter().any(|&local_cid_token| {
++                        connection
++                            .local_connection_ids
++                            .get(local_cid_token)
++                            .is_some_and(|local_cid| {
++                                local_cid.connection_by_id_membership == Some(hash_token)
++                                    && local_cid.connection_id == *cid
++                            })
++                    })
++                })
++            })
+     }
+ 
+     /// Load issued-retry-tokens from a persistent store.
+-    pub fn load_retry_tokens(&mut self, _token_store_filename: &str) -> Result<(), Error> {
+-        // Complex: involves file I/O and token deserialization.
+-        Ok(())
++    pub fn load_retry_tokens(&mut self, token_store_filename: &str) -> Result<(), Error> {
++        // C wrapper delegates directly to picoquic_load_tokens.
++        self.load_tokens(token_store_filename)
+     }
+ 
+     /// Persist session tickets to disk.
+-    pub fn save_session_tickets(&mut self, _ticket_store_filename: &str) -> Result<(), Error> {
+-        // Complex: involves file I/O and ticket serialization.
+-        Ok(())
++    /// C: `picoquic_save_session_tickets`.
++    pub fn save_session_tickets(&mut self, ticket_store_filename: &str) -> Result<(), Error> {
++        self.save_tickets(Instant::from_ticks(self.time()), ticket_store_filename)
+     }
+ 
+     /// Persist outstanding retry tokens to disk.
+-    pub fn save_retry_tokens(&mut self, _token_store_filename: &str) -> Result<(), Error> {
+-        // Complex: involves file I/O and token serialization.
+-        Ok(())
++    /// C: `picoquic_save_retry_tokens`.
++    pub fn save_retry_tokens(&mut self, token_store_filename: &str) -> Result<(), Error> {
++        self.save_tokens(token_store_filename)
+     }
+ 
+     /// Toggle BDP-frame extension on new connections (per the
+@@ -1849,15 +2204,17 @@ impl Quic {
+     /// connections.
+     /// C: `picoquic_set_default_connection_id_length`.
+     pub fn set_default_connection_id_length(&mut self, cid_length: u8) -> Result<(), Error> {
+-        if cid_length as usize > CONNECTION_ID_MAX_SIZE {
+-            return Err(Error::Protocol(InternalError::CnxidCheck as u64));
+-        }
+-        if self.current_number_connections > 0 {
+-            return Err(Error::Protocol(
+-                InternalError::CannotChangeActiveContext as u64,
+-            ));
++        if cid_length != self.local_connection_id_length {
++            if cid_length as usize > CONNECTION_ID_MAX_SIZE {
++                return Err(Error::Protocol(InternalError::CnxidCheck as u64));
++            }
++            if self.current_number_connections > 0 {
++                return Err(Error::Protocol(
++                    InternalError::CannotChangeActiveContext as u64,
++                ));
++            }
++            self.local_connection_id_length = cid_length;
+         }
+-        self.local_connection_id_length = cid_length;
+         Ok(())
+     }
+ 
+@@ -1875,6 +2232,7 @@ impl Quic {
+     /// Cap the maximum MTU PMTUD will probe up to.
+     pub fn set_mtu_max(&mut self, mtu_max: u32) {
+         self.mtu_max = mtu_max;
++        self.default_tp.max_packet_size = mtu_max;
+     }
+ 
+     /// Install (or remove, with `None`) the ALPN-selection callback.
+@@ -1909,6 +2267,8 @@ impl Quic {
+     /// Default minimum interval between stateless-reset emissions
+     /// (microseconds).
+     pub fn set_default_stateless_reset_min_interval(&mut self, min_interval: Duration) {
++        let now = Instant::from_ticks(self.time());
++        self.stateless_reset_next_time = now;
+         self.stateless_reset_min_interval = min_interval;
+     }
+ 
+@@ -1969,13 +2329,12 @@ impl Quic {
+     /// live in this context.  C: access pattern of storing and dereferencing a
+     /// `picoquic_cnx_t*` pointer obtained from `picoquic_create_cnx`.
+     pub fn connection_ref_by_id(&mut self, id: ConnectionId) -> Option<&mut Connection> {
+-        let ht = self.connection_by_id.lookup(&id)?;
+-        let conn_token = *self.connection_by_id.get(ht)?;
+-        self.connections.get_mut(conn_token)
++        self.connections
++            .iter_mut()
++            .find(|connection| connection.initial_connection_id == id)
+     }
+ 
+-    /// Convenience wrapper around [`Self::create_connection`] for the
+-    /// client side; `addr` is required.
++    /// Create and start a client-side connection; `addr` is required.
+     pub fn create_client_connection(
+         &mut self,
+         addr: &SocketAddr,
+@@ -1983,23 +2342,41 @@ impl Quic {
+         preferred_version: u32,
+         sni: Option<&str>,
+         alpn: Option<&str>,
+-        _callback: Option<Box<dyn StreamDataCallback>>,
++        callback: Option<Box<dyn StreamDataCallback>>,
+     ) -> Option<&mut Connection> {
+         // C: picoquic_create_client_cnx — wraps picoquic_create_cnx with
+         // null CIDs, then runs picoquic_start_client_cnx and rolls back
+         // on failure.  Callback installation is folded in here; the Rust
+         // shape stores the boxed callback on Connection, which is the
+         // moral equivalent of `cnx->callback_fn`/`cnx->callback_ctx`.
+-        self.create_connection(
+-            ConnectionId::with_size(0)?,
+-            ConnectionId::with_size(0)?,
+-            Some(addr),
+-            start_time,
+-            preferred_version,
+-            sni,
+-            alpn,
+-            true,
+-        )
++        let token = self
++            .create_cnx_internal(
++                ConnectionId::with_size(0)?,
++                ConnectionId::with_size(0)?,
++                Some(addr),
++                start_time,
++                preferred_version,
++                sni,
++                alpn,
++                true,
++                None,
++                None,
++            )
++            .ok()?;
++
++        let start_result = {
++            let cnx = self.connections.get_mut(token)?;
++            if let Some(callback) = callback {
++                cnx.set_callback(Some(callback));
++            }
++            cnx.start_client()
++        };
++        if start_result.is_err() {
++            self.delete_connection(token);
++            return None;
++        }
++
++        self.connections.get_mut(token)
+     }
+ 
+     /// Default callback enablement for path-state events on new
+@@ -2328,13 +2705,12 @@ impl Quic {
+             token
+         };
+ 
+-        if self.local_connection_id_length > 0 {
+-            let (membership, _) = self.connection_by_id.insert(connection_id, connection)?;
+-            if let Some(cnx) = self.connections.get_mut(connection)
+-                && let Some(local_cid) = cnx.local_connection_ids.get_mut(token)
+-            {
+-                local_cid.connection_by_id_membership = Some(membership);
+-            }
++        if self.local_connection_id_length > 0
++            && let Ok((membership, _)) = self.connection_by_id.insert(connection_id, connection)
++            && let Some(cnx) = self.connections.get_mut(connection)
++            && let Some(local_cid) = cnx.local_connection_ids.get_mut(token)
++        {
++            local_cid.connection_by_id_membership = Some(membership);
+         }
+ 
+         Ok(token)
+@@ -2342,11 +2718,76 @@ impl Quic {
+ }
+ 
+ impl Connection {
++    fn reinsert_self_by_wake_time(&mut self, next_time: Instant) -> Result<(), Error> {
++        let token = self.own_token.ok_or(Error::InvalidState)?;
++        if self.quic_ptr.is_null() {
++            return Err(Error::InvalidState);
++        }
++
++        let old_membership = self.connection_wake_membership.take();
++        self.next_wake_time = next_time;
++
++        // SAFETY: `quic_ptr` is installed by `Quic::create_cnx_internal` and the
++        // owning `Quic` outlives every connection stored in its arena.
++        let quic = unsafe { &mut *self.quic_ptr };
++        if let Some(old_membership) = old_membership {
++            quic.connection_wake_tree.remove(old_membership);
++        }
++        if let Ok((tree_token, old_token)) =
++            quic.connection_wake_tree.insert(next_time.ticks(), token)
++        {
++            self.connection_wake_membership = Some(tree_token);
++            if let Some(old_token) = old_token
++                && old_token != token
++                && let Some(old_connection) = quic.connections.get_mut(old_token)
++            {
++                old_connection.connection_wake_membership = None;
++            }
++        }
++        Ok(())
++    }
++
+     /// Begin the client-side handshake on this connection.
++    /// C: `picoquic_start_client_cnx` (picoquic/quicctx.c:4384-4413).
+     pub fn start_client(&mut self) -> Result<(), Error> {
+-        self.setup_initial_traffic_keys()?;
+-        self.connection_state = State::ClientInitSent;
+-        Ok(())
++        let initial_tls = &self.tls_stream[crate::internal::Epoch::Initial as usize];
++        if self.connection_state != State::ClientInit
++            || initial_tls.sent_offset > 0
++            || !initial_tls.send_queue.is_empty()
++        {
++            log::debug!("picoquic_start_client_cnx called twice.");
++            return Err(Error::Generic);
++        }
++
++        self.log_new_connection();
++
++        let current_time = Instant::from_ticks(
++            self.quic_ref()
++                .map(|quic| quic.time())
++                .unwrap_or_else(crate::current_time),
++        );
++        let tls_init_result = self.initialize_tls_stream(current_time);
++
++        let role_bit = u64::from(!self.client_mode);
++        self.maxdata_remote = self.remote_parameters.initial_max_data;
++        self.max_stream_id_bidir_remote = (self
++            .remote_parameters
++            .initial_max_stream_id_bidir
++            .wrapping_sub(1)
++            << 2)
++            | role_bit;
++        self.max_stream_id_unidir_remote = (self
++            .remote_parameters
++            .initial_max_stream_id_unidir
++            .wrapping_sub(1)
++            << 2)
++            | 2
++            | role_bit;
++        self.max_stream_data_remote = self.remote_parameters.initial_max_data;
++        self.max_stream_data_local = self.local_parameters.initial_max_stream_data_bidi_local;
++
++        let _ = self.reinsert_self_by_wake_time(current_time);
++        tls_init_result
+     }
+ 
+     /// Begin an ordered close.
+@@ -7556,4 +7997,610 @@ impl crate::internal::IssuedTicket {
+ }
+ 
+ #[cfg(test)]
+-mod test {}
++mod test {
++    use super::{
++        AES_128_GCM_SHA256, AES_256_GCM_SHA384, ConnectionId, ConnectionIdCallback, Error,
++        GROUP_SECP256R1, Instant, InternalError, Quic, RESET_SECRET_SIZE, TransportError,
++        TransportParameters, errors, is_handshake_error, reset_tls_api, write_ssl_key_log_line,
++    };
++
++    struct FixedConnectionIdCallback {
++        connection_id: ConnectionId,
++    }
++
++    impl ConnectionIdCallback for FixedConnectionIdCallback {
++        fn produce(
++            &mut self,
++            _quic: &mut Quic,
++            _connection_id_local: ConnectionId,
++            _connection_id_remote: ConnectionId,
++        ) -> ConnectionId {
++            self.connection_id
++        }
++    }
++
++    #[test]
++    fn connection_id_hash_matches_c_fold() {
++        let seed_a = [0u8; 16];
++        let seed_b = [0x5au8; 16];
++
++        let short = ConnectionId::clone_from_slice(&[0x01, 0x02]).unwrap();
++        assert_eq!(short.hash_with_seed(&seed_a), 0x0102);
++        assert_eq!(short.hash_with_seed(&seed_b), 0x0102);
++
++        let exact = ConnectionId::clone_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
++        assert_eq!(exact.hash_with_seed(&seed_a), 0x0102_0304_0506_0708);
++
++        let folded = ConnectionId::clone_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap();
++        assert_eq!(folded.hash_with_seed(&seed_a), 0x0203_0405_0608_080a);
++    }
++
++    #[test]
++    fn is_local_cid_checks_length_and_registered_local_cids_only() {
++        let initial_cid =
++            ConnectionId::clone_from_slice(&[0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17])
++                .unwrap();
++        let remote_cid = ConnectionId::clone_from_slice(&[0x20, 0x21, 0x22, 0x23]).unwrap();
++        let local_cid =
++            ConnectionId::clone_from_slice(&[0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7])
++                .unwrap();
++        let callback: Option<Box<dyn ConnectionIdCallback>> =
++            Some(Box::new(FixedConnectionIdCallback {
++                connection_id: local_cid,
++            }));
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            callback,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++        let addr: core::net::SocketAddr = "127.0.0.1:4433".parse().unwrap();
++
++        quic.create_connection(
++            initial_cid,
++            remote_cid,
++            Some(&addr),
++            Instant::from_ticks(0),
++            0,
++            None,
++            None,
++            true,
++        )
++        .unwrap();
++
++        assert!(quic.connection_ref_by_id(initial_cid).is_some());
++        assert!(!quic.is_local_cid(&initial_cid));
++        assert!(quic.is_local_cid(&local_cid));
++
++        let short_local_cid = ConnectionId::clone_from_slice(&[0xb0, 0xb1, 0xb2, 0xb3]).unwrap();
++        let short_callback: Option<Box<dyn ConnectionIdCallback>> =
++            Some(Box::new(FixedConnectionIdCallback {
++                connection_id: short_local_cid,
++            }));
++        let mut short_quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            short_callback,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++        short_quic
++            .create_connection(
++                initial_cid,
++                remote_cid,
++                Some(&addr),
++                Instant::from_ticks(0),
++                0,
++                None,
++                None,
++                true,
++            )
++            .unwrap();
++
++        assert!(short_quic.connection_by_id.contains_key(&short_local_cid));
++        assert!(!short_quic.is_local_cid(&short_local_cid));
++    }
++
++    #[test]
++    fn handshake_error_matches_c_predicate() {
++        assert!(is_handshake_error(errors::transport_crypto_error(0) as u64));
++        assert!(is_handshake_error(
++            errors::transport_crypto_error(0x7f) as u64
++        ));
++        assert!(is_handshake_error(
++            errors::transport_crypto_error(0) as u64 | 0x1_0000
++        ));
++        assert!(is_handshake_error(
++            TransportError::TlsHandshakeFailed as u64
++        ));
++        assert!(!is_handshake_error(InternalError::AeadCheck as u64));
++        assert!(!is_handshake_error(InternalError::InvalidFrame as u64));
++    }
++
++    #[test]
++    fn ssl_key_log_line_uses_c_format() {
++        let mut out = Vec::new();
++        let random = [0xabu8; 32];
++        let secret = [0x01, 0x23, 0xff];
++
++        write_ssl_key_log_line(&mut out, "CLIENT_TRAFFIC_SECRET_0", &random, &secret).unwrap();
++
++        assert_eq!(
++            String::from_utf8(out).unwrap(),
++            "CLIENT_TRAFFIC_SECRET_0 abababababababababababababababababababababababababababababababab 0123ff\n"
++        );
++    }
++
++    #[test]
++    fn tls_key_log_label_matches_c_role_direction_table() {
++        assert_eq!(
++            Quic::tls_key_log_label(false, 1),
++            Some("CLIENT_EARLY_TRAFFIC_SECRET")
++        );
++        assert_eq!(
++            Quic::tls_key_log_label(false, 2),
++            Some("CLIENT_HANDSHAKE_TRAFFIC_SECRET")
++        );
++        assert_eq!(
++            Quic::tls_key_log_label(false, 3),
++            Some("CLIENT_TRAFFIC_SECRET_0")
++        );
++        assert_eq!(Quic::tls_key_log_label(true, 1), None);
++        assert_eq!(
++            Quic::tls_key_log_label(true, 2),
++            Some("SERVER_HANDSHAKE_TRAFFIC_SECRET")
++        );
++        assert_eq!(
++            Quic::tls_key_log_label(true, 3),
++            Some("SERVER_TRAFFIC_SECRET_0")
++        );
++    }
++
++    #[test]
++    fn quic_new_handles_nullable_reset_seed() {
++        let explicit_seed = [0x5au8; RESET_SECRET_SIZE];
++        let explicit = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            Some(explicit_seed),
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++        assert_eq!(explicit.reset_seed_bytes(), explicit_seed.as_ref());
++
++        let generated = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++        assert_ne!(
++            generated.reset_seed_bytes(),
++            [0u8; RESET_SECRET_SIZE].as_ref()
++        );
++    }
++
++    #[test]
++    fn set_default_tp_none_resets_initialized_defaults() {
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++
++        let custom = TransportParameters {
++            initial_max_data: 7,
++            max_packet_size: 9,
++            ack_delay_exponent: 1,
++            enable_loss_bit: 0,
++            ..TransportParameters::default()
++        };
++        quic.set_default_tp(&custom).unwrap();
++        assert_eq!(quic.default_tp().initial_max_data, custom.initial_max_data);
++
++        quic.set_default_tp(None::<&TransportParameters>).unwrap();
++
++        let mut expected = TransportParameters::default();
++        crate::internal::init_transport_parameters(&mut expected);
++        assert_eq!(
++            quic.default_tp().initial_max_data,
++            expected.initial_max_data
++        );
++        assert_eq!(quic.default_tp().max_packet_size, expected.max_packet_size);
++        assert_eq!(
++            quic.default_tp().ack_delay_exponent,
++            expected.ack_delay_exponent
++        );
++        assert_eq!(quic.default_tp().enable_loss_bit, expected.enable_loss_bit);
++    }
++
++    #[test]
++    fn set_max_data_control_updates_default_and_unsent_client_init_connections() {
++        let mut quic = Quic::new(
++            2,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++
++        let eligible_id = ConnectionId::clone_from_slice(&[0x10, 0x20, 0x30, 0x40]).unwrap();
++        let sent_id = ConnectionId::clone_from_slice(&[0x50, 0x60, 0x70, 0x80]).unwrap();
++        let remote_a = ConnectionId::clone_from_slice(&[0xa1, 0xa2]).unwrap();
++        let remote_b = ConnectionId::clone_from_slice(&[0xb1, 0xb2]).unwrap();
++        let addr_a: core::net::SocketAddr = "127.0.0.1:4433".parse().unwrap();
++        let addr_b: core::net::SocketAddr = "127.0.0.1:4434".parse().unwrap();
++
++        {
++            let cnx = quic
++                .create_connection(
++                    eligible_id,
++                    remote_a,
++                    Some(&addr_a),
++                    Instant::from_ticks(0),
++                    0,
++                    None,
++                    None,
++                    true,
++                )
++                .unwrap();
++            cnx.local_parameters.initial_max_data = 111;
++            cnx.maxdata_local = 111;
++        }
++
++        {
++            let cnx = quic
++                .create_connection(
++                    sent_id,
++                    remote_b,
++                    Some(&addr_b),
++                    Instant::from_ticks(0),
++                    0,
++                    None,
++                    None,
++                    true,
++                )
++                .unwrap();
++            cnx.local_parameters.initial_max_data = 222;
++            cnx.maxdata_local = 222;
++            cnx.tls_stream[crate::internal::Epoch::Initial as usize].sent_offset = 1;
++        }
++
++        quic.set_max_data_control(4096);
++
++        assert_eq!(quic.max_data_limit(), 4096);
++        assert_eq!(quic.default_tp().initial_max_data, 4096);
++
++        {
++            let cnx = quic.connection_ref_by_id(eligible_id).unwrap();
++            assert_eq!(cnx.local_parameters.initial_max_data, 4096);
++            assert_eq!(cnx.maxdata_local, 4096);
++        }
++
++        {
++            let cnx = quic.connection_ref_by_id(sent_id).unwrap();
++            assert_eq!(cnx.local_parameters.initial_max_data, 222);
++            assert_eq!(cnx.maxdata_local, 222);
++        }
++    }
++
++    #[test]
++    fn set_transport_parameters_refreshes_mtu_and_local_flow_limits() {
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++        quic.set_mtu_max(1500);
++        assert_eq!(quic.default_tp().max_packet_size, 1500);
++
++        let local_id = ConnectionId::clone_from_slice(&[0x10, 0x20, 0x30, 0x40]).unwrap();
++        let remote_id = ConnectionId::clone_from_slice(&[0xa1, 0xa2]).unwrap();
++        let peer_addr: core::net::SocketAddr = "127.0.0.1:4433".parse().unwrap();
++        let cnx = quic
++            .create_connection(
++                local_id,
++                remote_id,
++                Some(&peer_addr),
++                Instant::from_ticks(0),
++                0,
++                None,
++                None,
++                true,
++            )
++            .unwrap();
++
++        cnx.maxdata_local = 1;
++        cnx.max_stream_id_bidir_local = 2;
++        cnx.max_stream_id_unidir_local = 3;
++
++        let tp = TransportParameters {
++            initial_max_data: 1234,
++            initial_max_stream_id_bidir: 7,
++            initial_max_stream_id_unidir: 11,
++            max_packet_size: 0,
++            ..TransportParameters::default()
++        };
++        cnx.set_transport_parameters(&tp);
++
++        assert_eq!(cnx.local_parameters.max_packet_size, 1472);
++        assert_eq!(cnx.maxdata_local, 1234);
++        assert_eq!(cnx.max_stream_id_bidir_local, (7 - 1) << 2);
++        assert_eq!(cnx.max_stream_id_unidir_local, ((11 - 1) << 2) | 2);
++    }
++
++    #[test]
++    fn set_cipher_suite_installs_provider_selected_list() {
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++
++        assert!(quic.tls_cipher_suites.contains(&AES_128_GCM_SHA256));
++        assert!(quic.tls_cipher_suites.contains(&AES_256_GCM_SHA384));
++
++        quic.set_cipher_suite(AES_256_GCM_SHA384).unwrap();
++        assert_eq!(quic.tls_cipher_suites.as_slice(), &[AES_256_GCM_SHA384]);
++
++        assert!(matches!(
++            quic.set_cipher_suite(0xffff),
++            Err(Error::InvalidArgument)
++        ));
++        assert!(quic.tls_cipher_suites.is_empty());
++    }
++
++    #[test]
++    fn set_key_exchange_installs_provider_selected_list() {
++        reset_tls_api(0);
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++
++        assert!(quic.tls_key_exchanges.contains(&GROUP_SECP256R1));
++        assert!(quic.tls_key_exchanges.contains(&29));
++
++        quic.set_key_exchange(GROUP_SECP256R1).unwrap();
++        assert_eq!(quic.tls_key_exchanges.as_slice(), &[GROUP_SECP256R1]);
++
++        assert!(matches!(
++            quic.set_key_exchange(0xffff),
++            Err(Error::InvalidArgument)
++        ));
++        assert_eq!(quic.tls_key_exchanges.as_slice(), &[GROUP_SECP256R1]);
++
++        quic.set_key_exchange(0).unwrap();
++        assert!(quic.tls_key_exchanges.contains(&GROUP_SECP256R1));
++        assert!(quic.tls_key_exchanges.contains(&29));
++        reset_tls_api(0);
++    }
++
++    #[test]
++    fn set_default_multipath_option_advertises_initial_path_id_for_bit_zero() {
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++
++        assert_eq!(quic.default_tp().initial_max_path_id, 0);
++
++        quic.set_default_multipath_option(1);
++
++        assert_eq!(quic.default_multipath_option, 1);
++        assert_eq!(quic.default_tp().initial_max_path_id, 2);
++
++        quic.default_tp.initial_max_path_id = 7;
++        quic.set_default_multipath_option(2);
++
++        assert_eq!(quic.default_multipath_option, 2);
++        assert_eq!(quic.default_tp().initial_max_path_id, 7);
++    }
++
++    #[test]
++    fn set_tls_certificate_chain_replaces_owned_chain() {
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++
++        let first = vec![vec![1, 2, 3], vec![4, 5]];
++        quic.set_tls_certificate_chain(first.clone());
++        assert_eq!(quic.tls_certificate_chain, first);
++
++        let replacement = vec![vec![9, 8, 7]];
++        quic.set_tls_certificate_chain(replacement.clone());
++        assert_eq!(quic.tls_certificate_chain, replacement);
++    }
++
++    #[test]
++    fn set_tls_root_certificates_rejects_invalid_or_unsupported_roots() {
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++
++        assert!(matches!(
++            quic.set_tls_root_certificates(vec![vec![0x30, 0x00]]),
++            Err(Error::Generic)
++        ));
++        assert!(!quic.is_cert_store_not_empty);
++    }
++
++    #[cfg(feature = "sys-openssl")]
++    #[test]
++    fn set_tls_root_certificates_installs_openssl_roots() {
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++        let cert = openssl::x509::X509::from_pem(include_bytes!("../../../certs/test-ca.crt"))
++            .unwrap()
++            .to_der()
++            .unwrap();
++
++        quic.set_tls_root_certificates(vec![cert.clone()]).unwrap();
++
++        assert!(quic.is_cert_store_not_empty);
++        quic.tls_callbacks
++            .as_mut()
++            .unwrap()
++            .verify_certificate(&[cert.as_slice()])
++            .unwrap();
++    }
++
++    #[test]
++    fn key_log_file_is_separate_from_text_log_and_failed_reopen_clears() {
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .unwrap();
++        quic.f_log = Some(Box::new(Vec::<u8>::new()));
++
++        let path = std::env::temp_dir().join(format!(
++            "fq-keylog-{}-{}.log",
++            std::process::id(),
++            super::current_time()
++        ));
++        quic.set_key_log_file(Some(path.to_str().unwrap()));
++        assert!(quic.key_log.is_some());
++        assert!(quic.f_log.is_some());
++
++        let missing_parent = std::env::temp_dir().join(format!(
++            "fq-keylog-missing-{}-{}",
++            std::process::id(),
++            super::current_time()
++        ));
++        let bad_path = missing_parent.join("keylog.log");
++        quic.set_key_log_file(Some(bad_path.to_str().unwrap()));
++        assert!(quic.key_log.is_none());
++        assert!(quic.f_log.is_some());
++
++        quic.set_key_log_file(None);
++        let _ = std::fs::remove_file(path);
++    }
++}
+diff --git a/rs/fq/src/sys/openssl.rs b/rs/fq/src/sys/openssl.rs
+index ab23267e..563b3e33 100644
+--- a/rs/fq/src/sys/openssl.rs
++++ b/rs/fq/src/sys/openssl.rs
+@@ -14,8 +14,8 @@ use crate::Error;
+ use crate::ech::{HpkeCipherSuiteId, aead_id, kdf_id, kem_id};
+ use crate::internal::Version;
+ use crate::tls::{
+-    ClientConfig, ConfigError, HandshakeData, KeyPair, KeyPairHeader, Keys, PeerIdentity,
+-    ServerConfig, Session, TlsBackend,
++    ClientConfig, ConfigError, HandshakeData, KeyLogEvent, KeyPair, KeyPairHeader, Keys,
++    PeerIdentity, ServerConfig, Session, TlsBackend,
+ };
+ use crate::tls_api::{hkdf_expand_label, pn_enc_create_for_test, setup_test_aead_context};
+ use crate::{
+@@ -91,6 +91,7 @@ pub struct OpenSslSession {
+     handshaking: bool,
+     yielded_1rtt: bool,
+     saw_peer_handshake: bool,
++    pending_key_log_events: Vec<KeyLogEvent>,
+ }
+ 
+ impl OpenSslSession {
+@@ -109,6 +110,7 @@ impl OpenSslSession {
+             handshaking: true,
+             yielded_1rtt: false,
+             saw_peer_handshake: false,
++            pending_key_log_events: Vec::new(),
+         }
+     }
+ 
+@@ -148,7 +150,7 @@ impl OpenSslSession {
+         Some(secret)
+     }
+ 
+-    fn keys(&self) -> Option<Keys> {
++    fn key_material(&self) -> Option<(Keys, [u8; SECRET_LEN], [u8; SECRET_LEN])> {
+         let (local_label, remote_label) = match self.role {
+             TlsRole::Client => ("client app", "server app"),
+             TlsRole::Server => ("server app", "client app"),
+@@ -156,7 +158,7 @@ impl OpenSslSession {
+         let local_secret = self.traffic_secret(local_label)?;
+         let remote_secret = self.traffic_secret(remote_label)?;
+         let prefix = self.prefix_label();
+-        Some(Keys {
++        let keys = Keys {
+             header: KeyPairHeader {
+                 local: pn_enc_create_for_test(&local_secret, prefix)?,
+                 remote: pn_enc_create_for_test(&remote_secret, prefix)?,
+@@ -165,7 +167,24 @@ impl OpenSslSession {
+                 local: setup_test_aead_context(true, &local_secret, prefix)?,
+                 remote: setup_test_aead_context(false, &remote_secret, prefix)?,
+             },
+-        })
++        };
++        Some((keys, local_secret, remote_secret))
++    }
++
++    fn queue_1rtt_key_log_events(&mut self, local_secret: &[u8], remote_secret: &[u8]) {
++        let client_random = self.seed("client random");
++        self.pending_key_log_events.push(KeyLogEvent {
++            is_enc: true,
++            epoch: 3,
++            client_random,
++            secret: local_secret.to_vec(),
++        });
++        self.pending_key_log_events.push(KeyLogEvent {
++            is_enc: false,
++            epoch: 3,
++            client_random,
++            secret: remote_secret.to_vec(),
++        });
+     }
+ 
+     fn handshake_bytes(&self) -> &'static [u8] {
+@@ -197,7 +216,9 @@ impl Session for OpenSslSession {
+             None
+         } else {
+             self.yielded_1rtt = true;
+-            self.keys()
++            let (keys, local_secret, remote_secret) = self.key_material()?;
++            self.queue_1rtt_key_log_events(&local_secret, &remote_secret);
++            Some(keys)
+         }
+     }
+ 
+@@ -210,7 +231,13 @@ impl Session for OpenSslSession {
+             return None;
+         }
+         self.yielded_1rtt = true;
+-        self.keys().map(|keys| keys.packet)
++        let (keys, local_secret, remote_secret) = self.key_material()?;
++        self.queue_1rtt_key_log_events(&local_secret, &remote_secret);
++        Some(keys.packet)
++    }
++
++    fn take_key_log_events(&mut self) -> Vec<KeyLogEvent> {
++        core::mem::take(&mut self.pending_key_log_events)
+     }
+ 
+     fn handshake_data(&self) -> Option<HandshakeData> {
+diff --git a/rs/fq/src/sys/picotls.rs b/rs/fq/src/sys/picotls.rs
+index 76d5621e..f0cd423d 100644
+--- a/rs/fq/src/sys/picotls.rs
++++ b/rs/fq/src/sys/picotls.rs
+@@ -11,8 +11,8 @@ use alloc::vec::Vec;
+ use crate::Error;
+ use crate::internal::Version;
+ use crate::tls::{
+-    ClientConfig, ConfigError, HandshakeData, KeyPair, KeyPairHeader, Keys, PeerIdentity,
+-    ServerConfig, Session, TlsBackend,
++    ClientConfig, ConfigError, HandshakeData, KeyLogEvent, KeyPair, KeyPairHeader, Keys,
++    PeerIdentity, ServerConfig, Session, TlsBackend,
+ };
+ use crate::tls_api::{hkdf_expand_label, pn_enc_create_for_test, setup_test_aead_context};
+ 
+@@ -86,6 +86,7 @@ pub struct PicotlsSession {
+     handshaking: bool,
+     yielded_1rtt: bool,
+     saw_peer_handshake: bool,
++    pending_key_log_events: Vec<KeyLogEvent>,
+ }
+ 
+ impl PicotlsSession {
+@@ -104,6 +105,7 @@ impl PicotlsSession {
+             handshaking: true,
+             yielded_1rtt: false,
+             saw_peer_handshake: false,
++            pending_key_log_events: Vec::new(),
+         }
+     }
+ 
+@@ -143,7 +145,7 @@ impl PicotlsSession {
+         Some(secret)
+     }
+ 
+-    fn keys(&self) -> Option<Keys> {
++    fn key_material(&self) -> Option<(Keys, [u8; SECRET_LEN], [u8; SECRET_LEN])> {
+         let (local_label, remote_label) = match self.role {
+             TlsRole::Client => ("client app", "server app"),
+             TlsRole::Server => ("server app", "client app"),
+@@ -151,7 +153,7 @@ impl PicotlsSession {
+         let local_secret = self.traffic_secret(local_label)?;
+         let remote_secret = self.traffic_secret(remote_label)?;
+         let prefix = self.prefix_label();
+-        Some(Keys {
++        let keys = Keys {
+             header: KeyPairHeader {
+                 local: pn_enc_create_for_test(&local_secret, prefix)?,
+                 remote: pn_enc_create_for_test(&remote_secret, prefix)?,
+@@ -160,7 +162,24 @@ impl PicotlsSession {
+                 local: setup_test_aead_context(true, &local_secret, prefix)?,
+                 remote: setup_test_aead_context(false, &remote_secret, prefix)?,
+             },
+-        })
++        };
++        Some((keys, local_secret, remote_secret))
++    }
++
++    fn queue_1rtt_key_log_events(&mut self, local_secret: &[u8], remote_secret: &[u8]) {
++        let client_random = self.seed("client random");
++        self.pending_key_log_events.push(KeyLogEvent {
++            is_enc: true,
++            epoch: 3,
++            client_random,
++            secret: local_secret.to_vec(),
++        });
++        self.pending_key_log_events.push(KeyLogEvent {
++            is_enc: false,
++            epoch: 3,
++            client_random,
++            secret: remote_secret.to_vec(),
++        });
+     }
+ 
+     fn handshake_bytes(&self) -> &'static [u8] {
+@@ -192,7 +211,9 @@ impl Session for PicotlsSession {
+             None
+         } else {
+             self.yielded_1rtt = true;
+-            self.keys()
++            let (keys, local_secret, remote_secret) = self.key_material()?;
++            self.queue_1rtt_key_log_events(&local_secret, &remote_secret);
++            Some(keys)
+         }
+     }
+ 
+@@ -205,7 +226,13 @@ impl Session for PicotlsSession {
+             return None;
+         }
+         self.yielded_1rtt = true;
+-        self.keys().map(|keys| keys.packet)
++        let (keys, local_secret, remote_secret) = self.key_material()?;
++        self.queue_1rtt_key_log_events(&local_secret, &remote_secret);
++        Some(keys.packet)
++    }
++
++    fn take_key_log_events(&mut self) -> Vec<KeyLogEvent> {
++        core::mem::take(&mut self.pending_key_log_events)
+     }
+ 
+     fn handshake_data(&self) -> Option<HandshakeData> {
+diff --git a/rs/fq/src/tests/getter.rs b/rs/fq/src/tests/getter.rs
+index 2a31e133..2f874d56 100644
+--- a/rs/fq/src/tests/getter.rs
++++ b/rs/fq/src/tests/getter.rs
+@@ -5,7 +5,7 @@
+ 
+ #![allow(non_snake_case)]
+ 
+-use crate::errors::InternalError;
++use crate::errors::{InternalError, TransportError, transport_crypto_error};
+ use crate::internal::Version;
+ use crate::tests::util::{TEST_ALPN, TEST_SNI, tls_api_connection_loop, tls_api_init_ctx_ex2};
+ use crate::{
+@@ -193,12 +193,20 @@ fn getter() {
+ 
+     // is_handshake_error.
+     assert!(
+-        is_handshake_error(crate::errors::InternalError::AeadCheck as u64),
+-        "AEAD check is a handshake error"
++        !is_handshake_error(InternalError::AeadCheck as u64),
++        "AEAD check is not a handshake error"
++    );
++    assert!(
++        is_handshake_error(transport_crypto_error(0) as u64),
++        "CRYPTO_ERROR codes are handshake errors"
++    );
++    assert!(
++        is_handshake_error(TransportError::TlsHandshakeFailed as u64),
++        "TLS handshake failure is a handshake error"
+     );
+     // A transport-frame error is not a handshake error.
+     assert!(
+-        !is_handshake_error(crate::errors::InternalError::InvalidFrame as u64),
++        !is_handshake_error(InternalError::InvalidFrame as u64),
+         "frame-format error is not a handshake error"
+     );
+ 
+diff --git a/rs/fq/src/tls.rs b/rs/fq/src/tls.rs
+index a2a8290d..268d4a27 100644
+--- a/rs/fq/src/tls.rs
++++ b/rs/fq/src/tls.rs
+@@ -76,6 +76,16 @@ pub trait Session: Send {
+     /// until a key update.
+     fn next_1rtt_keys(&mut self) -> Option<KeyPair>;
+ 
++    /// Drain traffic-key updates produced since the last call.
++    ///
++    /// Backends call this side channel when their QUIC traffic-key
++    /// callback fires.  The QUIC layer uses the events both to cache
++    /// application traffic secrets for key rotation and to emit
++    /// SSLKEYLOGFILE lines when key logging is configured.
++    fn take_key_log_events(&mut self) -> Vec<KeyLogEvent> {
++        Vec::new()
++    }
++
+     /// Server-side handshake parameters (SNI, ALPN, etc.).
+     /// Available after the first ClientHello.
+     fn handshake_data(&self) -> Option<HandshakeData>;
+@@ -120,6 +130,23 @@ pub trait Session: Send {
+     }
+ }
+ 
++/// One TLS traffic-secret update.
++///
++/// C: `picoquic_update_traffic_key_callback` receives `is_enc`,
++/// `epoch`, the raw traffic secret, and reads the TLS ClientHello
++/// random from picotls for SSLKEYLOGFILE output.
++pub struct KeyLogEvent {
++    /// `true` for the local/encrypt direction, `false` for
++    /// remote/decrypt.
++    pub is_enc: bool,
++    /// QUIC crypto epoch: 1 = 0-RTT, 2 = handshake, 3 = 1-RTT.
++    pub epoch: usize,
++    /// TLS client random associated with this connection.
++    pub client_random: [u8; 32],
++    /// Raw traffic secret for this direction and epoch.
++    pub secret: Vec<u8>,
++}
++
+ // ---------------------------------------------------------------------------
+ // Builder traits for client / server sessions.
+ 
+diff --git a/rs/fq/src/tls_api.rs b/rs/fq/src/tls_api.rs
+index 8bee5ed5..5e4254bd 100644
+--- a/rs/fq/src/tls_api.rs
++++ b/rs/fq/src/tls_api.rs
+@@ -722,31 +722,107 @@ fn queue_tls_bytes(cnx: &mut Connection, epoch: usize, bytes: &[u8]) -> Result<(
+ struct LocalSession {
+     is_client: bool,
+     prefix_label: &'static str,
++    cipher_suites: Vec<u16>,
++    key_exchanges: Vec<u16>,
++    certificate_chain: Vec<Vec<u8>>,
+     wrote_initial: bool,
+     yielded_1rtt: bool,
+     handshaking: bool,
++    client_random: [u8; SHA256_SIZE],
++    pending_key_log_events: Vec<crate::tls::KeyLogEvent>,
+ }
+ 
+ impl LocalSession {
+-    fn new(is_client: bool, prefix_label: &'static str) -> Self {
++    fn new(
++        is_client: bool,
++        prefix_label: &'static str,
++        cipher_suites: &[u16],
++        key_exchanges: &[u16],
++        certificate_chain: &[Vec<u8>],
++    ) -> Self {
+         Self {
+             is_client,
+             prefix_label,
++            cipher_suites: cipher_suites.to_vec(),
++            key_exchanges: key_exchanges.to_vec(),
++            certificate_chain: certificate_chain.to_vec(),
+             wrote_initial: false,
+             yielded_1rtt: false,
+             handshaking: true,
++            client_random: Self::client_random_for(prefix_label, cipher_suites, key_exchanges),
++            pending_key_log_events: Vec::new(),
+         }
+     }
+ 
+-    fn keys(&self) -> Option<crate::tls::Keys> {
+-        const CLIENT_APP_SECRET: [u8; SHA256_SIZE] = [0x11; SHA256_SIZE];
+-        const SERVER_APP_SECRET: [u8; SHA256_SIZE] = [0x22; SHA256_SIZE];
+-        let (local, remote) = if self.is_client {
+-            (&CLIENT_APP_SECRET[..], &SERVER_APP_SECRET[..])
++    fn mix_u16_list(secret: &mut [u8; SHA256_SIZE], values: &[u16], salt: u8) {
++        for (i, value) in values.iter().enumerate() {
++            let bytes = value.to_be_bytes();
++            let slot = (2 * i) % secret.len();
++            secret[slot] ^= bytes[0].wrapping_add(salt);
++            secret[(slot + 1) % secret.len()] ^= bytes[1].wrapping_add(i as u8);
++        }
++    }
++
++    fn client_random_for(
++        prefix_label: &str,
++        cipher_suites: &[u16],
++        key_exchanges: &[u16],
++    ) -> [u8; SHA256_SIZE] {
++        let mut random = [0u8; SHA256_SIZE];
++        for (i, b) in prefix_label.as_bytes().iter().enumerate() {
++            let slot = i % random.len();
++            random[slot] = random[slot].wrapping_add(*b).rotate_left((i % 8) as u32) ^ (i as u8);
++        }
++        Self::mix_u16_list(&mut random, cipher_suites, 0xc5);
++        Self::mix_u16_list(&mut random, key_exchanges, 0xe5);
++        random
++    }
++
++    fn app_secrets(&self) -> ([u8; SHA256_SIZE], [u8; SHA256_SIZE]) {
++        let mut client = [0x11; SHA256_SIZE];
++        let mut server = [0x22; SHA256_SIZE];
++        Self::mix_u16_list(&mut client, &self.cipher_suites, 0x11);
++        Self::mix_u16_list(&mut server, &self.cipher_suites, 0x22);
++        Self::mix_u16_list(&mut client, &self.key_exchanges, 0x51);
++        Self::mix_u16_list(&mut server, &self.key_exchanges, 0x62);
++        if self.is_client {
++            (client, server)
+         } else {
+-            (&SERVER_APP_SECRET[..], &CLIENT_APP_SECRET[..])
+-        };
+-        build_key_pair(local, remote, self.prefix_label).ok()
++            (server, client)
++        }
++    }
++
++    fn queue_1rtt_key_log_events(&mut self) {
++        let (local, remote) = self.app_secrets();
++        self.pending_key_log_events.push(crate::tls::KeyLogEvent {
++            is_enc: true,
++            epoch: 3,
++            client_random: self.client_random,
++            secret: local.to_vec(),
++        });
++        self.pending_key_log_events.push(crate::tls::KeyLogEvent {
++            is_enc: false,
++            epoch: 3,
++            client_random: self.client_random,
++            secret: remote.to_vec(),
++        });
++    }
++
++    fn keys(&self) -> Option<crate::tls::Keys> {
++        let (local, remote) = self.app_secrets();
++        build_key_pair(&local, &remote, self.prefix_label).ok()
++    }
++
++    fn write_certificate_chain(&self, buf: &mut Vec<u8>) {
++        if self.is_client || self.certificate_chain.is_empty() {
++            return;
++        }
++
++        buf.extend_from_slice(&(self.certificate_chain.len() as u64).to_be_bytes());
++        for cert in &self.certificate_chain {
++            buf.extend_from_slice(&(cert.len() as u64).to_be_bytes());
++            buf.extend_from_slice(cert);
++        }
+     }
+ }
+ 
+@@ -768,9 +844,11 @@ impl crate::tls::Session for LocalSession {
+             } else {
+                 b"picoquic server hello"
+             });
++            self.write_certificate_chain(buf);
+         }
+         if !self.yielded_1rtt {
+             self.yielded_1rtt = true;
++            self.queue_1rtt_key_log_events();
+             return self.keys();
+         }
+         None
+@@ -784,6 +862,10 @@ impl crate::tls::Session for LocalSession {
+         None
+     }
+ 
++    fn take_key_log_events(&mut self) -> Vec<crate::tls::KeyLogEvent> {
++        core::mem::take(&mut self.pending_key_log_events)
++    }
++
+     fn handshake_data(&self) -> Option<crate::tls::HandshakeData> {
+         None
+     }
+@@ -948,6 +1030,8 @@ impl Quic {
+             }
+         }
+ 
++        self.set_key_exchange(0)?;
++        self.set_cipher_suite(0)?;
+         install_ticket_aead_contexts(self, ticket_key)
+     }
+ 
+@@ -968,6 +1052,8 @@ impl Quic {
+     pub fn free_master_tls_context(&mut self) {
+         self.tls_client_config = None;
+         self.tls_server_config = None;
++        self.tls_cipher_suites.clear();
++        self.tls_key_exchanges.clear();
+     }
+ }
+ 
+@@ -984,6 +1070,10 @@ impl Connection {
+     /// `ERROR_TLS_SERVER_CON_WITHOUT_CERT` / `ERROR_MEMORY` / -1 on
+     /// failure.
+     pub fn create_tls_context(&mut self, quic: &mut Quic) -> Result<(), Error> {
++        if quic.tls_cipher_suites.is_empty() {
++            return Err(Error::Tls);
++        }
++
+         let version = connection_version(self);
+         let transport_params = Vec::new();
+         let session: Box<dyn crate::tls::Session> = if self.client_mode {
+@@ -996,6 +1086,9 @@ impl Connection {
+                 Box::new(LocalSession::new(
+                     true,
+                     version.parameters().tls_prefix_label,
++                    &quic.tls_cipher_suites,
++                    &quic.tls_key_exchanges,
++                    &[],
+                 ))
+             }
+         } else if let Some(config) = quic.tls_server_config.as_ref() {
+@@ -1011,6 +1104,9 @@ impl Connection {
+             Box::new(LocalSession::new(
+                 false,
+                 version.parameters().tls_prefix_label,
++                &quic.tls_cipher_suites,
++                &quic.tls_key_exchanges,
++                &quic.tls_certificate_chain,
+             ))
+         };
+ 
+@@ -1091,14 +1187,18 @@ impl Connection {
+         }
+ 
+         for chunk in &chunks {
+-            if session.read_handshake(chunk)?
+-                && let Some(keys) = session.write_handshake(&mut self.tls_sendbuf)
+-            {
+-                install_key_pair(&mut self.crypto_context[3], keys);
++            if session.read_handshake(chunk)? {
++                let keys = session.write_handshake(&mut self.tls_sendbuf);
++                self.consume_tls_key_log_events(session.as_mut());
++                if let Some(keys) = keys {
++                    install_key_pair(&mut self.crypto_context[3], keys);
++                }
+             }
+         }
+ 
+-        if let Some(keys) = session.write_handshake(&mut self.tls_sendbuf) {
++        let keys = session.write_handshake(&mut self.tls_sendbuf);
++        self.consume_tls_key_log_events(session.as_mut());
++        if let Some(keys) = keys {
+             install_key_pair(&mut self.crypto_context[3], keys);
+         }
+ 
+@@ -1126,7 +1226,9 @@ impl Connection {
+     /// `initialize_tls_stream`.
+     pub fn initialize_tls_stream(&mut self, current_time: Instant) -> Result<(), Error> {
+         let mut session = self.tls_ctx.take().ok_or(Error::InvalidState)?;
+-        if let Some(keys) = session.write_handshake(&mut self.tls_sendbuf) {
++        let keys = session.write_handshake(&mut self.tls_sendbuf);
++        self.consume_tls_key_log_events(session.as_mut());
++        if let Some(keys) = keys {
+             install_key_pair(&mut self.crypto_context[3], keys);
+         }
+         let out = core::mem::take(&mut self.tls_sendbuf);
+@@ -2305,6 +2407,7 @@ struct TlsApiState {
+     key_exchange_secp256r1: Option<CryptoProvider>,
+     crypto_random_provider: Option<CryptoProvider>,
+     private_key_provider: Option<CryptoProvider>,
++    verify_certificate_provider: Option<CryptoProvider>,
+ }
+ 
+ impl TlsApiState {
+@@ -2317,6 +2420,7 @@ impl TlsApiState {
+             key_exchange_secp256r1: None,
+             crypto_random_provider: None,
+             private_key_provider: None,
++            verify_certificate_provider: None,
+         }
+     }
+ 
+@@ -2328,6 +2432,7 @@ impl TlsApiState {
+         self.key_exchange_secp256r1 = None;
+         self.crypto_random_provider = None;
+         self.private_key_provider = None;
++        self.verify_certificate_provider = None;
+     }
+ 
+     /// Register or replace a TLS cipher suite.  The first matching slot by
+@@ -2379,6 +2484,13 @@ impl TlsApiState {
+         self.private_key_provider = Some(provider);
+     }
+ 
++    /// Register the certificate-verification callback family.
++    /// C: `picoquic_register_verify_certificate_provider_fn`.
++    #[cfg(feature = "sys-openssl")]
++    fn register_verify_certificate_provider(&mut self, provider: CryptoProvider) {
++        self.verify_certificate_provider = Some(provider);
++    }
++
+     fn cipher_suite_provider(&self, suite_id: u16, use_low_memory: bool) -> Option<CryptoProvider> {
+         self.cipher_suites
+             .iter()
+@@ -2428,6 +2540,7 @@ fn ptls_openssl_load_locked(state: &mut TlsApiState, unload: i32) {
+         }
+         state.register_crypto_random_provider(CryptoProvider::OpenSsl);
+         state.register_tls_key_provider(CryptoProvider::OpenSsl);
++        state.register_verify_certificate_provider(CryptoProvider::OpenSsl);
+     }
+ }
+ 
+@@ -2539,14 +2652,15 @@ pub fn is_minicrypto_aes128gcm_sha256(use_low_memory: bool) -> bool {
+         == Some(CryptoProvider::Minicrypto)
+ }
+ 
+-/// Return the first registered cipher-suite ID matching `cipher_suite_id`.
+-/// Passing `0` selects the first registered suite in provider order.
++/// Return the registered cipher-suite IDs matching `cipher_suite_id`.
++/// Passing `0` selects the default registered suite list in provider order.
+ ///
+-/// C: `picoquic/tls_api.c:picoquic_get_cipher_suite_by_id`.
+-pub fn picoquic_get_cipher_suite_by_id(cipher_suite_id: i32, use_low_memory: bool) -> Option<u16> {
++/// C: `picoquic/tls_api.c:picoquic_set_cipher_suite_list`.
++pub fn picoquic_cipher_suite_list(cipher_suite_id: i32, use_low_memory: bool) -> Vec<u16> {
+     let state = tls_api_state();
++    let mut suites = Vec::new();
+     for slot in state.cipher_suites {
+-        if slot.high_memory_suite.is_none() {
++        if slot.high_memory_suite.is_none() || suites.len() >= 4 {
+             break;
+         }
+         if cipher_suite_id != 0 && cipher_suite_id != i32::from(slot.id) {
+@@ -2558,10 +2672,42 @@ pub fn picoquic_get_cipher_suite_by_id(cipher_suite_id: i32, use_low_memory: boo
+             slot.high_memory_suite
+         };
+         if provider.is_some() {
+-            return Some(slot.id);
++            suites.push(slot.id);
+         }
+     }
+-    None
++    suites
++}
++
++/// Return the key-exchange group IDs matching `key_exchange_id`.
++/// Passing `0` selects all registered groups in provider order; passing
++/// [`GROUP_SECP256R1`] selects only P-256 and fails if no provider registered
++/// that group.
++///
++/// C: `picoquic/tls_api.c:picoquic_set_key_exchange_in_ctx`.
++pub fn picoquic_key_exchange_list(key_exchange_id: i32) -> crate::Result<Vec<u16>> {
++    let state = tls_api_state();
++    match key_exchange_id {
++        0 => Ok(state
++            .key_exchanges
++            .iter()
++            .take_while(|slot| slot.provider.is_some())
++            .map(|slot| slot.id)
++            .collect()),
++        id if id == i32::from(GROUP_SECP256R1) && state.key_exchange_secp256r1.is_some() => {
++            Ok(vec![GROUP_SECP256R1])
++        }
++        _ => Err(Error::InvalidArgument),
++    }
++}
++
++/// Return the first registered cipher-suite ID matching `cipher_suite_id`.
++/// Passing `0` selects the first registered suite in provider order.
++///
++/// C: `picoquic/tls_api.c:picoquic_get_cipher_suite_by_id`.
++pub fn picoquic_get_cipher_suite_by_id(cipher_suite_id: i32, use_low_memory: bool) -> Option<u16> {
++    picoquic_cipher_suite_list(cipher_suite_id, use_low_memory)
++        .first()
++        .copied()
+ }
+ 
+ /// Get the AES-128-GCM-SHA-256 TLS cipher suite required for Initial packets.
+@@ -2602,6 +2748,12 @@ pub fn is_minicrypto_key_loader() -> bool {
+     state.private_key_provider == Some(CryptoProvider::Minicrypto)
+ }
+ 
++#[cfg(feature = "sys-openssl")]
++pub(crate) fn is_openssl_verify_certificate_provider() -> bool {
++    let state = tls_api_state();
++    state.verify_certificate_provider == Some(CryptoProvider::OpenSsl)
++}
++
+ /// Initialize the minicrypto provider.  In the current C implementation
+ /// the function body is empty (`/* Nothing for now */`); the Rust
+ /// translation matches.  C: `picoquic_init_minicrypto`.

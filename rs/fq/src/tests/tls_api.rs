@@ -26,20 +26,20 @@ use crate::tests::util::{
     TEST_FILE_SERVER_KEY_RSA, TEST_SNI, TestApiStreamDesc, TestSimPacket, TestTlsApiCtx,
     ZeroRttTest, cid_length_test_one, cnx_ddos_test_loop, compare_text_files,
     ddos_amplification_test_one, grease_quic_bit_test_one, heavy_loss_test_one,
-    keep_alive_test_impl, key_rotation_auto_one, key_rotation_stress_test_one,
-    key_rotation_test_one, migration_test_scenario, mtu_discovery_test_one, mtu_drop_cc_algotest,
-    nat_rebinding_test_one, optimistic_ack_test_one, padding_test_one, preferred_address_test_one,
-    qlog_fns_test_one, qlog_trace_test_one, ready_to_send_test_one, red_cc_algotest,
-    request_client_authentication_test_one, save_empty_tickets, session_resume_test_one,
-    session_resume_wait_for_ticket, short_initial_cid_test_one, stop_sending_test_one,
-    test_api_init_send_recv_scenario, test_random, test_random_bytes, test_uniform_random,
-    tester_push_frame_packet, tester_simple_ack_frame, tester_wait_handshake_key,
-    tls_api_close_with_losses, tls_api_connection_loop, tls_api_data_sending_loop,
-    tls_api_init_ctx, tls_api_init_ctx_ex, tls_api_init_ctx_ex2, tls_api_init_ctx_zero_share,
-    tls_api_loss_test, tls_api_one_scenario_body, tls_api_one_scenario_body_connect,
-    tls_api_one_scenario_body_ex, tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex,
-    tls_api_one_scenario_verify, tls_api_one_sim_round, tls_api_one_sim_round_with_loss,
-    tls_api_retry_test_one, tls_api_synch_to_empty_loop, tls_api_test_with_loss,
+    keep_alive_test_impl, key_rotation_auto_one, key_rotation_test_one, migration_test_scenario,
+    mtu_discovery_test_one, mtu_drop_cc_algotest, nat_rebinding_test_one, optimistic_ack_test_one,
+    padding_test_one, preferred_address_test_one, qlog_fns_test_one, qlog_trace_test_one,
+    ready_to_send_test_one, red_cc_algotest, request_client_authentication_test_one,
+    save_empty_tickets, session_resume_wait_for_ticket, short_initial_cid_test_one,
+    stop_sending_test_one, test_api_init_send_recv_scenario, test_random, test_random_bytes,
+    test_uniform_random, tester_push_frame_packet, tester_simple_ack_frame,
+    tester_wait_handshake_key, tls_api_close_with_losses, tls_api_connection_loop,
+    tls_api_data_sending_loop, tls_api_init_ctx, tls_api_init_ctx_ex, tls_api_init_ctx_ex2,
+    tls_api_init_ctx_ex2_delayed, tls_api_init_ctx_zero_share, tls_api_loss_test,
+    tls_api_one_scenario_body, tls_api_one_scenario_body_connect, tls_api_one_scenario_body_ex,
+    tls_api_one_scenario_body_verify, tls_api_one_scenario_init_ex, tls_api_one_scenario_verify,
+    tls_api_one_sim_round, tls_api_one_sim_round_with_loss, tls_api_retry_test_one,
+    tls_api_synch_to_empty_loop, tls_api_test_with_loss, tls_api_test_with_loss_final,
     tls_retry_token_test_one, transmit_cnxid_test_one, wait_client_connection_ready,
     zero_rtt_test_one,
 };
@@ -61,20 +61,6 @@ const QUALITY_UPDATE_CSV: &str = "quality_update.csv";
 const QUALITY_UPDATE_REF: &str = "picoquictest/quality_update_ref.txt";
 const RANDOM_PADDING_TICKET_FILE: &str = "random_padding_tickets.bin";
 const RANDOM_PADDING_TEXT_LOG: &str = "random_padding_log.txt";
-
-const TEST_SCENARIO_VERY_LONG: &[TestApiStreamDesc] = &[TestApiStreamDesc {
-    stream_id: 4,
-    previous_stream_id: 0,
-    q_len: 257,
-    r_len: 1_000_000,
-}];
-
-const TEST_SCENARIO_Q_AND_R: &[TestApiStreamDesc] = &[TestApiStreamDesc {
-    stream_id: 4,
-    previous_stream_id: 0,
-    q_len: 257,
-    r_len: 2000,
-}];
 
 const CHELLO_MALFORMED: &[u8] = &[
     0x01, 0x00, 0x01, 0x19, 0x03, 0x03, 0xe2, 0xc9, 0x8d, 0x67, 0xe6, 0x60, 0xeb, 0x1f, 0xe4, 0xbc,
@@ -2288,7 +2274,7 @@ fn excess_repeat_test_one(
 #[test]
 fn excess_repeat() {
     const NB_REPEAT_MAX: usize = 128;
-    const ALGORITHMS: &[&str] = &["newreno", "cubic", "dcubic", "fastcc", "bbr", "prague"];
+    const ALGORITHMS: &[&str] = &["newreno", "cubic", "dcubic", "fast", "bbr", "prague"];
 
     register_all_congestion_control_algorithms();
 
@@ -2300,39 +2286,6 @@ fn excess_repeat() {
             .unwrap_or_else(|e| panic!("excess_repeat({algo_id}): {e:?}"));
     }
 }
-
-/// C: `false_migration_test` in `picoquictest/tls_api_test.c`.
-///
-/// Injects a packet with a spoofed source address and verifies the
-/// implementation does not migrate to it without a successful path challenge.
-const TEST_SCENARIO_Q_AND_R: &[TestApiStreamDesc] = &[TestApiStreamDesc {
-    stream_id: 4,
-    previous_stream_id: 0,
-    q_len: 257,
-    r_len: 2000,
-}];
-
-const TEST_SCENARIO_VERY_LONG: &[TestApiStreamDesc] = &[TestApiStreamDesc {
-    stream_id: 4,
-    previous_stream_id: 0,
-    q_len: 257,
-    r_len: 1_000_000,
-}];
-
-const TEST_SCENARIO_Q2_AND_R2: &[TestApiStreamDesc] = &[
-    TestApiStreamDesc {
-        stream_id: 4,
-        previous_stream_id: 0,
-        q_len: 257,
-        r_len: 2000,
-    },
-    TestApiStreamDesc {
-        stream_id: 8,
-        previous_stream_id: 0,
-        q_len: 531,
-        r_len: 11_000,
-    },
-];
 
 const TEST_SCENARIO_MIGRATION_FAIL_VERY_LONG: &[TestApiStreamDesc] = &[TestApiStreamDesc {
     stream_id: 4,
@@ -3990,8 +3943,12 @@ fn many_losses_loss_test(loss_mask: u64) -> crate::Result<()> {
         tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
     let mut loss_mask = loss_mask;
     many_losses_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    wait_client_connection_ready(&mut test_ctx, &mut simulated_time)?;
-    tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
+    tls_api_test_with_loss_final(
+        &mut test_ctx,
+        Some(TEST_SNI),
+        Some(TEST_ALPN),
+        &mut simulated_time,
+    )
 }
 
 fn many_losses_q_and_r_scenario(init_loss_mask: u64) -> crate::Result<()> {
@@ -5221,8 +5178,15 @@ fn no_ack_frequency() {
         server_parameters.enable_loss_bit = if i > 1 { 0 } else { 1 };
 
         let mut simulated_time = Instant::from_ticks(0);
-        let mut test_ctx = tls_api_init_ctx_ex(&mut simulated_time, 0, None, None)
-            .unwrap_or_else(|| panic!("no_ack_frequency({i}): ctx"));
+        let mut test_ctx = tls_api_init_ctx_ex2_delayed(
+            &mut simulated_time,
+            0,
+            Some(TEST_SNI),
+            Some(TEST_ALPN),
+            None,
+            None,
+        )
+        .unwrap_or_else(|| panic!("no_ack_frequency({i}): ctx"));
         test_ctx
             .cnx_client()
             .set_transport_parameters(&client_parameters);
@@ -5230,6 +5194,10 @@ fn no_ack_frequency() {
             .qserver
             .set_default_tp(&server_parameters)
             .unwrap_or_else(|e| panic!("no_ack_frequency({i}): server tp: {e:?}"));
+        test_ctx
+            .cnx_client()
+            .start_client()
+            .unwrap_or_else(|e| panic!("no_ack_frequency({i}): start client: {e:?}"));
 
         tls_api_one_scenario_body(
             &mut test_ctx,
@@ -5922,7 +5890,7 @@ fn pn_enc_1rtt() {
 
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)
         .expect("pn_enc_1rtt connection");
-    wait_application_aead_ready(&mut test_ctx, &mut simulated_time)
+    wait_pn_enc_application_aead_ready(&mut test_ctx, &mut simulated_time)
         .expect("pn_enc_1rtt application aead");
 
     let seq_num_1: [u8; 4] = [0xde, 0xad, 0xbe, 0xef];
@@ -5970,7 +5938,7 @@ fn pn_enc_1rtt() {
 }
 
 /// C: `wait_application_aead_ready` in `picoquictest/tls_api_test.c`.
-fn wait_application_aead_ready(
+fn wait_pn_enc_application_aead_ready(
     test_ctx: &mut TestTlsApiCtx,
     simulated_time: &mut Instant,
 ) -> crate::Result<()> {
@@ -6592,9 +6560,8 @@ fn qlog_trace_parallel() {
 /// the RTT or bandwidth estimate changes.
 #[test]
 fn quality_update() {
-    use std::io::Write as _;
-
     let mut simulated_time = Instant::from_ticks(0);
+    let rows = Rc::new(RefCell::new(Vec::new()));
     let mut test_ctx = tls_api_init_ctx(&mut simulated_time, V1, None).expect("ctx");
     let quality_update_scenario = [TestApiStreamDesc {
         stream_id: 4,
@@ -6603,18 +6570,19 @@ fn quality_update() {
         r_len: 2000,
     }];
 
-    {
-        let mut file = std::fs::File::create(QUALITY_UPDATE_CSV).expect("quality_update.csv");
-        writeln!(
-            file,
-            "Time, Path_id, Sending_rate_CB, Pacing_rate, Receive_Rate, CWIN, RTT"
-        )
-        .expect("quality_update header");
-    }
-
+    std::fs::write(
+        QUALITY_UPDATE_CSV,
+        "Time, Path_id, Sending_rate_CB, Pacing_rate, Receive_Rate, CWIN, RTT\n",
+    )
+    .expect("quality_update header");
     test_ctx
         .cnx_client()
-        .subscribe_to_quality_update(0x10000, crate::Duration::from_ticks(0x1000));
+        .set_callback(Some(Box::new(QualityUpdateCallback {
+            rows: Rc::clone(&rows),
+        })));
+    test_ctx
+        .cnx_client()
+        .subscribe_to_quality_update(0x10000, Duration::from_ticks(0x1000));
 
     tls_api_one_scenario_body_ex(
         &mut test_ctx,
@@ -6629,7 +6597,59 @@ fn quality_update() {
     )
     .expect("quality_update scenario");
 
+    let mut csv =
+        String::from("Time, Path_id, Sending_rate_CB, Pacing_rate, Receive_Rate, CWIN, RTT\n");
+    for row in rows.borrow().iter() {
+        writeln!(
+            csv,
+            "{}, {}, {}, {}, {}, {}, {}",
+            row.time, row.path_id, row.event, row.pacing_rate, row.receive_rate, row.cwin, row.rtt
+        )
+        .expect("quality_update row");
+    }
+    std::fs::write(QUALITY_UPDATE_CSV, csv).expect("quality_update.csv");
     compare_text_files(QUALITY_UPDATE_CSV, QUALITY_UPDATE_REF).expect("quality_update reference");
+}
+
+#[derive(Clone, Copy)]
+struct QualityUpdateRow {
+    time: u64,
+    path_id: u64,
+    event: u32,
+    pacing_rate: u64,
+    receive_rate: u64,
+    cwin: u64,
+    rtt: u64,
+}
+
+struct QualityUpdateCallback {
+    rows: Rc<RefCell<Vec<QualityUpdateRow>>>,
+}
+
+impl StreamDataCallback for QualityUpdateCallback {
+    fn callback(
+        &mut self,
+        connection: &mut Connection,
+        stream_id: u64,
+        _bytes: &[u8],
+        fin_or_event: CallbackEvent,
+        _stream_ctx: Option<&mut dyn core::any::Any>,
+    ) -> i32 {
+        if fin_or_event == CallbackEvent::PathQualityChanged {
+            let time = connection.quic_time().ticks();
+            let quality = connection.default_path_quality();
+            self.rows.borrow_mut().push(QualityUpdateRow {
+                time,
+                path_id: stream_id,
+                event: fin_or_event as u32,
+                pacing_rate: quality.pacing_rate,
+                receive_rate: quality.receive_rate_estimate,
+                cwin: quality.cwin,
+                rtt: quality.rtt.ticks(),
+            });
+        }
+        0
+    }
 }
 
 /// C: `tls_quant_params_test` in `picoquictest/tls_api_test.c`.
@@ -6648,14 +6668,11 @@ fn quant_params() {
     client_params.initial_max_stream_data_bidi_remote = 0x2000;
     client_params.initial_max_stream_data_uni = 0x2000;
 
-    let mut ctx = tls_api_one_scenario_init_ex(
-        &mut t,
-        Version::InternalTest1,
-        Some(&client_params),
-        None,
-        None,
-    )
-    .expect("ctx");
+    let mut ctx =
+        tls_api_init_ctx_ex2_delayed(&mut t, V1, Some(TEST_SNI), Some(TEST_ALPN), None, None)
+            .expect("ctx");
+    ctx.cnx_client().set_transport_parameters(&client_params);
+    ctx.cnx_client().start_client().expect("start client");
     let quant_scenario = [TestApiStreamDesc {
         stream_id: 4,
         previous_stream_id: 0,
@@ -8939,10 +8956,18 @@ fn vn_compat() {
 
 fn vn_compat_test_one(current: u32, target: u32) -> crate::Result<()> {
     let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx =
-        tls_api_init_ctx(&mut simulated_time, current, None).ok_or(crate::Error::Generic)?;
+    let mut test_ctx = tls_api_init_ctx_ex2_delayed(
+        &mut simulated_time,
+        current,
+        Some(TEST_SNI),
+        Some(TEST_ALPN),
+        None,
+        None,
+    )
+    .ok_or(crate::Error::Generic)?;
 
     test_ctx.cnx_client().set_desired_version(target);
+    test_ctx.cnx_client().start_client()?;
 
     let mut loss_mask = 0u64;
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;

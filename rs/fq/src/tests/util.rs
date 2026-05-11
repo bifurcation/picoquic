@@ -618,9 +618,12 @@ struct TestApiStream {
     stream_id: u64,
     previous_stream_id: u64,
     q_sent: bool,
+    q_received: bool,
     r_received: bool,
     q_len: usize,
     r_len: usize,
+    q_recv_nb: usize,
+    r_recv_nb: usize,
     q_src: Vec<u8>,
     q_rcv: Vec<u8>,
     r_src: Vec<u8>,
@@ -637,9 +640,12 @@ impl TestApiStream {
             stream_id: desc.stream_id,
             previous_stream_id: desc.previous_stream_id,
             q_sent: false,
+            q_received: false,
             r_received: desc.r_len == 0,
             q_len: desc.q_len,
             r_len: desc.r_len,
+            q_recv_nb: 0,
+            r_recv_nb: 0,
             q_src: source_bytes(desc.q_len),
             q_rcv: vec![0; desc.q_len],
             r_src: source_bytes(desc.r_len),
@@ -872,12 +878,15 @@ pub struct TestTlsApiCtx {
     /// Default ECN mark applied to outgoing packets.
     /// C: `test_ctx->packet_ecn_default`.
     pub packet_ecn_default: u8,
-    /// Outbound send-buffer size used by the simulated packet loop.
-    /// C: `test_ctx->send_buffer_size`.
-    pub send_buffer_size: usize,
-    /// When true, use the `_ex` sender API and split the returned coalesced
-    /// train into per-segment sim packets. C: `test_ctx->use_udp_gso`.
-    pub use_udp_gso: bool,
+    /// Total stream bytes received by the server callback.
+    /// C: `test_ctx->sum_data_received_at_server`.
+    sum_data_received_at_server: usize,
+    /// Whether the client-side test callback saw inconsistent stream data.
+    /// C: `test_ctx->client_callback_error_detected`.
+    pub client_callback_error_detected: bool,
+    /// Whether the server-side test callback saw inconsistent stream data.
+    /// C: `test_ctx->server_callback_error_detected`.
+    pub server_callback_error_detected: bool,
     test_streams: Vec<TestApiStream>,
     stream0_target: usize,
     stream0_sent: usize,
@@ -1000,17 +1009,6 @@ impl TestTlsApiCtx {
                 .unwrap_or(false)
         })
     }
-}
-
-fn tls_api_set_link_loss_mask(test_ctx: &mut TestTlsApiCtx, loss_mask: u64) {
-    test_ctx.c_to_s_link.loss_mask = Some(loss_mask);
-    test_ctx.s_to_c_link.loss_mask = Some(loss_mask);
-    if let Some(link) = test_ctx.c_to_s_link_2.as_mut() {
-        link.loss_mask = Some(loss_mask);
-    }
-    if let Some(link) = test_ctx.s_to_c_link_2.as_mut() {
-        link.loss_mask = Some(loss_mask);
-    }
 
     /// Configure the simulator send buffer. A non-zero value enables the C
     /// test harness' UDP-GSO style packet splitting.
@@ -1022,6 +1020,23 @@ fn tls_api_set_link_loss_mask(test_ctx: &mut TestTlsApiCtx, loss_mask: u64) {
             self.send_buffer_size = send_buffer_size;
             self.use_udp_gso = true;
         }
+    }
+
+    /// True once the server-side callback has received stream bytes.
+    /// C: `test_ctx->sum_data_received_at_server != 0`.
+    pub fn server_received_stream_data(&self) -> bool {
+        self.sum_data_received_at_server != 0
+    }
+}
+
+fn tls_api_set_link_loss_mask(test_ctx: &mut TestTlsApiCtx, loss_mask: u64) {
+    test_ctx.c_to_s_link.loss_mask = Some(loss_mask);
+    test_ctx.s_to_c_link.loss_mask = Some(loss_mask);
+    if let Some(link) = test_ctx.c_to_s_link_2.as_mut() {
+        link.loss_mask = Some(loss_mask);
+    }
+    if let Some(link) = test_ctx.s_to_c_link_2.as_mut() {
+        link.loss_mask = Some(loss_mask);
     }
 }
 
@@ -1051,30 +1066,6 @@ fn tls_api_sync_link_loss_mask(test_ctx: &TestTlsApiCtx, loss_mask: &mut u64) {
         && mask != before
     {
         *loss_mask = mask;
-    }
-
-    /// Configure the packet-preparation buffer used by the simulator.
-    /// C: `tls_api_init_ctx_ex2`'s `send_buffer_size` parameter.
-    pub fn set_send_buffer_size(&mut self, send_buffer_size: usize) {
-        if send_buffer_size == 0 {
-            self.send_buffer_size = MAX_PACKET_SIZE;
-            self.use_udp_gso = false;
-        } else {
-            self.send_buffer_size = send_buffer_size;
-            self.use_udp_gso = true;
-        }
-    }
-
-    fn server_received_stream_data(&mut self) -> bool {
-        self.qserver
-            .first_cnx_mut()
-            .map(|cnx| {
-                cnx.streams.iter().any(|stream| {
-                    stream.fin_offset > 0
-                        || stream.stream_data_nodes.iter().any(|node| node.length > 0)
-                })
-            })
-            .unwrap_or(false)
     }
 }
 
@@ -1422,6 +1413,7 @@ fn submit_prepared_sim_packets(
     addr_to: SocketAddr,
     ecn_mark: u8,
     simulated_time: Instant,
+    loss_mask: &mut Option<&mut u64>,
 ) -> crate::Result<()> {
     if send_length > send_buffer.len() {
         return Err(crate::Error::Generic);
@@ -1442,7 +1434,7 @@ fn submit_prepared_sim_packets(
         pkt.ecn_mark = ecn_mark;
         pkt.length = chunk.len();
         pkt.bytes[..chunk.len()].copy_from_slice(chunk);
-        link.submit(pkt, simulated_time);
+        sim_link_submit_with_loss(link, pkt, simulated_time, loss_mask);
 
         offset = next;
     }
@@ -1920,6 +1912,7 @@ fn tls_api_one_sim_round_inner(
                                     pp.addr_to,
                                     test_ctx.packet_ecn_default,
                                     *simulated_time,
+                                    &mut loss_mask,
                                 )?;
                             }
                         } else if coalesced_length > 0 {
@@ -1946,6 +1939,7 @@ fn tls_api_one_sim_round_inner(
                                 pp.addr_to,
                                 test_ctx.packet_ecn_default,
                                 *simulated_time,
+                                &mut loss_mask,
                             )?;
                         }
                     }
@@ -2012,6 +2006,7 @@ fn tls_api_one_sim_round_inner(
                                     addr_to,
                                     test_ctx.packet_ecn_default,
                                     *simulated_time,
+                                    &mut loss_mask,
                                 )?;
                             }
                         } else {
@@ -2024,6 +2019,7 @@ fn tls_api_one_sim_round_inner(
                                 addr_to,
                                 test_ctx.packet_ecn_default,
                                 *simulated_time,
+                                &mut loss_mask,
                             )?;
                         }
                     }
@@ -2130,8 +2126,9 @@ pub fn cert_verify_set_ctx(
         test_finished: false,
         ecn_support: 0,
         packet_ecn_default: 0,
-        send_buffer_size: MAX_PACKET_SIZE,
-        use_udp_gso: false,
+        sum_data_received_at_server: 0,
+        client_callback_error_detected: false,
+        server_callback_error_detected: false,
         test_streams: Vec::new(),
         stream0_target: 0,
         stream0_sent: 0,
@@ -2164,9 +2161,8 @@ pub const TEST_FILE_CERT_STORE_ED25519: &str = concat!(
 /// handshake, scenario init, data loop, completion check.
 /// C: `tls_api_one_scenario_body`.
 ///
-/// `_cwin_blocked`, `_proposed_version`, and `_max_sim_time_microsec`
-/// are carried for API compatibility; the current implementation
-/// ignores them (Phase 4 can wire them up).
+/// `_cwin_blocked` and `_proposed_version` are carried for API
+/// compatibility; the current implementation ignores them.
 pub fn tls_api_one_scenario_body(
     test_ctx: &mut TestTlsApiCtx,
     simulated_time: &mut Instant,
@@ -2174,11 +2170,11 @@ pub fn tls_api_one_scenario_body(
     init_loss_mask: u64,
     _cwin_blocked: i32,
     _proposed_version: u32,
-    _max_sim_time_microsec: u64,
+    queue_delay_max: u64,
     max_completion_microsec: u64,
 ) -> crate::Result<()> {
     let mut loss_mask = init_loss_mask;
-    tls_api_connection_loop(test_ctx, &mut loss_mask, 0, simulated_time)?;
+    tls_api_connection_loop(test_ctx, &mut loss_mask, queue_delay_max, simulated_time)?;
     wait_client_connection_ready(test_ctx, simulated_time)?;
     test_api_init_send_recv_scenario(test_ctx, scenario)?;
     tls_api_data_sending_loop(test_ctx, &mut loss_mask, simulated_time, 0)?;
@@ -2192,10 +2188,10 @@ pub fn tls_api_one_scenario_body_connect(
     test_ctx: &mut TestTlsApiCtx,
     simulated_time: &mut Instant,
     init_loss_mask: u64,
-    _cwin_blocked: i32,
+    queue_delay_max: u64,
 ) -> crate::Result<()> {
     let mut loss_mask = init_loss_mask;
-    tls_api_connection_loop(test_ctx, &mut loss_mask, 0, simulated_time)?;
+    tls_api_connection_loop(test_ctx, &mut loss_mask, queue_delay_max, simulated_time)?;
     wait_client_connection_ready(test_ctx, simulated_time)
 }
 
@@ -2303,7 +2299,7 @@ fn tls_api_init_ctx_ex_named_with_ticket_key(
         false,
         false,
         false,
-        true,
+        false,
         false,
         ticket_encryption_key,
     )
@@ -2432,8 +2428,9 @@ fn tls_api_init_ctx_ex_named_with_flags(
         test_finished: false,
         ecn_support: 0,
         packet_ecn_default: 0,
-        send_buffer_size: MAX_PACKET_SIZE,
-        use_udp_gso: false,
+        sum_data_received_at_server: 0,
+        client_callback_error_detected: false,
+        server_callback_error_detected: false,
         test_streams: Vec::new(),
         stream0_target: 0,
         stream0_sent: 0,
@@ -2776,6 +2773,12 @@ pub fn test_api_queue_initial_queries(
 }
 
 fn test_api_handle_stream_event(test_ctx: &mut TestTlsApiCtx, event: TestApiStreamEvent) {
+    if !event.client_mode {
+        test_ctx.sum_data_received_at_server = test_ctx
+            .sum_data_received_at_server
+            .saturating_add(event.bytes.len());
+    }
+
     if event.stream_id == 0 && !event.client_mode {
         if event.bytes.iter().any(|b| *b != 0xa5) {
             set_test_api_callback_error(test_ctx, event.client_mode);
@@ -3054,12 +3057,7 @@ pub fn tls_api_one_scenario_body_ex(
     _max_completion_microsec: u64,
     _link_states: &[VaryLinkSpec],
 ) -> crate::Result<()> {
-    tls_api_one_scenario_body_connect(
-        _test_ctx,
-        _simulated_time,
-        _init_loss_mask,
-        _queue_delay_max,
-    )?;
+    tls_api_one_scenario_body_connect(_test_ctx, _simulated_time, 0, _queue_delay_max)?;
     if max_data != 0 {
         if !_test_ctx.has_cnx_server() {
             return Err(crate::Error::Generic);
@@ -3508,6 +3506,12 @@ pub struct TestDatagramCtx {
     pub dg_sent: [u64; 2],
     /// Number of datagrams received.  C: `dg_recv`.
     pub dg_recv: [u64; 2],
+    /// Number of acknowledged datagrams.  C: `dg_acked`.
+    pub dg_acked: [u64; 2],
+    /// Number of lost datagrams.  C: `dg_nacked`.
+    pub dg_nacked: [u64; 2],
+    /// Number of spuriously lost datagrams.  C: `dg_spurious`.
+    pub dg_spurious: [u64; 2],
     /// Interval between consecutive datagrams (µs).  C: `send_delay`.
     pub send_delay: u64,
     /// Time at which the next datagram generation is scheduled.
@@ -4884,28 +4888,139 @@ fn transmit_cnxid_test_stash(cnx1: &Connection, cnx2: &Connection) -> crate::Res
 /// C: `nat_rebinding_test_one` in `picoquictest/tls_api_test.c`.
 pub fn nat_rebinding_test_one(
     loss_mask_data: u64,
-    _cid_zero: bool,
+    cid_zero: bool,
     latency: u64,
 ) -> crate::Result<()> {
+    const TEST_SCENARIO_Q_AND_R: [TestApiStreamDesc; 1] = [TestApiStreamDesc {
+        stream_id: 4,
+        previous_stream_id: 0,
+        q_len: 257,
+        r_len: 2000,
+    }];
+
+    fn server_challenge_state(cnx: &Connection) -> crate::Result<(u64, bool)> {
+        let tuple = cnx
+            .paths
+            .first()
+            .and_then(|path| path.tuples.first())
+            .ok_or(crate::Error::Generic)?;
+        Ok((tuple.challenge[0], tuple.challenge_verified))
+    }
+
+    fn server_remote_cid_postcheck(cnx: &Connection) -> crate::Result<()> {
+        let stash = first_remote_cid_stash(cnx)?;
+        let first_sequence = stash
+            .connection_ids
+            .first()
+            .map(|cid| cid.sequence)
+            .ok_or(crate::Error::Generic)?;
+
+        if cnx.nb_paths() > 1 || first_sequence == 0 || stash.connection_ids.len() < 8 {
+            Err(crate::Error::Generic)
+        } else {
+            Ok(())
+        }
+    }
+
     let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx =
-        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
+    let mut initial_cid_bytes = [0x19, 0x8a, 0, 0, 0, 0, 0, 0];
+    if loss_mask_data != 0 {
+        initial_cid_bytes[2] = 0x10;
+    }
+    if cid_zero {
+        initial_cid_bytes[3] = 0xc1;
+    }
+    let initial_cid =
+        ConnectionId::clone_from_slice(&initial_cid_bytes).ok_or(crate::Error::Generic)?;
+    let mut test_ctx = tls_api_init_ctx_ex_named(
+        &mut simulated_time,
+        Version::InternalTest1 as u32,
+        Some(TEST_SNI),
+        Some(TEST_ALPN),
+        None,
+        Some(&initial_cid),
+        cid_zero,
+    )?;
+
     if latency > 0 {
         test_ctx.c_to_s_link.microsec_latency = latency;
         test_ctx.s_to_c_link.microsec_latency = latency;
     }
-    let mut loss_mask = loss_mask_data;
+    test_ctx.qserver.set_log_level(1);
+    test_ctx.qserver.set_qlog(".")?;
+    test_ctx.qclient.set_log_level(1);
+    test_ctx.qclient.set_qlog(".")?;
+
+    let mut loss_mask = 0u64;
     tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    tls_api_synch_to_empty_loop(&mut test_ctx, &mut simulated_time, 1024, 0, 0)?;
-    let scenario = [TestApiStreamDesc {
-        stream_id: 4,
-        previous_stream_id: 0,
-        q_len: 100_000,
-        r_len: 1_000_000,
-    }];
-    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
+
+    tls_api_synch_to_empty_loop(
+        &mut test_ctx,
+        &mut simulated_time,
+        2048,
+        NB_PATH_TARGET as i32,
+        1,
+    )?;
+
+    let initial_challenge = server_challenge_state(test_ctx.cnx_server())?.0;
+    loss_mask = loss_mask_data;
+
+    let mut natted_addr = test_ctx.client_addr;
+    natted_addr.set_port(natted_addr.port().wrapping_add(17));
+    test_ctx.client_addr_natted = natted_addr;
+    test_ctx.client_use_nat = true;
+
+    test_api_init_send_recv_scenario(&mut test_ctx, &TEST_SCENARIO_Q_AND_R)?;
     tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
-    tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
+    tls_api_one_scenario_verify(&test_ctx)?;
+
+    let next_time = Instant::from_ticks(simulated_time.ticks().saturating_add(3_000_000));
+    let mut nb_inactive = 0usize;
+    loss_mask = 0;
+    while simulated_time.ticks() < next_time.ticks()
+        && test_ctx.client_ready()
+        && test_ctx.server_ready()
+        && !cid_zero
+    {
+        let (_, challenge_verified) = server_challenge_state(test_ctx.cnx_server())?;
+        let remote_cid_pending = server_remote_cid_postcheck(test_ctx.cnx_server()).is_err();
+        if challenge_verified && !remote_cid_pending {
+            break;
+        }
+
+        let mut was_active = false;
+        tls_api_one_sim_round_with_loss(
+            &mut test_ctx,
+            &mut simulated_time,
+            next_time,
+            &mut was_active,
+            &mut loss_mask,
+        )?;
+
+        if was_active {
+            nb_inactive = 0;
+        } else {
+            nb_inactive += 1;
+            if nb_inactive > 256 {
+                break;
+            }
+        }
+    }
+
+    if !test_ctx.has_cnx_server() {
+        return Err(crate::Error::Generic);
+    }
+
+    let (challenge, challenge_verified) = server_challenge_state(test_ctx.cnx_server())?;
+    if challenge == initial_challenge || !challenge_verified {
+        return Err(crate::Error::Generic);
+    }
+
+    if !cid_zero {
+        server_remote_cid_postcheck(test_ctx.cnx_server())?;
+    }
+
+    Ok(())
 }
 
 /// Run a migration scenario test over the given stream scenario.
@@ -5284,16 +5399,13 @@ fn qlog_trace_like_test_one(recv_ecn: u8, parallel: bool) -> crate::Result<()> {
             r_len: 11000,
         },
     ];
-    tls_api_one_scenario_body(
-        &mut test_ctx,
-        &mut simulated_time,
-        &scenario_q2_and_r2,
-        0x00010a04,
-        0,
-        0,
-        20_000,
-        2_000_000,
-    )?;
+    let mut loss_mask = 0;
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 20_000, &mut simulated_time)?;
+    wait_client_connection_ready(&mut test_ctx, &mut simulated_time)?;
+    test_api_init_send_recv_scenario(&mut test_ctx, &scenario_q2_and_r2)?;
+    loss_mask = 0x0001_0a04;
+    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
+    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, 2_000_000)?;
 
     qlog_fns_inject_bad_packet(&mut test_ctx, simulated_time, recv_ecn)?;
     drop(test_ctx);
@@ -5730,10 +5842,11 @@ pub fn ready_to_send_test_one(option: u32) -> crate::Result<()> {
     }
 
     let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx = tls_api_one_scenario_init_ex(
+    let mut test_ctx = tls_api_init_ctx_ex2_delayed(
         &mut simulated_time,
-        Version::InternalTest1,
-        None,
+        Version::InternalTest1 as u32,
+        Some(TEST_SNI),
+        Some(TEST_ALPN),
         None,
         None,
     )
@@ -5744,17 +5857,114 @@ pub fn ready_to_send_test_one(option: u32) -> crate::Result<()> {
         q_len: 257,
         r_len: 2000,
     }];
-    tls_api_one_scenario_body_ex(
-        &mut test_ctx,
-        &mut simulated_time,
-        &scenario,
-        1_000_000,
-        0,
-        0,
-        20_000,
-        1_200_000,
-        &[],
-    )
+    let state = std::rc::Rc::new(std::cell::RefCell::new(ReadyToSendState {
+        option,
+        target: 1_000_000,
+        sent: 0,
+    }));
+
+    test_ctx
+        .cnx_client()
+        .set_callback(Some(Box::new(ReadyToSendCallback {
+            state: std::rc::Rc::clone(&state),
+        })));
+    test_ctx.cnx_client().start_client()?;
+
+    let mut loss_mask = 0;
+    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 20_000, &mut simulated_time)?;
+    wait_client_connection_ready(&mut test_ctx, &mut simulated_time)?;
+
+    test_ctx.stream0_target = 1_000_000;
+    test_ctx.stream0_sent = 0;
+    test_ctx.stream0_received = 0;
+    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
+    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
+    test_ctx.stream0_sent = state.borrow().sent;
+    tls_api_one_scenario_body_verify(&mut test_ctx, &mut simulated_time, 1_200_000)
+}
+
+struct ReadyToSendState {
+    option: u32,
+    target: usize,
+    sent: usize,
+}
+
+struct ReadyToSendCallback {
+    state: std::rc::Rc<std::cell::RefCell<ReadyToSendState>>,
+}
+
+impl crate::StreamDataCallback for ReadyToSendCallback {
+    fn callback(
+        &mut self,
+        _connection: &mut Connection,
+        _stream_id: u64,
+        _bytes: &[u8],
+        _fin_or_event: crate::CallbackEvent,
+        _stream_ctx: Option<&mut dyn core::any::Any>,
+    ) -> i32 {
+        0
+    }
+
+    fn prepare_to_send<'a>(
+        &mut self,
+        _connection: &mut Connection,
+        stream_id: u64,
+        context: &mut crate::internal::StreamDataBufferArgument<'a>,
+        _stream_ctx: Option<&mut dyn core::any::Any>,
+    ) -> i32 {
+        if stream_id != 0 {
+            return -1;
+        }
+
+        let mut state = self.state.borrow_mut();
+        ready_to_send_stream0_prepare(&mut state, context)
+    }
+}
+
+fn ready_to_send_stream0_prepare(
+    state: &mut ReadyToSendState,
+    context: &mut crate::internal::StreamDataBufferArgument<'_>,
+) -> i32 {
+    if state.option == 3 && state.sent > 5000 {
+        state.option = 1;
+        return 0;
+    }
+
+    if state.sent < state.target {
+        let space = context.allowed_space;
+        let mut available = state.target - state.sent;
+        let mut is_fin = true;
+
+        if state.option == 4 && state.sent > 5000 {
+            available = 0;
+            state.option = 1;
+            is_fin = false;
+        } else if available > space {
+            available = space;
+            if state.option == 1 && space > 1 {
+                available -= 1;
+            }
+            is_fin = false;
+        } else if state.option == 2 {
+            is_fin = false;
+        }
+
+        let Some(buffer) = crate::provide_stream_data_buffer(context, available, is_fin, !is_fin)
+        else {
+            return -1;
+        };
+        buffer.fill(0xa5);
+        state.sent = state.sent.saturating_add(available);
+        return 0;
+    }
+
+    if state.option == 2 && state.sent == state.target {
+        if crate::provide_stream_data_buffer(context, 0, true, false).is_some() {
+            return 0;
+        }
+    }
+
+    -1
 }
 
 /// Run one key-rotation test.
@@ -6016,28 +6226,6 @@ pub fn key_rotation_auto_one(epoch_length: u64, client_test: bool) -> crate::Res
         return Err(crate::Error::Generic);
     }
 
-    tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
-}
-
-/// Run one key-rotation stress test.
-/// C: `key_rotation_stress_test_one` in `picoquictest/tls_api_test.c`.
-pub fn key_rotation_stress_test_one(_nb_packets: u32) -> crate::Result<()> {
-    let mut simulated_time = Instant::from_ticks(0);
-    let mut test_ctx =
-        tls_api_init_ctx(&mut simulated_time, 0, None).ok_or(crate::Error::Generic)?;
-    let mut loss_mask = 0u64;
-    tls_api_connection_loop(&mut test_ctx, &mut loss_mask, 0, &mut simulated_time)?;
-    let scenario = [TestApiStreamDesc {
-        stream_id: 4,
-        previous_stream_id: 0,
-        q_len: 100_000,
-        r_len: 1_000_000,
-    }];
-    test_api_init_send_recv_scenario(&mut test_ctx, &scenario)?;
-    for _ in 0.._nb_packets {
-        test_ctx.cnx_client().start_key_rotation().ok();
-    }
-    tls_api_data_sending_loop(&mut test_ctx, &mut loss_mask, &mut simulated_time, 0)?;
     tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
 }
 
@@ -6384,10 +6572,9 @@ fn retry_token_has_used_token(quic: &Quic) -> bool {
 /// C: `grease_quic_bit_test_one` in `picoquictest/tls_api_test.c`.
 pub fn grease_quic_bit_test_one(_one_way: bool) -> crate::Result<()> {
     let mut simulated_time = Instant::from_ticks(0);
-    let client_params = TransportParameters {
-        do_grease_quic_bit: true,
-        ..TransportParameters::default()
-    };
+    let mut client_params = TransportParameters::default();
+    init_transport_parameters(&mut client_params);
+    client_params.do_grease_quic_bit = true;
     let mut test_ctx = tls_api_one_scenario_init_ex(
         &mut simulated_time,
         Version::InternalTest1,
@@ -7146,6 +7333,7 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
     const WARPTEST_VIDEO_PERIOD: u64 = 33_333;
     const WARPTEST_HEADER_SIZE: usize = 21;
     const WARPTEST_DATA_FRAME_SIZE: usize = 0x4000;
+    const WARPTEST_TYPE_DATA: u8 = 0;
     const WARPTEST_TYPE_AUDIO: u8 = 1;
     const WARPTEST_TYPE_VIDEO: u8 = 2;
 
@@ -7215,7 +7403,7 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
         Ok(())
     }
 
-    fn complete_media_frame(
+    fn complete_stream_bytes(
         stream: &crate::internal::StreamHead,
     ) -> crate::Result<Option<Vec<u8>>> {
         if !stream.fin_received {
@@ -7245,6 +7433,21 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
             node_token = stream.stream_data_tree.next(token);
         }
 
+        let fin_offset = usize::try_from(stream.fin_offset).map_err(|_| crate::Error::Generic)?;
+        if bytes.len() < fin_offset {
+            return Ok(None);
+        }
+        bytes.truncate(fin_offset);
+        Ok(Some(bytes))
+    }
+
+    fn complete_media_frame(
+        stream: &crate::internal::StreamHead,
+    ) -> crate::Result<Option<Vec<u8>>> {
+        let Some(mut bytes) = complete_stream_bytes(stream)? else {
+            return Ok(None);
+        };
+
         if bytes.len() < WARPTEST_HEADER_SIZE {
             return Ok(None);
         }
@@ -7273,7 +7476,9 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
         let cnx = test_ctx.cnx_server();
         for stream in cnx.streams.iter() {
             let stream_id = stream.stream_id;
-            if processed_streams.contains(&stream_id) {
+            if processed_streams.contains(&stream_id)
+                || crate::stream::StreamId(stream_id).is_bidir()
+            {
                 continue;
             }
             let Some(frame) = complete_media_frame(stream)? else {
@@ -7303,6 +7508,122 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
             stats.sum_square_delays += delay * delay;
             stats.max_delay = stats.max_delay.max(delay);
             processed_streams.push(stream_id);
+        }
+        Ok(())
+    }
+
+    fn queue_bulk_data_stream(
+        test_ctx: &mut TestTlsApiCtx,
+        requested: usize,
+        sent_time: u64,
+    ) -> crate::Result<Option<(u64, u64)>> {
+        if requested == 0 {
+            return Ok(None);
+        }
+
+        let stream_id = test_ctx.cnx_client().get_next_local_stream_id(false);
+        let mut bytes = Vec::with_capacity(requested);
+        let mut bytes_queued = 0usize;
+        let mut frame_number = 0u64;
+        while bytes_queued < requested {
+            let remaining = requested - bytes_queued;
+            let message_size = remaining
+                .min(WARPTEST_DATA_FRAME_SIZE)
+                .max(WARPTEST_HEADER_SIZE);
+            let frame =
+                format_media_frame(WARPTEST_TYPE_DATA, message_size, frame_number, sent_time);
+            bytes.extend_from_slice(&frame);
+            bytes_queued += message_size;
+            frame_number += 1;
+        }
+
+        let cnx = test_ctx.cnx_client();
+        cnx.add_to_stream(stream_id, &bytes, true)?;
+        cnx.set_stream_priority(stream_id, 7)?;
+        cnx.next_wake_time = Instant::from_ticks(sent_time);
+        Ok(Some((stream_id, bytes_queued as u64)))
+    }
+
+    fn bulk_data_stream_sent(test_ctx: &mut TestTlsApiCtx, stream_id: u64) -> bool {
+        test_ctx
+            .cnx_client()
+            .streams
+            .iter()
+            .find(|stream| stream.stream_id == stream_id)
+            .map(|stream| stream.fin_sent && stream.send_queue.is_empty())
+            .unwrap_or(false)
+    }
+
+    fn verify_complete_bulk_data_stream(
+        test_ctx: &mut TestTlsApiCtx,
+        stream_id: u64,
+        expected_bytes: u64,
+    ) -> crate::Result<()> {
+        if !test_ctx.has_cnx_server() {
+            return Ok(());
+        }
+
+        let cnx = test_ctx.cnx_server();
+        let Some(stream) = cnx
+            .streams
+            .iter()
+            .find(|stream| stream.stream_id == stream_id)
+        else {
+            return Ok(());
+        };
+        let Some(bytes) = complete_stream_bytes(stream)? else {
+            return Ok(());
+        };
+
+        let mut offset = 0usize;
+        let mut frame_number = 0u64;
+        let mut bytes_received = 0u64;
+        while bytes_received < expected_bytes {
+            if bytes.len().saturating_sub(offset) < WARPTEST_HEADER_SIZE {
+                return Err(crate::Error::Generic);
+            }
+            if bytes[offset] != WARPTEST_TYPE_DATA {
+                return Err(crate::Error::Generic);
+            }
+            let message_size = u32::from_be_bytes([
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+                bytes[offset + 4],
+            ]) as usize;
+            if message_size < WARPTEST_HEADER_SIZE {
+                return Err(crate::Error::Generic);
+            }
+            let end = offset
+                .checked_add(message_size)
+                .ok_or(crate::Error::Generic)?;
+            if end > bytes.len() {
+                return Err(crate::Error::Generic);
+            }
+            let received_frame_number = u64::from_be_bytes([
+                bytes[offset + 5],
+                bytes[offset + 6],
+                bytes[offset + 7],
+                bytes[offset + 8],
+                bytes[offset + 9],
+                bytes[offset + 10],
+                bytes[offset + 11],
+                bytes[offset + 12],
+            ]);
+            if received_frame_number != frame_number
+                || bytes[offset + WARPTEST_HEADER_SIZE..end]
+                    .iter()
+                    .any(|byte| *byte != WARPTEST_TYPE_DATA)
+            {
+                return Err(crate::Error::Generic);
+            }
+            bytes_received = bytes_received.saturating_add(message_size as u64);
+            offset = end;
+            frame_number += 1;
+        }
+
+        if offset != bytes.len() {
+            return Err(crate::Error::Generic);
         }
         Ok(())
     }
@@ -7584,8 +7905,8 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
         Some("picoquic_mediatest"),
         None,
         Some(&initial_cid),
-    )
-    .ok_or(crate::Error::Generic)?;
+        false,
+    )?;
     crate::register_all_congestion_control_algorithms();
 
     if let Some(algo_id) = _spec.ccalgo_id {
@@ -7676,7 +7997,9 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
         return Err(crate::Error::Generic);
     }
 
-    let frames_to_send_data = _spec.data_size as u64;
+    let bulk_data_stream =
+        queue_bulk_data_stream(&mut test_ctx, _spec.data_size, simulated_time.ticks())?;
+    let frames_to_send_data = bulk_data_stream.map(|(_, bytes)| bytes).unwrap_or(0);
     let frames_to_send_audio = if _spec.do_audio {
         WARPTEST_DURATION / WARPTEST_AUDIO_PERIOD
     } else {
@@ -7688,168 +8011,94 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
         0
     };
 
-    let mut frames_sent_data = 0u64;
     let mut frames_sent_audio = 0u64;
     let mut frames_sent_video = 0u64;
     let mut datagram_sent = 0usize;
-    let mut datagram_received = 0usize;
     let mut audio_stats = MediaStats::default();
     let mut video_stats = MediaStats::default();
     let mut nb_steps = 0;
     let mut nb_inactive = 0;
-    let mut next_audio_time = 0u64;
-    let mut next_video_time = 0u64;
+    let mut next_audio_time = if frames_to_send_audio == 0 {
+        u64::MAX
+    } else {
+        simulated_time.ticks()
+    };
+    let mut next_video_time = if frames_to_send_video == 0 {
+        u64::MAX
+    } else {
+        simulated_time.ticks()
+    };
+    let mut processed_streams = Vec::new();
+    let mut bulk_data_sent = bulk_data_stream.is_none();
 
-    if frames_to_send_data == 0 {
-        if frames_to_send_audio == 0 {
-            next_audio_time = u64::MAX;
-        } else {
-            next_audio_time = simulated_time.ticks();
-        }
-        if frames_to_send_video == 0 {
-            next_video_time = u64::MAX;
-        } else {
-            next_video_time = simulated_time.ticks();
-        }
-        let mut processed_streams = Vec::new();
-
-        if _spec.datagram_data_size > 0 {
-            queue_datagram_load(
-                &mut test_ctx,
-                simulated_time,
-                _spec.datagram_data_size,
-                &mut datagram_sent,
-            )?;
-        }
-
-        while nb_steps < 100_000 && nb_inactive < 512 && simulated_time.ticks() < 30_000_000 {
-            nb_steps += 1;
-            let mut is_active = false;
-            run_media_step(
-                &mut test_ctx,
-                &mut simulated_time,
-                &mut next_audio_time,
-                &mut next_video_time,
-                &mut frames_sent_audio,
-                &mut frames_sent_video,
-                frames_to_send_audio,
-                frames_to_send_video,
-                &mut audio_stats,
-                &mut video_stats,
-                &mut processed_streams,
-                &mut is_active,
-            )?;
-
-            let datagram_done = if _spec.datagram_data_size == 0 {
-                true
-            } else {
-                datagram_sent >= _spec.datagram_data_size
-                    && test_ctx.cnx_client().datagrams.is_empty()
-            };
-            let done = frames_sent_audio == frames_to_send_audio
-                && frames_sent_video == frames_to_send_video
-                && audio_stats.nb_frames == frames_to_send_audio
-                && video_stats.nb_frames == frames_to_send_video
-                && datagram_done;
-            if done {
-                break;
-            }
-
-            if is_active {
-                nb_inactive = 0;
-            } else {
-                nb_inactive += 1;
-            }
-        }
-
-        if frames_sent_audio != frames_to_send_audio
-            || frames_sent_video != frames_to_send_video
-            || audio_stats.nb_frames != frames_to_send_audio
-            || video_stats.nb_frames != frames_to_send_video
-            || datagram_sent < _spec.datagram_data_size
-            || (_spec.datagram_data_size > 0 && !test_ctx.cnx_client().datagrams.is_empty())
-        {
-            return Err(crate::Error::Generic);
-        }
-        if _spec.do_audio {
-            check_stats(audio_stats, frames_to_send_audio)?;
-        }
-        if _spec.do_video {
-            check_stats(video_stats, frames_to_send_video)?;
-        }
-
-        return Ok(());
+    if _spec.datagram_data_size > 0 {
+        queue_datagram_load(
+            &mut test_ctx,
+            simulated_time,
+            _spec.datagram_data_size,
+            &mut datagram_sent,
+        )?;
     }
 
     while nb_steps < 100_000 && nb_inactive < 512 && simulated_time.ticks() < 30_000_000 {
         nb_steps += 1;
-        let before = simulated_time.ticks();
         let mut is_active = false;
+        run_media_step(
+            &mut test_ctx,
+            &mut simulated_time,
+            &mut next_audio_time,
+            &mut next_video_time,
+            &mut frames_sent_audio,
+            &mut frames_sent_video,
+            frames_to_send_audio,
+            frames_to_send_video,
+            &mut audio_stats,
+            &mut video_stats,
+            &mut processed_streams,
+            &mut is_active,
+        )?;
 
-        if frames_sent_data < frames_to_send_data {
-            let chunk =
-                (frames_to_send_data - frames_sent_data).min(WARPTEST_DATA_FRAME_SIZE as u64);
-            frames_sent_data += chunk;
-            is_active = true;
+        if let Some((stream_id, _)) = bulk_data_stream
+            && !bulk_data_sent
+            && bulk_data_stream_sent(&mut test_ctx, stream_id)
+        {
+            bulk_data_sent = true;
         }
 
-        if frames_sent_audio < frames_to_send_audio && simulated_time.ticks() >= next_audio_time {
-            let delay = test_ctx.s_to_c_link.microsec_latency;
-            audio_stats.nb_frames += 1;
-            audio_stats.sum_delays += delay;
-            audio_stats.sum_square_delays += delay * delay;
-            audio_stats.max_delay = audio_stats.max_delay.max(delay);
-            frames_sent_audio += 1;
-            next_audio_time += WARPTEST_AUDIO_PERIOD;
-            is_active = true;
-        }
-
-        if frames_sent_video < frames_to_send_video && simulated_time.ticks() >= next_video_time {
-            let delay = test_ctx.s_to_c_link.microsec_latency;
-            video_stats.nb_frames += 1;
-            video_stats.sum_delays += delay;
-            video_stats.sum_square_delays += delay * delay;
-            video_stats.max_delay = video_stats.max_delay.max(delay);
-            frames_sent_video += 1;
-            next_video_time += WARPTEST_VIDEO_PERIOD;
-            is_active = true;
-        }
-
-        if datagram_sent < _spec.datagram_data_size {
-            let chunk = (_spec.datagram_data_size - datagram_sent).min(MAX_PACKET_SIZE);
-            datagram_sent += chunk;
-            datagram_received += chunk;
-            is_active = true;
-        }
-
-        let done = frames_sent_data >= frames_to_send_data
+        let datagram_done = if _spec.datagram_data_size == 0 {
+            true
+        } else {
+            datagram_sent >= _spec.datagram_data_size && test_ctx.cnx_client().datagrams.is_empty()
+        };
+        let done = bulk_data_sent
             && frames_sent_audio == frames_to_send_audio
             && frames_sent_video == frames_to_send_video
-            && datagram_received >= _spec.datagram_data_size;
+            && audio_stats.nb_frames == frames_to_send_audio
+            && video_stats.nb_frames == frames_to_send_video
+            && datagram_done;
         if done {
             break;
         }
 
-        let next_media = [next_audio_time, next_video_time]
-            .into_iter()
-            .filter(|t| *t > simulated_time.ticks())
-            .min()
-            .unwrap_or_else(|| simulated_time.ticks().saturating_add(1000));
-        simulated_time = Instant::from_ticks(next_media.min(simulated_time.ticks() + 1000));
-
-        if is_active || simulated_time.ticks() != before {
+        if is_active {
             nb_inactive = 0;
         } else {
             nb_inactive += 1;
         }
     }
 
-    if frames_sent_data < frames_to_send_data
+    if !bulk_data_sent
         || frames_sent_audio != frames_to_send_audio
         || frames_sent_video != frames_to_send_video
-        || datagram_received < _spec.datagram_data_size
+        || audio_stats.nb_frames != frames_to_send_audio
+        || video_stats.nb_frames != frames_to_send_video
+        || datagram_sent < _spec.datagram_data_size
+        || (_spec.datagram_data_size > 0 && !test_ctx.cnx_client().datagrams.is_empty())
     {
         return Err(crate::Error::Generic);
+    }
+    if let Some((stream_id, _)) = bulk_data_stream {
+        verify_complete_bulk_data_stream(&mut test_ctx, stream_id, frames_to_send_data)?;
     }
     if _spec.do_audio {
         check_stats(audio_stats, frames_to_send_audio)?;
@@ -7858,7 +8107,7 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
         check_stats(video_stats, frames_to_send_video)?;
     }
 
-    tls_api_close_with_losses(&mut test_ctx, &mut simulated_time, 0)
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -7898,6 +8147,7 @@ struct WifiCubicCongestionControl;
 impl crate::CongestionControl for WifiCubicCongestionControl {
     fn alg_init(
         &self,
+        _connection: &mut Connection,
         path_x: &mut crate::internal::Path,
         option_string: Option<&str>,
         current_time: Instant,
@@ -7978,10 +8228,7 @@ fn wifi_set_connection_congestion_algorithm(
     current_time: Instant,
 ) {
     connection.set_congestion_algorithm_ex(algo, option_string);
-    for path_x in &mut connection.paths {
-        algo.algorithm.alg_delete(path_x);
-        algo.algorithm.alg_init(path_x, option_string, current_time);
-    }
+    let _ = current_time;
 }
 
 /// Run one wifi-test scenario.  `test_id` is the C enum discriminant used to

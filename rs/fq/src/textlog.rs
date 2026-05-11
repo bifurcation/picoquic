@@ -43,6 +43,7 @@ use crate::internal::{
     Connection, PacketHeader, PacketType, Path, parse_stream_header, skip_frame,
 };
 use crate::logger::{Logger, LoggerRef, prepare_outgoing_packet_header};
+use crate::tp::TransportParameter;
 use crate::utils::frames_varint_decode;
 use crate::{ConnectionId, Duration, Instant, State};
 
@@ -83,6 +84,108 @@ fn write_textlog_prefix_initial_cid64(out: &mut dyn Write, cnx_id64: u64) {
     if cnx_id64 != 0 {
         let _ = write!(out, "{cnx_id64:016x}: ");
     }
+}
+
+/// Format QUIC transport-parameter bytes to the text log.
+///
+/// C: `picoquic_textlog_transport_extension_content`.
+pub fn textlog_transport_extension_content<W: Write>(
+    out: &mut W,
+    log_cnxid: bool,
+    cnx_id64: u64,
+    bytes: &[u8],
+) -> Result<(), Error> {
+    let write_prefix = |out: &mut W| -> Result<(), Error> {
+        if log_cnxid {
+            write!(out, "{cnx_id64:016x}: ").map_err(|_| Error::Generic)?;
+        }
+        Ok(())
+    };
+
+    if bytes.len() < 256 {
+        write_prefix(out)?;
+        writeln!(out, "    Extension list ({} bytes):", bytes.len()).map_err(|_| Error::Generic)?;
+
+        let mut rest = bytes;
+        while !rest.is_empty() {
+            let before_type = rest.len();
+            let Some((after_type, extension_type)) = frames_varint_decode(rest) else {
+                write_prefix(out)?;
+                writeln!(
+                    out,
+                    "        Malformed extension -- only {} bytes avaliable for type and length.",
+                    rest.len()
+                )
+                .map_err(|_| Error::Generic)?;
+                return Ok(());
+            };
+            let type_len = before_type - after_type.len();
+            let before_length = after_type.len();
+            let Some((after_length, extension_length)) = frames_varint_decode(after_type) else {
+                write_prefix(out)?;
+                writeln!(
+                    out,
+                    "        Malformed extension -- only {} bytes avaliable for type and length.",
+                    after_type.len()
+                )
+                .map_err(|_| Error::Generic)?;
+                return Ok(());
+            };
+            let length_len = before_length - after_length.len();
+            if type_len == 0 || length_len == 0 || extension_length as usize > after_length.len() {
+                write_prefix(out)?;
+                writeln!(
+                    out,
+                    "        Malformed extension -- only {} bytes avaliable for type and length.",
+                    after_length.len()
+                )
+                .map_err(|_| Error::Generic)?;
+                return Ok(());
+            }
+
+            let value_len = extension_length as usize;
+            let (value, suffix) = after_length.split_at(value_len);
+            write_prefix(out)?;
+            write!(
+                out,
+                "        Extension type: {} ({}), length {}{}",
+                extension_type,
+                TransportParameter::name(extension_type).unwrap_or("unknown"),
+                value_len,
+                if value_len == 0 { "" } else { ", " }
+            )
+            .map_err(|_| Error::Generic)?;
+            for byte in value {
+                write!(out, "{byte:02x}").map_err(|_| Error::Generic)?;
+            }
+            writeln!(out).map_err(|_| Error::Generic)?;
+            rest = suffix;
+        }
+    } else {
+        write_prefix(out)?;
+        writeln!(
+            out,
+            "Received transport parameter TLS extension ({} bytes):",
+            bytes.len()
+        )
+        .map_err(|_| Error::Generic)?;
+        write_prefix(out)?;
+        writeln!(out, "    First bytes ({}):", bytes.len()).map_err(|_| Error::Generic)?;
+        let mut byte_index = 0usize;
+        while byte_index < bytes.len() && byte_index < 128 {
+            write_prefix(out)?;
+            write!(out, "        ").map_err(|_| Error::Generic)?;
+            for _ in 0..32 {
+                if byte_index >= bytes.len() || byte_index >= 128 {
+                    break;
+                }
+                write!(out, "{:02x}", bytes[byte_index]).map_err(|_| Error::Generic)?;
+                byte_index += 1;
+            }
+            writeln!(out).map_err(|_| Error::Generic)?;
+        }
+    }
+    Ok(())
 }
 
 fn write_textlog_connection_id(out: &mut dyn Write, cid: &ConnectionId) {
@@ -391,6 +494,12 @@ fn write_textlog_frames(out: &mut dyn Write, log_cnxid64: u64, bytes: &[u8]) {
             }
         }
     }
+}
+
+/// Log a raw sequence of QUIC frames to the text-log stream.
+/// C: `picoquic_textlog_frames`.
+pub fn textlog_frames(out: &mut dyn Write, log_cnxid64: u64, bytes: &[u8]) {
+    write_textlog_frames(out, log_cnxid64, bytes);
 }
 
 fn write_textlog_decrypted_segment(

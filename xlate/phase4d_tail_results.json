@@ -1,0 +1,114 @@
+{
+  "results": [
+    {
+      "analysis": "Rust updates the deadline like C, but Quic exposes wake_file/wake_line and this helper omits the C SET_LAST_WAKE(PICOQUIC_SENDER) provenance side effect when app_wake_time wins.",
+      "c_id": "picoquic/sender.c:picoquic_program_app_wake_time",
+      "files_changed": [],
+      "fix_summary": "Set the Rust wake provenance to the sender file/line equivalent when app_wake_time updates next_wake_time.",
+      "outcome": "needs_fix",
+      "phase4c_status": "suspect",
+      "verification": [
+        "read-only context inspection of sender.c, internal.rs, and wake_file/wake_line fields"
+      ]
+    },
+    {
+      "analysis": "The Rust harness wrapper runs the same three sim_link_one_test cases with the same loss masks and expected loss counts. C stops on first nonzero ret; Rust assertions stop the test on first failure, preserving test-observable behavior.",
+      "c_id": "picoquic/sim_link.c:sim_link_test",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "suspect",
+      "verification": [
+        "read-only context inspection of sim_link.c and rs/fq/src/tests/harness.rs"
+      ]
+    },
+    {
+      "analysis": "Rust delegates to RandomSpinBit.outgoing, which returns public_random_64() as u8 & 0x20. That matches C's (uint8_t)(picoquic_public_random_64() & 0x20); the unused connection parameter is intentionally ignored in both.",
+      "c_id": "picoquic/spinbit.c:picoquic_spinbit_random_outgoing",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "suspect",
+      "verification": [
+        "read-only context inspection of spinbit.c and spinbit.rs"
+      ]
+    },
+    {
+      "analysis": "Rust's PacketKey::decrypt_mp abstraction folds C's path_id IV xor/decrypt/unxor sequence into the provider method. The nullable C context is represented by a required trait object, and decrypt failure maps to None.",
+      "c_id": "picoquic/tls_api.c:picoquic_aead_decrypt_mp",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "suspect",
+      "verification": [
+        "read-only context inspection of tls_api.c, lib.rs, and tls.rs PacketKey"
+      ]
+    },
+    {
+      "analysis": "Rust builds [odcid length] + odcid bytes + packet prefix and uses the same strict capacity test: byte_index + odcid.len() + 1 must be less than MAX_PACKET_SIZE. The extra byte_index > bytes.len() guard only rejects invalid safe-slice callers.",
+      "c_id": "picoquic/tls_api.c:picoquic_format_retry_protection_pseudo_packet",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "suspect",
+      "verification": [
+        "read-only context inspection of tls_api.c and tls_api.rs"
+      ]
+    },
+    {
+      "analysis": "For valid rnd_max values, Rust uses the same UINT64_MAX % rnd_max rejection threshold and returns rnd % rnd_max. The rnd_max == 0 guard only avoids C undefined division in invalid callers.",
+      "c_id": "picoquic/tls_api.c:picoquic_public_uniform_random",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "suspect",
+      "verification": [
+        "read-only context inspection of tls_api.c and internal.rs"
+      ]
+    },
+    {
+      "analysis": "C mutates the picotls context key_exchanges pointer for either all supported groups or secp256r1, with provider-availability failure. Rust only validates the ID and does not store or apply the selected key-exchange policy to TLS context state.",
+      "c_id": "picoquic/tls_api.c:picoquic_set_key_exchange",
+      "files_changed": [],
+      "fix_summary": "Persist and apply the selected key-exchange policy in the Rust TLS context/provider abstraction, including secp256r1 availability failure.",
+      "outcome": "needs_fix",
+      "phase4c_status": "suspect",
+      "verification": [
+        "read-only context inspection of tls_api.c, lib.rs, tls_api.rs, and tests"
+      ]
+    },
+    {
+      "analysis": "C calls the registered crypto-provider callback to install a private key into the ptls context and fails if the callback is unset. Rust only reads the file and checks PEM marker text, with no TLS context mutation or provider callback behavior.",
+      "c_id": "picoquic/tls_api.c:set_private_key_from_file",
+      "files_changed": [],
+      "fix_summary": "Wire private-key loading through the Rust TLS provider/context abstraction instead of marker-only file validation.",
+      "outcome": "needs_fix",
+      "phase4c_status": "suspect",
+      "verification": [
+        "read-only context inspection of tls_api.c, tls_api.rs, and crypto-provider state"
+      ]
+    },
+    {
+      "analysis": "C exits when there is no current debug stream and clears debug_out otherwise. Rust asserts when the thread-local sink is absent and clears it otherwise; assert panic is the Rust test/process-failure equivalent of the C fatal path.",
+      "c_id": "picoquic/util.c:debug_printf_pop_stream",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "suspect",
+      "verification": [
+        "read-only context inspection of util.c and utils.rs"
+      ]
+    },
+    {
+      "analysis": "Both C and Rust parse up to 18 hex-decoded bytes into zero-initialized connection-id storage and represent zero decoded bytes as an empty/null connection ID. Rust's Result return carries the output value instead of C's out parameter plus length.",
+      "c_id": "picoquic/util.c:picoquic_parse_connection_id_hexa",
+      "files_changed": [],
+      "fix_summary": "",
+      "outcome": "ok",
+      "phase4c_status": "suspect",
+      "verification": [
+        "read-only context inspection of util.c and utils.rs"
+      ]
+    }
+  ]
+}

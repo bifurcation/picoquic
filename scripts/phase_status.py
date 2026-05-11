@@ -188,7 +188,7 @@ def print_report(args: argparse.Namespace) -> None:
         f"{f_counts.get('required_missing', 0)} required missing "
         f"({f_counts.get('expected_omission', 0)} expected omissions)"
     )
-    print("Cargo tests: not run here; deferred to Phase 5C")
+    print("Cargo tests: not run here; deferred to Phase 6")
     print(
         "Workers: "
         f"screens {screens.get('phase4e', 0)}/{args.phase4e_workers} 4E, "

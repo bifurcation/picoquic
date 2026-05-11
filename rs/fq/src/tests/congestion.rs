@@ -12,13 +12,16 @@
 
 use super::util::{
     TestApiStreamDesc, check_bytes_in_flight, save_empty_tickets, test_api_init_send_recv_scenario,
-    tls_api_data_sending_loop, tls_api_init_ctx_ex, tls_api_one_scenario_body,
-    tls_api_one_scenario_body_connect, tls_api_one_scenario_body_verify,
+    tls_api_data_sending_loop, tls_api_init_ctx_ex, tls_api_init_ctx_ex2_delayed,
+    tls_api_one_scenario_body, tls_api_one_scenario_body_connect, tls_api_one_scenario_body_verify,
     tls_api_one_scenario_init_ex,
 };
 use crate::internal::{Version, init_transport_parameters};
 use crate::tp::TransportParameters;
-use crate::{CongestionAlgorithm, ConnectionId, Duration, Instant, get_congestion_algorithm};
+use crate::{
+    CongestionAlgorithm, ConnectionId, Duration, Instant, get_congestion_algorithm,
+    register_all_congestion_control_algorithms,
+};
 
 // ---------------------------------------------------------------------------
 // Shared stream scenarios.  C: file-scope statics in congestion_test.c.
@@ -152,7 +155,9 @@ enum BdpTestOption {
 
 fn cc_algo(name: &str) -> &'static CongestionAlgorithm {
     register_all_congestion_control_algorithms();
-    get_congestion_algorithm(name).unwrap_or_else(|| panic!("cc algo not found: {name}"))
+    let registry_name = if name == "fastcc" { "fast" } else { name };
+    get_congestion_algorithm(registry_name)
+        .unwrap_or_else(|| panic!("cc algo not found: {name} ({registry_name})"))
 }
 
 /// Run a congestion-control scenario on a symmetric 1 Mbps, 10 ms link.
@@ -176,13 +181,15 @@ fn congestion_control_test(
     ])
     .expect("8-byte CID");
 
-    let mut test_ctx = tls_api_init_ctx_ex(
+    let mut test_ctx = tls_api_init_ctx_ex2_delayed(
         &mut simulated_time,
         Version::InternalTest1 as u32,
         None,
+        None,
+        None,
         Some(&initial_cid),
     )
-    .expect("tls_api_init_ctx_ex");
+    .expect("tls_api_init_ctx_ex2_delayed");
 
     test_ctx.qserver.set_default_congestion_algorithm(ccalgo);
     test_ctx.cnx_client().set_congestion_algorithm(ccalgo);
@@ -191,6 +198,7 @@ fn congestion_control_test(
     test_ctx.s_to_c_link.jitter = jitter;
 
     test_ctx.qserver.set_qlog(".").ok();
+    test_ctx.cnx_client().start_client().expect("start client");
 
     tls_api_one_scenario_body(
         &mut test_ctx,
@@ -293,14 +301,21 @@ fn performance_test_one(
 
     let ccalgo = cc_algo("bbr");
 
-    let mut test_ctx = tls_api_one_scenario_init_ex(
+    let mut test_ctx = tls_api_init_ctx_ex2_delayed(
         &mut simulated_time,
-        Version::InternalTest1,
+        Version::InternalTest1 as u32,
         None,
-        server_params,
+        None,
+        None,
         Some(&initial_cid),
     )
-    .expect("tls_api_one_scenario_init_ex");
+    .expect("tls_api_init_ctx_ex2_delayed");
+    if let Some(params) = server_params {
+        test_ctx
+            .qserver
+            .set_default_tp(params)
+            .expect("set_default_tp");
+    }
 
     test_ctx.qserver.set_default_congestion_algorithm(ccalgo);
     test_ctx.cnx_client().set_congestion_algorithm(ccalgo);
@@ -315,6 +330,7 @@ fn performance_test_one(
     test_ctx.s_to_c_link.microsec_latency = latency;
     test_ctx.s_to_c_link.picosec_per_byte = picosec_per_byte_down;
     test_ctx.s_to_c_link.jitter = jitter;
+    test_ctx.cnx_client().start_client().expect("start client");
 
     tls_api_one_scenario_body(
         &mut test_ctx,
@@ -617,14 +633,18 @@ fn app_limit_cc_test_one(ccalgo: &'static CongestionAlgorithm, max_completion_ti
     init_transport_parameters(&mut client_params);
     client_params.initial_max_data = 40_000;
 
-    let mut test_ctx = tls_api_one_scenario_init_ex(
+    let mut test_ctx = tls_api_init_ctx_ex2_delayed(
         &mut simulated_time,
-        Version::InternalTest1,
-        Some(&client_params),
+        Version::InternalTest1 as u32,
+        None,
+        None,
         None,
         Some(&initial_cid),
     )
-    .expect("tls_api_one_scenario_init_ex");
+    .expect("tls_api_init_ctx_ex2_delayed");
+    test_ctx
+        .cnx_client()
+        .set_transport_parameters(&client_params);
 
     test_ctx.qserver.set_default_congestion_algorithm(ccalgo);
     test_ctx.cnx_client().set_congestion_algorithm(ccalgo);
@@ -640,6 +660,7 @@ fn app_limit_cc_test_one(ccalgo: &'static CongestionAlgorithm, max_completion_ti
     test_ctx.s_to_c_link.microsec_latency = latency;
     test_ctx.s_to_c_link.picosec_per_byte = picosec_per_byte_1;
     test_ctx.s_to_c_link.jitter = 0;
+    test_ctx.cnx_client().start_client().expect("start client");
 
     tls_api_one_scenario_body(
         &mut test_ctx,

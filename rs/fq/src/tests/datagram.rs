@@ -7,19 +7,28 @@
 
 #![allow(non_snake_case)]
 
-use super::util::{tls_api_connection_loop, tls_api_init_ctx_ex, tls_api_one_sim_round};
+use super::util::{
+    TestTlsApiCtx, tls_api_connection_loop, tls_api_init_ctx_ex, tls_api_one_sim_round,
+};
 use crate::errors::InternalError;
+use crate::internal::DatagramBufferArgument;
 use crate::internal::{ENFORCED_INITIAL_MTU, Version};
 use crate::tp::TransportParameters;
 use crate::utils::{frames_uint64_decode, frames_uint64_encode};
-use crate::{Connection, ConnectionId, Error, Instant, MAX_PACKET_SIZE, PacketContext};
+use crate::{
+    CallbackEvent, Connection, ConnectionId, DatagramActive, Error, Instant, MAX_PACKET_SIZE,
+    PacketContext, StreamDataCallback,
+};
+use core::any::Any;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 // ---------------------------------------------------------------------------
 // Shared context type.  C: `test_datagram_send_recv_ctx_t`.
 
 /// Per-test state for the datagram send/receive callbacks.
 /// C: `test_datagram_send_recv_ctx_t` in `picoquictest/datagram_tests.c`.
-#[derive(Default)]
+#[derive(Default, Clone)]
 #[allow(dead_code)]
 struct DatagramSendRecvCtx {
     /// Maximum datagram payload the client advertises.
@@ -110,16 +119,17 @@ fn test_datagram_send(
     dg_ctx: &mut DatagramSendRecvCtx,
     client_mode: usize,
     unique_path_id: u64,
+    context: &mut DatagramBufferArgument<'_, '_, '_>,
     length: usize,
     current_time: u64,
-) -> Result<Option<Vec<u8>>, Error> {
+) -> Result<(), Error> {
     let mut skipping = false;
 
     if client_mode == 0 && length > dg_ctx.dg_max_size {
         return Err(Error::InvalidArgument);
     }
     if length < 24 {
-        return Ok(None);
+        return Ok(());
     }
 
     if dg_ctx.do_skip_test[client_mode] && !dg_ctx.is_skipping[client_mode] {
@@ -128,11 +138,15 @@ fn test_datagram_send(
         if dg_ctx.use_extended_provider_api {
             let is_active = test_datagram_check_ready(dg_ctx, client_mode, current_time);
             dg_ctx.is_ready[client_mode] = is_active && !dg_ctx.one_datagram_per_packet;
+            let active = if dg_ctx.is_ready[client_mode] {
+                DatagramActive::AnyPath
+            } else {
+                DatagramActive::NotActive
+            };
+            let _ = crate::provide_datagram_buffer_ex(context, 0, active);
         }
     } else if !dg_ctx.is_ready[client_mode] || (dg_ctx.test_affinity && unique_path_id != 0) {
-        if dg_ctx.use_extended_provider_api {
-            dg_ctx.is_ready[client_mode] = false;
-        }
+        let _ = crate::provide_datagram_buffer_ex(context, 0, DatagramActive::NotActive);
     } else {
         dg_ctx.is_skipping[client_mode] = false;
         let sent_mod = (dg_ctx.dg_sent[client_mode] % 6) as usize;
@@ -146,21 +160,34 @@ fn test_datagram_send(
             }
         }
 
-        if dg_ctx.use_extended_provider_api {
-            dg_ctx.is_ready[client_mode] = !dg_ctx.one_datagram_per_packet;
-        }
-
         if available >= 16 {
             let send_time = if dg_ctx.dg_sent[client_mode] == 0 {
                 current_time
             } else {
                 dg_ctx.dg_time_ready[client_mode]
             };
+            let active = if dg_ctx.one_datagram_per_packet {
+                DatagramActive::NotActive
+            } else if dg_ctx.test_affinity {
+                DatagramActive::ThisPathOnly
+            } else {
+                DatagramActive::AnyPath
+            };
+            let provided = if dg_ctx.use_extended_provider_api {
+                dg_ctx.is_ready[client_mode] = active != DatagramActive::NotActive;
+                crate::provide_datagram_buffer_ex(context, available, active)
+            } else {
+                crate::provide_datagram_buffer(context, available)
+            };
+
+            let Some(payload) = provided else {
+                return Err(Error::BufferTooSmall);
+            };
+
             dg_ctx.dg_sent[client_mode] += 1;
             dg_ctx.batch_sent[client_mode] += 1;
 
-            let mut payload = vec![0u8; available];
-            let rest = frames_uint64_encode(&mut payload, dg_ctx.dg_sent[client_mode])
+            let rest = frames_uint64_encode(payload, dg_ctx.dg_sent[client_mode])
                 .ok_or(Error::BufferTooSmall)?;
             let rest = frames_uint64_encode(rest, send_time).ok_or(Error::BufferTooSmall)?;
             rest.fill(b'd');
@@ -176,18 +203,25 @@ fn test_datagram_send(
             if !dg_ctx.use_extended_provider_api {
                 test_datagram_check_ready(dg_ctx, client_mode, current_time);
             }
-
-            return Ok(Some(payload));
+        } else {
+            return Err(Error::BufferTooSmall);
         }
-
-        return Err(Error::BufferTooSmall);
     }
 
     if !skipping && !dg_ctx.use_extended_provider_api {
         test_datagram_check_ready(dg_ctx, client_mode, current_time);
+        if dg_ctx.test_affinity {
+            context
+                .connection_mut()
+                .mark_datagram_ready_path(0, dg_ctx.is_ready[client_mode])?;
+        } else {
+            context
+                .connection_mut()
+                .mark_datagram_ready(dg_ctx.is_ready[client_mode])?;
+        }
     }
 
-    Ok(None)
+    Ok(())
 }
 
 fn test_datagram_recv(
@@ -229,97 +263,150 @@ fn test_datagram_recv(
 fn test_datagram_ack(
     dg_ctx: &mut DatagramSendRecvCtx,
     client_mode: usize,
-    event: crate::CallbackEvent,
+    event: CallbackEvent,
 ) -> Result<(), Error> {
     match event {
-        crate::CallbackEvent::DatagramAcked => dg_ctx.dg_acked[client_mode] += 1,
-        crate::CallbackEvent::DatagramLost => dg_ctx.dg_nacked[client_mode] += 1,
-        crate::CallbackEvent::DatagramSpurious => dg_ctx.dg_spurious[client_mode] += 1,
+        CallbackEvent::DatagramAcked => dg_ctx.dg_acked[client_mode] += 1,
+        CallbackEvent::DatagramLost => dg_ctx.dg_nacked[client_mode] += 1,
+        CallbackEvent::DatagramSpurious => dg_ctx.dg_spurious[client_mode] += 1,
         _ => return Err(Error::InvalidArgument),
     }
     Ok(())
 }
 
-fn sim_loss(loss_mask: &mut u64) -> bool {
-    let loss_bit = *loss_mask & 1;
-    *loss_mask = (*loss_mask >> 1) | (loss_bit << 63);
-    loss_bit != 0
-}
-
-fn datagram_effective_latency(dg_ctx: &DatagramSendRecvCtx) -> u64 {
-    if dg_ctx.link_latency == 0 {
-        10_000
-    } else {
-        dg_ctx.link_latency
-    }
-}
-
-fn datagram_send_limit(dg_ctx: &DatagramSendRecvCtx, client_mode: usize) -> u64 {
-    if dg_ctx.batch_size[client_mode] == 0 {
-        1
-    } else {
-        let batch_offset = dg_ctx.dg_sent[client_mode] % dg_ctx.batch_size[client_mode];
-        dg_ctx.batch_size[client_mode] - batch_offset
-    }
-}
-
-fn datagram_app_round(
-    dg_ctx: &mut DatagramSendRecvCtx,
+#[derive(Default)]
+struct DatagramCallbackState {
+    dg_ctx: DatagramSendRecvCtx,
     current_time: u64,
-    loss_mask: &mut u64,
-    client_packets_received: &mut u64,
-    last_delivery_time: &mut u64,
-) -> Result<bool, Error> {
-    let mut was_active = false;
-    let latency = datagram_effective_latency(dg_ctx);
+}
 
-    for sender in 0..2 {
-        test_datagram_check_ready(dg_ctx, sender, current_time);
-        let limit = datagram_send_limit(dg_ctx, sender);
-        let mut sent_in_packet = 0;
-        let mut delivered_to_client_in_packet = false;
+struct DatagramCallback {
+    state: Rc<RefCell<DatagramCallbackState>>,
+}
 
-        while sent_in_packet < limit
-            && dg_ctx.is_ready[sender]
-            && dg_ctx.dg_sent[sender] < dg_ctx.dg_target[sender]
-        {
-            let offered_length = if sender == 0 {
-                dg_ctx.dg_max_size.clamp(24, MAX_PACKET_SIZE)
-            } else {
-                MAX_PACKET_SIZE
-            };
-            let payload = test_datagram_send(dg_ctx, sender, 0, offered_length, current_time)?;
+impl DatagramCallback {
+    fn new(state: Rc<RefCell<DatagramCallbackState>>) -> Self {
+        Self { state }
+    }
+}
 
-            let Some(payload) = payload else {
-                break;
-            };
+impl StreamDataCallback for DatagramCallback {
+    fn callback(
+        &mut self,
+        connection: &mut Connection,
+        _stream_id: u64,
+        bytes: &[u8],
+        fin_or_event: CallbackEvent,
+        _stream_ctx: Option<&mut dyn Any>,
+    ) -> i32 {
+        let client_mode = if connection.client_mode { 1 } else { 0 };
+        let mut state = self.state.borrow_mut();
+        let current_time = state.current_time;
 
-            was_active = true;
-            sent_in_packet += 1;
-            let receiver = 1 - sender;
-            if sim_loss(loss_mask) {
-                test_datagram_ack(dg_ctx, sender, crate::CallbackEvent::DatagramLost)?;
-            } else {
-                let receive_time = current_time.saturating_add(latency);
-                *last_delivery_time = (*last_delivery_time).max(receive_time);
-                test_datagram_recv(dg_ctx, receiver, 0, &payload, receive_time);
-                test_datagram_ack(dg_ctx, sender, crate::CallbackEvent::DatagramAcked)?;
-                if receiver == 1 {
-                    if dg_ctx.one_datagram_per_packet || dg_ctx.batch_size[sender] == 0 {
-                        *client_packets_received += 1;
-                    } else {
-                        delivered_to_client_in_packet = true;
-                    }
-                }
+        match fin_or_event {
+            CallbackEvent::Datagram => {
+                test_datagram_recv(
+                    &mut state.dg_ctx,
+                    client_mode,
+                    _stream_id,
+                    bytes,
+                    current_time,
+                );
+                0
             }
-        }
-
-        if delivered_to_client_in_packet {
-            *client_packets_received += 1;
+            CallbackEvent::DatagramAcked
+            | CallbackEvent::DatagramLost
+            | CallbackEvent::DatagramSpurious => {
+                test_datagram_ack(&mut state.dg_ctx, client_mode, fin_or_event)
+                    .map(|_| 0)
+                    .unwrap_or(-1)
+            }
+            _ => 0,
         }
     }
 
-    Ok(was_active)
+    fn prepare_datagram<'buf, 'cnx, 'path>(
+        &mut self,
+        context: &mut DatagramBufferArgument<'buf, 'cnx, 'path>,
+        unique_path_id: u64,
+        allowed_space: usize,
+    ) -> i32 {
+        let client_mode = if context.connection_mut().client_mode {
+            1
+        } else {
+            0
+        };
+        let mut state = self.state.borrow_mut();
+        let current_time = state.current_time;
+
+        test_datagram_send(
+            &mut state.dg_ctx,
+            client_mode,
+            unique_path_id,
+            context,
+            allowed_space,
+            current_time,
+        )
+        .map(|_| 0)
+        .unwrap_or(-1)
+    }
+}
+
+fn datagram_set_callback_time(state: &Rc<RefCell<DatagramCallbackState>>, current_time: u64) {
+    state.borrow_mut().current_time = current_time;
+}
+
+fn datagram_set_link_loss_mask(test_ctx: &mut TestTlsApiCtx, loss_mask: u64) {
+    test_ctx.c_to_s_link.loss_mask = Some(loss_mask);
+    test_ctx.s_to_c_link.loss_mask = Some(loss_mask);
+    if let Some(link) = test_ctx.c_to_s_link_2.as_mut() {
+        link.loss_mask = Some(loss_mask);
+    }
+    if let Some(link) = test_ctx.s_to_c_link_2.as_mut() {
+        link.loss_mask = Some(loss_mask);
+    }
+}
+
+fn datagram_sync_link_loss_mask(test_ctx: &TestTlsApiCtx, loss_mask: &mut u64) {
+    let before = *loss_mask;
+    if let Some(mask) = test_ctx.c_to_s_link.loss_mask
+        && mask != before
+    {
+        *loss_mask = mask;
+        return;
+    }
+    if let Some(mask) = test_ctx.s_to_c_link.loss_mask
+        && mask != before
+    {
+        *loss_mask = mask;
+        return;
+    }
+    if let Some(link) = test_ctx.c_to_s_link_2.as_ref()
+        && let Some(mask) = link.loss_mask
+        && mask != before
+    {
+        *loss_mask = mask;
+        return;
+    }
+    if let Some(link) = test_ctx.s_to_c_link_2.as_ref()
+        && let Some(mask) = link.loss_mask
+        && mask != before
+    {
+        *loss_mask = mask;
+    }
+}
+
+fn datagram_one_sim_round_with_loss_mask(
+    test_ctx: &mut TestTlsApiCtx,
+    simulated_time: &mut Instant,
+    time_out: Instant,
+    was_active: &mut bool,
+    loss_mask: &mut u64,
+) -> Result<(), Error> {
+    datagram_set_link_loss_mask(test_ctx, *loss_mask);
+    let ret = tls_api_one_sim_round(test_ctx, simulated_time, time_out, was_active);
+    datagram_sync_link_loss_mask(test_ctx, loss_mask);
+    ret
 }
 
 fn datagram_queue_frame_for_test(
@@ -426,11 +513,13 @@ fn datagram_test_one_result(
     } else {
         dg_ctx.nb_trials_max
     };
-    let mut client_packets_received = 0;
-    let mut last_delivery_time = simulated_time.ticks();
 
     initial_cid_bytes[3] = test_id;
     let initial_cid = ConnectionId::clone_from_slice(&initial_cid_bytes).ok_or(Error::Generic)?;
+    let callback_state = Rc::new(RefCell::new(DatagramCallbackState {
+        dg_ctx: core::mem::take(dg_ctx),
+        current_time: simulated_time.ticks(),
+    }));
     let mut test_ctx = tls_api_init_ctx_ex(
         &mut simulated_time,
         Version::InternalTest1 as u32,
@@ -448,25 +537,34 @@ fn datagram_test_one_result(
     test_ctx.qclient.use_long_log = true;
     let _ = test_ctx.qclient.set_qlog(".");
 
-    if dg_ctx.link_latency != 0 {
-        test_ctx.c_to_s_link.microsec_latency = dg_ctx.link_latency;
-        test_ctx.s_to_c_link.microsec_latency = dg_ctx.link_latency;
+    let (link_latency, picosec_per_byte) = {
+        let state = callback_state.borrow();
+        (state.dg_ctx.link_latency, state.dg_ctx.picosec_per_byte)
+    };
+    if link_latency != 0 {
+        test_ctx.c_to_s_link.microsec_latency = link_latency;
+        test_ctx.s_to_c_link.microsec_latency = link_latency;
     }
-    if dg_ctx.picosec_per_byte != 0 {
-        test_ctx.c_to_s_link.picosec_per_byte = dg_ctx.picosec_per_byte;
-        test_ctx.s_to_c_link.picosec_per_byte = dg_ctx.picosec_per_byte;
+    if picosec_per_byte != 0 {
+        test_ctx.c_to_s_link.picosec_per_byte = picosec_per_byte;
+        test_ctx.s_to_c_link.picosec_per_byte = picosec_per_byte;
     }
 
+    let dg_max_size = callback_state.borrow().dg_ctx.dg_max_size;
     let client_parameters = TransportParameters {
-        max_datagram_frame_size: dg_ctx.dg_max_size as u32,
+        max_datagram_frame_size: dg_max_size as u32,
         ..TransportParameters::default()
     };
     test_ctx
         .cnx_client()
         .set_transport_parameters(&client_parameters);
 
-    let queue_delay_max =
-        2 * test_ctx.c_to_s_link.microsec_latency + if dg_ctx.test_wifi { 275_000 } else { 0 };
+    let queue_delay_max = 2 * test_ctx.c_to_s_link.microsec_latency
+        + if callback_state.borrow().dg_ctx.test_wifi {
+            275_000
+        } else {
+            0
+        };
     tls_api_connection_loop(
         &mut test_ctx,
         &mut loss_mask,
@@ -485,26 +583,45 @@ fn datagram_test_one_result(
         .cnx_server()
         .remote_parameters
         .max_datagram_frame_size;
-    if client_remote_max != MAX_PACKET_SIZE as u32 || server_remote_max != dg_ctx.dg_max_size as u32
-    {
+    if client_remote_max != MAX_PACKET_SIZE as u32 || server_remote_max != dg_max_size as u32 {
         return Err(Error::Generic);
     }
 
-    if dg_ctx.test_too_long {
+    if callback_state.borrow().dg_ctx.test_too_long {
         test_datagram_too_long(test_ctx.cnx_client())?;
+    }
+
+    test_ctx
+        .cnx_client()
+        .set_callback(Some(Box::new(DatagramCallback::new(Rc::clone(
+            &callback_state,
+        )))));
+    if test_ctx.has_cnx_server() {
+        test_ctx
+            .cnx_server()
+            .set_callback(Some(Box::new(DatagramCallback::new(Rc::clone(
+                &callback_state,
+            )))));
     }
 
     test_ctx.cnx_client().mark_datagram_ready(true)?;
     if test_ctx.has_cnx_server() {
         test_ctx.cnx_server().mark_datagram_ready(true)?;
     }
-    dg_ctx.is_ready = [true, true];
-    dg_ctx.dg_time_ready = [simulated_time.ticks(), simulated_time.ticks()];
+    {
+        let mut state = callback_state.borrow_mut();
+        state.current_time = simulated_time.ticks();
+        state.dg_ctx.is_ready = [true, true];
+        state.dg_ctx.dg_time_ready = [simulated_time.ticks(), simulated_time.ticks()];
+    }
     loss_mask = loss_mask_init;
 
     while nb_trials < nb_trial_max && nb_inactive < 16 {
         let mut was_active = false;
-        let mut time_out = test_datagram_next_time_ready(dg_ctx);
+        let mut time_out = {
+            let state = callback_state.borrow();
+            test_datagram_next_time_ready(&state.dg_ctx)
+        };
 
         nb_trials += 1;
 
@@ -514,45 +631,41 @@ fn datagram_test_one_result(
                 test_ctx.c_to_s_link.suspend(resume_time, false);
                 test_ctx.s_to_c_link.suspend(resume_time, true);
                 wifi_todo = false;
-            } else if time_out == 0 || time_out > wifi_test_time {
+            } else if time_out > wifi_test_time {
                 time_out = wifi_test_time;
             }
         }
 
-        tls_api_one_sim_round(
+        datagram_set_callback_time(&callback_state, simulated_time.ticks());
+        datagram_one_sim_round_with_loss_mask(
             &mut test_ctx,
             &mut simulated_time,
             Instant::from_ticks(time_out),
             &mut was_active,
-        )?;
-
-        was_active |= datagram_app_round(
-            dg_ctx,
-            simulated_time.ticks(),
             &mut loss_mask,
-            &mut client_packets_received,
-            &mut last_delivery_time,
         )?;
+        datagram_set_callback_time(&callback_state, simulated_time.ticks());
 
         if was_active {
             nb_inactive = 0;
         } else {
             nb_inactive += 1;
-            let next_time = test_datagram_next_time_ready(dg_ctx);
-            if next_time > simulated_time.ticks() {
-                simulated_time = Instant::from_ticks(next_time);
-            }
         }
 
-        if dg_ctx.dg_recv[0] == dg_ctx.dg_target[1]
-            && dg_ctx.dg_recv[1] == dg_ctx.dg_target[0]
-            && test_ctx.cnx_client().datagrams.is_empty()
-        {
+        let (complete, all_sent, test_wifi) = {
+            let state = callback_state.borrow();
+            (
+                state.dg_ctx.dg_recv[0] == state.dg_ctx.dg_target[1]
+                    && state.dg_ctx.dg_recv[1] == state.dg_ctx.dg_target[0],
+                state.dg_ctx.dg_sent[0] == state.dg_ctx.dg_target[0]
+                    && state.dg_ctx.dg_sent[1] == state.dg_ctx.dg_target[1],
+                state.dg_ctx.test_wifi,
+            )
+        };
+
+        if complete && test_ctx.cnx_client().datagrams.is_empty() {
             break;
-        } else if (loss_mask_init != 0 || dg_ctx.test_wifi)
-            && dg_ctx.dg_sent[0] == dg_ctx.dg_target[0]
-            && dg_ctx.dg_sent[1] == dg_ctx.dg_target[1]
-        {
+        } else if (loss_mask_init != 0 || test_wifi) && all_sent {
             if all_sent_time == 0 {
                 let ping_frame = [crate::frames::FrameType::Ping as u8];
                 test_ctx.cnx_client().queue_misc_frame(
@@ -569,67 +682,84 @@ fn datagram_test_one_result(
                 }
                 loss_mask = 0;
                 all_sent_time = simulated_time.ticks();
-            } else if test_ctx.cnx_client().is_backlog_empty()
-                && (!test_ctx.has_cnx_server() || test_ctx.cnx_server().is_backlog_empty())
-                && test_ctx.cnx_client().datagrams.is_empty()
-            {
-                break;
+            } else {
+                let client_empty = test_ctx.cnx_client().is_cnx_backlog_empty();
+                let server_empty = if test_ctx.has_cnx_server() {
+                    test_ctx.cnx_server().is_cnx_backlog_empty()
+                } else {
+                    true
+                };
+                if client_empty && server_empty && test_ctx.cnx_client().datagrams.is_empty() {
+                    break;
+                }
             }
         }
 
-        if !dg_ctx.is_ready[0]
-            && test_datagram_check_ready(dg_ctx, 0, simulated_time.ticks())
-            && test_ctx.has_cnx_server()
-        {
+        let server_datagram_ready = {
+            let mut state = callback_state.borrow_mut();
+            !state.dg_ctx.is_ready[0]
+                && test_datagram_check_ready(&mut state.dg_ctx, 0, simulated_time.ticks())
+        };
+        if server_datagram_ready && test_ctx.has_cnx_server() {
             test_ctx.cnx_server().mark_datagram_ready(true)?;
         }
-        if !dg_ctx.is_ready[1] && test_datagram_check_ready(dg_ctx, 1, simulated_time.ticks()) {
+        let client_datagram_ready = {
+            let mut state = callback_state.borrow_mut();
+            !state.dg_ctx.is_ready[1]
+                && test_datagram_check_ready(&mut state.dg_ctx, 1, simulated_time.ticks())
+        };
+        if client_datagram_ready {
             test_ctx.cnx_client().mark_datagram_ready(true)?;
         }
     }
 
-    simulated_time = Instant::from_ticks(simulated_time.ticks().max(last_delivery_time));
+    let final_ctx = callback_state.borrow().dg_ctx.clone();
 
-    let complete =
-        dg_ctx.dg_recv[0] == dg_ctx.dg_target[1] && dg_ctx.dg_recv[1] == dg_ctx.dg_target[0];
+    let complete = final_ctx.dg_recv[0] == final_ctx.dg_target[1]
+        && final_ctx.dg_recv[1] == final_ctx.dg_target[0];
     if loss_mask_init == 0 || complete {
         if !complete {
             return Err(Error::Generic);
         }
-        if dg_ctx.dg_nacked[0] != dg_ctx.dg_spurious[0]
-            || dg_ctx.dg_nacked[1] != dg_ctx.dg_spurious[1]
+        if final_ctx.dg_nacked[0] != final_ctx.dg_spurious[0]
+            || final_ctx.dg_nacked[1] != final_ctx.dg_spurious[1]
         {
             return Err(Error::Generic);
         }
-        if dg_ctx.max_packets_received > 0 && client_packets_received > dg_ctx.max_packets_received
+        if final_ctx.max_packets_received > 0
+            && test_ctx.cnx_client().nb_packets_received > final_ctx.max_packets_received
         {
             return Err(Error::Generic);
         }
-        if dg_ctx.duration_max > 0 && dg_ctx.duration_max < simulated_time.ticks() {
+        if final_ctx.duration_max > 0 && final_ctx.duration_max < simulated_time.ticks() {
             return Err(Error::Generic);
         }
     } else {
-        if dg_ctx.dg_recv[0] != dg_ctx.dg_acked[1] + dg_ctx.dg_spurious[1]
-            || dg_ctx.dg_recv[1] != dg_ctx.dg_acked[0] + dg_ctx.dg_spurious[0]
+        if final_ctx.dg_recv[0] != final_ctx.dg_acked[1] + final_ctx.dg_spurious[1]
+            || final_ctx.dg_recv[1] != final_ctx.dg_acked[0] + final_ctx.dg_spurious[0]
         {
             return Err(Error::Generic);
         }
-        if dg_ctx.dg_recv[0] + dg_ctx.dg_nacked[1].saturating_sub(dg_ctx.dg_spurious[1])
-            != dg_ctx.dg_sent[1]
-            || dg_ctx.dg_recv[1] + dg_ctx.dg_nacked[0].saturating_sub(dg_ctx.dg_spurious[0])
-                != dg_ctx.dg_sent[0]
+        if final_ctx.dg_recv[0] + final_ctx.dg_nacked[1].saturating_sub(final_ctx.dg_spurious[1])
+            != final_ctx.dg_sent[1]
+            || final_ctx.dg_recv[1]
+                + final_ctx.dg_nacked[0].saturating_sub(final_ctx.dg_spurious[0])
+                != final_ctx.dg_sent[0]
         {
             return Err(Error::Generic);
         }
     }
 
     for i in 0..2 {
-        if dg_ctx.dg_latency_target[i] > 0 && dg_ctx.dg_latency_max[i] > dg_ctx.dg_latency_target[i]
+        if final_ctx.dg_latency_target[i] > 0
+            && final_ctx.dg_latency_max[i] > final_ctx.dg_latency_target[i]
         {
             return Err(Error::Generic);
         }
-        let _ = dg_ctx.dg_number_delta_max[i] > dg_ctx.dg_number_delta_target[i];
+        let _ = final_ctx.dg_number_delta_max[i] > final_ctx.dg_number_delta_target[i];
     }
+
+    *dg_ctx = final_ctx;
 
     Ok(())
 }

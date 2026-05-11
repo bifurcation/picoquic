@@ -27,6 +27,10 @@ fn spinbit_test_one(
     spin_policy: SpinbitVersion,
     spin_policy_server: SpinbitVersion,
 ) -> crate::Result<()> {
+    spinbit_test_one_raw(spin_policy as u64, spin_policy_server as u64)
+}
+
+fn spinbit_test_one_raw(spin_policy: u64, spin_policy_server: u64) -> crate::Result<()> {
     let mut simulated_time = Instant::from_ticks(0);
     let mut loss_mask: u64 = 0;
 
@@ -35,8 +39,8 @@ fn spinbit_test_one(
 
     test_ctx
         .qserver
-        .set_default_spinbit_policy(spin_policy_server)?;
-    test_ctx.cnx_client().set_spinbit_policy(spin_policy)?;
+        .set_default_spinbit_policy_raw(spin_policy_server)?;
+    test_ctx.cnx_client().set_spinbit_policy_raw(spin_policy)?;
 
     test_ctx.cnx_client().start_client()?;
 
@@ -98,8 +102,11 @@ fn spinbit_test_one(
     test_ctx.cnx_client().close(0)?;
 
     // Validate spin counts against policy expectations.
-    if matches!(spin_policy, SpinbitVersion::Basic) {
-        match spin_policy_server {
+    if matches!(
+        SpinbitVersion::from_raw(spin_policy)?,
+        SpinbitVersion::Basic
+    ) {
+        match SpinbitVersion::from_raw(spin_policy_server)? {
             SpinbitVersion::On => {
                 assert!(
                     spin_count >= 6,
@@ -159,15 +166,14 @@ fn spinbit_null() {
 
 /// C: `spinbit_bad_test` in `picoquictest/spinbit_test.c`.
 /// Verifies that invalid spinbit policy codes are rejected.
-///
-/// The C test passes raw out-of-range integer values (123456, 123455), which
-/// the current closed Rust enum API cannot represent safely.  The in-API
-/// invalid case available here is the server-only `SpinbitVersion::On` value
-/// used as a per-connection override.
 #[test]
 fn spinbit_bad() {
     assert!(
-        spinbit_test_one(SpinbitVersion::On, SpinbitVersion::Basic).is_err(),
-        "expected server-only per-connection spinbit policy to be rejected"
+        spinbit_test_one_raw(SpinbitVersion::On as u64, 123_456).is_err(),
+        "expected invalid server spinbit policy to be rejected"
+    );
+    assert!(
+        spinbit_test_one_raw(123_455, SpinbitVersion::Null as u64).is_err(),
+        "expected invalid client spinbit policy to be rejected"
     );
 }

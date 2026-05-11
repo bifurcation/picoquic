@@ -29372,7 +29372,7 @@ mod test {
     type SharedVec<T> = std::rc::Rc<std::cell::RefCell<Vec<T>>>;
     type DeleteEvents = SharedVec<&'static str>;
     type DeleteMemlogSeen = SharedVec<(bool, i32, u64)>;
-    type DeletePerflogSeen = SharedVec<(bool, usize, u32, bool)>;
+    type DeletePerflogSeen = SharedVec<(bool, bool, bool)>;
     type DeleteCloseSeen = SharedVec<(CallbackEvent, State, bool)>;
 
     fn test_quic() -> Box<Quic> {
@@ -29512,13 +29512,17 @@ mod test {
         }
 
         impl PerformanceLog for DeletePerflog {
-            fn emit(&mut self, quic: &Quic, connection: &Connection, should_delete: bool) -> i32 {
+            fn emit(
+                &mut self,
+                connection: Option<&Connection>,
+                should_delete: bool,
+                is_last_connection: bool,
+            ) -> i32 {
                 self.events.borrow_mut().push("perflog");
                 self.seen.borrow_mut().push((
                     should_delete,
-                    quic.connections.len(),
-                    quic.current_number_half_open,
-                    connection.is_half_open,
+                    is_last_connection,
+                    connection.map(|cnx| cnx.is_half_open).unwrap_or(false),
                 ));
                 0
             }
@@ -29591,7 +29595,7 @@ mod test {
         assert_eq!(quic.current_number_half_open, 0);
         assert_eq!(&*events.borrow(), &["memlog", "perflog", "close"]);
         assert_eq!(&*memlog_seen.borrow(), &[(true, 1, 0)]);
-        assert_eq!(&*perflog_seen.borrow(), &[(false, 1, 1, true)]);
+        assert_eq!(&*perflog_seen.borrow(), &[(false, true, true)]);
         assert_eq!(
             &*close_seen.borrow(),
             &[(CallbackEvent::Close, State::Disconnected, false)]

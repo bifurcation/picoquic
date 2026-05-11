@@ -11,7 +11,10 @@
 #![allow(non_snake_case)]
 
 use crate::internal::Version;
-use crate::{CongestionAlgorithm, Duration, Instant, get_congestion_algorithm};
+use crate::{
+    CongestionAlgorithm, Duration, Instant, get_congestion_algorithm,
+    register_all_congestion_control_algorithms,
+};
 
 use super::util::{
     TestApiStreamDesc, test_api_init_send_recv_scenario, tls_api_connection_loop,
@@ -56,6 +59,11 @@ struct AckfrqTestSpec {
 
 // ---------------------------------------------------------------------------
 // Shared test body.  C: `ackfrq_test_one`.
+
+fn ackfrq_ccalgo(name: &str) -> &'static CongestionAlgorithm {
+    register_all_congestion_control_algorithms();
+    get_congestion_algorithm(name).unwrap_or_else(|| panic!("{name} cc algo"))
+}
 
 fn ackfrq_test_one(spec: &AckfrqTestSpec) {
     let mut simulated_time = Instant::from_ticks(0);
@@ -172,7 +180,7 @@ fn ackfrq_test_one(spec: &AckfrqTestSpec) {
 /// ≤ 1 ms, and average inter-packet interval ≈ 4 ms.
 #[test]
 fn ackfrq_basic() {
-    let ccalgo = get_congestion_algorithm("cubic").expect("cubic cc algo");
+    let ccalgo = ackfrq_ccalgo("cubic");
     ackfrq_test_one(&AckfrqTestSpec {
         latency: 10_000,
         picosec_per_byte_up: 80_000,
@@ -193,7 +201,7 @@ fn ackfrq_basic() {
 /// min-delay ≤ 1 ms, and average inter-packet interval ≈ 1 ms.
 #[test]
 fn ackfrq_short() {
-    let ccalgo = get_congestion_algorithm("cubic").expect("cubic cc algo");
+    let ccalgo = ackfrq_ccalgo("cubic");
     ackfrq_test_one(&AckfrqTestSpec {
         latency: 10,
         picosec_per_byte_up: 80_000,

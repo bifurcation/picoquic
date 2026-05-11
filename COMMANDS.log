@@ -2979,6 +2979,14 @@
   ps -axo pid,ppid,stat,etime,command | rg "81795|phase4e.py|phase5b.py|codex exec|cargo"
   python3 scripts/phase4e.py --status
   python3 scripts/phase5b.py --status
+  cargo fmt
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo check --tests
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo check --tests --features sys-mbedtls
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test mbedtls_crypto --features sys-mbedtls
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo test mbedtls_crypto --features sys-mbedtls -- --nocapture
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo check --offline --tests
+  python3 scripts/phase5c.py --status
+  CARGO_TARGET_DIR=/private/tmp/fq-target cargo check --offline --tests --features sys-mbedtls
   sed -n '1,240p' scripts/phase4e.py
   sed -n '1,260p' scripts/phase5b.py
   sed -n '1,220p' CLAUDE.md

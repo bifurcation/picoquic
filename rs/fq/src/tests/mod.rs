@@ -42,6 +42,7 @@ mod hashtest;
 mod high_latency;
 mod intformattest;
 mod l4s;
+#[cfg(feature = "sys-mbedtls")]
 mod mbedtls;
 mod mediatest;
 mod memlog;

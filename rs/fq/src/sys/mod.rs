@@ -17,12 +17,18 @@ pub mod picotls;
 #[cfg(feature = "sys-openssl")]
 pub mod openssl;
 
-/// Load or unload the mbedtls crypto provider.  In the C implementation
-/// this populates the global cipher-suite / key-exchange registry when
-/// `PICOQUIC_WITH_MBEDTLS` is defined; without that flag the C body is
-/// an explicit no-op (`/* Nothing to do, as the module is not loaded. */`).
-/// Rust selects backends directly rather than through a global registry,
-/// so this is a no-op until a `sys-mbedtls` feature and submodule are
-/// added.
+#[cfg(feature = "sys-mbedtls")]
+pub mod mbedtls;
+
+/// Load or unload the mbedtls crypto provider.
+///
 /// C: `picoquic_mbedtls_load`.
+#[cfg(feature = "sys-mbedtls")]
+pub fn mbedtls_load(unload: bool) {
+    mbedtls::load(unload);
+}
+
+/// No-op when the backend is not compiled in, matching the C
+/// `#ifndef PICOQUIC_WITH_MBEDTLS` body.
+#[cfg(not(feature = "sys-mbedtls"))]
 pub fn mbedtls_load(_unload: bool) {}

@@ -7,7 +7,7 @@
 
 use crate::bytestream::{BYTESTREAM_MAX_BUFFER_SIZE, ByteStream};
 use crate::internal::skip_frame;
-use crate::{ConnectionId, Instant, Quic, RESET_SECRET_SIZE};
+use crate::{Instant, Quic};
 
 // ---------------------------------------------------------------------------
 // Internal frame-test helpers.
@@ -2305,6 +2305,101 @@ const LOG_TEST_FILE: &str = "log_test.txt";
 const LOG_PACKET_TEST_FILE: &str = "log_packet_test.txt";
 const LOG_ERROR_TEST_FILE: &str = "log_error_test.txt";
 const LOG_FUZZ_TEST_FILE: &str = "log_fuzz_test.txt";
+
+fn text_file_sum(path: &str) -> crate::Result<u64> {
+    let bytes = std::fs::read(path).map_err(|_| crate::Error::Generic)?;
+    Ok(bytes
+        .iter()
+        .fold(0x1_0000_0000_00u64, |sum, byte| sum + u64::from(*byte)))
+}
+
+fn write_textlog_frame_file(
+    path: &str,
+    header: Option<&str>,
+    bytes: &[u8],
+) -> crate::Result<String> {
+    use std::io::Write as _;
+
+    let mut file = std::fs::File::create(path).map_err(|_| crate::Error::Generic)?;
+    if let Some(header) = header {
+        writeln!(file, "{header}").map_err(|_| crate::Error::Generic)?;
+    }
+    crate::textlog::textlog_frames(&mut file, 0, bytes);
+    drop(file);
+    std::fs::read_to_string(path).map_err(|_| crate::Error::Generic)
+}
+
+fn run_logger_random_packet_logging(
+    frames: &[TestSkipFrame],
+    random_context: &mut u64,
+) -> crate::Result<()> {
+    for i in 0..100 {
+        let packet = format_random_packet(frames, crate::MAX_PACKET_SIZE, random_context);
+        let text = write_textlog_frame_file(
+            LOG_PACKET_TEST_FILE,
+            Some(&format!("Log packet test #{i}")),
+            &packet,
+        )?;
+        if text
+            .lines()
+            .any(|line| line.trim_start().starts_with("Unknown"))
+        {
+            return Err(crate::Error::Generic);
+        }
+    }
+    Ok(())
+}
+
+fn run_logger_error_frame_logging(
+    errors: &[TestFrameError],
+    running_sum: &mut u64,
+) -> crate::Result<()> {
+    const EXTRA_BYTES: [u8; 4] = [0, 0, 0, 0];
+
+    for frame in errors {
+        for sharp_end in [false, true] {
+            use std::io::Write as _;
+
+            let mut packet = frame.bytes.clone();
+            if !frame.must_be_last && !sharp_end {
+                packet.extend_from_slice(&EXTRA_BYTES);
+            }
+
+            let mut file =
+                std::fs::File::create(LOG_ERROR_TEST_FILE).map_err(|_| crate::Error::Generic)?;
+            writeln!(file, "Running_sum: {running_sum:x}").map_err(|_| crate::Error::Generic)?;
+            crate::textlog::textlog_frames(&mut file, 0, &packet);
+            drop(file);
+            *running_sum = running_sum.saturating_add(text_file_sum(LOG_ERROR_TEST_FILE)?);
+        }
+    }
+    Ok(())
+}
+
+fn run_logger_fuzz_logging(
+    frames: &[TestSkipFrame],
+    random_context: &mut u64,
+    running_sum: &mut u64,
+) -> crate::Result<()> {
+    use std::io::Write as _;
+
+    for i in 0..100 {
+        let packet = format_random_packet(frames, crate::MAX_PACKET_SIZE, random_context);
+        let mut file =
+            std::fs::File::create(LOG_FUZZ_TEST_FILE).map_err(|_| crate::Error::Generic)?;
+        writeln!(file, "Log fuzz test #{i}, sum: {running_sum:x}")
+            .map_err(|_| crate::Error::Generic)?;
+        crate::textlog::textlog_frames(&mut file, 0, &packet);
+        for j in 0..100 {
+            writeln!(file, "Log fuzz test #{i}, packet {j}").map_err(|_| crate::Error::Generic)?;
+            let fuzz_packet = skip_test_fuzz_packet(&packet, random_context);
+            crate::textlog::textlog_frames(&mut file, 0, &fuzz_packet);
+        }
+        drop(file);
+        *running_sum = running_sum.saturating_add(text_file_sum(LOG_FUZZ_TEST_FILE)?);
+    }
+    Ok(())
+}
 const LOGGER_TEST_CID_BYTES: [u8; 8] = [11, 12, 13, 14, 15, 16, 17, 18];
 const LOGGER_TEST_ADDR: &str = "[2020:2020:2020:2020:2020:2020:2020:2020]:443";
 
@@ -2924,6 +3019,10 @@ fn run_logger_test() -> crate::Result<()> {
     let _ = std::fs::remove_file(LOG_ERROR_TEST_FILE);
     let _ = std::fs::remove_file(LOG_FUZZ_TEST_FILE);
 
+    let frames = test_skip_frames();
+    let errors = test_frame_errors();
+    let mut random_context = 0xF00BABu64;
+    let mut running_sum = 0u64;
     let mut simulated_time = Instant::from_ticks(123_456_789);
     let mut quic = make_quic(&mut simulated_time);
     let logger_test_cid = crate::ConnectionId::clone_from_slice(&LOGGER_TEST_CID_BYTES)
@@ -2951,10 +3050,24 @@ fn run_logger_test() -> crate::Result<()> {
         "connections created before set_textlog must dispatch through the installed textlog backend"
     );
 
+    {
+        let out = quic.f_log.as_deref_mut().ok_or(crate::Error::Generic)?;
+        for frame in &frames {
+            crate::textlog::textlog_frames(&mut *out, 0, &frame.bytes);
+        }
+        for frame in &errors {
+            crate::textlog::textlog_frames(&mut *out, 0, &frame.bytes);
+        }
+        writeln!(&mut *out).map_err(|_| crate::Error::Generic)?;
+    }
+
     cnx.log_app_message("This is an app message test.");
     cnx.log_app_message("This is app message test #1, severity 2.");
     quic.textlog_close();
     super::util::compare_text_files(LOG_TEST_FILE, "picoquictest/log_test_ref.txt")?;
+    run_logger_random_packet_logging(&frames, &mut random_context)?;
+    run_logger_error_frame_logging(&errors, &mut running_sum)?;
+    run_logger_fuzz_logging(&frames, &mut random_context, &mut running_sum)?;
     Ok(())
 }
 

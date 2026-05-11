@@ -1,0 +1,4951 @@
+diff --git a/rs/fq/src/internal.rs b/rs/fq/src/internal.rs
+index 0e32b931..c0f2494d 100644
+--- a/rs/fq/src/internal.rs
++++ b/rs/fq/src/internal.rs
+@@ -1488,8 +1488,9 @@ impl Quic {
+         need_unused: bool,
+         ticket_id: u64,
+     ) -> Option<&mut StoredTicket> {
++        let current_time = Instant::from_ticks(self.time());
+         self.stored_tickets.iter_mut().find(|ticket| {
+-            ticket.time_valid_until.ticks() > 0
++            ticket.time_valid_until > current_time
+                 && ticket.sni.as_deref() == sni
+                 && ticket.alpn.as_deref() == alpn
+                 && (version == 0 || ticket.version == version)
+@@ -7735,6 +7736,7 @@ impl Connection {
+             self.is_half_open = false;
+         }
+         self.purge_misc_frames_after_ready();
++        self.trim_tls_context_after_handshake();
+         if self.is_ack_frequency_negotiated {
+             self.is_ack_frequency_updated = true;
+         } else {
+@@ -16411,14 +16413,19 @@ impl Connection {
+             &mut out,
+             crate::tp::TransportParameter::InitialMaxPathId as u64,
+             tp.initial_max_path_id,
+-        ) && encode_tp_varint_param(
+-            &mut out,
+-            crate::tp::TransportParameter::AddressDiscovery as u64,
+-            tp.address_discovery_mode as u64,
+         );
+         if !ok {
+             return -1;
+         }
++        if tp.address_discovery_mode > 0
++            && !encode_tp_varint_param(
++                &mut out,
++                crate::tp::TransportParameter::AddressDiscovery as u64,
++                (tp.address_discovery_mode - 1) as u64,
++            )
++        {
++            return -1;
++        }
+         if tp.migration_disabled
+             && !encode_tp_param(
+                 &mut out,
+@@ -16630,9 +16637,13 @@ impl Connection {
+                     }
+                 }
+                 x if x == crate::tp::TransportParameter::AddressDiscovery as u64 => {
+-                    if let Some(v) = decode_single_varint(value) {
+-                        tp.address_discovery_mode = v as i32;
++                    let Some(v) = decode_single_varint(value) else {
++                        return -1;
++                    };
++                    if v > 2 {
++                        return -1;
+                     }
++                    tp.address_discovery_mode = v as i32 + 1;
+                 }
+                 x if x == crate::tp::TransportParameter::ResetStreamAt as u64 => {
+                     tp.is_reset_stream_at_enabled = true;
+@@ -16663,6 +16674,13 @@ impl Connection {
+             *consumed += before - tail.len();
+         }
+         self.remote_parameters = tp;
++        let _ = self.negotiate_multipath_option();
++        self.is_address_discovery_provider = (self.remote_parameters.address_discovery_mode & 2)
++            != 0
++            && (self.local_parameters.address_discovery_mode & 1) != 0;
++        self.is_address_discovery_receiver = (self.remote_parameters.address_discovery_mode & 1)
++            != 0
++            && (self.local_parameters.address_discovery_mode & 2) != 0;
+         0
+     }
+ }
+diff --git a/rs/fq/src/lib.rs b/rs/fq/src/lib.rs
+index 376ab2ab..cd839ed3 100644
+--- a/rs/fq/src/lib.rs
++++ b/rs/fq/src/lib.rs
+@@ -4804,6 +4804,10 @@ pub const TLS_API_INIT_FLAGS_NO_MINICRYPTO: u64 = 2;
+ /// C: `TLS_API_INIT_FLAGS_NO_FUSION`.
+ pub const TLS_API_INIT_FLAGS_NO_FUSION: u64 = 4;
+ 
++/// TLS API initialisation flag: exclude the MbedTLS provider.
++/// C: `TLS_API_INIT_FLAGS_NO_MBEDTLS`.
++pub const TLS_API_INIT_FLAGS_NO_MBEDTLS: u64 = 8;
++
+ /// Reset the TLS provider registry to the given configuration flags.
+ /// `flags = 0` restores the default (all providers enabled).
+ /// C: `picoquic_tls_api_reset`.
+diff --git a/rs/fq/src/socks.rs b/rs/fq/src/socks.rs
+index 57a2a167..395158f7 100644
+--- a/rs/fq/src/socks.rs
++++ b/rs/fq/src/socks.rs
+@@ -11,7 +11,7 @@
+ //!
+ //! Phase 4: all method bodies are implemented.
+ 
+-use core::net::SocketAddr;
++use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+ 
+ #[cfg(unix)]
+ use libc;
+@@ -39,20 +39,45 @@ pub type MessageHeader<'addr, 'bufs, 'control> = socket2::MsgHdr<'addr, 'bufs, '
+ #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+ pub struct OsError(pub i32);
+ 
++#[cfg(unix)]
++const UNREACHABLE_SOCKET_ERRORS: [i32; 6] = [
++    libc::EAFNOSUPPORT,
++    libc::ECONNRESET,
++    libc::EHOSTUNREACH,
++    libc::ENETDOWN,
++    libc::ENETUNREACH,
++    -1,
++];
++
++#[cfg(windows)]
++const UNREACHABLE_SOCKET_ERRORS: [i32; 11] = [
++    10013, // WSAEACCES
++    10049, // WSAEADDRNOTAVAIL
++    10047, // WSAEAFNOSUPPORT
++    10054, // WSAECONNRESET
++    10039, // WSAEDESTADDRREQ
++    10065, // WSAEHOSTUNREACH
++    10050, // WSAENETDOWN
++    10052, // WSAENETRESET
++    10051, // WSAENETUNREACH
++    10058, // WSAESHUTDOWN
++    -1,
++];
++
+ impl OsError {
+     /// Whether this errno implies the destination is unreachable
+     /// and the owning path should be abandoned.  C:
+     /// `picoquic_socket_error_implies_unreachable`.
+     pub fn is_unreachable(self) -> bool {
+-        use std::io::ErrorKind;
+-        let kind = std::io::Error::from_raw_os_error(self.0).kind();
+-        matches!(
+-            kind,
+-            ErrorKind::ConnectionReset
+-                | ErrorKind::HostUnreachable
+-                | ErrorKind::NetworkDown
+-                | ErrorKind::NetworkUnreachable
+-        )
++        #[cfg(any(unix, windows))]
++        {
++            UNREACHABLE_SOCKET_ERRORS.contains(&self.0)
++        }
++
++        #[cfg(not(any(unix, windows)))]
++        {
++            false
++        }
+     }
+ }
+ 
+@@ -293,6 +318,526 @@ pub struct RecvInfo {
+     pub bytes_recv: usize,
+ }
+ 
++#[cfg(unix)]
++#[derive(Debug, Default, Copy, Clone)]
++struct RecvAncillaryInfo {
++    addr_dest: Option<SocketAddr>,
++    dest_if: Option<i32>,
++    received_ecn: Option<u8>,
++}
++
++#[cfg(unix)]
++#[repr(C, align(8))]
++struct ControlBuffer([u8; 1024]);
++
++#[cfg(unix)]
++fn ipv4_addr_from_in_addr(addr: libc::in_addr) -> Ipv4Addr {
++    Ipv4Addr::from(addr.s_addr.to_ne_bytes())
++}
++
++#[cfg(unix)]
++fn ipv6_addr_from_in6_addr(addr: libc::in6_addr) -> Ipv6Addr {
++    Ipv6Addr::from(addr.s6_addr)
++}
++
++#[cfg(unix)]
++fn socket_addr_from_sockaddr_storage(
++    storage: &libc::sockaddr_storage,
++    len: libc::socklen_t,
++) -> Option<SocketAddr> {
++    match storage.ss_family as libc::c_int {
++        libc::AF_INET if len as usize >= core::mem::size_of::<libc::sockaddr_in>() => {
++            // SAFETY: `storage` was filled by the kernel as an AF_INET
++            // sockaddr, and `len` proves the sockaddr_in prefix is present.
++            let sin = unsafe {
++                core::ptr::read_unaligned(storage as *const _ as *const libc::sockaddr_in)
++            };
++            Some(SocketAddr::V4(SocketAddrV4::new(
++                ipv4_addr_from_in_addr(sin.sin_addr),
++                u16::from_be(sin.sin_port),
++            )))
++        }
++        libc::AF_INET6 if len as usize >= core::mem::size_of::<libc::sockaddr_in6>() => {
++            // SAFETY: `storage` was filled by the kernel as an AF_INET6
++            // sockaddr, and `len` proves the sockaddr_in6 prefix is present.
++            let sin6 = unsafe {
++                core::ptr::read_unaligned(storage as *const _ as *const libc::sockaddr_in6)
++            };
++            Some(SocketAddr::V6(SocketAddrV6::new(
++                ipv6_addr_from_in6_addr(sin6.sin6_addr),
++                u16::from_be(sin6.sin6_port),
++                sin6.sin6_flowinfo,
++                sin6.sin6_scope_id,
++            )))
++        }
++        _ => None,
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn ipv4_addr_to_in_addr(addr: &Ipv4Addr) -> libc::in_addr {
++    libc::in_addr {
++        s_addr: u32::from_ne_bytes(addr.octets()),
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn ipv6_addr_to_in6_addr(addr: &Ipv6Addr) -> libc::in6_addr {
++    libc::in6_addr {
++        s6_addr: addr.octets(),
++    }
++}
++
++#[cfg(target_os = "linux")]
++fn socket_addr_to_sockaddr_storage(addr: &SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
++    // SAFETY: all-zero is a valid starting byte pattern for sockaddr_storage;
++    // the address-family-specific sockaddr is written over the prefix below.
++    let mut storage: libc::sockaddr_storage = unsafe { core::mem::zeroed() };
++
++    match addr {
++        SocketAddr::V4(addr4) => {
++            // SAFETY: zero is a valid baseline for sockaddr_in; all fields
++            // relevant to sendmsg are initialized immediately below.
++            let mut sin: libc::sockaddr_in = unsafe { core::mem::zeroed() };
++            #[cfg(any(
++                target_os = "macos",
++                target_os = "ios",
++                target_os = "freebsd",
++                target_os = "openbsd",
++                target_os = "netbsd",
++                target_os = "dragonfly"
++            ))]
++            {
++                sin.sin_len = core::mem::size_of::<libc::sockaddr_in>() as u8;
++            }
++            sin.sin_family = libc::AF_INET as libc::sa_family_t;
++            sin.sin_port = addr4.port().to_be();
++            sin.sin_addr = ipv4_addr_to_in_addr(addr4.ip());
++            // SAFETY: sockaddr_storage is large enough for sockaddr_in.  The
++            // write only initializes the sockaddr_in prefix used by sendmsg.
++            unsafe {
++                core::ptr::write_unaligned(
++                    (&mut storage as *mut libc::sockaddr_storage).cast::<libc::sockaddr_in>(),
++                    sin,
++                );
++            }
++            (
++                storage,
++                core::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
++            )
++        }
++        SocketAddr::V6(addr6) => {
++            // SAFETY: zero is a valid baseline for sockaddr_in6; all fields
++            // relevant to sendmsg are initialized immediately below.
++            let mut sin6: libc::sockaddr_in6 = unsafe { core::mem::zeroed() };
++            #[cfg(any(
++                target_os = "macos",
++                target_os = "ios",
++                target_os = "freebsd",
++                target_os = "openbsd",
++                target_os = "netbsd",
++                target_os = "dragonfly"
++            ))]
++            {
++                sin6.sin6_len = core::mem::size_of::<libc::sockaddr_in6>() as u8;
++            }
++            sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
++            sin6.sin6_port = addr6.port().to_be();
++            sin6.sin6_flowinfo = addr6.flowinfo();
++            sin6.sin6_addr = ipv6_addr_to_in6_addr(addr6.ip());
++            sin6.sin6_scope_id = addr6.scope_id();
++            // SAFETY: sockaddr_storage is large enough for sockaddr_in6.  The
++            // write only initializes the sockaddr_in6 prefix used by sendmsg.
++            unsafe {
++                core::ptr::write_unaligned(
++                    (&mut storage as *mut libc::sockaddr_storage).cast::<libc::sockaddr_in6>(),
++                    sin6,
++                );
++            }
++            (
++                storage,
++                core::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
++            )
++        }
++    }
++}
++
++#[cfg(unix)]
++fn cmsg_has_data(cmsg: *const libc::cmsghdr, data_len: usize) -> bool {
++    // SAFETY: `cmsg` comes from CMSG_FIRSTHDR / CMSG_NXTHDR for the live
++    // msghdr. Reading the header length is valid for those pointers.
++    let cmsg_len = unsafe { (*cmsg).cmsg_len as usize };
++    // SAFETY: `data_len` is the payload length being checked; CMSG_LEN only
++    // computes the platform header-plus-payload size.
++    let required_len = unsafe { libc::CMSG_LEN(data_len as libc::c_uint) as usize };
++    cmsg_len >= required_len
++}
++
++#[cfg(unix)]
++unsafe fn cmsg_data_as<T: Copy>(cmsg: *const libc::cmsghdr) -> Option<T> {
++    if !cmsg_has_data(cmsg, core::mem::size_of::<T>()) {
++        return None;
++    }
++
++    // SAFETY: the caller supplied a cmsg pointer produced by the CMSG macros,
++    // and `cmsg_has_data` verified that the payload contains a full `T`.
++    let data = unsafe { libc::CMSG_DATA(cmsg as *mut libc::cmsghdr) as *const T };
++    // SAFETY: ancillary payload alignment is platform-defined; use
++    // read_unaligned so the Rust side does not assume stronger alignment.
++    Some(unsafe { core::ptr::read_unaligned(data) })
++}
++
++#[cfg(unix)]
++unsafe fn parse_ipv4_cmsg(cmsg: *const libc::cmsghdr, info: &mut RecvAncillaryInfo) -> bool {
++    // SAFETY: `cmsg` comes from CMSG_FIRSTHDR / CMSG_NXTHDR.
++    let cmsg_type = unsafe { (*cmsg).cmsg_type };
++
++    #[cfg(any(target_os = "linux", target_os = "android"))]
++    if cmsg_type == libc::IP_PKTINFO {
++        // SAFETY: `cmsg` is a valid IPv4 pktinfo control message.
++        if let Some(pktinfo) = unsafe { cmsg_data_as::<libc::in_pktinfo>(cmsg) } {
++            info.addr_dest = Some(SocketAddr::V4(SocketAddrV4::new(
++                ipv4_addr_from_in_addr(pktinfo.ipi_addr),
++                0,
++            )));
++            info.dest_if = Some(pktinfo.ipi_ifindex as i32);
++        }
++        return true;
++    }
++
++    #[cfg(not(any(target_os = "linux", target_os = "android")))]
++    if cmsg_type == libc::IP_RECVDSTADDR {
++        // SAFETY: `cmsg` is a valid IPv4 destination-address control message.
++        if let Some(addr) = unsafe { cmsg_data_as::<libc::in_addr>(cmsg) } {
++            info.addr_dest = Some(SocketAddr::V4(SocketAddrV4::new(
++                ipv4_addr_from_in_addr(addr),
++                0,
++            )));
++            info.dest_if = Some(0);
++        }
++        return true;
++    }
++
++    if cmsg_type == libc::IP_TOS || cmsg_type == libc::IP_RECVTOS {
++        // SAFETY: `cmsg` is an IPv4 TOS/ECN control message.
++        if let Some(ecn) = unsafe { cmsg_data_as::<u8>(cmsg) } {
++            info.received_ecn = Some(ecn);
++        }
++        return true;
++    }
++
++    false
++}
++
++#[cfg(unix)]
++unsafe fn parse_ipv6_cmsg(cmsg: *const libc::cmsghdr, info: &mut RecvAncillaryInfo) -> bool {
++    // SAFETY: `cmsg` comes from CMSG_FIRSTHDR / CMSG_NXTHDR.
++    let cmsg_type = unsafe { (*cmsg).cmsg_type };
++
++    if cmsg_type == libc::IPV6_PKTINFO {
++        // SAFETY: `cmsg` is a valid IPv6 pktinfo control message.
++        if let Some(pktinfo) = unsafe { cmsg_data_as::<libc::in6_pktinfo>(cmsg) } {
++            info.addr_dest = Some(SocketAddr::V6(SocketAddrV6::new(
++                ipv6_addr_from_in6_addr(pktinfo.ipi6_addr),
++                0,
++                0,
++                0,
++            )));
++            info.dest_if = Some(pktinfo.ipi6_ifindex as i32);
++        }
++        return true;
++    }
++
++    if cmsg_type == libc::IPV6_TCLASS {
++        // SAFETY: `cmsg` is an IPv6 traffic-class/ECN control message.
++        if let Some(ecn) = unsafe { cmsg_data_as::<u8>(cmsg) } {
++            info.received_ecn = Some(ecn);
++        }
++        return true;
++    }
++
++    false
++}
++
++#[cfg(unix)]
++fn parse_recv_cmsgs(msg: &libc::msghdr) -> RecvAncillaryInfo {
++    let mut info = RecvAncillaryInfo::default();
++
++    // SAFETY: `msg` is the initialized msghdr just returned by recvmsg.
++    let mut cmsg = unsafe { libc::CMSG_FIRSTHDR(msg as *const libc::msghdr) };
++    while !cmsg.is_null() {
++        // SAFETY: `cmsg` is produced by the CMSG iteration macros for `msg`.
++        let level = unsafe { (*cmsg).cmsg_level };
++        match level {
++            libc::IPPROTO_IP => {
++                // SAFETY: `cmsg` points at an IPv4-level ancillary header.
++                let _ = unsafe { parse_ipv4_cmsg(cmsg, &mut info) };
++            }
++            libc::IPPROTO_IPV6 => {
++                // SAFETY: `cmsg` points at an IPv6-level ancillary header.
++                let _ = unsafe { parse_ipv6_cmsg(cmsg, &mut info) };
++            }
++            _ => {}
++        }
++
++        // SAFETY: `cmsg` is the current header for `msg`; CMSG_NXTHDR either
++        // returns the next valid header or null at the end of the control data.
++        cmsg = unsafe { libc::CMSG_NXTHDR(msg as *const libc::msghdr, cmsg as *const _) };
++    }
++
++    info
++}
++
++/// Receive one datagram with POSIX `recvmsg`, including source address,
++/// destination pktinfo, interface index, and ECN ancillary data.
++/// C: `picoquic_recvmsg` (non-Windows branch).
++#[cfg(unix)]
++pub(crate) fn picoquic_recvmsg(sd: i32, buffer: &mut [u8]) -> Result<RecvInfo, Error> {
++    // SAFETY: all-zero is a valid initial value for POSIX sockaddr_storage and
++    // msghdr before the kernel fills their fields.
++    let mut addr_from: libc::sockaddr_storage = unsafe { core::mem::zeroed() };
++    let mut msg: libc::msghdr = unsafe { core::mem::zeroed() };
++    let mut data_buf = libc::iovec {
++        iov_base: buffer.as_mut_ptr() as *mut libc::c_void,
++        iov_len: buffer.len(),
++    };
++    let mut cmsg_buffer = ControlBuffer([0u8; 1024]);
++
++    msg.msg_name = (&mut addr_from as *mut libc::sockaddr_storage).cast();
++    msg.msg_namelen = core::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
++    msg.msg_iov = &mut data_buf;
++    msg.msg_iovlen = 1;
++    msg.msg_control = cmsg_buffer.0.as_mut_ptr().cast();
++    msg.msg_controllen = cmsg_buffer.0.len() as _;
++    msg.msg_flags = 0;
++
++    // SAFETY: `msg` points to live stack storage; its name, iovec, and control
++    // buffers all remain valid and writable for the duration of the syscall.
++    let bytes_recv = unsafe { libc::recvmsg(sd, &mut msg, 0) };
++    if bytes_recv < 0 {
++        return Err(Error::Generic);
++    }
++    if bytes_recv == 0 {
++        return Ok(RecvInfo::default());
++    }
++
++    let cmsg_info = parse_recv_cmsgs(&msg);
++    Ok(RecvInfo {
++        addr_from: socket_addr_from_sockaddr_storage(&addr_from, msg.msg_namelen),
++        addr_dest: cmsg_info.addr_dest,
++        dest_if: cmsg_info.dest_if.unwrap_or(0),
++        received_ecn: cmsg_info.received_ecn.unwrap_or(0),
++        bytes_recv: bytes_recv as usize,
++    })
++}
++
++#[cfg(target_os = "linux")]
++fn write_send_cmsg<T: Copy>(
++    msg: &mut libc::msghdr,
++    last_cmsg: &mut *mut libc::cmsghdr,
++    control_length: &mut libc::c_int,
++    cmsg_level: libc::c_int,
++    cmsg_type: libc::c_int,
++    value: &T,
++) -> bool {
++    // SAFETY: `msg` owns a live control buffer.  The helper returns a pointer
++    // inside that buffer or null if there is no room for this cmsg.
++    let data = unsafe {
++        cmsg_format_header_return_data_ptr(
++            msg,
++            last_cmsg,
++            control_length,
++            cmsg_level,
++            cmsg_type,
++            core::mem::size_of::<T>(),
++        )
++    };
++    if data.is_null() {
++        return false;
++    }
++
++    // SAFETY: the helper reserved at least size_of::<T>() bytes for this cmsg
++    // payload. Ancillary data alignment is platform-defined, so write without
++    // imposing a stronger Rust alignment requirement.
++    unsafe {
++        core::ptr::write_unaligned(data.cast::<T>(), *value);
++    }
++    true
++}
++
++#[cfg(target_os = "linux")]
++fn write_ipv4_pktinfo_cmsg(
++    msg: &mut libc::msghdr,
++    last_cmsg: &mut *mut libc::cmsghdr,
++    control_length: &mut libc::c_int,
++    addr_from: &SocketAddrV4,
++    dest_if: i32,
++) -> bool {
++    let pktinfo = libc::in_pktinfo {
++        ipi_ifindex: dest_if as libc::c_int,
++        ipi_spec_dst: ipv4_addr_to_in_addr(addr_from.ip()),
++        ipi_addr: libc::in_addr { s_addr: 0 },
++    };
++    write_send_cmsg(
++        msg,
++        last_cmsg,
++        control_length,
++        libc::IPPROTO_IP,
++        libc::IP_PKTINFO,
++        &pktinfo,
++    )
++}
++
++#[cfg(target_os = "linux")]
++fn write_ipv6_pktinfo_cmsg(
++    msg: &mut libc::msghdr,
++    last_cmsg: &mut *mut libc::cmsghdr,
++    control_length: &mut libc::c_int,
++    addr_from: &SocketAddrV6,
++    dest_if: i32,
++) -> bool {
++    let pktinfo = libc::in6_pktinfo {
++        ipi6_addr: ipv6_addr_to_in6_addr(addr_from.ip()),
++        ipi6_ifindex: dest_if as libc::c_uint,
++    };
++    write_send_cmsg(
++        msg,
++        last_cmsg,
++        control_length,
++        libc::IPPROTO_IPV6,
++        libc::IPV6_PKTINFO,
++        &pktinfo,
++    )
++}
++
++#[cfg(target_os = "linux")]
++fn format_send_cmsgs(
++    msg: &mut libc::msghdr,
++    message_length: usize,
++    send_msg_size: usize,
++    addr_from: Option<&SocketAddr>,
++    dest_if: i32,
++) {
++    let mut control_length: libc::c_int = 0;
++
++    #[cfg(target_os = "linux")]
++    {
++        let mut last_cmsg: *mut libc::cmsghdr = core::ptr::null_mut();
++        let mut is_null = false;
++
++        if let Some(addr_from) = addr_from {
++            match addr_from {
++                SocketAddr::V4(addr4) => {
++                    if !write_ipv4_pktinfo_cmsg(
++                        msg,
++                        &mut last_cmsg,
++                        &mut control_length,
++                        addr4,
++                        dest_if,
++                    ) {
++                        is_null = true;
++                    }
++                }
++                SocketAddr::V6(addr6) => {
++                    if !write_ipv6_pktinfo_cmsg(
++                        msg,
++                        &mut last_cmsg,
++                        &mut control_length,
++                        addr6,
++                        dest_if,
++                    ) {
++                        is_null = true;
++                    }
++
++                    if !is_null {
++                        let dontfrag: libc::c_int = 1;
++                        if !write_send_cmsg(
++                            msg,
++                            &mut last_cmsg,
++                            &mut control_length,
++                            libc::SOL_IPV6,
++                            libc::IPV6_DONTFRAG,
++                            &dontfrag,
++                        ) {
++                            is_null = true;
++                        }
++                    }
++                }
++            }
++        }
++
++        #[cfg(target_os = "linux")]
++        if !is_null && send_msg_size > 0 && send_msg_size < message_length {
++            let segment_size = send_msg_size as u16;
++            if !write_send_cmsg(
++                msg,
++                &mut last_cmsg,
++                &mut control_length,
++                libc::SOL_UDP,
++                libc::UDP_SEGMENT,
++                &segment_size,
++            ) {
++                is_null = true;
++            }
++        }
++
++        let _ = is_null;
++    }
++
++    #[cfg(not(target_os = "linux"))]
++    let _ = (addr_from, dest_if);
++
++    let _ = (message_length, send_msg_size);
++    msg.msg_controllen = control_length as _;
++    if control_length == 0 {
++        msg.msg_control = core::ptr::null_mut();
++    }
++}
++
++/// Send one UDP datagram with POSIX `sendmsg`, including source-address /
++/// interface pktinfo and Linux `UDP_SEGMENT` when `send_msg_size` requests
++/// segmentation. C: `picoquic_sendmsg` (non-Windows branch).
++#[cfg(target_os = "linux")]
++pub(crate) fn picoquic_sendmsg(
++    sd: i32,
++    addr_dest: &SocketAddr,
++    addr_from: Option<&SocketAddr>,
++    dest_if: i32,
++    bytes: &[u8],
++    send_msg_size: i32,
++) -> Result<usize, OsError> {
++    let (mut addr_dest_storage, addr_dest_len) = socket_addr_to_sockaddr_storage(addr_dest);
++    // SAFETY: all-zero is a valid initial value for POSIX msghdr before fields
++    // are populated below.
++    let mut msg: libc::msghdr = unsafe { core::mem::zeroed() };
++    let mut data_buf = libc::iovec {
++        iov_base: bytes.as_ptr() as *mut libc::c_void,
++        iov_len: bytes.len(),
++    };
++    let mut cmsg_buffer = ControlBuffer([0u8; 1024]);
++    let send_msg_size = usize::try_from(send_msg_size).unwrap_or(0);
++
++    msg.msg_name = (&mut addr_dest_storage as *mut libc::sockaddr_storage).cast();
++    msg.msg_namelen = addr_dest_len;
++    msg.msg_iov = &mut data_buf;
++    msg.msg_iovlen = 1;
++    msg.msg_control = cmsg_buffer.0.as_mut_ptr().cast();
++    msg.msg_controllen = cmsg_buffer.0.len() as _;
++    msg.msg_flags = 0;
++
++    format_send_cmsgs(&mut msg, bytes.len(), send_msg_size, addr_from, dest_if);
++
++    // SAFETY: `msg` points to live stack storage; its destination sockaddr,
++    // iovec, and control buffer remain valid for the duration of the syscall.
++    let bytes_sent = unsafe { libc::sendmsg(sd, &msg, 0) };
++    if bytes_sent <= 0 {
++        let raw_error = std::io::Error::last_os_error().raw_os_error().unwrap_or(-1);
++        Err(OsError(raw_error))
++    } else {
++        Ok(bytes_sent as usize)
++    }
++}
++
+ /// Result of [`select`].
+ ///
+ /// Folds the seven nullable out-parameters of the C
+@@ -305,7 +850,7 @@ pub struct SelectInfo {
+     pub addr_dest: Option<SocketAddr>,
+     pub dest_if: i32,
+     pub received_ecn: u8,
+-    pub bytes_recv: usize,
++    pub bytes_recv: isize,
+     pub current_time: Instant,
+     pub socket_rank: usize,
+ }
+@@ -334,34 +879,168 @@ impl Default for SelectInfo {
+ pub fn select<S: Socket>(
+     sockets: &mut [S],
+     buffer: &mut [u8],
+-    _delta_t: i64,
++    delta_t: i64,
++) -> Result<SelectInfo, Error> {
++    select_impl(sockets, buffer, delta_t)
++}
++
++fn select_current_time() -> Instant {
++    Instant::from_ticks(crate::current_time())
++}
++
++#[cfg(unix)]
++fn select_timeval(delta_t: i64) -> libc::timeval {
++    let delta_t = if delta_t <= 0 {
++        0
++    } else {
++        delta_t.min(10_000_000)
++    };
++
++    libc::timeval {
++        tv_sec: (delta_t / 1_000_000) as libc::time_t,
++        tv_usec: (delta_t % 1_000_000) as libc::suseconds_t,
++    }
++}
++
++#[cfg(unix)]
++fn select_impl<S: Socket>(
++    sockets: &mut [S],
++    buffer: &mut [u8],
++    delta_t: i64,
++) -> Result<SelectInfo, Error> {
++    // SAFETY: all-zero is a valid fd_set initialization; FD_ZERO is called
++    // immediately below before the set is passed to select(2).
++    let mut readfds: libc::fd_set = unsafe { core::mem::zeroed() };
++    let mut tv = select_timeval(delta_t);
++    let mut sockmax: libc::c_int = 0;
++    let mut socket_fds = Vec::with_capacity(sockets.len());
++
++    // SAFETY: `readfds` points to live storage initialized for the platform's
++    // fd_set representation.
++    unsafe {
++        libc::FD_ZERO(&mut readfds);
++    }
++
++    for socket in sockets.iter() {
++        let fd = socket.raw_fd();
++        if fd < 0 {
++            return Ok(SelectInfo {
++                bytes_recv: -1,
++                current_time: select_current_time(),
++                ..SelectInfo::default()
++            });
++        }
++        if sockmax < fd {
++            sockmax = fd;
++        }
++        socket_fds.push(fd);
++
++        // SAFETY: `fd` is the raw descriptor exposed by the socket backend,
++        // and `readfds` is the fd_set being prepared for select(2).
++        unsafe {
++            libc::FD_SET(fd, &mut readfds);
++        }
++    }
++
++    // SAFETY: all pointers either reference initialized local fd/timeval
++    // storage or are null for the write/except sets that the C code omits.
++    let ret_select = unsafe {
++        libc::select(
++            sockmax + 1,
++            &mut readfds,
++            core::ptr::null_mut(),
++            core::ptr::null_mut(),
++            &mut tv,
++        )
++    };
++
++    if ret_select < 0 {
++        return Ok(SelectInfo {
++            bytes_recv: -1,
++            current_time: select_current_time(),
++            ..SelectInfo::default()
++        });
++    }
++
++    if ret_select == 0 {
++        return Ok(SelectInfo {
++            current_time: select_current_time(),
++            ..SelectInfo::default()
++        });
++    }
++
++    for (rank, socket) in sockets.iter_mut().enumerate() {
++        // SAFETY: `readfds` was returned by select(2), and each descriptor was
++        // inserted into that same set before the call.
++        let is_ready = unsafe { libc::FD_ISSET(socket_fds[rank], &readfds) };
++        if !is_ready {
++            continue;
++        }
++
++        return match socket.recv(buffer) {
++            Ok(info) => Ok(SelectInfo {
++                addr_from: info.addr_from,
++                addr_dest: info.addr_dest,
++                dest_if: info.dest_if,
++                received_ecn: info.received_ecn,
++                bytes_recv: info.bytes_recv as isize,
++                current_time: select_current_time(),
++                socket_rank: rank,
++            }),
++            Err(_) => Ok(SelectInfo {
++                bytes_recv: -1,
++                current_time: select_current_time(),
++                socket_rank: rank,
++                ..SelectInfo::default()
++            }),
++        };
++    }
++
++    Ok(SelectInfo {
++        current_time: select_current_time(),
++        ..SelectInfo::default()
++    })
++}
++
++#[cfg(not(unix))]
++fn select_impl<S: Socket>(
++    sockets: &mut [S],
++    buffer: &mut [u8],
++    delta_t: i64,
+ ) -> Result<SelectInfo, Error> {
+-    // Faithful note: the C body uses select(2) with raw file descriptors.
+-    // The generic Socket trait does not expose a file descriptor, so this
+-    // fallback tries each socket once in order and returns the first that
+-    // delivers data.  Platform-specific implementations can supply a more
+-    // efficient multiplexed select via the concrete Socket type.
++    if delta_t > 0 {
++        let timeout = core::time::Duration::from_micros(delta_t.min(10_000_000) as u64);
++        std::thread::sleep(timeout);
++    }
++
+     for (rank, socket) in sockets.iter_mut().enumerate() {
+         match socket.recv(buffer) {
+-            Ok(info) if info.bytes_recv > 0 => {
+-                let now_us = std::time::SystemTime::now()
+-                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+-                    .map(|d| d.as_micros() as u64)
+-                    .unwrap_or(0);
++            Ok(info) => {
+                 return Ok(SelectInfo {
+                     addr_from: info.addr_from,
+                     addr_dest: info.addr_dest,
+                     dest_if: info.dest_if,
+                     received_ecn: info.received_ecn,
+-                    bytes_recv: info.bytes_recv,
+-                    current_time: Instant::from_ticks(now_us),
++                    bytes_recv: info.bytes_recv as isize,
++                    current_time: select_current_time(),
+                     socket_rank: rank,
+                 });
+             }
+-            _ => {}
++            Err(_) => {
++                return Ok(SelectInfo {
++                    bytes_recv: -1,
++                    current_time: select_current_time(),
++                    socket_rank: rank,
++                    ..SelectInfo::default()
++                });
++            }
+         }
+     }
+-    Err(Error::Generic)
++
++    Ok(SelectInfo {
++        current_time: select_current_time(),
++        ..SelectInfo::default()
++    })
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -439,6 +1118,15 @@ pub enum EcnCodepoint {
+     Ce = 0b11,
+ }
+ 
++fn ecn_codepoint_from_byte(value: u8) -> EcnCodepoint {
++    match value & 0x03 {
++        1 => EcnCodepoint::Ect1,
++        2 => EcnCodepoint::Ect0,
++        3 => EcnCodepoint::Ce,
++        _ => EcnCodepoint::NotEct,
++    }
++}
++
+ #[cfg(unix)]
+ fn setsockopt_uint(
+     sd: libc::c_int,
+@@ -454,6 +1142,54 @@ fn setsockopt_uint(
+     unsafe { libc::setsockopt(sd, level, optname, value_ptr, value_len) == 0 }
+ }
+ 
++#[cfg(unix)]
++fn setsockopt_int(
++    sd: libc::c_int,
++    level: libc::c_int,
++    optname: libc::c_int,
++    value: libc::c_int,
++) -> Result<(), Error> {
++    let value_ptr = &value as *const libc::c_int as *const libc::c_void;
++    let value_len = core::mem::size_of::<libc::c_int>() as libc::socklen_t;
++    // SAFETY: `setsockopt` reads `value_len` bytes from `value_ptr` during
++    // this call. `value_ptr` points to the local `value`, and any OS-level
++    // failure is reported by the negative syscall result.
++    let ret = unsafe { libc::setsockopt(sd, level, optname, value_ptr, value_len) };
++    if ret == 0 {
++        Ok(())
++    } else {
++        Err(Error::Generic)
++    }
++}
++
++/// Enable per-packet destination-info delivery on a UDP socket.
++/// C: `picoquic_socket_set_pkt_info` (picosocks.c:58-91).
++#[cfg(unix)]
++pub fn picoquic_socket_set_pkt_info(sd: i32, af: i32) -> Result<(), Error> {
++    let val: libc::c_int = 1;
++
++    if af == libc::AF_INET6 {
++        setsockopt_int(sd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, val)?;
++        setsockopt_int(sd, libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, val)
++    } else {
++        #[cfg(any(target_os = "linux", target_os = "android"))]
++        {
++            setsockopt_int(sd, libc::IPPROTO_IP, libc::IP_PKTINFO, val)
++        }
++
++        #[cfg(not(any(target_os = "linux", target_os = "android")))]
++        {
++            setsockopt_int(sd, libc::IPPROTO_IP, libc::IP_RECVDSTADDR, val)
++        }
++    }
++}
++
++/// Non-Unix companion wrapper for [`picoquic_socket_set_pkt_info`].
++#[cfg(not(unix))]
++pub fn picoquic_socket_set_pkt_info(_sd: i32, _af: i32) -> Result<(), Error> {
++    Ok(())
++}
++
+ /// Enable ECN receive reporting and, when `ecn_value != NotEct`, request
+ /// that outgoing packets use that ECN codepoint.
+ /// C: `picoquic_socket_set_ecn_options_ex` (picosocks.c:93-223).
+@@ -529,28 +1265,88 @@ pub fn picoquic_socket_set_ecn_options(_sd: i32, _af: i32) -> Result<(bool, bool
+     Ok((false, false))
+ }
+ 
++/// Enable Path-MTU-Discovery probing on a UDP socket.
++/// C: `picoquic_socket_set_pmtud_options` (picosocks.c:230-248).
++#[cfg(target_os = "linux")]
++pub fn picoquic_socket_set_pmtud_options(sd: i32, af: i32) -> Result<(), Error> {
++    let val: libc::c_int = libc::IP_PMTUDISC_PROBE;
++
++    if af == libc::AF_INET6 {
++        setsockopt_int(sd, libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER, val)
++    } else {
++        setsockopt_int(sd, libc::IPPROTO_IP, libc::IP_MTU_DISCOVER, val)
++    }
++}
++
++/// Non-Linux targets match the C build's `#ifdef __linux` no-op path.
++#[cfg(not(target_os = "linux"))]
++pub fn picoquic_socket_set_pmtud_options(_sd: i32, _af: i32) -> Result<(), Error> {
++    Ok(())
++}
++
+ /// Parse the control-message ancillary data attached to a
+ /// received `msghdr`.  C: `picoquic_socks_cmsg_parse`.
+-pub fn parse_cmsg(_header: &MessageHeader<'_, '_, '_>) -> CmsgInfo {
+-    // Control-message parsing requires CMSG_FIRSTHDR / CMSG_NXTHDR macros,
+-    // which are not available in safe Rust through socket2 0.5.  Return a
+-    // neutral default; ECN and pktinfo will appear as absent.
+-    CmsgInfo::default()
++pub fn parse_cmsg(header: &MessageHeader<'_, '_, '_>) -> CmsgInfo {
++    #[cfg(unix)]
++    {
++        debug_assert_eq!(
++            core::mem::size_of_val(header),
++            core::mem::size_of::<libc::msghdr>()
++        );
++
++        // SAFETY: socket2 0.5 `MsgHdr` wraps the platform `msghdr` as its
++        // only non-zero-sized field on Unix. `parse_cmsg` only reads header
++        // fields and ancillary bytes that the caller provided through that
++        // wrapper, matching the C helper's "already filled by recvmsg"
++        // contract.
++        let msg = unsafe { &*(header as *const _ as *const libc::msghdr) };
++        let parsed = parse_recv_cmsgs(msg);
++        CmsgInfo {
++            addr_dest: parsed.addr_dest,
++            dest_if: parsed.dest_if,
++            received_ecn: parsed.received_ecn.map(ecn_codepoint_from_byte),
++            udp_coalesced_size: 0,
++        }
++    }
++
++    #[cfg(not(unix))]
++    {
++        let _ = header;
++        CmsgInfo::default()
++    }
+ }
+ 
+ /// Write `IP_PKTINFO` / `IPV6_PKTINFO` / `UDP_SEGMENT` control
+ /// messages into `header` for an outgoing datagram.  C:
+ /// `picoquic_socks_cmsg_format`.
+ pub fn format_cmsg(
+-    _header: &mut MessageHeader<'_, '_, '_>,
+-    _message_length: usize,
+-    _send_msg_size: usize,
+-    _addr_from: Option<&SocketAddr>,
+-    _dest_if: i32,
++    header: &mut MessageHeader<'_, '_, '_>,
++    message_length: usize,
++    send_msg_size: usize,
++    addr_from: Option<&SocketAddr>,
++    dest_if: i32,
+ ) {
+-    // Control-message formatting requires CMSG_ macros not available in
+-    // safe Rust through socket2 0.5.  The kernel will pick the source
+-    // address; GSO segmentation and ECN marking are not applied.
++    #[cfg(target_os = "linux")]
++    {
++        debug_assert_eq!(
++            core::mem::size_of_val(header),
++            core::mem::size_of::<libc::msghdr>()
++        );
++
++        // SAFETY: socket2 0.5 `MsgHdr` wraps the platform `msghdr` as its
++        // only non-zero-sized field on Unix. The caller provides a header
++        // whose control buffer is the outgoing ancillary-data scratch space;
++        // `format_send_cmsgs` only writes cmsg records inside that buffer and
++        // then shrinks `msg_controllen` to the used length, matching the C
++        // helper's contract.
++        let msg = unsafe { &mut *(header as *mut _ as *mut libc::msghdr) };
++        format_send_cmsgs(msg, message_length, send_msg_size, addr_from, dest_if);
++    }
++
++    #[cfg(not(target_os = "linux"))]
++    {
++        let _ = (header, message_length, send_msg_size, addr_from, dest_if);
++    }
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -622,4 +1418,412 @@ pub(crate) unsafe fn cmsg_format_header_return_data_ptr(
+ }
+ 
+ #[cfg(test)]
+-mod test {}
++mod test {
++    use super::{EcnCodepoint, MessageHeader, OsError, RecvInfo, Socket};
++    use crate::Error;
++    use core::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
++
++    #[cfg(unix)]
++    struct FdGuard(libc::c_int);
++
++    #[cfg(unix)]
++    impl Drop for FdGuard {
++        fn drop(&mut self) {
++            if self.0 >= 0 {
++                // SAFETY: the guard owns this file descriptor.
++                unsafe {
++                    libc::close(self.0);
++                }
++                self.0 = -1;
++            }
++        }
++    }
++
++    #[cfg(unix)]
++    struct TestSocket {
++        fd: libc::c_int,
++        recv_calls: usize,
++        recv_error: bool,
++    }
++
++    #[cfg(unix)]
++    impl Drop for TestSocket {
++        fn drop(&mut self) {
++            if self.fd >= 0 {
++                // SAFETY: the test socket owns this file descriptor.
++                unsafe {
++                    libc::close(self.fd);
++                }
++                self.fd = -1;
++            }
++        }
++    }
++
++    #[cfg(unix)]
++    impl Socket for TestSocket {
++        fn local_address(&self) -> Result<SocketAddr, Error> {
++            Err(Error::Generic)
++        }
++
++        fn recv(&mut self, buffer: &mut [u8]) -> Result<RecvInfo, Error> {
++            self.recv_calls += 1;
++            if self.recv_error {
++                return Err(Error::Generic);
++            }
++
++            // SAFETY: `self.fd` is a live pipe read end owned by this test
++            // socket, and `buffer` is writable for `buffer.len()` bytes.
++            let ret = unsafe {
++                libc::read(
++                    self.fd,
++                    buffer.as_mut_ptr().cast::<libc::c_void>(),
++                    buffer.len(),
++                )
++            };
++            if ret < 0 {
++                Err(Error::Generic)
++            } else {
++                Ok(RecvInfo {
++                    bytes_recv: ret as usize,
++                    ..RecvInfo::default()
++                })
++            }
++        }
++
++        fn send(
++            &mut self,
++            _addr_dest: &SocketAddr,
++            _addr_from: Option<&SocketAddr>,
++            _dest_if: i32,
++            _bytes: &[u8],
++            _gso_size: i32,
++        ) -> Result<usize, OsError> {
++            Err(OsError(-1))
++        }
++
++        fn raw_fd(&self) -> i32 {
++            self.fd
++        }
++    }
++
++    #[cfg(unix)]
++    fn pipe_socket() -> (TestSocket, FdGuard) {
++        let mut fds = [0; 2];
++        // SAFETY: `fds` points to two writable ints for pipe(2) to fill.
++        let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
++        assert_eq!(ret, 0);
++        (
++            TestSocket {
++                fd: fds[0],
++                recv_calls: 0,
++                recv_error: false,
++            },
++            FdGuard(fds[1]),
++        )
++    }
++
++    #[cfg(unix)]
++    fn write_fd(fd: libc::c_int, bytes: &[u8]) {
++        // SAFETY: `fd` is a live pipe write end and `bytes` is readable for
++        // `bytes.len()` bytes.
++        let ret = unsafe { libc::write(fd, bytes.as_ptr().cast::<libc::c_void>(), bytes.len()) };
++        assert_eq!(ret, bytes.len() as isize);
++    }
++
++    #[cfg(unix)]
++    fn append_test_cmsg<T: Copy>(
++        msg: &mut libc::msghdr,
++        last_cmsg: &mut *mut libc::cmsghdr,
++        control_length: &mut libc::c_int,
++        cmsg_level: libc::c_int,
++        cmsg_type: libc::c_int,
++        value: T,
++    ) {
++        // SAFETY: the test msghdr owns a live control buffer with enough room
++        // for all cmsgs appended in this test.
++        let data = unsafe {
++            super::cmsg_format_header_return_data_ptr(
++                msg,
++                last_cmsg,
++                control_length,
++                cmsg_level,
++                cmsg_type,
++                core::mem::size_of::<T>(),
++            )
++        };
++        assert!(!data.is_null());
++
++        // SAFETY: the cmsg helper reserved size_of::<T>() bytes at `data`.
++        unsafe {
++            core::ptr::write_unaligned(data.cast::<T>(), value);
++        }
++    }
++
++    #[cfg(target_os = "linux")]
++    fn send_msg_with_control(cmsg_buffer: &mut super::ControlBuffer) -> libc::msghdr {
++        // SAFETY: all-zero is a valid initial POSIX msghdr value before the
++        // test fills the control buffer fields used by cmsg formatting.
++        let mut msg: libc::msghdr = unsafe { core::mem::zeroed() };
++        msg.msg_control = cmsg_buffer.0.as_mut_ptr().cast();
++        msg.msg_controllen = cmsg_buffer.0.len() as _;
++        msg
++    }
++
++    #[cfg(target_os = "linux")]
++    fn header_from_msghdr(msg: &mut libc::msghdr) -> &mut MessageHeader<'_, '_, '_> {
++        // SAFETY: socket2 0.5 `MsgHdr` wraps the platform `msghdr` with only
++        // zero-sized lifetime metadata; this is the same representation
++        // assumption used by `format_cmsg`.
++        unsafe { &mut *(msg as *mut libc::msghdr as *mut MessageHeader<'_, '_, '_>) }
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn parse_cmsg_extracts_ipv6_pktinfo_and_ecn() {
++        let mut cmsg_buffer = super::ControlBuffer([0u8; 1024]);
++        let mut msg: libc::msghdr = unsafe { core::mem::zeroed() };
++        let mut last_cmsg: *mut libc::cmsghdr = core::ptr::null_mut();
++        let mut control_length: libc::c_int = 0;
++        let dest_ip = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
++
++        msg.msg_control = cmsg_buffer.0.as_mut_ptr().cast();
++        msg.msg_controllen = cmsg_buffer.0.len() as _;
++
++        append_test_cmsg(
++            &mut msg,
++            &mut last_cmsg,
++            &mut control_length,
++            libc::IPPROTO_IPV6,
++            libc::IPV6_PKTINFO,
++            libc::in6_pktinfo {
++                ipi6_addr: libc::in6_addr { s6_addr: dest_ip },
++                ipi6_ifindex: 17,
++            },
++        );
++        append_test_cmsg(
++            &mut msg,
++            &mut last_cmsg,
++            &mut control_length,
++            libc::IPPROTO_IPV6,
++            libc::IPV6_TCLASS,
++            0x03u8,
++        );
++
++        let header = MessageHeader::new().with_control(&cmsg_buffer.0[..control_length as usize]);
++        let info = super::parse_cmsg(&header);
++
++        assert_eq!(
++            info.addr_dest,
++            Some(SocketAddr::V6(SocketAddrV6::new(
++                Ipv6Addr::from(dest_ip),
++                0,
++                0,
++                0
++            )))
++        );
++        assert_eq!(info.dest_if, Some(17));
++        assert_eq!(info.received_ecn, Some(EcnCodepoint::Ce));
++        assert_eq!(info.udp_coalesced_size, 0);
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn format_cmsg_writes_ipv4_pktinfo_and_udp_segment() {
++        let mut cmsg_buffer = super::ControlBuffer([0u8; 1024]);
++        let mut msg = send_msg_with_control(&mut cmsg_buffer);
++        let addr = SocketAddr::V4(core::net::SocketAddrV4::new(
++            core::net::Ipv4Addr::new(192, 0, 2, 1),
++            4433,
++        ));
++
++        super::format_cmsg(header_from_msghdr(&mut msg), 1400, 1200, Some(&addr), 12);
++
++        // SAFETY: `msg` owns a live control buffer that `format_cmsg` has just
++        // populated with well-formed cmsg headers.
++        let first = unsafe { libc::CMSG_FIRSTHDR(&msg as *const libc::msghdr) };
++        assert!(!first.is_null());
++        // SAFETY: `first` is the first cmsg returned for `msg`.
++        unsafe {
++            assert_eq!((*first).cmsg_level, libc::IPPROTO_IP);
++            assert_eq!((*first).cmsg_type, libc::IP_PKTINFO);
++        }
++        // SAFETY: the first cmsg is the IPv4 pktinfo cmsg just checked above.
++        let pktinfo = unsafe { super::cmsg_data_as::<libc::in_pktinfo>(first) }
++            .expect("IPv4 pktinfo payload");
++        let SocketAddr::V4(addr4) = addr else {
++            unreachable!();
++        };
++        assert_eq!(
++            pktinfo.ipi_spec_dst.s_addr,
++            super::ipv4_addr_to_in_addr(addr4.ip()).s_addr
++        );
++        assert_eq!(pktinfo.ipi_ifindex, 12);
++
++        // SAFETY: `first` belongs to `msg`; CMSG_NXTHDR returns the next valid
++        // cmsg or null at the end.
++        let second = unsafe { libc::CMSG_NXTHDR(&msg as *const libc::msghdr, first as *const _) };
++        assert!(!second.is_null());
++        // SAFETY: `second` is a cmsg returned for `msg`.
++        unsafe {
++            assert_eq!((*second).cmsg_level, libc::SOL_UDP);
++            assert_eq!((*second).cmsg_type, libc::UDP_SEGMENT);
++        }
++        // SAFETY: the second cmsg is the UDP_SEGMENT cmsg just checked above.
++        let segment = unsafe { super::cmsg_data_as::<u16>(second) }.expect("segment payload");
++        assert_eq!(segment, 1200);
++
++        // SAFETY: `second` belongs to `msg`; this verifies the formatter wrote
++        // exactly the two expected cmsgs.
++        let third = unsafe { libc::CMSG_NXTHDR(&msg as *const libc::msghdr, second as *const _) };
++        assert!(third.is_null());
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn format_cmsg_writes_ipv6_pktinfo_dontfrag_and_udp_segment() {
++        let mut cmsg_buffer = super::ControlBuffer([0u8; 1024]);
++        let mut msg = send_msg_with_control(&mut cmsg_buffer);
++        let addr = SocketAddr::V6(SocketAddrV6::new(
++            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
++            4433,
++            0,
++            0,
++        ));
++
++        super::format_cmsg(header_from_msghdr(&mut msg), 1500, 1200, Some(&addr), 17);
++
++        // SAFETY: `msg` owns a live control buffer that `format_cmsg` has just
++        // populated with well-formed cmsg headers.
++        let first = unsafe { libc::CMSG_FIRSTHDR(&msg as *const libc::msghdr) };
++        assert!(!first.is_null());
++        // SAFETY: `first` is the first cmsg returned for `msg`.
++        unsafe {
++            assert_eq!((*first).cmsg_level, libc::IPPROTO_IPV6);
++            assert_eq!((*first).cmsg_type, libc::IPV6_PKTINFO);
++        }
++        // SAFETY: the first cmsg is the IPv6 pktinfo cmsg just checked above.
++        let pktinfo = unsafe { super::cmsg_data_as::<libc::in6_pktinfo>(first) }
++            .expect("IPv6 pktinfo payload");
++        let SocketAddr::V6(addr6) = addr else {
++            unreachable!();
++        };
++        assert_eq!(pktinfo.ipi6_addr.s6_addr, addr6.ip().octets());
++        assert_eq!(pktinfo.ipi6_ifindex, 17);
++
++        // SAFETY: `first` belongs to `msg`; CMSG_NXTHDR returns the next valid
++        // cmsg or null at the end.
++        let second = unsafe { libc::CMSG_NXTHDR(&msg as *const libc::msghdr, first as *const _) };
++        assert!(!second.is_null());
++        // SAFETY: `second` is a cmsg returned for `msg`.
++        unsafe {
++            assert_eq!((*second).cmsg_level, libc::SOL_IPV6);
++            assert_eq!((*second).cmsg_type, libc::IPV6_DONTFRAG);
++        }
++        // SAFETY: the second cmsg is the IPV6_DONTFRAG cmsg just checked.
++        let dontfrag =
++            unsafe { super::cmsg_data_as::<libc::c_int>(second) }.expect("dontfrag payload");
++        assert_eq!(dontfrag, 1);
++
++        // SAFETY: `second` belongs to `msg`; CMSG_NXTHDR returns the next valid
++        // cmsg or null at the end.
++        let third = unsafe { libc::CMSG_NXTHDR(&msg as *const libc::msghdr, second as *const _) };
++        assert!(!third.is_null());
++        // SAFETY: `third` is a cmsg returned for `msg`.
++        unsafe {
++            assert_eq!((*third).cmsg_level, libc::SOL_UDP);
++            assert_eq!((*third).cmsg_type, libc::UDP_SEGMENT);
++        }
++        // SAFETY: the third cmsg is the UDP_SEGMENT cmsg just checked above.
++        let segment = unsafe { super::cmsg_data_as::<u16>(third) }.expect("segment payload");
++        assert_eq!(segment, 1200);
++
++        // SAFETY: `third` belongs to `msg`; this verifies the formatter wrote
++        // exactly the three expected cmsgs.
++        let fourth = unsafe { libc::CMSG_NXTHDR(&msg as *const libc::msghdr, third as *const _) };
++        assert!(fourth.is_null());
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn is_unreachable_matches_unix_c_list() {
++        for code in [
++            libc::EAFNOSUPPORT,
++            libc::ECONNRESET,
++            libc::EHOSTUNREACH,
++            libc::ENETDOWN,
++            libc::ENETUNREACH,
++            -1,
++        ] {
++            assert!(OsError(code).is_unreachable());
++        }
++
++        for code in [0, libc::EIO, libc::EACCES, libc::EADDRNOTAVAIL] {
++            assert!(!OsError(code).is_unreachable());
++        }
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn socket_set_pkt_info_reports_setsockopt_failure() {
++        assert!(super::picoquic_socket_set_pkt_info(-1, libc::AF_INET).is_err());
++        assert!(super::picoquic_socket_set_pkt_info(-1, libc::AF_INET6).is_err());
++    }
++
++    #[cfg(target_os = "linux")]
++    #[test]
++    fn socket_set_pmtud_reports_setsockopt_failure() {
++        assert!(super::picoquic_socket_set_pmtud_options(-1, libc::AF_INET).is_err());
++        assert!(super::picoquic_socket_set_pmtud_options(-1, libc::AF_INET6).is_err());
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn select_timeout_returns_zero_without_recv() {
++        let (socket, _writer) = pipe_socket();
++        let mut sockets = [socket];
++        let mut buffer = [0u8; 16];
++
++        let info = super::select(&mut sockets, &mut buffer, 0).expect("select timeout");
++
++        assert_eq!(info.bytes_recv, 0);
++        assert_eq!(info.socket_rank, 0);
++        assert_eq!(sockets[0].recv_calls, 0);
++        assert!(info.current_time.ticks() > 0);
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn select_receives_only_from_ready_socket() {
++        let (socket0, _writer0) = pipe_socket();
++        let (socket1, writer1) = pipe_socket();
++        let mut sockets = [socket0, socket1];
++        let mut buffer = [0u8; 16];
++
++        write_fd(writer1.0, b"abc");
++        let info = super::select(&mut sockets, &mut buffer, 1_000_000).expect("select ready");
++
++        assert_eq!(info.bytes_recv, 3);
++        assert_eq!(info.socket_rank, 1);
++        assert_eq!(&buffer[..3], b"abc");
++        assert_eq!(sockets[0].recv_calls, 0);
++        assert_eq!(sockets[1].recv_calls, 1);
++        assert!(info.current_time.ticks() > 0);
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn select_ready_recv_error_returns_c_failure_value() {
++        let (mut socket, writer) = pipe_socket();
++        socket.recv_error = true;
++        let mut sockets = [socket];
++        let mut buffer = [0u8; 16];
++
++        write_fd(writer.0, b"x");
++        let info = super::select(&mut sockets, &mut buffer, 1_000_000).expect("select error");
++
++        assert_eq!(info.bytes_recv, -1);
++        assert_eq!(info.socket_rank, 0);
++        assert_eq!(sockets[0].recv_calls, 1);
++        assert!(info.current_time.ticks() > 0);
++    }
++}
+diff --git a/rs/fq/src/socks_socket2.rs b/rs/fq/src/socks_socket2.rs
+index 6413052e..5187aef6 100644
+--- a/rs/fq/src/socks_socket2.rs
++++ b/rs/fq/src/socks_socket2.rs
+@@ -62,9 +62,8 @@ impl Socket2Udp {
+             libc::AF_INET
+         };
+         let mut udp = Socket2Udp(sock, af);
+-        let _ = udp.set_pkt_info();
+         let _ = udp.set_ecn_options();
+-        let _ = udp.set_pmtud_options();
++        udp.set_pkt_info()?;
+         let addr = if domain == socket2::Domain::IPV6 {
+             SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, port as u16, 0, 0))
+         } else {
+@@ -73,6 +72,7 @@ impl Socket2Udp {
+         udp.0
+             .bind(&socket2::SockAddr::from(addr))
+             .map_err(|_| Error::Generic)?;
++        udp.set_pmtud_options()?;
+         Ok(udp)
+     }
+ 
+@@ -91,26 +91,57 @@ impl Socket for Socket2Udp {
+     }
+ 
+     fn recv(&mut self, buffer: &mut [u8]) -> Result<RecvInfo, Error> {
+-        use std::io::Read;
+-        let bytes_recv = self.0.read(buffer).map_err(|_| Error::Generic)?;
+-        Ok(RecvInfo {
+-            bytes_recv,
+-            ..RecvInfo::default()
+-        })
++        #[cfg(unix)]
++        {
++            use std::os::unix::io::AsRawFd;
++
++            crate::socks::picoquic_recvmsg(self.0.as_raw_fd(), buffer)
++        }
++
++        #[cfg(not(unix))]
++        {
++            use std::io::Read;
++
++            let bytes_recv = self.0.read(buffer).map_err(|_| Error::Generic)?;
++            Ok(RecvInfo {
++                bytes_recv,
++                ..RecvInfo::default()
++            })
++        }
+     }
+ 
+     fn send(
+         &mut self,
+         addr_dest: &SocketAddr,
+-        _addr_from: Option<&SocketAddr>,
+-        _dest_if: i32,
++        addr_from: Option<&SocketAddr>,
++        dest_if: i32,
+         bytes: &[u8],
+-        _gso_size: i32,
++        gso_size: i32,
+     ) -> Result<usize, OsError> {
+-        let sa = socket2::SockAddr::from(*addr_dest);
+-        self.0
+-            .send_to(bytes, &sa)
+-            .map_err(|e| OsError(e.raw_os_error().unwrap_or(-1)))
++        #[cfg(target_os = "linux")]
++        {
++            use std::os::unix::io::AsRawFd;
++
++            crate::socks::picoquic_sendmsg(
++                self.0.as_raw_fd(),
++                addr_dest,
++                addr_from,
++                dest_if,
++                bytes,
++                gso_size,
++            )
++        }
++
++        #[cfg(not(target_os = "linux"))]
++        {
++            let _ = addr_from;
++            let _ = dest_if;
++            let _ = gso_size;
++            let sa = socket2::SockAddr::from(*addr_dest);
++            self.0
++                .send_to(bytes, &sa)
++                .map_err(|e| OsError(e.raw_os_error().unwrap_or(-1)))
++        }
+     }
+ 
+     fn open_udp(af: i32) -> Result<Self, Error> {
+@@ -145,30 +176,14 @@ impl Socket for Socket2Udp {
+         #[cfg(unix)]
+         {
+             use std::os::unix::io::AsRawFd;
+-            let fd = self.0.as_raw_fd();
+-            let val: libc::c_int = 1;
+-            let vp = &val as *const libc::c_int as *const libc::c_void;
+-            let vl = core::mem::size_of::<libc::c_int>() as libc::socklen_t;
+-            // IPv6 path: IPV6_V6ONLY=1 then IPV6_RECVPKTINFO=1.
+-            // setsockopt returns -1 on an AF_INET socket (wrong protocol),
+-            // so the if-check naturally skips IPV6_RECVPKTINFO on IPv4 sockets.
+-            let r6only =
+-                unsafe { libc::setsockopt(fd, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, vp, vl) };
+-            if r6only == 0 {
+-                unsafe { libc::setsockopt(fd, libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, vp, vl) };
+-            }
+-            // IPv4 path: IP_PKTINFO (Linux/Android) or IP_RECVDSTADDR (BSD/macOS).
+-            // setsockopt returns -1 on an AF_INET6 socket; error is ignored.
+-            #[cfg(any(target_os = "linux", target_os = "android"))]
+-            unsafe {
+-                libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_PKTINFO, vp, vl)
+-            };
+-            #[cfg(not(any(target_os = "linux", target_os = "android")))]
+-            unsafe {
+-                libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_RECVDSTADDR, vp, vl)
+-            };
++
++            crate::socks::picoquic_socket_set_pkt_info(self.0.as_raw_fd(), self.1)
++        }
++
++        #[cfg(not(unix))]
++        {
++            Ok(())
+         }
+-        Ok(())
+     }
+ 
+     fn set_ecn_options(&mut self) -> Result<(bool, bool), Error> {
+@@ -197,16 +212,14 @@ impl Socket for Socket2Udp {
+         #[cfg(target_os = "linux")]
+         {
+             use std::os::unix::io::AsRawFd;
+-            let fd = self.0.as_raw_fd();
+-            let val: libc::c_int = libc::IP_PMTUDISC_PROBE;
+-            let vp = &val as *const libc::c_int as *const libc::c_void;
+-            let vl = core::mem::size_of::<libc::c_int>() as libc::socklen_t;
+-            // Apply to both families; the one that doesn't match the socket's
+-            // AF will return -1 (ignored), matching the C af-branch behavior.
+-            unsafe { libc::setsockopt(fd, libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER, vp, vl) };
+-            unsafe { libc::setsockopt(fd, libc::IPPROTO_IP, libc::IP_MTU_DISCOVER, vp, vl) };
++
++            crate::socks::picoquic_socket_set_pmtud_options(self.0.as_raw_fd(), self.1)
++        }
++
++        #[cfg(not(target_os = "linux"))]
++        {
++            Ok(())
+         }
+-        Ok(())
+     }
+ 
+     fn open_server_v4(port: i32) -> Result<Self, Error> {
+diff --git a/rs/fq/src/sys/openssl.rs b/rs/fq/src/sys/openssl.rs
+index ab23267e..7dc0d6ec 100644
+--- a/rs/fq/src/sys/openssl.rs
++++ b/rs/fq/src/sys/openssl.rs
+@@ -87,6 +87,7 @@ pub struct OpenSslSession {
+     version: u32,
+     server_name: Option<Vec<u8>>,
+     transport_params: Vec<u8>,
++    peer_transport_params: Option<Vec<u8>>,
+     wrote_handshake: bool,
+     handshaking: bool,
+     yielded_1rtt: bool,
+@@ -105,6 +106,7 @@ impl OpenSslSession {
+             version,
+             server_name,
+             transport_params: transport_params.to_vec(),
++            peer_transport_params: None,
+             wrote_handshake: false,
+             handshaking: true,
+             yielded_1rtt: false,
+@@ -174,6 +176,13 @@ impl OpenSslSession {
+             TlsRole::Server => b"openssl server hello",
+         }
+     }
++
++    fn peer_handshake_bytes(&self) -> &'static [u8] {
++        match self.role {
++            TlsRole::Client => b"openssl server hello",
++            TlsRole::Server => b"openssl client hello",
++        }
++    }
+ }
+ 
+ impl Session for OpenSslSession {
+@@ -182,6 +191,9 @@ impl Session for OpenSslSession {
+             return Ok(false);
+         }
+         let changed = self.handshaking;
++        if let Some(params) = plaintext.strip_prefix(self.peer_handshake_bytes()) {
++            self.peer_transport_params = Some(params.to_vec());
++        }
+         self.saw_peer_handshake = true;
+         self.handshaking = false;
+         Ok(changed)
+@@ -242,7 +254,12 @@ impl Session for OpenSslSession {
+     }
+ 
+     fn transport_parameters(&self) -> Result<Option<Vec<u8>>, Error> {
+-        Ok(Some(self.transport_params.clone()))
++        Ok(self.peer_transport_params.clone())
++    }
++
++    fn set_transport_parameters(&mut self, transport_params: &[u8]) -> Result<(), Error> {
++        self.transport_params = transport_params.to_vec();
++        Ok(())
+     }
+ 
+     fn export_keying_material(
+diff --git a/rs/fq/src/sys/picotls.rs b/rs/fq/src/sys/picotls.rs
+index 76d5621e..e3ed9e37 100644
+--- a/rs/fq/src/sys/picotls.rs
++++ b/rs/fq/src/sys/picotls.rs
+@@ -82,6 +82,7 @@ pub struct PicotlsSession {
+     version: u32,
+     server_name: Option<Vec<u8>>,
+     transport_params: Vec<u8>,
++    peer_transport_params: Option<Vec<u8>>,
+     wrote_handshake: bool,
+     handshaking: bool,
+     yielded_1rtt: bool,
+@@ -100,6 +101,7 @@ impl PicotlsSession {
+             version,
+             server_name,
+             transport_params: transport_params.to_vec(),
++            peer_transport_params: None,
+             wrote_handshake: false,
+             handshaking: true,
+             yielded_1rtt: false,
+@@ -169,6 +171,13 @@ impl PicotlsSession {
+             TlsRole::Server => b"picotls server hello",
+         }
+     }
++
++    fn peer_handshake_bytes(&self) -> &'static [u8] {
++        match self.role {
++            TlsRole::Client => b"picotls server hello",
++            TlsRole::Server => b"picotls client hello",
++        }
++    }
+ }
+ 
+ impl Session for PicotlsSession {
+@@ -177,6 +186,9 @@ impl Session for PicotlsSession {
+             return Ok(false);
+         }
+         let changed = self.handshaking;
++        if let Some(params) = plaintext.strip_prefix(self.peer_handshake_bytes()) {
++            self.peer_transport_params = Some(params.to_vec());
++        }
+         self.saw_peer_handshake = true;
+         self.handshaking = false;
+         Ok(changed)
+@@ -237,7 +249,12 @@ impl Session for PicotlsSession {
+     }
+ 
+     fn transport_parameters(&self) -> Result<Option<Vec<u8>>, Error> {
+-        Ok(Some(self.transport_params.clone()))
++        Ok(self.peer_transport_params.clone())
++    }
++
++    fn set_transport_parameters(&mut self, transport_params: &[u8]) -> Result<(), Error> {
++        self.transport_params = transport_params.to_vec();
++        Ok(())
+     }
+ 
+     fn export_keying_material(
+diff --git a/rs/fq/src/tests/util.rs b/rs/fq/src/tests/util.rs
+index 5dbad88a..a7b8ea60 100644
+--- a/rs/fq/src/tests/util.rs
++++ b/rs/fq/src/tests/util.rs
+@@ -754,7 +754,7 @@ impl TestTlsApiCtx {
+     /// C: `picoquic_set_test_address(&test_ctx->client_addr, addr_be, port)`.
+     pub fn set_client_addr(&mut self, addr_be: u32, port: u16) {
+         use core::net::Ipv4Addr;
+-        self.client_addr = SocketAddr::from((Ipv4Addr::from(addr_be.to_be_bytes()), port));
++        self.client_addr = SocketAddr::from((Ipv4Addr::from(addr_be.to_ne_bytes()), port.to_be()));
+     }
+ 
+     /// True when the client connection is in the Ready state.
+diff --git a/rs/fq/src/tls.rs b/rs/fq/src/tls.rs
+index a2a8290d..799c3af7 100644
+--- a/rs/fq/src/tls.rs
++++ b/rs/fq/src/tls.rs
+@@ -40,6 +40,7 @@
+ extern crate alloc;
+ use alloc::boxed::Box;
+ use alloc::vec::Vec;
++use core::any::Any;
+ 
+ use crate::Error;
+ 
+@@ -90,12 +91,37 @@ pub trait Session: Send {
+     /// Whether the server accepted the client's 0-RTT data.
+     fn early_data_accepted(&self) -> Option<bool>;
+ 
++    /// Digest length of the hash used by the negotiated TLS cipher suite.
++    ///
++    /// C: `ptls_get_cipher(tls)->hash->digest_size`.
++    fn app_secret_size(&self) -> Option<usize> {
++        None
++    }
++
++    /// IANA ID of the negotiated TLS cipher suite.
++    ///
++    /// C: `ptls_get_cipher(tls)->id`.
++    fn cipher_suite_id(&self) -> Option<u16> {
++        None
++    }
++
+     /// Decode the peer's QUIC transport parameters (TLS
+     /// extension 57; RFC 9001 §8.2).  Returns the decoded
+     /// transport parameters as raw bytes — picoquic parses
+     /// them with its own decoder.
+     fn transport_parameters(&self) -> Result<Option<Vec<u8>>, Error>;
+ 
++    /// Replace the local QUIC transport-parameter bytes that will be
++    /// emitted in the next handshake flight.
++    ///
++    /// Server-side sessions need this after parsing the client's
++    /// transport parameters, because picoquic may adjust local
++    /// parameters before composing the server extension.
++    fn set_transport_parameters(&mut self, transport_params: &[u8]) -> Result<(), Error> {
++        let _ = transport_params;
++        Ok(())
++    }
++
+     /// HKDF-Expand-Label using the session's exporter master
+     /// secret.  Used by QUIC for stateless-reset tokens etc.
+     fn export_keying_material(
+@@ -189,11 +215,15 @@ pub trait DynClientConfig: Send {
+         server_name: &str,
+         transport_params: &[u8],
+     ) -> Result<Box<dyn Session>, ConfigError>;
++
++    /// Expose the concrete config for APIs that mutate the translated
++    /// master TLS context after construction.
++    fn as_any(&self) -> &dyn Any;
+ }
+ 
+ impl<T> DynClientConfig for T
+ where
+-    T: ClientConfig + Send,
++    T: ClientConfig + Send + 'static,
+     T::Session: 'static,
+ {
+     fn start_session(
+@@ -205,6 +235,10 @@ where
+         ClientConfig::start_session(self, version, server_name, transport_params)
+             .map(|s| Box::new(s) as Box<dyn Session>)
+     }
++
++    fn as_any(&self) -> &dyn Any {
++        self
++    }
+ }
+ 
+ /// Dyn-compatible mirror of [`ServerConfig`].
+@@ -214,11 +248,15 @@ pub trait DynServerConfig: Send {
+         version: u32,
+         transport_params: &[u8],
+     ) -> Result<Box<dyn Session>, ConfigError>;
++
++    /// Expose the concrete config for APIs that mutate the translated
++    /// master TLS context after construction.
++    fn as_any(&self) -> &dyn Any;
+ }
+ 
+ impl<T> DynServerConfig for T
+ where
+-    T: ServerConfig + Send,
++    T: ServerConfig + Send + 'static,
+     T::Session: 'static,
+ {
+     fn start_session(
+@@ -229,6 +267,10 @@ where
+         ServerConfig::start_session(self, version, transport_params)
+             .map(|s| Box::new(s) as Box<dyn Session>)
+     }
++
++    fn as_any(&self) -> &dyn Any {
++        self
++    }
+ }
+ 
+ // ---------------------------------------------------------------------------
+diff --git a/rs/fq/src/tls_api.rs b/rs/fq/src/tls_api.rs
+index 8bee5ed5..4e06777b 100644
+--- a/rs/fq/src/tls_api.rs
++++ b/rs/fq/src/tls_api.rs
+@@ -88,14 +88,16 @@ use core::net::{IpAddr, SocketAddr};
+ use digest::Digest;
+ 
+ use crate::Instant;
+-use crate::errors::InternalError;
++use crate::errors::{InternalError, TransportError};
+ use crate::internal::{
+-    CryptoContext, MAX_PACKET_SIZE, NB_TP_0RTT, NUMBER_OF_EPOCHS, Path, RETRY_TOKEN_PAD_SIZE,
+-    StoredTicket, StoredToken, StreamQueueNode, TOKEN_DELAY_LONG, TOKEN_DELAY_SHORT, Version,
++    CryptoContext, Epoch, MAX_PACKET_SIZE, NB_TP_0RTT, NUMBER_OF_EPOCHS, Path,
++    RETRY_TOKEN_PAD_SIZE, StoredTicket, StoredToken, StreamQueueNode, TOKEN_DELAY_LONG,
++    TOKEN_DELAY_SHORT, Version, parse_16, parse_64,
+ };
++use crate::logger::Log;
+ use crate::{
+-    AES_128_GCM_SHA256, AES_256_GCM_SHA384, CHACHA20_POLY1305_SHA256, Connection, ConnectionId,
+-    Error, GROUP_SECP256R1, Quic, RESET_SECRET_SIZE,
++    AES_128_GCM_SHA256, AES_256_GCM_SHA384, CHACHA20_POLY1305_SHA256, CallbackEvent, Connection,
++    ConnectionId, Error, GROUP_SECP256R1, Quic, RESET_SECRET_SIZE, State,
+ };
+ 
+ // ---------------------------------------------------------------------------
+@@ -152,9 +154,14 @@ pub const LABEL_QUIC_V1_KEY_BASE: &str = "tls13 quic ";
+ pub const LABEL_QUIC_V2_KEY_BASE: &str = "tls13 quicv2 ";
+ 
+ const SHA256_SIZE: usize = 32;
++const SHA384_SIZE: usize = 48;
++const SHA512_SIZE: usize = 64;
+ const AES128_KEY_SIZE: usize = 16;
+ const AES_GCM_IV_SIZE: usize = 12;
+ const TICKET_AEAD_LABEL: &str = "random label";
++const TLS_TICKET_LIFETIME_SECONDS: u64 = 100_000;
++const TLS_MAX_EARLY_DATA_SIZE: u32 = u32::MAX;
++const TRANSPORT_PARAMETERS_MAX_SIZE: usize = 2048;
+ const TLS13_LABEL_PREFIX: &str = "tls13 ";
+ 
+ fn version_from_index(version_index: i32) -> Option<Version> {
+@@ -237,6 +244,73 @@ fn hkdf_expand_label_sha512(
+         .map_err(|_| Error::InvalidArgument)
+ }
+ 
++/// HKDF hash algorithm selector for APIs that mirror picotls
++/// `cipher->hash`.  The digest size controls both the PRK slice and
++/// the number of bytes written by HKDF-Expand-Label.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum HkdfHashAlgorithm {
++    /// SHA-256, 32-byte digest.
++    Sha256,
++    /// SHA-384, 48-byte digest.
++    Sha384,
++    /// SHA-512, 64-byte digest.
++    Sha512,
++}
++
++impl HkdfHashAlgorithm {
++    /// Return this hash algorithm's digest size in bytes.
++    pub const fn digest_size(self) -> usize {
++        match self {
++            Self::Sha256 => SHA256_SIZE,
++            Self::Sha384 => SHA384_SIZE,
++            Self::Sha512 => SHA512_SIZE,
++        }
++    }
++
++    fn new_digest(self) -> Box<dyn digest::DynDigest> {
++        match self {
++            Self::Sha256 => Box::new(sha2::Sha256::new()),
++            Self::Sha384 => Box::new(sha2::Sha384::new()),
++            Self::Sha512 => Box::new(sha2::Sha512::new()),
++        }
++    }
++
++    fn expand_label(
++        self,
++        label: &str,
++        base_label: &str,
++        secret: &[u8],
++        output: &mut [u8],
++    ) -> Result<(), Error> {
++        match self {
++            Self::Sha256 => hkdf_expand_label_sha256(label, base_label, secret, output),
++            Self::Sha384 => hkdf_expand_label_sha384(label, base_label, secret, output),
++            Self::Sha512 => hkdf_expand_label_sha512(label, base_label, secret, output),
++        }
++    }
++}
++
++fn hash_algorithm_for_cipher_suite_id(cipher_suite_id: u16) -> Option<HkdfHashAlgorithm> {
++    match cipher_suite_id {
++        AES_128_GCM_SHA256 | CHACHA20_POLY1305_SHA256 => Some(HkdfHashAlgorithm::Sha256),
++        AES_256_GCM_SHA384 => Some(HkdfHashAlgorithm::Sha384),
++        _ => None,
++    }
++}
++
++fn app_secret_len_for_cipher_suite_id(cipher_suite_id: u16) -> Option<usize> {
++    hash_algorithm_for_cipher_suite_id(cipher_suite_id).map(HkdfHashAlgorithm::digest_size)
++}
++
++fn aead_suite_for_cipher_suite_id(cipher_suite_id: u16) -> Result<AeadSuiteId, Error> {
++    match cipher_suite_id {
++        AES_128_GCM_SHA256 => Ok(AeadSuiteId::Aes128GcmSha256),
++        AES_256_GCM_SHA384 => Ok(AeadSuiteId::Aes256GcmSha384),
++        CHACHA20_POLY1305_SHA256 => Ok(AeadSuiteId::ChaCha20Poly1305Sha256),
++        _ => Err(Error::InvalidArgument),
++    }
++}
++
+ fn derive_aes128_gcm_key_iv(
+     secret: &[u8],
+     prefix_label: &str,
+@@ -436,23 +510,145 @@ impl crate::tls::PacketKey for Aes256GcmPacketKey {
+     }
+ }
+ 
+-struct Aes128HeaderKey {
+-    cipher: aes::Aes128Enc,
++const CHACHA20_POLY1305_KEY_SIZE: usize = 32;
++type ChaCha20Poly1305Aead = <hpke::aead::ChaCha20Poly1305 as hpke::aead::Aead>::AeadImpl;
++
++fn derive_chacha20_poly1305_key_iv(
++    secret: &[u8],
++    prefix_label: &str,
++) -> Result<([u8; CHACHA20_POLY1305_KEY_SIZE], [u8; AES_GCM_IV_SIZE]), Error> {
++    let mut key = [0u8; CHACHA20_POLY1305_KEY_SIZE];
++    let mut iv = [0u8; AES_GCM_IV_SIZE];
++    hkdf_expand_label_sha256(LABEL_KEY, prefix_label, secret, &mut key)?;
++    hkdf_expand_label_sha256(LABEL_IV, prefix_label, secret, &mut iv)?;
++    Ok((key, iv))
++}
++
++struct ChaCha20Poly1305PacketKey {
++    cipher: ChaCha20Poly1305Aead,
++    iv: [u8; AES_GCM_IV_SIZE],
++}
++
++impl ChaCha20Poly1305PacketKey {
++    fn from_secret(secret: &[u8], prefix_label: &str) -> Result<Self, Error> {
++        use aead::KeyInit;
++
++        let (key, iv) = derive_chacha20_poly1305_key_iv(secret, prefix_label)?;
++        let cipher =
++            ChaCha20Poly1305Aead::new_from_slice(&key).map_err(|_| Error::InvalidArgument)?;
++        Ok(Self { cipher, iv })
++    }
++
++    fn nonce_mp(&self, path_id: u64, packet: u64) -> [u8; AES_GCM_IV_SIZE] {
++        let mut nonce = self.iv;
++        let path = (path_id as u32).to_be_bytes();
++        for (n, p) in nonce[..4].iter_mut().zip(path.iter()) {
++            *n ^= *p;
++        }
++        let pn = packet.to_be_bytes();
++        for (n, p) in nonce[4..].iter_mut().zip(pn.iter()) {
++            *n ^= *p;
++        }
++        nonce
++    }
++}
++
++impl crate::tls::PacketKey for ChaCha20Poly1305PacketKey {
++    fn encrypt(&self, packet: u64, header: &[u8], payload: &mut Vec<u8>) {
++        self.encrypt_mp(0, packet, header, payload);
++    }
++
++    fn decrypt(&self, packet: u64, header: &[u8], payload: &mut Vec<u8>) -> Result<(), Error> {
++        self.decrypt_mp(0, packet, header, payload)
++    }
++
++    fn encrypt_mp(&self, path_id: u64, packet: u64, header: &[u8], payload: &mut Vec<u8>) {
++        use aead::AeadInPlace;
++
++        let nonce = self.nonce_mp(path_id, packet);
++        let tag = self
++            .cipher
++            .encrypt_in_place_detached((&nonce).into(), header, payload.as_mut_slice())
++            .expect("ChaCha20-Poly1305 encryption should not fail for in-place buffers");
++        payload.extend_from_slice(&tag);
++    }
++
++    fn decrypt_mp(
++        &self,
++        path_id: u64,
++        packet: u64,
++        header: &[u8],
++        payload: &mut Vec<u8>,
++    ) -> Result<(), Error> {
++        use aead::AeadInPlace;
++
++        if payload.len() < QUIC_AEAD_TAG_LEN {
++            return Err(Error::Protocol(InternalError::AeadCheck as u64));
++        }
++        let tag_index = payload.len() - QUIC_AEAD_TAG_LEN;
++        let tag_bytes: [u8; QUIC_AEAD_TAG_LEN] = payload[tag_index..]
++            .try_into()
++            .map_err(|_| Error::Protocol(InternalError::AeadCheck as u64))?;
++        payload.truncate(tag_index);
++        let nonce = self.nonce_mp(path_id, packet);
++        self.cipher
++            .decrypt_in_place_detached(
++                (&nonce).into(),
++                header,
++                payload.as_mut_slice(),
++                (&tag_bytes).into(),
++            )
++            .map_err(|_| Error::Protocol(InternalError::AeadCheck as u64))
++    }
++
++    fn tag_len(&self) -> usize {
++        QUIC_AEAD_TAG_LEN
++    }
++
++    fn integrity_limit(&self) -> u64 {
++        1u64 << 36
++    }
++
++    fn confidentiality_limit(&self) -> u64 {
++        1u64 << 62
++    }
++}
++
++enum Aes128HeaderKey {
++    Encrypt(aes::Aes128Enc),
++    Decrypt(aes::Aes128Enc),
+ }
+ 
+ impl Aes128HeaderKey {
+     fn from_raw_key(key: &[u8; AES128_KEY_SIZE]) -> Self {
++        Self::from_raw_key_for_direction(key, true)
++    }
++
++    fn from_raw_key_for_direction(key: &[u8; AES128_KEY_SIZE], is_enc: bool) -> Self {
+         use cipher::KeyInit;
+ 
+-        Self {
+-            cipher: aes::Aes128Enc::new_from_slice(key).expect("key is 16 bytes"),
++        let cipher = aes::Aes128Enc::new_from_slice(key).expect("key is 16 bytes");
++        if is_enc {
++            Self::Encrypt(cipher)
++        } else {
++            Self::Decrypt(cipher)
+         }
+     }
+ 
+     fn from_secret(secret: &[u8], prefix_label: &str) -> Result<Self, Error> {
+         let mut hp_key = [0u8; AES128_KEY_SIZE];
+         hkdf_expand_label(LABEL_HP, prefix_label, secret, &mut hp_key)?;
+-        Ok(Self::from_raw_key(&hp_key))
++        Ok(Self::from_raw_key_for_direction(&hp_key, true))
++    }
++
++    fn from_secret_for_direction(
++        secret: &[u8],
++        prefix_label: &str,
++        is_enc: bool,
++    ) -> Result<Self, Error> {
++        let mut hp_key = [0u8; AES128_KEY_SIZE];
++        hkdf_expand_label_sha256(LABEL_HP, prefix_label, secret, &mut hp_key)?;
++        Ok(Self::from_raw_key_for_direction(&hp_key, is_enc))
+     }
+ }
+ 
+@@ -461,7 +657,51 @@ impl crate::tls::HeaderKey for Aes128HeaderKey {
+         use cipher::BlockEncrypt;
+ 
+         let mut block = cipher::generic_array::GenericArray::clone_from_slice(&sample);
+-        self.cipher.encrypt_block(&mut block);
++        match self {
++            Self::Encrypt(cipher) | Self::Decrypt(cipher) => cipher.encrypt_block(&mut block),
++        }
++        let mut out = [0u8; 16];
++        out.copy_from_slice(&block);
++        out
++    }
++}
++
++enum Aes256HeaderKey {
++    Encrypt(aes::Aes256Enc),
++    Decrypt(aes::Aes256Enc),
++}
++
++impl Aes256HeaderKey {
++    fn from_raw_key_for_direction(key: &[u8; AES256_KEY_SIZE], is_enc: bool) -> Self {
++        use cipher::KeyInit;
++
++        let cipher = aes::Aes256Enc::new_from_slice(key).expect("key is 32 bytes");
++        if is_enc {
++            Self::Encrypt(cipher)
++        } else {
++            Self::Decrypt(cipher)
++        }
++    }
++
++    fn from_secret_for_direction(
++        secret: &[u8],
++        prefix_label: &str,
++        is_enc: bool,
++    ) -> Result<Self, Error> {
++        let mut hp_key = [0u8; AES256_KEY_SIZE];
++        hkdf_expand_label_sha384(LABEL_HP, prefix_label, secret, &mut hp_key)?;
++        Ok(Self::from_raw_key_for_direction(&hp_key, is_enc))
++    }
++}
++
++impl crate::tls::HeaderKey for Aes256HeaderKey {
++    fn mask(&self, sample: [u8; 16]) -> [u8; 16] {
++        use cipher::BlockEncrypt;
++
++        let mut block = cipher::generic_array::GenericArray::clone_from_slice(&sample);
++        match self {
++            Self::Encrypt(cipher) | Self::Decrypt(cipher) => cipher.encrypt_block(&mut block),
++        }
+         let mut out = [0u8; 16];
+         out.copy_from_slice(&block);
+         out
+@@ -488,6 +728,55 @@ fn header_key_from_secret(
+     )?))
+ }
+ 
++fn packet_key_from_secret_for_suite(
++    suite: AeadSuiteId,
++    secret: &[u8],
++    prefix_label: &str,
++) -> Result<Box<dyn crate::tls::PacketKey>, Error> {
++    match suite {
++        AeadSuiteId::Aes128GcmSha256 => packet_key_from_secret(secret, prefix_label),
++        AeadSuiteId::Aes256GcmSha384 => Ok(Box::new(Aes256GcmPacketKey::from_secret(
++            secret,
++            prefix_label,
++        )?)),
++        AeadSuiteId::ChaCha20Poly1305Sha256 => Ok(Box::new(
++            ChaCha20Poly1305PacketKey::from_secret(secret, prefix_label)?,
++        )),
++    }
++}
++
++fn header_key_from_secret_for_suite(
++    suite: AeadSuiteId,
++    is_enc: bool,
++    secret: &[u8],
++    prefix_label: &str,
++) -> Result<Box<dyn crate::tls::HeaderKey>, Error> {
++    match suite {
++        AeadSuiteId::Aes128GcmSha256 => {
++            let secret = secret.get(..SHA256_SIZE).ok_or(Error::InvalidArgument)?;
++            Ok(Box::new(Aes128HeaderKey::from_secret_for_direction(
++                secret,
++                prefix_label,
++                is_enc,
++            )?))
++        }
++        AeadSuiteId::Aes256GcmSha384 => {
++            let secret = secret.get(..SHA384_SIZE).ok_or(Error::InvalidArgument)?;
++            Ok(Box::new(Aes256HeaderKey::from_secret_for_direction(
++                secret,
++                prefix_label,
++                is_enc,
++            )?))
++        }
++        AeadSuiteId::ChaCha20Poly1305Sha256 => {
++            let secret = secret.get(..SHA256_SIZE).ok_or(Error::InvalidArgument)?;
++            let mut hp_key = [0u8; CHACHA20_POLY1305_KEY_SIZE];
++            hkdf_expand_label_sha256(LABEL_HP, prefix_label, secret, &mut hp_key)?;
++            crate::header_protection::ChaCha20HeaderKey::boxed(&hp_key)
++        }
++    }
++}
++
+ /// AEAD cipher suite identifier.  Selects the key-derivation hash
+ /// and AEAD algorithm for `set_aead_from_secret`.  Maps to the
+ /// `ptls_cipher_suite_t *` parameter in C.
+@@ -497,6 +786,26 @@ pub enum AeadSuiteId {
+     Aes128GcmSha256,
+     /// AES-256-GCM with SHA-384 HKDF (IANA TLS 0x1302).
+     Aes256GcmSha384,
++    /// ChaCha20-Poly1305 with SHA-256 HKDF (IANA TLS 0x1303).
++    ChaCha20Poly1305Sha256,
++}
++
++impl AeadSuiteId {
++    const fn hkdf_hash(self) -> HkdfHashAlgorithm {
++        match self {
++            Self::Aes128GcmSha256 => HkdfHashAlgorithm::Sha256,
++            Self::Aes256GcmSha384 => HkdfHashAlgorithm::Sha384,
++            Self::ChaCha20Poly1305Sha256 => HkdfHashAlgorithm::Sha256,
++        }
++    }
++}
++
++fn aead_suite_for_app_secret_len(secret_len: usize) -> Result<AeadSuiteId, Error> {
++    match secret_len {
++        SHA256_SIZE => Ok(AeadSuiteId::Aes128GcmSha256),
++        SHA384_SIZE => Ok(AeadSuiteId::Aes256GcmSha384),
++        _ => Err(Error::InvalidArgument),
++    }
+ }
+ 
+ /// Replace the AEAD key in `aead_slot` with a key freshly derived
+@@ -514,32 +823,33 @@ fn set_aead_from_secret(
+     secret: &[u8],
+     prefix_label: &str,
+ ) -> Result<(), Error> {
+-    let key: Box<dyn crate::tls::PacketKey> = match suite {
+-        AeadSuiteId::Aes128GcmSha256 => packet_key_from_secret(secret, prefix_label)?,
+-        AeadSuiteId::Aes256GcmSha384 => {
+-            Box::new(Aes256GcmPacketKey::from_secret(secret, prefix_label)?)
+-        }
+-    };
+-    *aead_slot = Some(key);
++    *aead_slot = Some(packet_key_from_secret_for_suite(
++        suite,
++        secret,
++        prefix_label,
++    )?);
+     Ok(())
+ }
+ 
+ /// Replace the PN-encryption header-protection key in `pn_enc_slot`
+ /// with a key freshly derived from `secret` using HKDF-Expand-Label
+ /// with the HP label and `prefix_label`.  Any previously installed
+-/// key is dropped.  `suite` and `is_enc` are present for API parity
+-/// with the C signature; only the secret and prefix label affect the
+-/// derivation in the current AES-128-GCM-only build.
++/// key is dropped before derivation, matching the C `ptls_cipher_free`
++/// / `NULL` sequence.  `suite` selects the HKDF hash and header-key
++/// size; `is_enc` is retained in the constructed context for parity
++/// with `ptls_cipher_new(cipher->aead->ctr_cipher, is_enc, ...)`.
+ /// C: `picoquic_set_pn_enc_from_secret` (tls_api.c:1311-1330).
+ #[allow(dead_code)]
+ fn set_pn_enc_from_secret(
+     pn_enc_slot: &mut Option<Box<dyn crate::tls::HeaderKey>>,
+-    _suite: AeadSuiteId,
+-    _is_enc: bool,
++    suite: AeadSuiteId,
++    is_enc: bool,
+     secret: &[u8],
+     prefix_label: &str,
+ ) -> Result<(), Error> {
+-    *pn_enc_slot = Some(header_key_from_secret(secret, prefix_label)?);
++    *pn_enc_slot = None;
++    let key = header_key_from_secret_for_suite(suite, is_enc, secret, prefix_label)?;
++    *pn_enc_slot = Some(key);
+     Ok(())
+ }
+ 
+@@ -683,17 +993,23 @@ fn initial_secrets_for_version(
+ ///
+ /// C: `picoquic/tls_api.c:picoquic_compute_initial_secrets`.
+ fn picoquic_compute_initial_secrets(
+-    _quic: &Quic,
++    quic: &Quic,
+     version_index: i32,
+     initial_cnxid: &ConnectionId,
+ ) -> Result<(AeadSuiteId, [u8; SHA256_SIZE], [u8; SHA256_SIZE]), Error> {
+-    let suite = AeadSuiteId::Aes128GcmSha256;
++    let suite = picoquic_get_aes128gcm_sha256(quic.use_low_memory)
++        .map(|_| AeadSuiteId::Aes128GcmSha256)
++        .ok_or(Error::Generic)?;
+     let salt = setup_cleartext_aead_salt(version_index);
+     let mut master = [0u8; SHA256_SIZE];
+     let mut client = [0u8; SHA256_SIZE];
+     let mut server = [0u8; SHA256_SIZE];
+     setup_initial_master_secret(salt, *initial_cnxid, &mut master)?;
+-    setup_initial_secrets(&master, &mut client, &mut server)?;
++    setup_initial_secrets(
++        InitialSecretMaterial::from_suite(suite, &master),
++        &mut client,
++        &mut server,
++    )?;
+     Ok((suite, client, server))
+ }
+ 
+@@ -706,32 +1022,58 @@ fn queue_tls_bytes(cnx: &mut Connection, epoch: usize, bytes: &[u8]) -> Result<(
+         return Ok(());
+     }
+     let stream = &mut cnx.tls_stream[epoch];
+-    let offset = stream.sent_offset;
+-    stream.sent_offset = stream
+-        .sent_offset
+-        .checked_add(bytes.len() as u64)
+-        .ok_or(Error::InvalidArgument)?;
++    let offset = if let Some(node) = stream.send_queue.back() {
++        node.offset
++            .checked_add(node.bytes.len() as u64)
++            .ok_or(Error::InvalidArgument)?
++    } else {
++        stream.sent_offset
++    };
+     stream.send_queue.push_back(StreamQueueNode {
+         offset,
+         bytes: bytes.to_vec(),
+     });
+-    cnx.nb_bytes_queued = cnx.nb_bytes_queued.saturating_add(bytes.len() as u64);
+     Ok(())
+ }
+ 
++fn extract_peer_transport_params(
++    plaintext: &[u8],
++    peer_handshake_prefix: &[u8],
++    peer_alpn: Option<&[u8]>,
++) -> Option<Vec<u8>> {
++    let mut tail = plaintext.strip_prefix(peer_handshake_prefix)?;
++    if let Some(alpn) = peer_alpn
++        && tail.starts_with(alpn)
++    {
++        tail = &tail[alpn.len()..];
++    }
++    Some(tail.to_vec())
++}
++
+ struct LocalSession {
+     is_client: bool,
+     prefix_label: &'static str,
++    transport_params: Vec<u8>,
++    peer_transport_params: Option<Vec<u8>>,
++    negotiate_before_key_exchange: bool,
+     wrote_initial: bool,
+     yielded_1rtt: bool,
+     handshaking: bool,
+ }
+ 
+ impl LocalSession {
+-    fn new(is_client: bool, prefix_label: &'static str) -> Self {
++    fn new(
++        is_client: bool,
++        prefix_label: &'static str,
++        transport_params: &[u8],
++        negotiate_before_key_exchange: bool,
++    ) -> Self {
+         Self {
+             is_client,
+             prefix_label,
++            transport_params: transport_params.to_vec(),
++            peer_transport_params: None,
++            negotiate_before_key_exchange,
+             wrote_initial: false,
+             yielded_1rtt: false,
+             handshaking: true,
+@@ -748,11 +1090,24 @@ impl LocalSession {
+         };
+         build_key_pair(local, remote, self.prefix_label).ok()
+     }
++
++    fn peer_handshake_bytes(&self) -> &'static [u8] {
++        if self.is_client {
++            b"picoquic server hello"
++        } else {
++            b"picoquic client hello"
++        }
++    }
+ }
+ 
+ impl crate::tls::Session for LocalSession {
+     fn read_handshake(&mut self, plaintext: &[u8]) -> Result<bool, Error> {
+         if !plaintext.is_empty() {
++            if let Some(params) =
++                extract_peer_transport_params(plaintext, self.peer_handshake_bytes(), None)
++            {
++                self.peer_transport_params = Some(params);
++            }
+             self.handshaking = false;
+             Ok(true)
+         } else {
+@@ -768,8 +1123,12 @@ impl crate::tls::Session for LocalSession {
+             } else {
+                 b"picoquic server hello"
+             });
++            buf.extend_from_slice(&self.transport_params);
+         }
+         if !self.yielded_1rtt {
++            if self.is_client && self.negotiate_before_key_exchange && self.handshaking {
++                return None;
++            }
+             self.yielded_1rtt = true;
+             return self.keys();
+         }
+@@ -805,8 +1164,21 @@ impl crate::tls::Session for LocalSession {
+         Some(false)
+     }
+ 
++    fn app_secret_size(&self) -> Option<usize> {
++        Some(SHA256_SIZE)
++    }
++
++    fn cipher_suite_id(&self) -> Option<u16> {
++        Some(AES_128_GCM_SHA256)
++    }
++
+     fn transport_parameters(&self) -> Result<Option<Vec<u8>>, Error> {
+-        Ok(Some(Vec::new()))
++        Ok(self.peer_transport_params.clone())
++    }
++
++    fn set_transport_parameters(&mut self, transport_params: &[u8]) -> Result<(), Error> {
++        self.transport_params = transport_params.to_vec();
++        Ok(())
+     }
+ 
+     fn export_keying_material(
+@@ -824,55 +1196,396 @@ impl crate::tls::Session for LocalSession {
+     }
+ }
+ 
+-fn install_ticket_aead_contexts(quic: &mut Quic, ticket_key: Option<&[u8]>) -> Result<(), Error> {
+-    let mut secret = [0u8; SHA256_SIZE];
+-    if let Some(key) = ticket_key
+-        && !key.is_empty()
+-    {
+-        let copy_len = key.len().min(secret.len());
+-        secret[..copy_len].copy_from_slice(&key[..copy_len]);
+-    } else {
+-        use rand_core::RngCore;
+-        quic.rng.fill_bytes(&mut secret);
+-    }
++#[derive(Clone)]
++struct PrivateKeyMaterial {
++    kind: PrivateKeyKind,
++    der: Vec<u8>,
++}
+ 
+-    quic.aead_encrypt_ticket_ctx = Some(packet_key_from_secret(&secret, TICKET_AEAD_LABEL)?);
+-    quic.aead_decrypt_ticket_ctx = Some(packet_key_from_secret(&secret, TICKET_AEAD_LABEL)?);
+-    Ok(())
++#[derive(Clone, Copy)]
++enum PrivateKeyKind {
++    Pkcs8,
++    Ec,
++    Rsa,
+ }
+ 
+-fn ensure_ticket_aead_contexts(quic: &mut Quic) -> Result<(), Error> {
+-    if quic.aead_encrypt_ticket_ctx.is_some() && quic.aead_decrypt_ticket_ctx.is_some() {
+-        Ok(())
+-    } else {
+-        install_ticket_aead_contexts(quic, None)
++impl PrivateKeyKind {
++    const fn tag(self) -> u8 {
++        match self {
++            Self::Pkcs8 => 1,
++            Self::Ec => 2,
++            Self::Rsa => 3,
++        }
+     }
+ }
+ 
+-fn ip_auth_data(addr: &SocketAddr) -> Vec<u8> {
+-    match addr.ip() {
+-        IpAddr::V4(ip) => ip.octets().to_vec(),
+-        IpAddr::V6(ip) => ip.octets().to_vec(),
+-    }
++#[derive(Clone)]
++struct ConfiguredTlsMaterial {
++    certificate_chain: Vec<Vec<u8>>,
++    private_key: Option<PrivateKeyMaterial>,
++    trusted_roots: Vec<Vec<u8>>,
++    cipher_suite_id: u16,
++    default_alpn: Option<Vec<u8>>,
++    has_on_client_hello: bool,
++    has_verify_callback: bool,
++    has_save_ticket_callback: bool,
++    has_encrypt_ticket_callback: bool,
++    ticket_lifetime: u64,
++    require_dhe_on_psk: bool,
++    max_early_data_size: u32,
++    omit_end_of_early_data: bool,
++    client_zero_share: bool,
++    require_client_authentication: bool,
++    use_exporter: bool,
+ }
+ 
+-/// Build the pseudo-packet used as the AEAD auth-data input for retry
+-/// integrity tag computation.  The pseudo-packet is:
+-/// `[odcid.len as u8] ++ odcid.bytes ++ bytes[..byte_index]`.
+-/// Returns `None` when the total length would exceed `MAX_PACKET_SIZE`
+-/// (matching the C `byte_index == 0` early-return path).
+-/// C: `picoquic_format_retry_protection_pseudo_packet`
+-fn retry_protection_pseudo_packet(
+-    bytes: &[u8],
+-    byte_index: usize,
+-    odcid: &ConnectionId,
+-) -> Option<Vec<u8>> {
+-    if byte_index > bytes.len() || byte_index + odcid.len() + 1 >= MAX_PACKET_SIZE {
+-        return None;
++impl ConfiguredTlsMaterial {
++    fn has_server_identity(&self) -> bool {
++        !self.certificate_chain.is_empty() && self.private_key.is_some()
+     }
+-    let mut pseudo = Vec::with_capacity(1 + odcid.len() + byte_index);
+-    pseudo.push(odcid.len() as u8);
+-    pseudo.extend_from_slice(odcid.as_bytes());
++
++    fn mix_bytes(seed: &mut [u8; SHA256_SIZE], bytes: &[u8]) {
++        for (i, byte) in bytes.iter().enumerate() {
++            let slot = i % seed.len();
++            seed[slot] = seed[slot].wrapping_add(*byte).rotate_left((i % 8) as u32) ^ (i as u8);
++        }
++    }
++
++    fn mix_seed(&self, seed: &mut [u8; SHA256_SIZE]) {
++        Self::mix_bytes(seed, &self.cipher_suite_id.to_be_bytes());
++        if let Some(alpn) = &self.default_alpn {
++            Self::mix_bytes(seed, alpn);
++        }
++        for cert in &self.certificate_chain {
++            Self::mix_bytes(seed, cert);
++        }
++        if let Some(key) = &self.private_key {
++            Self::mix_bytes(seed, &[key.kind.tag()]);
++            Self::mix_bytes(seed, &key.der);
++        }
++        for root in &self.trusted_roots {
++            Self::mix_bytes(seed, root);
++        }
++        Self::mix_bytes(seed, &[self.has_on_client_hello as u8]);
++        Self::mix_bytes(seed, &[self.has_verify_callback as u8]);
++        Self::mix_bytes(seed, &[self.has_save_ticket_callback as u8]);
++        Self::mix_bytes(seed, &[self.has_encrypt_ticket_callback as u8]);
++        Self::mix_bytes(seed, &self.ticket_lifetime.to_be_bytes());
++        Self::mix_bytes(seed, &[self.require_dhe_on_psk as u8]);
++        Self::mix_bytes(seed, &self.max_early_data_size.to_be_bytes());
++        Self::mix_bytes(seed, &[self.omit_end_of_early_data as u8]);
++        Self::mix_bytes(seed, &[self.client_zero_share as u8]);
++        Self::mix_bytes(seed, &[self.require_client_authentication as u8]);
++        Self::mix_bytes(seed, &[self.use_exporter as u8]);
++    }
++}
++
++struct ConfiguredTlsClientConfig {
++    material: ConfiguredTlsMaterial,
++}
++
++struct ConfiguredTlsServerConfig {
++    material: ConfiguredTlsMaterial,
++}
++
++#[derive(Debug, Copy, Clone, PartialEq, Eq)]
++enum ConfiguredTlsRole {
++    Client,
++    Server,
++}
++
++struct ConfiguredTlsSession {
++    role: ConfiguredTlsRole,
++    version: u32,
++    server_name: Option<Vec<u8>>,
++    transport_params: Vec<u8>,
++    peer_transport_params: Option<Vec<u8>>,
++    material: ConfiguredTlsMaterial,
++    wrote_initial: bool,
++    yielded_1rtt: bool,
++    handshaking: bool,
++    saw_peer_handshake: bool,
++}
++
++impl ConfiguredTlsSession {
++    fn new(
++        role: ConfiguredTlsRole,
++        version: u32,
++        server_name: Option<Vec<u8>>,
++        transport_params: &[u8],
++        material: ConfiguredTlsMaterial,
++    ) -> Self {
++        Self {
++            role,
++            version,
++            server_name,
++            transport_params: transport_params.to_vec(),
++            peer_transport_params: None,
++            material,
++            wrote_initial: false,
++            yielded_1rtt: false,
++            handshaking: true,
++            saw_peer_handshake: false,
++        }
++    }
++
++    fn prefix_label(&self) -> &'static str {
++        Version::try_from_wire(self.version)
++            .unwrap_or(Version::V1)
++            .parameters()
++            .tls_prefix_label
++    }
++
++    fn seed(&self, label: &str) -> [u8; SHA256_SIZE] {
++        let mut seed = [0u8; SHA256_SIZE];
++        seed[..4].copy_from_slice(&self.version.to_be_bytes());
++        seed[4] = match self.role {
++            ConfiguredTlsRole::Client => 0xc1,
++            ConfiguredTlsRole::Server => 0x5e,
++        };
++        ConfiguredTlsMaterial::mix_bytes(&mut seed, label.as_bytes());
++        if let Some(server_name) = &self.server_name {
++            ConfiguredTlsMaterial::mix_bytes(&mut seed, server_name);
++        }
++        ConfiguredTlsMaterial::mix_bytes(&mut seed, &self.transport_params);
++        self.material.mix_seed(&mut seed);
++        seed
++    }
++
++    fn traffic_secret(&self, label: &str) -> Option<[u8; SHA256_SIZE]> {
++        let seed = self.seed(label);
++        let mut secret = [0u8; SHA256_SIZE];
++        hkdf_expand_label(label, self.prefix_label(), &seed, &mut secret).ok()?;
++        Some(secret)
++    }
++
++    fn keys(&self) -> Option<crate::tls::Keys> {
++        let (local_label, remote_label) = match self.role {
++            ConfiguredTlsRole::Client => ("client app", "server app"),
++            ConfiguredTlsRole::Server => ("server app", "client app"),
++        };
++        let local_secret = self.traffic_secret(local_label)?;
++        let remote_secret = self.traffic_secret(remote_label)?;
++        build_key_pair(&local_secret, &remote_secret, self.prefix_label()).ok()
++    }
++
++    fn handshake_bytes(&self) -> &'static [u8] {
++        match self.role {
++            ConfiguredTlsRole::Client => b"picoquic configured client hello",
++            ConfiguredTlsRole::Server => b"picoquic configured server hello",
++        }
++    }
++
++    fn peer_handshake_bytes(&self) -> &'static [u8] {
++        match self.role {
++            ConfiguredTlsRole::Client => b"picoquic configured server hello",
++            ConfiguredTlsRole::Server => b"picoquic configured client hello",
++        }
++    }
++
++    fn should_defer_key_exchange(&self) -> bool {
++        self.role == ConfiguredTlsRole::Client
++            && self.material.client_zero_share
++            && self.handshaking
++    }
++}
++
++impl crate::tls::ClientConfig for ConfiguredTlsClientConfig {
++    type Session = ConfiguredTlsSession;
++
++    fn start_session(
++        &self,
++        version: u32,
++        server_name: &str,
++        transport_params: &[u8],
++    ) -> Result<Self::Session, crate::tls::ConfigError> {
++        Ok(ConfiguredTlsSession::new(
++            ConfiguredTlsRole::Client,
++            version,
++            Some(server_name.as_bytes().to_vec()),
++            transport_params,
++            self.material.clone(),
++        ))
++    }
++}
++
++impl crate::tls::ServerConfig for ConfiguredTlsServerConfig {
++    type Session = ConfiguredTlsSession;
++
++    fn start_session(
++        &self,
++        version: u32,
++        transport_params: &[u8],
++    ) -> Result<Self::Session, crate::tls::ConfigError> {
++        if !self.material.has_server_identity() {
++            return Err(crate::tls::ConfigError {
++                message: "server TLS config missing certificate/private key".into(),
++            });
++        }
++        Ok(ConfiguredTlsSession::new(
++            ConfiguredTlsRole::Server,
++            version,
++            None,
++            transport_params,
++            self.material.clone(),
++        ))
++    }
++}
++
++impl crate::tls::Session for ConfiguredTlsSession {
++    fn read_handshake(&mut self, plaintext: &[u8]) -> Result<bool, Error> {
++        if plaintext.is_empty() {
++            return Ok(false);
++        }
++        let changed = self.handshaking;
++        if let Some(params) = extract_peer_transport_params(
++            plaintext,
++            self.peer_handshake_bytes(),
++            self.material.default_alpn.as_deref(),
++        ) {
++            self.peer_transport_params = Some(params);
++        }
++        self.saw_peer_handshake = true;
++        self.handshaking = false;
++        Ok(changed)
++    }
++
++    fn write_handshake(&mut self, buf: &mut Vec<u8>) -> Option<crate::tls::Keys> {
++        if !self.wrote_initial {
++            self.wrote_initial = true;
++            buf.extend_from_slice(self.handshake_bytes());
++            if let Some(alpn) = &self.material.default_alpn {
++                buf.extend_from_slice(alpn);
++            }
++            buf.extend_from_slice(&self.transport_params);
++        }
++        if self.yielded_1rtt || self.should_defer_key_exchange() {
++            None
++        } else {
++            self.yielded_1rtt = true;
++            self.keys()
++        }
++    }
++
++    fn is_handshaking(&self) -> bool {
++        self.handshaking
++    }
++
++    fn next_1rtt_keys(&mut self) -> Option<crate::tls::KeyPair> {
++        if self.handshaking || self.yielded_1rtt {
++            return None;
++        }
++        self.yielded_1rtt = true;
++        self.keys().map(|keys| keys.packet)
++    }
++
++    fn handshake_data(&self) -> Option<crate::tls::HandshakeData> {
++        if self.role == ConfiguredTlsRole::Server && self.saw_peer_handshake {
++            Some(crate::tls::HandshakeData {
++                sni: self.server_name.clone(),
++                alpn: self.material.default_alpn.clone(),
++            })
++        } else {
++            None
++        }
++    }
++
++    fn peer_identity(&self) -> Option<crate::tls::PeerIdentity> {
++        None
++    }
++
++    fn early_keys(
++        &self,
++    ) -> Option<(
++        Box<dyn crate::tls::HeaderKey>,
++        Box<dyn crate::tls::PacketKey>,
++    )> {
++        None
++    }
++
++    fn early_data_accepted(&self) -> Option<bool> {
++        Some(false)
++    }
++
++    fn app_secret_size(&self) -> Option<usize> {
++        app_secret_len_for_cipher_suite_id(self.material.cipher_suite_id)
++    }
++
++    fn cipher_suite_id(&self) -> Option<u16> {
++        Some(self.material.cipher_suite_id)
++    }
++
++    fn transport_parameters(&self) -> Result<Option<Vec<u8>>, Error> {
++        Ok(self.peer_transport_params.clone())
++    }
++
++    fn set_transport_parameters(&mut self, transport_params: &[u8]) -> Result<(), Error> {
++        self.transport_params = transport_params.to_vec();
++        Ok(())
++    }
++
++    fn export_keying_material(
++        &self,
++        label: &[u8],
++        context: &[u8],
++        output: &mut [u8],
++    ) -> Result<(), Error> {
++        let mut seed = self.seed("exporter");
++        ConfiguredTlsMaterial::mix_bytes(&mut seed, label);
++        ConfiguredTlsMaterial::mix_bytes(&mut seed, context);
++        hkdf_expand_label("exporter", self.prefix_label(), &seed, output)
++    }
++}
++
++fn install_ticket_aead_contexts(quic: &mut Quic, ticket_key: Option<&[u8]>) -> Result<(), Error> {
++    let mut secret = [0u8; SHA256_SIZE];
++    if let Some(key) = ticket_key
++        && !key.is_empty()
++    {
++        let copy_len = key.len().min(secret.len());
++        secret[..copy_len].copy_from_slice(&key[..copy_len]);
++    } else {
++        use rand_core::RngCore;
++        quic.rng.fill_bytes(&mut secret);
++    }
++
++    quic.aead_encrypt_ticket_ctx = Some(packet_key_from_secret(&secret, TICKET_AEAD_LABEL)?);
++    quic.aead_decrypt_ticket_ctx = Some(packet_key_from_secret(&secret, TICKET_AEAD_LABEL)?);
++    Ok(())
++}
++
++fn ensure_ticket_aead_contexts(quic: &mut Quic) -> Result<(), Error> {
++    if quic.aead_encrypt_ticket_ctx.is_some() && quic.aead_decrypt_ticket_ctx.is_some() {
++        Ok(())
++    } else {
++        install_ticket_aead_contexts(quic, None)
++    }
++}
++
++fn ip_auth_data(addr: &SocketAddr) -> Vec<u8> {
++    match addr.ip() {
++        IpAddr::V4(ip) => ip.octets().to_vec(),
++        IpAddr::V6(ip) => ip.octets().to_vec(),
++    }
++}
++
++/// Build the pseudo-packet used as the AEAD auth-data input for retry
++/// integrity tag computation.  The pseudo-packet is:
++/// `[odcid.len as u8] ++ odcid.bytes ++ bytes[..byte_index]`.
++/// Returns `None` when the total length would exceed `MAX_PACKET_SIZE`
++/// (matching the C `byte_index == 0` early-return path).
++/// C: `picoquic_format_retry_protection_pseudo_packet`
++fn retry_protection_pseudo_packet(
++    bytes: &[u8],
++    byte_index: usize,
++    odcid: &ConnectionId,
++) -> Option<Vec<u8>> {
++    if byte_index > bytes.len() || byte_index + odcid.len() + 1 >= MAX_PACKET_SIZE {
++        return None;
++    }
++    let mut pseudo = Vec::with_capacity(1 + odcid.len() + byte_index);
++    pseudo.push(odcid.len() as u8);
++    pseudo.extend_from_slice(odcid.as_bytes());
+     pseudo.extend_from_slice(&bytes[..byte_index]);
+     Some(pseudo)
+ }
+@@ -922,13 +1635,224 @@ fn base64_decode_clean(input: &str) -> Option<Vec<u8>> {
+ // [`crate::tls`]).  Both lifecycle entry points install or
+ // release state on the QUIC context itself.
+ 
++fn der_tlv(
++    bytes: &[u8],
++    bytes_max: usize,
++    pos: usize,
++    expected_type: u8,
++) -> Result<(usize, usize), Error> {
++    if pos >= bytes_max || bytes[pos] != expected_type {
++        return Err(Error::InvalidFile);
++    }
++    let pos = pos + 1;
++    if pos >= bytes_max {
++        return Err(Error::InvalidFile);
++    }
++    let first = bytes[pos];
++    let (length, val_start) = if first < 0x80 {
++        (first as usize, pos + 1)
++    } else {
++        let n = (first & 0x7f) as usize;
++        if n == 0 || n > core::mem::size_of::<usize>() || pos + 1 + n > bytes_max {
++            return Err(Error::InvalidFile);
++        }
++        let mut len = 0usize;
++        for i in 0..n {
++            len = (len << 8) | bytes[pos + 1 + i] as usize;
++        }
++        (len, pos + 1 + n)
++    };
++    let val_end = val_start.checked_add(length).ok_or(Error::InvalidFile)?;
++    if val_end > bytes_max {
++        return Err(Error::InvalidFile);
++    }
++    Ok((val_start, val_end))
++}
++
++fn validate_private_key_der(der: &[u8], label: &str) -> Result<PrivateKeyKind, Error> {
++    let (outer_val, outer_end) = der_tlv(der, der.len(), 0, 0x30)?;
++    if outer_end != der.len() {
++        return Err(Error::InvalidFile);
++    }
++
++    let (_, after_version) = der_tlv(der, outer_end, outer_val, 0x02)?;
++    if label.contains("EC PRIVATE KEY") {
++        let (_, after_key) = der_tlv(der, outer_end, after_version, 0x04)?;
++        if after_key <= outer_end {
++            Ok(PrivateKeyKind::Ec)
++        } else {
++            Err(Error::InvalidFile)
++        }
++    } else if label.contains("RSA PRIVATE KEY") {
++        let (_, after_modulus) = der_tlv(der, outer_end, after_version, 0x02)?;
++        if after_modulus < outer_end {
++            Ok(PrivateKeyKind::Rsa)
++        } else {
++            Err(Error::InvalidFile)
++        }
++    } else {
++        let (_, after_algorithm) = der_tlv(der, outer_end, after_version, 0x30)?;
++        let (_, after_private_key) = der_tlv(der, outer_end, after_algorithm, 0x04)?;
++        if after_private_key <= outer_end {
++            Ok(PrivateKeyKind::Pkcs8)
++        } else {
++            Err(Error::InvalidFile)
++        }
++    }
++}
++
++fn private_key_pem_material(text: &str) -> Result<PrivateKeyMaterial, Error> {
++    let mut rest = text;
++    while let Some(begin) = rest.find("-----BEGIN ") {
++        let after_begin = &rest[begin + "-----BEGIN ".len()..];
++        let Some(label_end) = after_begin.find("-----") else {
++            break;
++        };
++        let label = &after_begin[..label_end];
++        let after_header = &after_begin[label_end + "-----".len()..];
++        let end_marker = alloc::format!("-----END {label}-----");
++        if label.ends_with("PRIVATE KEY")
++            && let Some(end) = after_header.find(&end_marker)
++        {
++            let der = base64_decode_clean(&after_header[..end]).ok_or(Error::InvalidFile)?;
++            let kind = validate_private_key_der(&der, label)?;
++            return Ok(PrivateKeyMaterial { kind, der });
++        }
++        rest = after_header;
++    }
++    Err(Error::InvalidFile)
++}
++
++fn load_private_key_material(file_name: &str) -> Result<PrivateKeyMaterial, Error> {
++    let contents = std::fs::read(file_name).map_err(|_| Error::NoSuchFile)?;
++    let text = core::str::from_utf8(&contents).map_err(|_| Error::InvalidFile)?;
++    private_key_pem_material(text)
++}
++
++fn active_private_key_loader() -> Result<CryptoProvider, Error> {
++    tls_api_state().private_key_loader.ok_or(Error::Generic)
++}
++
++#[cfg(feature = "sys-openssl")]
++fn active_sign_certificate_disposer() -> Option<CryptoProvider> {
++    tls_api_state().sign_certificate_disposer
++}
++
++fn install_private_key_from_active_provider(
++    file_name: &str,
++    material: &mut ConfiguredTlsMaterial,
++) -> Result<(), Error> {
++    match active_private_key_loader()? {
++        CryptoProvider::Minicrypto => set_minicrypto_private_key_from_key_file(file_name, material),
++        #[cfg(feature = "sys-openssl")]
++        CryptoProvider::OpenSsl => {
++            let provider = crate::sys::openssl::OPENSSL_PROVIDER_REGISTRATION.tls_key_provider;
++            let signer = (provider.private_key_loader)(file_name)?;
++            if active_sign_certificate_disposer() == Some(CryptoProvider::OpenSsl) {
++                (provider.sign_certificate_disposer)(signer);
++            }
++            material.private_key = Some(load_private_key_material(file_name)?);
++            Ok(())
++        }
++        #[cfg(feature = "sys-fusion")]
++        CryptoProvider::Fusion => Err(Error::Generic),
++        #[cfg(feature = "sys-mbedtls")]
++        CryptoProvider::MbedTls => Err(Error::Generic),
++    }
++}
++
++fn has_registered_key_exchange() -> bool {
++    tls_api_state()
++        .key_exchanges
++        .iter()
++        .any(|slot| slot.provider.is_some())
++}
++
++fn build_master_tls_material(
++    quic: &Quic,
++    cert_file_name: Option<&str>,
++    key_file_name: Option<&str>,
++    cert_root_file_name: Option<&str>,
++) -> Result<ConfiguredTlsMaterial, Error> {
++    let certificate_chain = if let (Some(cert), Some(_)) = (cert_file_name, key_file_name) {
++        get_certs_from_file(cert).ok_or(Error::InvalidFile)?
++    } else {
++        Vec::new()
++    };
++
++    let trusted_roots = if let Some(root) = cert_root_file_name {
++        get_certs_from_file(root).ok_or(Error::InvalidFile)?
++    } else {
++        Vec::new()
++    };
++
++    if !has_registered_key_exchange() {
++        return Err(Error::Generic);
++    }
++    let cipher_suite_id =
++        picoquic_get_cipher_suite_by_id(0, quic.use_low_memory).ok_or(Error::Generic)?;
++
++    let mut material = ConfiguredTlsMaterial {
++        certificate_chain,
++        private_key: None,
++        trusted_roots,
++        cipher_suite_id,
++        default_alpn: quic
++            .default_alpn
++            .as_deref()
++            .map(|alpn| alpn.as_bytes().to_vec()),
++        has_on_client_hello: true,
++        has_verify_callback: quic.tls_callbacks.is_some() || cert_root_file_name.is_some(),
++        has_save_ticket_callback: quic.ticket_file_name.is_some(),
++        has_encrypt_ticket_callback: true,
++        ticket_lifetime: TLS_TICKET_LIFETIME_SECONDS,
++        require_dhe_on_psk: true,
++        max_early_data_size: TLS_MAX_EARLY_DATA_SIZE,
++        omit_end_of_early_data: true,
++        client_zero_share: quic.client_zero_share,
++        require_client_authentication: quic.client_authentication,
++        use_exporter: quic.use_exporter,
++    };
++
++    if let (Some(_), Some(key)) = (cert_file_name, key_file_name) {
++        install_private_key_from_active_provider(key, &mut material)?;
++    }
++
++    Ok(material)
++}
++
++fn configured_tls_material(quic: &Quic) -> Result<ConfiguredTlsMaterial, Error> {
++    if let Some(config) = quic.tls_server_config.as_ref()
++        && let Some(config) = config.as_any().downcast_ref::<ConfiguredTlsServerConfig>()
++    {
++        return Ok(config.material.clone());
++    }
++
++    if let Some(config) = quic.tls_client_config.as_ref()
++        && let Some(config) = config.as_any().downcast_ref::<ConfiguredTlsClientConfig>()
++    {
++        return Ok(config.material.clone());
++    }
++
++    Err(Error::InvalidState)
++}
++
++fn install_configured_tls_material(quic: &mut Quic, material: ConfiguredTlsMaterial) {
++    quic.tls_client_config = Some(Box::new(ConfiguredTlsClientConfig {
++        material: material.clone(),
++    }));
++    quic.tls_server_config = material.has_server_identity().then(|| {
++        Box::new(ConfiguredTlsServerConfig { material }) as Box<dyn crate::tls::DynServerConfig>
++    });
++}
++
+ impl Quic {
+     /// Initialize this context's master TLS context.  Loads the
+     /// certificate chain, the private key, the trusted-root bundle
+     /// and the ticket-encryption key.  Any of the file-name / key
+     /// parameters may be `NULL` in C (server-only, no roots, no
+     /// ticket key); Rust models that with `Option<&str>` /
+-    /// `Option<&[u8]>`.  C: `master_tlscontext`.
++    /// `Option<&[u8]>`.  C: `picoquic_master_tlscontext`.
+     pub fn init_master_tls_context(
+         &mut self,
+         cert_file_name: Option<&str>,
+@@ -936,115 +1860,626 @@ impl Quic {
+         cert_root_file_name: Option<&str>,
+         ticket_key: Option<&[u8]>,
+     ) -> Result<(), Error> {
+-        if let (Some(cert), Some(key)) = (cert_file_name, key_file_name) {
+-            get_certs_from_file(cert).ok_or(Error::InvalidFile)?;
+-            self.set_private_key_from_file(key)?;
++        tls_api_init();
++        self.free_master_tls_context();
++        self.is_cert_store_not_empty = false;
++
++        let material =
++            build_master_tls_material(self, cert_file_name, key_file_name, cert_root_file_name)?;
++        install_ticket_aead_contexts(self, ticket_key)?;
++
++        self.is_cert_store_not_empty = !material.trusted_roots.is_empty();
++        self.tls_client_config = Some(Box::new(ConfiguredTlsClientConfig {
++            material: material.clone(),
++        }));
++        self.tls_server_config = material.has_server_identity().then(|| {
++            Box::new(ConfiguredTlsServerConfig { material }) as Box<dyn crate::tls::DynServerConfig>
++        });
++        self.picoquic_public_random_seed();
++        Ok(())
++    }
++
++    /// Set up server ticket AEAD contexts from `secret`, or from fresh
++    /// cryptographic random bytes when no non-empty secret is supplied.
++    ///
++    /// C: `picoquic/tls_api.c:picoquic_server_setup_ticket_aead_contexts`.
++    pub fn picoquic_server_setup_ticket_aead_contexts(
++        &mut self,
++        secret: Option<&[u8]>,
++    ) -> Result<(), Error> {
++        install_ticket_aead_contexts(self, secret)
++    }
++
++    /// Tear down the master TLS context installed by
++    /// [`Quic::init_master_tls_context`].  C:
++    /// `master_tlscontext_free`.
++    pub fn free_master_tls_context(&mut self) {
++        self.tls_client_config = None;
++        self.tls_server_config = None;
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Per-connection TLS context.
++//
++// `tls_ctx_t` itself lives in `crypto_provider_api.rs`; this module
++// just exposes the API surface that quic-core uses to drive it.
++
++fn local_transport_extension_mode(client_mode: bool) -> i32 {
++    if client_mode { 0 } else { 1 }
++}
++
++fn peer_transport_extension_mode(client_mode: bool) -> i32 {
++    if client_mode { 1 } else { 0 }
++}
++
++fn encode_local_transport_params_with_options(
++    cnx: &mut Connection,
++    test_large_server_flight: bool,
++) -> Result<Vec<u8>, Error> {
++    let mut ext_data_size = TRANSPORT_PARAMETERS_MAX_SIZE;
++    if !cnx.client_mode && test_large_server_flight {
++        ext_data_size += 4096;
++    }
++
++    let mut transport_params = vec![0u8; ext_data_size];
++    let mut consumed = 0usize;
++    if cnx.prepare_transport_extensions(
++        local_transport_extension_mode(cnx.client_mode),
++        &mut transport_params,
++        ext_data_size,
++        &mut consumed,
++    ) != 0
++    {
++        return Err(Error::Generic);
++    }
++    transport_params.truncate(consumed);
++    Ok(transport_params)
++}
++
++fn encode_local_transport_params(cnx: &mut Connection, quic: &Quic) -> Result<Vec<u8>, Error> {
++    encode_local_transport_params_with_options(cnx, quic.test_large_server_flight)
++}
++
++fn encode_local_transport_params_for_connection(cnx: &mut Connection) -> Result<Vec<u8>, Error> {
++    let test_large_server_flight = cnx
++        .quic_ref()
++        .map(|quic| quic.test_large_server_flight)
++        .unwrap_or(false);
++    encode_local_transport_params_with_options(cnx, test_large_server_flight)
++}
++
++fn refresh_session_transport_params(
++    cnx: &mut Connection,
++    session: &mut dyn crate::tls::Session,
++) -> Result<(), Error> {
++    let transport_params = encode_local_transport_params_for_connection(cnx)?;
++    Log::transport_extension(cnx, true, &transport_params);
++    session.set_transport_parameters(&transport_params)
++}
++
++fn default_app_secret_len_for_quic(quic: &Quic) -> usize {
++    picoquic_get_cipher_suite_by_id(0, quic.use_low_memory)
++        .and_then(app_secret_len_for_cipher_suite_id)
++        .unwrap_or(SHA256_SIZE)
++}
++
++fn app_secret_len_from_session(session: &dyn crate::tls::Session) -> Option<usize> {
++    session
++        .app_secret_size()
++        .filter(|secret_len| *secret_len <= HASH_SIZE_MAX)
++}
++
++fn aead_suite_from_session(
++    session: Option<&dyn crate::tls::Session>,
++    fallback_secret_len: usize,
++) -> Result<AeadSuiteId, Error> {
++    if let Some(session) = session {
++        if let Some(cipher_suite_id) = session.cipher_suite_id() {
++            return aead_suite_for_cipher_suite_id(cipher_suite_id);
++        }
++        if let Some(secret_len) = app_secret_len_from_session(session) {
++            return aead_suite_for_app_secret_len(secret_len);
++        }
++    }
++    aead_suite_for_app_secret_len(fallback_secret_len)
++}
++
++fn set_app_secret_len_from_cipher_suite(cnx: &mut Connection, cipher_suite_id: u16) {
++    if let Some(secret_len) = app_secret_len_for_cipher_suite_id(cipher_suite_id) {
++        cnx.app_secret_len = secret_len;
++    }
++}
++
++impl Connection {
++    /// Allocate a per-connection TLS context, attach it to this
++    /// connection, and initialize the tls handshake-property slots.
++    /// C: `picoquic_tlscontext_create`.  C side returns 0 on success,
++    /// `ERROR_TLS_SERVER_CON_WITHOUT_CERT` / `ERROR_MEMORY` / -1 on
++    /// failure.
++    pub fn create_tls_context(&mut self, quic: &mut Quic) -> Result<(), Error> {
++        let version = connection_version(self);
++        let app_secret_len = default_app_secret_len_for_quic(quic);
++        let session_result = (|| -> Result<Box<dyn crate::tls::Session>, Error> {
++            let transport_params = encode_local_transport_params(self, quic)?;
++            if self.client_mode {
++                if let Some(config) = quic.tls_client_config.as_ref() {
++                    let sni = self.sni.as_deref().unwrap_or("");
++                    config
++                        .start_session(version as u32, sni, &transport_params)
++                        .map_err(|_| Error::Tls)
++                } else {
++                    Ok(Box::new(LocalSession::new(
++                        true,
++                        version.parameters().tls_prefix_label,
++                        &transport_params,
++                        quic.client_zero_share && self.connection_state == State::ClientInit,
++                    )))
++                }
++            } else if let Some(config) = quic.tls_server_config.as_ref() {
++                config
++                    .start_session(version as u32, &transport_params)
++                    .map_err(|_| Error::Tls)
++            } else {
++                Err(Error::Protocol(
++                    InternalError::TlsServerConWithoutCert as u64,
++                ))
++            }
++        })();
++
++        let session = match session_result {
++            Ok(session) => session,
++            Err(error) => {
++                self.tls_ctx = None;
++                return Err(error);
++            }
++        };
++        let app_secret_len =
++            app_secret_len_from_session(session.as_ref()).unwrap_or(app_secret_len);
++
++        self.tls_ctx = Some(session);
++        self.tls_sendbuf.clear();
++        self.app_secret_len = app_secret_len;
++        Ok(())
++    }
++
++    /// Drop transient buffers (ALPN list, transport-parameter encode
++    /// scratch) once the handshake is done.  C:
++    /// `picoquic_tlscontext_trim_after_handshake`.
++    pub fn trim_tls_context_after_handshake(&mut self) {
++        self.alpn_proposals.clear();
++        self.alpn_proposals.shrink_to_fit();
++        self.tls_sendbuf.clear();
++        self.tls_sendbuf.shrink_to_fit();
++    }
++
++    /// Forget the TLS backend's pending client session ticket for 0-RTT.
++    /// C: `picoquic_tlscontext_remove_ticket`.
++    pub fn remove_tls_ticket(&mut self) {
++        // The configured Rust backend does not currently install a
++        // picotls-style pending session-ticket iovec.  Preserve the
++        // connection metadata that the C function leaves untouched.
++    }
++}
++
++// `tls_context_free` is gone -- `Connection.tls_ctx` is now an
++// `Option<Box<dyn Session>>`, and `Drop` on the boxed Session
++// runs the backend's teardown automatically.  The C
++// `client_mode` flag is unnecessary too: the `Session` impl
++// knows whether it's a client or server session internally.
++
++// ---------------------------------------------------------------------------
++// TLS stream processing.
++
++fn collect_peer_transport_params(
++    cnx: &mut Connection,
++    session: &dyn crate::tls::Session,
++) -> Result<bool, Error> {
++    if cnx.remote_parameters_received {
++        return Ok(false);
++    }
++    let Some(mut transport_params) = session.transport_parameters()? else {
++        return Ok(false);
++    };
++    let mut consumed = 0usize;
++    let bytes_max = transport_params.len();
++    let ret = cnx.receive_transport_extensions(
++        peer_transport_extension_mode(cnx.client_mode),
++        &mut transport_params,
++        bytes_max,
++        &mut consumed,
++    );
++    if ret == 0 {
++        let _ = cnx.negotiate_multipath_option();
++    } else {
++        let code = TransportError::ParameterError as u64;
++        cnx.connection_error(code, 0);
++        return Err(Error::Protocol(code));
++    }
++    Ok(true)
++}
++
++fn tls_stream_first_data(cnx: &Connection, epoch: usize) -> Option<(u64, usize)> {
++    let stream = cnx.tls_stream.get(epoch)?;
++    let node_token = stream.stream_data_tree.first()?;
++    let data_token = stream.stream_data_tree.get(node_token).copied()?;
++    let node = stream.stream_data_nodes.get(data_token)?;
++    Some((node.offset, node.length))
++}
++
++fn inferred_tls_read_epoch(cnx: &Connection, session: &dyn crate::tls::Session) -> usize {
++    if !session.is_handshaking() {
++        return Epoch::OneRtt as usize;
++    }
++
++    let handshake_epoch = Epoch::Handshake as usize;
++    if cnx.crypto_context[handshake_epoch].aead_decrypt.is_some()
++        || cnx.crypto_context[handshake_epoch].aead_encrypt.is_some()
++        || cnx.tls_stream[Epoch::Initial as usize].consumed_offset > 0
++        || matches!(
++            cnx.connection_state,
++            State::ClientHandshakeStart
++                | State::ClientAlmostReady
++                | State::ClientReadyStart
++                | State::ServerHandshake
++                | State::ServerFalseStart
++                | State::ServerAlmostReady
++                | State::Ready
++        )
++    {
++        handshake_epoch
++    } else {
++        Epoch::Initial as usize
++    }
++}
++
++fn pop_tls_stream_chunk(cnx: &mut Connection, epoch: usize) -> Option<Vec<u8>> {
++    let stream = &mut cnx.tls_stream[epoch];
++    loop {
++        let node_token = stream.stream_data_tree.first()?;
++        let data_token = match stream.stream_data_tree.get(node_token).copied() {
++            Some(token) => token,
++            None => {
++                stream.stream_data_tree.remove(node_token);
++                continue;
++            }
++        };
++        let Some(node) = stream.stream_data_nodes.get(data_token) else {
++            stream.stream_data_tree.remove(node_token);
++            continue;
++        };
++        if node.offset > stream.consumed_offset {
++            return None;
++        }
++        let start = (stream.consumed_offset - node.offset) as usize;
++        if start >= node.length {
++            stream.stream_data_tree.remove(node_token);
++            stream.stream_data_nodes.remove(data_token);
++            continue;
++        }
++        let data = node.data[start..node.length].to_vec();
++        stream.consumed_offset += data.len() as u64;
++        stream.stream_data_tree.remove(node_token);
++        stream.stream_data_nodes.remove(data_token);
++        return Some(data);
++    }
++}
++
++fn flush_tls_sendbuf_to_epoch(cnx: &mut Connection, epoch: usize) -> Result<bool, Error> {
++    if cnx.tls_sendbuf.is_empty() {
++        return Ok(false);
++    }
++    let out = core::mem::take(&mut cnx.tls_sendbuf);
++    queue_tls_bytes(cnx, epoch, &out)?;
++    Ok(true)
++}
++
++fn negotiated_alpn_from_session(
++    cnx: &Connection,
++    session: &dyn crate::tls::Session,
++) -> Option<String> {
++    if let Some(handshake_data) = session.handshake_data()
++        && let Some(alpn) = handshake_data.alpn
++        && let Ok(alpn) = String::from_utf8(alpn)
++    {
++        return Some(alpn);
++    }
++    cnx.quic_ref()
++        .and_then(|quic| quic.default_alpn.clone())
++        .or_else(|| cnx.alpn_proposals.first().cloned())
++}
++
++fn update_client_tls_side_effects(cnx: &mut Connection, session: &dyn crate::tls::Session) {
++    if !cnx.client_mode {
++        return;
++    }
++
++    if cnx.alpn.is_none()
++        && !session.is_handshaking()
++        && let Some(alpn) = negotiated_alpn_from_session(cnx, session)
++    {
++        if let Some(mut callback) = cnx.callback_fn.take() {
++            let _ = callback.callback(cnx, 0, alpn.as_bytes(), CallbackEvent::SetAlpn, None);
++            cnx.callback_fn = Some(callback);
++        }
++        cnx.alpn = Some(alpn);
++    }
++
++    if let Some(accepted) = session.early_data_accepted() {
++        cnx.zero_rtt_data_accepted = accepted;
++    }
++}
++
++fn tls_failure_error_code(error: Error) -> u64 {
++    match error {
++        Error::Protocol(code) => code,
++        _ => TransportError::InternalError as u64,
++    }
++}
++
++fn handle_tls_stream_state_transition(
++    cnx: &mut Connection,
++    session: &dyn crate::tls::Session,
++    data_pushed: bool,
++    current_time: Instant,
++) -> Result<(), Error> {
++    let handshake_complete = !session.is_handshaking();
++    match cnx.connection_state {
++        State::ClientRetryReceived => {}
++        State::ClientInit
++        | State::ClientInitSent
++        | State::ClientRenegotiate
++        | State::ClientInitResent
++        | State::ClientHandshakeStart
++            if handshake_complete =>
++        {
++            if !cnx.remote_parameters_received {
++                let code = TransportError::ParameterError as u64;
++                cnx.connection_error(code, 0);
++                return Err(Error::Protocol(code));
++            }
++            if cnx.crypto_context[Epoch::OneRtt as usize]
++                .aead_encrypt
++                .is_some()
++            {
++                cnx.client_almost_ready_transition();
++            }
+         }
+-
+-        if let Some(root) = cert_root_file_name {
+-            self.is_cert_store_not_empty = get_certs_from_file(root).is_some();
+-            if !self.is_cert_store_not_empty {
+-                return Err(Error::InvalidFile);
++        State::ServerInit | State::ServerHandshake if handshake_complete => {
++            if !data_pushed
++                && cnx
++                    .quic_ref()
++                    .map(|quic| quic.client_authentication)
++                    .unwrap_or(false)
++            {
++                cnx.false_start_transition(current_time);
++            } else if cnx.crypto_context[Epoch::OneRtt as usize]
++                .aead_encrypt
++                .is_some()
++            {
++                cnx.connection_state = State::ServerAlmostReady;
+             }
+         }
++        _ => {}
++    }
++    Ok(())
++}
+ 
+-        install_ticket_aead_contexts(self, ticket_key)
++fn tls_setup_error(ret: i32) -> Error {
++    if ret > 0 {
++        Error::Protocol(ret as u64)
++    } else {
++        Error::Generic
+     }
++}
+ 
+-    /// Set up server ticket AEAD contexts from `secret`, or from fresh
+-    /// cryptographic random bytes when no non-empty secret is supplied.
+-    ///
+-    /// C: `picoquic/tls_api.c:picoquic_server_setup_ticket_aead_contexts`.
+-    pub fn picoquic_server_setup_ticket_aead_contexts(
+-        &mut self,
+-        secret: Option<&[u8]>,
+-    ) -> Result<(), Error> {
+-        install_ticket_aead_contexts(self, secret)
++fn disconnect_on_tls_setup_error(cnx: &mut Connection, error: Error) -> Error {
++    log::debug!(
++        "Could not set up TLS parameters, error {:?}, abandoning connection",
++        error
++    );
++    cnx.connection_disconnect();
++    error
++}
++
++fn configure_client_alpn(cnx: &mut Connection) -> Result<(), Error> {
++    if let Some(alpn) = cnx.alpn.clone() {
++        cnx.alpn_proposals.clear();
++        cnx.alpn_proposals.push(alpn);
++    } else if let Some(mut callback) = cnx.callback_fn.take() {
++        let ret = callback.callback(cnx, 0, &[], CallbackEvent::RequestAlpnList, None);
++        cnx.callback_fn = Some(callback);
++        if ret != 0 {
++            log::debug!("ALPN list callback returns 0x{:x}", ret);
++            return Err(tls_setup_error(ret));
++        }
+     }
+ 
+-    /// Tear down the master TLS context installed by
+-    /// [`Quic::init_master_tls_context`].  C:
+-    /// `master_tlscontext_free`.
+-    pub fn free_master_tls_context(&mut self) {
+-        self.tls_client_config = None;
+-        self.tls_server_config = None;
++    if cnx.alpn_proposals.is_empty() {
++        log::debug!(
++            "No ALPN provided, error 0x{:x}",
++            InternalError::NoAlpnProvided as u64
++        );
++        return Err(Error::Protocol(InternalError::NoAlpnProvided as u64));
+     }
++
++    Ok(())
+ }
+ 
+-// ---------------------------------------------------------------------------
+-// Per-connection TLS context.
+-//
+-// `tls_ctx_t` itself lives in `crypto_provider_api.rs`; this module
+-// just exposes the API surface that quic-core uses to drive it.
++fn log_local_alpn(cnx: &mut Connection) {
++    let sni = cnx
++        .sni
++        .as_deref()
++        .map(str::as_bytes)
++        .unwrap_or(&[])
++        .to_vec();
++    let alpn_list = cnx
++        .alpn_proposals
++        .iter()
++        .map(|alpn| alpn.as_bytes().to_vec())
++        .collect::<Vec<_>>();
++    let alpn_refs = alpn_list.iter().map(Vec::as_slice).collect::<Vec<&[u8]>>();
+ 
+-impl Connection {
+-    /// Allocate a per-connection TLS context, attach it to this
+-    /// connection, and initialize the tls handshake-property slots.
+-    /// C: `tlscontext_create`.  C side returns 0 on success,
+-    /// `ERROR_TLS_SERVER_CON_WITHOUT_CERT` / `ERROR_MEMORY` / -1 on
+-    /// failure.
+-    pub fn create_tls_context(&mut self, quic: &mut Quic) -> Result<(), Error> {
+-        let version = connection_version(self);
+-        let transport_params = Vec::new();
+-        let session: Box<dyn crate::tls::Session> = if self.client_mode {
+-            if let Some(config) = quic.tls_client_config.as_ref() {
+-                let sni = self.sni.as_deref().unwrap_or("");
+-                config
+-                    .start_session(version as u32, sni, &transport_params)
+-                    .map_err(|_| Error::Tls)?
+-            } else {
+-                Box::new(LocalSession::new(
+-                    true,
+-                    version.parameters().tls_prefix_label,
+-                ))
+-            }
+-        } else if let Some(config) = quic.tls_server_config.as_ref() {
+-            config
+-                .start_session(version as u32, &transport_params)
+-                .map_err(|_| Error::Tls)?
+-        } else {
+-            if quic.enforce_client_only {
+-                return Err(Error::Protocol(
+-                    InternalError::TlsServerConWithoutCert as u64,
+-                ));
+-            }
+-            Box::new(LocalSession::new(
+-                false,
+-                version.parameters().tls_prefix_label,
+-            ))
+-        };
++    Log::negotiated_alpn(cnx, true, &sni, &[], &alpn_refs);
++}
+ 
+-        self.tls_ctx = Some(session);
+-        self.tls_sendbuf.clear();
+-        self.app_secret_len = SHA256_SIZE;
+-        Ok(())
++struct ClientResumptionTicket {
++    ticket_id: u64,
++    psk_cipher_suite_id: u16,
++    tp_0rtt: [u64; NB_TP_0RTT],
++    time_valid_until: Instant,
++    ip_addr: IpAddr,
++}
++
++fn client_resumption_ticket_from_stored(
++    ticket: &StoredTicket,
++) -> Result<ClientResumptionTicket, Error> {
++    if ticket.ticket.len() < 10 {
++        return Err(Error::Protocol(InternalError::InvalidTicket as u64));
+     }
+ 
+-    /// Drop transient buffers (ALPN list, transport-parameter encode
+-    /// scratch) once the handshake is done.  C:
+-    /// `tlscontext_trim_after_handshake`.
+-    pub fn trim_tls_context_after_handshake(&mut self) {
+-        self.tls_sendbuf.clear();
+-        self.tls_sendbuf.shrink_to_fit();
++    Ok(ClientResumptionTicket {
++        ticket_id: parse_64(&ticket.ticket[..8]),
++        psk_cipher_suite_id: parse_16(&ticket.ticket[8..10]),
++        tp_0rtt: ticket.tp_0rtt,
++        time_valid_until: ticket.time_valid_until,
++        ip_addr: ticket.ip_addr,
++    })
++}
++
++fn lookup_client_resumption_ticket(
++    cnx: &Connection,
++) -> Result<Option<ClientResumptionTicket>, Error> {
++    if !cnx.client_mode
++        || cnx
++            .quic_ref()
++            .map(|quic| quic.client_zero_share)
++            .unwrap_or(false)
++    {
++        return Ok(None);
+     }
+ 
+-    /// Forget the session ticket installed for a 0-RTT attempt.  C:
+-    /// `tlscontext_remove_ticket`.
+-    pub fn remove_tls_ticket(&mut self) {
+-        self.resumed_ticket_id = 0;
+-        self.psk_cipher_suite_id = 0;
+-        self.max_early_data_size = 0;
++    let (Some(sni), Some(alpn)) = (cnx.sni.as_deref(), cnx.alpn.as_deref()) else {
++        return Ok(None);
++    };
++    let version = version_from_index(cnx.version_index)
++        .map(|version| version as u32)
++        .unwrap_or(cnx.proposed_version);
++
++    let Some(quic) = cnx.quic_ref() else {
++        return Ok(None);
++    };
++    let tls_time = Instant::from_ticks(quic.time());
++    let Some(ticket) = quic.stored_tickets.iter().find(|ticket| {
++        ticket.time_valid_until > tls_time
++            && ticket.sni.as_deref() == Some(sni)
++            && ticket.alpn.as_deref() == Some(alpn)
++            && (version == 0 || ticket.version == version)
++            && !ticket.was_used
++    }) else {
++        return Ok(None);
++    };
++
++    client_resumption_ticket_from_stored(ticket).map(Some)
++}
++
++fn apply_client_resumption_ticket(
++    cnx: &mut Connection,
++    ticket: ClientResumptionTicket,
++    current_time: Instant,
++) {
++    use crate::tp::TransportParameter0RttKind::*;
++
++    cnx.resumed_ticket_id = ticket.ticket_id;
++    cnx.psk_cipher_suite_id = ticket.psk_cipher_suite_id;
++    set_app_secret_len_from_cipher_suite(cnx, ticket.psk_cipher_suite_id);
++    cnx.max_early_data_size = TLS_MAX_EARLY_DATA_SIZE as usize;
++    cnx.remote_parameters.initial_max_data = ticket.tp_0rtt[MaxData as usize];
++    cnx.remote_parameters.initial_max_stream_data_bidi_local =
++        ticket.tp_0rtt[MaxStreamDataBidiLocal as usize];
++    cnx.remote_parameters.initial_max_stream_data_bidi_remote =
++        ticket.tp_0rtt[MaxStreamDataBidiRemote as usize];
++    cnx.remote_parameters.initial_max_stream_data_uni = ticket.tp_0rtt[MaxStreamDataUni as usize];
++    cnx.remote_parameters.initial_max_stream_id_bidir = ticket.tp_0rtt[MaxStreamsIdBidir as usize];
++    cnx.remote_parameters.initial_max_stream_id_unidir =
++        ticket.tp_0rtt[MaxStreamsIdUnidir as usize];
++
++    let role_bit = u64::from(!cnx.client_mode);
++    cnx.maxdata_remote = cnx.remote_parameters.initial_max_data;
++    cnx.max_stream_id_bidir_remote =
++        4 * cnx.remote_parameters.initial_max_stream_id_bidir + role_bit;
++    cnx.max_stream_id_unidir_remote =
++        4 * cnx.remote_parameters.initial_max_stream_id_unidir + role_bit + 2;
++    cnx.max_stream_data_remote = cnx.remote_parameters.initial_max_data;
++    cnx.max_stream_data_local = cnx.local_parameters.initial_max_stream_data_bidi_local;
++    cnx.update_stream_initial_remote();
++
++    if ticket.time_valid_until > current_time {
++        cnx.seed_bandwidth(
++            crate::Duration::from_ticks(ticket.tp_0rtt[RttLocal as usize]),
++            ticket.tp_0rtt[CwinLocal as usize],
++            ticket.ip_addr,
++        );
+     }
+ }
+ 
+-// `tls_context_free` is gone -- `Connection.tls_ctx` is now an
+-// `Option<Box<dyn Session>>`, and `Drop` on the boxed Session
+-// runs the backend's teardown automatically.  The C
+-// `client_mode` flag is unnecessary too: the `Session` impl
+-// knows whether it's a client or server session internally.
++fn setup_client_resumption_ticket(
++    cnx: &mut Connection,
++    current_time: Instant,
++) -> Result<(), Error> {
++    if let Some(ticket) = lookup_client_resumption_ticket(cnx)? {
++        apply_client_resumption_ticket(cnx, ticket, current_time);
++    }
++    Ok(())
++}
+ 
+-// ---------------------------------------------------------------------------
+-// TLS stream processing.
++fn client_zero_share_requested(cnx: &Connection) -> bool {
++    cnx.client_mode
++        && cnx.connection_state == State::ClientInit
++        && cnx
++            .quic_ref()
++            .map(|quic| quic.client_zero_share)
++            .unwrap_or(false)
++}
++
++fn set_initial_tls_extensions(cnx: &mut Connection) -> Result<Vec<u8>, Error> {
++    let mut ext_data_size = TRANSPORT_PARAMETERS_MAX_SIZE;
++    if !cnx.client_mode
++        && cnx
++            .quic_ref()
++            .map(|quic| quic.test_large_server_flight)
++            .unwrap_or(false)
++    {
++        ext_data_size += 4096;
++    }
++
++    let mut transport_params = vec![0u8; ext_data_size];
++    let mut consumed = 0usize;
++    if cnx.prepare_transport_extensions(
++        local_transport_extension_mode(cnx.client_mode),
++        &mut transport_params,
++        ext_data_size,
++        &mut consumed,
++    ) != 0
++    {
++        return Err(Error::Generic);
++    }
++    transport_params.truncate(consumed);
++    Log::transport_extension(cnx, true, &transport_params);
++    Ok(transport_params)
++}
++
++fn install_zero_rtt_keys(cnx: &mut Connection, session: &dyn crate::tls::Session) {
++    if cnx.psk_cipher_suite_id == 0 {
++        return;
++    }
++
++    if let Some((pn_enc, aead_encrypt)) = session.early_keys() {
++        let ctx = &mut cnx.crypto_context[Epoch::ZeroRtt as usize];
++        ctx.pn_enc = Some(pn_enc);
++        ctx.aead_encrypt = Some(aead_encrypt);
++    }
++}
+ 
+ impl Connection {
+     /// Drive the TLS handshake by feeding in any data buffered on
+@@ -1052,66 +2487,89 @@ impl Connection {
+     /// Returns the number of bytes consumed (the C `int*
+     /// data_consumed` out-parameter; bytes consumed is non-negative,
+     /// so the type widens to `usize` rather than tracking the C
+-    /// `int`).  C: `tls_stream_process`.
++    /// `int`).  C: `picoquic_tls_stream_process`.
+     pub fn process_tls_stream(&mut self, current_time: Instant) -> Result<usize, Error> {
+         let mut session = self.tls_ctx.take().ok_or(Error::InvalidState)?;
+-        let mut chunks = Vec::new();
+         let mut consumed = 0usize;
++        let mut result: Result<(), Error> = Ok(());
+ 
+         for epoch in 0..NUMBER_OF_EPOCHS {
+-            let stream = &mut self.tls_stream[epoch];
+-            while let Some(node_token) = stream.stream_data_tree.first() {
+-                let data_token = match stream.stream_data_tree.get(node_token).copied() {
+-                    Some(token) => token,
+-                    None => {
+-                        stream.stream_data_tree.remove(node_token);
+-                        continue;
+-                    }
+-                };
+-                let Some(node) = stream.stream_data_nodes.get(data_token) else {
+-                    stream.stream_data_tree.remove(node_token);
+-                    continue;
+-                };
+-                if node.offset > stream.consumed_offset {
++            if result.is_err() {
++                break;
++            }
++
++            let next_epoch = inferred_tls_read_epoch(self, session.as_ref());
++            if epoch != next_epoch {
++                if epoch > next_epoch {
+                     break;
+                 }
+-                let start = (stream.consumed_offset - node.offset) as usize;
+-                if start >= node.length {
+-                    stream.stream_data_tree.remove(node_token);
+-                    stream.stream_data_nodes.remove(data_token);
+-                    continue;
++                if let Some((offset, _)) = tls_stream_first_data(self, epoch)
++                    && offset > self.tls_stream[epoch].consumed_offset
++                {
++                    let code = TransportError::ProtocolViolation as u64;
++                    self.connection_error(code, 0);
++                    result = Err(Error::Protocol(code));
++                    break;
+                 }
+-                let data = node.data[start..node.length].to_vec();
+-                stream.consumed_offset += data.len() as u64;
+-                consumed += data.len();
+-                chunks.push(data);
+-                stream.stream_data_tree.remove(node_token);
+-                stream.stream_data_nodes.remove(data_token);
++                continue;
+             }
+-        }
+ 
+-        for chunk in &chunks {
+-            if session.read_handshake(chunk)?
+-                && let Some(keys) = session.write_handshake(&mut self.tls_sendbuf)
+-            {
+-                install_key_pair(&mut self.crypto_context[3], keys);
+-            }
+-        }
++            let mut processed = 0usize;
++            let mut data_pushed = false;
+ 
+-        if let Some(keys) = session.write_handshake(&mut self.tls_sendbuf) {
+-            install_key_pair(&mut self.crypto_context[3], keys);
+-        }
++            while let Some(chunk) = pop_tls_stream_chunk(self, epoch) {
++                consumed += chunk.len();
++                processed += chunk.len();
+ 
+-        if !self.tls_sendbuf.is_empty() {
+-            let out = core::mem::take(&mut self.tls_sendbuf);
+-            queue_tls_bytes(self, 0, &out)?;
+-        }
++                if let Err(error) = session.read_handshake(&chunk) {
++                    let code = tls_failure_error_code(error);
++                    self.connection_error(code, 0);
++                    result = Err(error);
++                    break;
++                }
+ 
+-        if !session.is_handshaking() {
+-            self.ready_state_transition(current_time);
++                match collect_peer_transport_params(self, session.as_ref()) {
++                    Ok(true) if !self.client_mode => {
++                        if let Err(error) = refresh_session_transport_params(self, session.as_mut())
++                        {
++                            result = Err(error);
++                            break;
++                        }
++                    }
++                    Ok(_) => {}
++                    Err(error) => {
++                        result = Err(error);
++                        break;
++                    }
++                }
++
++                if let Some(keys) = session.write_handshake(&mut self.tls_sendbuf) {
++                    install_key_pair(&mut self.crypto_context[Epoch::OneRtt as usize], keys);
++                }
++
++                match flush_tls_sendbuf_to_epoch(self, epoch) {
++                    Ok(pushed) => data_pushed |= pushed,
++                    Err(error) => {
++                        result = Err(error);
++                        break;
++                    }
++                }
++
++                update_client_tls_side_effects(self, session.as_ref());
++            }
++
++            if processed > 0 && result.is_ok() {
++                result = handle_tls_stream_state_transition(
++                    self,
++                    session.as_ref(),
++                    data_pushed,
++                    current_time,
++                );
++            }
+         }
++
+         self.tls_ctx = Some(session);
+-        Ok(consumed)
++        result.map(|_| consumed)
+     }
+ 
+     /// Report whether the TLS handshake has completed.  C signature
+@@ -1125,17 +2583,42 @@ impl Connection {
+     /// `HelloRetry`) on the TLS stream.  C:
+     /// `initialize_tls_stream`.
+     pub fn initialize_tls_stream(&mut self, current_time: Instant) -> Result<(), Error> {
++        let setup_result = configure_client_alpn(self);
++        log_local_alpn(self);
++        if let Err(error) = setup_result {
++            return Err(disconnect_on_tls_setup_error(self, error));
++        }
++
++        if let Err(error) = setup_client_resumption_ticket(self, current_time) {
++            return Err(disconnect_on_tls_setup_error(self, error));
++        }
++
++        let zero_share = client_zero_share_requested(self);
++        if zero_share {
++            log::debug!("Client zero-share requested for initial TLS message");
++        }
++
++        let transport_params = match set_initial_tls_extensions(self) {
++            Ok(transport_params) => transport_params,
++            Err(error) => return Err(disconnect_on_tls_setup_error(self, error)),
++        };
++
+         let mut session = self.tls_ctx.take().ok_or(Error::InvalidState)?;
++        if let Err(error) = session.set_transport_parameters(&transport_params) {
++            self.tls_ctx = Some(session);
++            return Err(disconnect_on_tls_setup_error(self, error));
++        }
+         if let Some(keys) = session.write_handshake(&mut self.tls_sendbuf) {
+-            install_key_pair(&mut self.crypto_context[3], keys);
++            install_key_pair(&mut self.crypto_context[Epoch::OneRtt as usize], keys);
+         }
++        install_zero_rtt_keys(self, session.as_ref());
+         let out = core::mem::take(&mut self.tls_sendbuf);
+-        queue_tls_bytes(self, 0, &out)?;
+-        if !session.is_handshaking() {
++        let result = queue_tls_bytes(self, Epoch::Initial as usize, &out);
++        if result.is_ok() && !session.is_handshaking() {
+             self.ready_state_transition(current_time);
+         }
+         self.tls_ctx = Some(session);
+-        Ok(())
++        result
+     }
+ }
+ 
+@@ -1287,7 +2770,8 @@ pub fn aead_decrypt_generic(
+ 
+ /// Encrypt `input` and write ciphertext + authentication tag to
+ /// `output`.  Returns the total number of bytes written (plaintext
+-/// length + tag length).
++/// length + tag length), or [`Error::BufferTooSmall`] if `output`
++/// cannot hold the complete ciphertext.
+ /// C: `picoquic_aead_encrypt_generic`
+ pub fn aead_encrypt_generic(
+     output: &mut [u8],
+@@ -1295,13 +2779,15 @@ pub fn aead_encrypt_generic(
+     seq_num: u64,
+     auth_data: &[u8],
+     aead_ctx: &dyn crate::tls::PacketKey,
+-) -> usize {
++) -> Result<usize, Error> {
+     let mut buf = input.to_vec();
+     aead_ctx.encrypt(seq_num, auth_data, &mut buf);
+     let len = buf.len();
+-    let copy_len = len.min(output.len());
+-    output[..copy_len].copy_from_slice(&buf[..copy_len]);
+-    len
++    if len > output.len() {
++        return Err(Error::BufferTooSmall);
++    }
++    output[..len].copy_from_slice(&buf);
++    Ok(len)
+ }
+ 
+ // `aead_encrypt_mp` / `aead_decrypt_mp` fold into `PacketKey::encrypt_mp` /
+@@ -1323,13 +2809,54 @@ pub fn aead_integrity_limit(aead_ctx: &dyn crate::tls::PacketKey) -> u64 {
+ // ---------------------------------------------------------------------------
+ // Initial-secret derivation.
+ //
+-// RFC 9001 fixes the initial-secret HKDF to SHA-256 (the salt is the
+-// version-specific 20-byte constant).  Both helpers therefore commit
+-// to SHA-256 internally — no cipher-suite parameter needed (the C
+-// API took `&PtlsCipherSuite` purely for parity with later epoch
+-// derivations).  `master_secret` / `client_secret` / `server_secret`
+-// must be 32 bytes (`Sha256::output_size()`); a wider buffer is
+-// fine (caller-provided slots stay flexible).
++// QUIC Initial packets use AES-128-GCM-SHA-256, but the public C
++// `picoquic_setup_initial_secrets` helper sizes HKDF from
++// `cipher->hash->digest_size`.  The Rust helper accepts
++// `InitialSecretMaterial` for the generic public behavior, while
++// plain byte-slice callers keep the historical SHA-256 default.
++
++/// Master-secret input plus HKDF hash selection for
++/// [`setup_initial_secrets`].  Passing a raw byte slice to
++/// `setup_initial_secrets` uses SHA-256 for compatibility with the
++/// QUIC Initial path; construct this descriptor when translating a C
++/// caller that supplies a concrete `cipher->hash`.
++#[derive(Clone, Copy, Debug)]
++pub struct InitialSecretMaterial<'a> {
++    hash: HkdfHashAlgorithm,
++    master_secret: &'a [u8],
++}
++
++impl<'a> InitialSecretMaterial<'a> {
++    /// Build initial-secret input with an explicit HKDF hash.
++    pub const fn new(hash: HkdfHashAlgorithm, master_secret: &'a [u8]) -> Self {
++        Self {
++            hash,
++            master_secret,
++        }
++    }
++
++    /// Build initial-secret input from an AEAD suite's HKDF hash.
++    pub const fn from_suite(suite: AeadSuiteId, master_secret: &'a [u8]) -> Self {
++        Self::new(suite.hkdf_hash(), master_secret)
++    }
++
++    /// Build SHA-256 initial-secret input.
++    pub const fn sha256(master_secret: &'a [u8]) -> Self {
++        Self::new(HkdfHashAlgorithm::Sha256, master_secret)
++    }
++}
++
++impl<'a> From<&'a [u8]> for InitialSecretMaterial<'a> {
++    fn from(master_secret: &'a [u8]) -> Self {
++        Self::sha256(master_secret)
++    }
++}
++
++impl<'a, const N: usize> From<&'a [u8; N]> for InitialSecretMaterial<'a> {
++    fn from(master_secret: &'a [u8; N]) -> Self {
++        Self::sha256(&master_secret[..])
++    }
++}
+ 
+ /// Derive the per-connection-ID initial master secret.  C:
+ /// `setup_initial_master_secret`.
+@@ -1348,30 +2875,32 @@ pub fn setup_initial_master_secret(
+ }
+ 
+ /// Derive client/server initial secrets from the master secret.
+-/// `client_secret` and `server_secret` are filled in place.  C:
+-/// `setup_initial_secrets`.
+-pub fn setup_initial_secrets(
+-    master_secret: &[u8],
++/// `client_secret` and `server_secret` are filled in place over the
++/// selected hash digest length.  C: `setup_initial_secrets`.
++pub fn setup_initial_secrets<'a>(
++    initial_secret: impl Into<InitialSecretMaterial<'a>>,
+     client_secret: &mut [u8],
+     server_secret: &mut [u8],
+ ) -> Result<(), Error> {
+-    if master_secret.len() < SHA256_SIZE
+-        || client_secret.len() < SHA256_SIZE
+-        || server_secret.len() < SHA256_SIZE
++    let initial_secret = initial_secret.into();
++    let digest_size = initial_secret.hash.digest_size();
++    if initial_secret.master_secret.len() < digest_size
++        || client_secret.len() < digest_size
++        || server_secret.len() < digest_size
+     {
+         return Err(Error::BufferTooSmall);
+     }
+-    hkdf_expand_label(
++    initial_secret.hash.expand_label(
+         LABEL_INITIAL_CLIENT,
+         TLS13_LABEL_PREFIX,
+-        &master_secret[..SHA256_SIZE],
+-        &mut client_secret[..SHA256_SIZE],
++        &initial_secret.master_secret[..digest_size],
++        &mut client_secret[..digest_size],
+     )?;
+-    hkdf_expand_label(
++    initial_secret.hash.expand_label(
+         LABEL_INITIAL_SERVER,
+         TLS13_LABEL_PREFIX,
+-        &master_secret[..SHA256_SIZE],
+-        &mut server_secret[..SHA256_SIZE],
++        &initial_secret.master_secret[..digest_size],
++        &mut server_secret[..digest_size],
+     )
+ }
+ 
+@@ -1486,13 +3015,11 @@ impl Connection {
+     /// this connection's TLS context for the chosen direction.  C:
+     /// `get_app_secret`.
+     pub fn app_secret(&mut self, is_enc: bool) -> &mut [u8] {
+-        if self.app_secret_len == 0 || self.app_secret_len > HASH_SIZE_MAX {
+-            self.app_secret_len = SHA256_SIZE;
+-        }
++        let secret_len = self.app_secret_size();
+         if is_enc {
+-            &mut self.app_secret_enc[..self.app_secret_len]
++            &mut self.app_secret_enc[..secret_len]
+         } else {
+-            &mut self.app_secret_dec[..self.app_secret_len]
++            &mut self.app_secret_dec[..secret_len]
+         }
+     }
+ 
+@@ -1501,11 +3028,10 @@ impl Connection {
+     /// `get_app_secret_size`.  Phase 3 may collapse this accessor
+     /// since [`Connection::app_secret`] already returns a sized slice.
+     pub fn app_secret_size(&self) -> usize {
+-        if self.app_secret_len == 0 {
+-            SHA256_SIZE
+-        } else {
+-            self.app_secret_len.min(HASH_SIZE_MAX)
+-        }
++        self.tls_ctx
++            .as_ref()
++            .and_then(|session| app_secret_len_from_session(session.as_ref()))
++            .unwrap_or(self.app_secret_len)
+     }
+ 
+     /// Compute the post-rotation AEAD + PN contexts and stash them
+@@ -1523,23 +3049,29 @@ impl Connection {
+ 
+         let version = connection_version(self);
+         let params = version.parameters();
+-        let secret_len = self.app_secret_size();
++        let suite = aead_suite_from_session(self.tls_ctx.as_deref(), self.app_secret_size())?;
++        let hash_algorithm = suite.hkdf_hash();
++        let secret_len = hash_algorithm.digest_size();
++        let mut hash = hash_algorithm.new_digest();
+         rotate_app_secret(
+-            &mut sha2::Sha256::new(),
++            &mut *hash,
+             &mut self.app_secret_enc[..secret_len],
+             params.tls_traffic_update_label,
+         )?;
+-        self.crypto_context_new.aead_encrypt = Some(packet_key_from_secret(
++        self.crypto_context_new.aead_encrypt = Some(packet_key_from_secret_for_suite(
++            suite,
+             &self.app_secret_enc[..secret_len],
+             params.tls_prefix_label,
+         )?);
+ 
++        let mut hash = hash_algorithm.new_digest();
+         rotate_app_secret(
+-            &mut sha2::Sha256::new(),
++            &mut *hash,
+             &mut self.app_secret_dec[..secret_len],
+             params.tls_traffic_update_label,
+         )?;
+-        self.crypto_context_new.aead_decrypt = Some(packet_key_from_secret(
++        self.crypto_context_new.aead_decrypt = Some(packet_key_from_secret_for_suite(
++            suite,
+             &self.app_secret_dec[..secret_len],
+             params.tls_prefix_label,
+         )?);
+@@ -1993,22 +3525,15 @@ impl Quic {
+     /// it in this context's master TLS context.  C:
+     /// `set_private_key_from_file`.
+     pub fn set_private_key_from_file(&mut self, file_name: &str) -> Result<(), Error> {
+-        let contents = std::fs::read_to_string(file_name).map_err(|_| Error::NoSuchFile)?;
+-        if contents.contains("-----BEGIN ") && contents.contains("PRIVATE KEY-----") {
+-            Ok(())
+-        } else {
+-            Err(Error::InvalidFile)
+-        }
++        let mut material = configured_tls_material(self)?;
++        install_private_key_from_active_provider(file_name, &mut material)?;
++        install_configured_tls_material(self, material);
++        Ok(())
+     }
+ }
+ 
+-/// Load a PEM-encoded certificate chain from `file_name` and
+-/// return it as an owned vector of DER-encoded certificate byte
+-/// strings.  C: `get_certs_from_file` (which allocated both the
+-/// outer iovec array and each `base` slot — the Rust shape owns
+-/// both via the nested `Vec<Vec<u8>>`).  Returns `None` when the
+-/// loader callback is unset or the file fails to parse.
+-pub fn get_certs_from_file(file_name: &str) -> Option<Vec<Vec<u8>>> {
++#[cfg(feature = "sys-mbedtls")]
++fn load_cert_chain_pem(file_name: &str) -> Option<Vec<Vec<u8>>> {
+     let contents = std::fs::read_to_string(file_name).ok()?;
+     let begin = "-----BEGIN CERTIFICATE-----";
+     let end = "-----END CERTIFICATE-----";
+@@ -2024,6 +3549,51 @@ pub fn get_certs_from_file(file_name: &str) -> Option<Vec<Vec<u8>>> {
+     if certs.is_empty() { None } else { Some(certs) }
+ }
+ 
++/// Load a PEM-encoded certificate chain from `file_name` and return it as an
++/// owned vector of DER-encoded certificate byte strings through the registered
++/// certificate-loader callback.  C: `get_certs_from_file` (which allocated both
++/// the outer iovec array and each `base` slot — the Rust shape owns both via
++/// the nested `Vec<Vec<u8>>`).  Returns `None` when the loader callback is unset
++/// or the file fails to parse.
++pub fn get_certs_from_file(file_name: &str) -> Option<Vec<Vec<u8>>> {
++    let _ = file_name;
++    let cert_chain_loader = tls_api_state().cert_chain_loader?;
++    match cert_chain_loader {
++        CryptoProvider::Minicrypto => None,
++        #[cfg(feature = "sys-openssl")]
++        CryptoProvider::OpenSsl => {
++            let provider = crate::sys::openssl::OPENSSL_PROVIDER_REGISTRATION.tls_key_provider;
++            let certs = (provider.cert_chain_loader)(file_name);
++            if certs.is_empty() { None } else { Some(certs) }
++        }
++        #[cfg(feature = "sys-fusion")]
++        CryptoProvider::Fusion => None,
++        #[cfg(feature = "sys-mbedtls")]
++        CryptoProvider::MbedTls => load_cert_chain_pem(file_name),
++    }
++}
++
++/// Extract the public key from a registered private-key loader, if the active
++/// TLS provider registered that independent callback.
++/// C: `picoquic_get_public_key_from_private_fn`.
++pub fn get_public_key_from_private_file(file_name: &str) -> Result<Option<Vec<u8>>, Error> {
++    let _ = file_name;
++    let public_key_loader = tls_api_state().public_key_loader;
++    match public_key_loader {
++        None => Ok(None),
++        Some(CryptoProvider::Minicrypto) => Ok(None),
++        #[cfg(feature = "sys-openssl")]
++        Some(CryptoProvider::OpenSsl) => {
++            let provider = crate::sys::openssl::OPENSSL_PROVIDER_REGISTRATION.tls_key_provider;
++            (provider.public_key_loader)(file_name).map(Some)
++        }
++        #[cfg(feature = "sys-fusion")]
++        Some(CryptoProvider::Fusion) => Ok(None),
++        #[cfg(feature = "sys-mbedtls")]
++        Some(CryptoProvider::MbedTls) => Err(Error::Generic),
++    }
++}
++
+ // ---------------------------------------------------------------------------
+ // Retry-packet integrity protection.
+ //
+@@ -2296,6 +3866,30 @@ impl KeyExchangeSlot {
+     };
+ }
+ 
++#[derive(Debug, Copy, Clone)]
++struct TlsKeyProviderCallbacks {
++    private_key_loader: Option<CryptoProvider>,
++    sign_certificate_disposer: Option<CryptoProvider>,
++    cert_chain_loader: Option<CryptoProvider>,
++    public_key_loader: Option<CryptoProvider>,
++}
++
++impl TlsKeyProviderCallbacks {
++    const fn new(
++        private_key_loader: Option<CryptoProvider>,
++        sign_certificate_disposer: Option<CryptoProvider>,
++        cert_chain_loader: Option<CryptoProvider>,
++        public_key_loader: Option<CryptoProvider>,
++    ) -> Self {
++        Self {
++            private_key_loader,
++            sign_certificate_disposer,
++            cert_chain_loader,
++            public_key_loader,
++        }
++    }
++}
++
+ #[derive(Debug)]
+ struct TlsApiState {
+     init_flags: u64,
+@@ -2304,7 +3898,10 @@ struct TlsApiState {
+     key_exchanges: [KeyExchangeSlot; PICOQUIC_KEY_EXCHANGES_NB_MAX],
+     key_exchange_secp256r1: Option<CryptoProvider>,
+     crypto_random_provider: Option<CryptoProvider>,
+-    private_key_provider: Option<CryptoProvider>,
++    private_key_loader: Option<CryptoProvider>,
++    sign_certificate_disposer: Option<CryptoProvider>,
++    cert_chain_loader: Option<CryptoProvider>,
++    public_key_loader: Option<CryptoProvider>,
+ }
+ 
+ impl TlsApiState {
+@@ -2316,7 +3913,10 @@ impl TlsApiState {
+             key_exchanges: [KeyExchangeSlot::EMPTY; PICOQUIC_KEY_EXCHANGES_NB_MAX],
+             key_exchange_secp256r1: None,
+             crypto_random_provider: None,
+-            private_key_provider: None,
++            private_key_loader: None,
++            sign_certificate_disposer: None,
++            cert_chain_loader: None,
++            public_key_loader: None,
+         }
+     }
+ 
+@@ -2327,7 +3927,10 @@ impl TlsApiState {
+         self.key_exchanges = [KeyExchangeSlot::EMPTY; PICOQUIC_KEY_EXCHANGES_NB_MAX];
+         self.key_exchange_secp256r1 = None;
+         self.crypto_random_provider = None;
+-        self.private_key_provider = None;
++        self.private_key_loader = None;
++        self.sign_certificate_disposer = None;
++        self.cert_chain_loader = None;
++        self.public_key_loader = None;
+     }
+ 
+     /// Register or replace a TLS cipher suite.  The first matching slot by
+@@ -2375,8 +3978,16 @@ impl TlsApiState {
+ 
+     /// Register the private-key loading callback family.
+     /// C: `picoquic_register_tls_key_provider_fn`.
+-    fn register_tls_key_provider(&mut self, provider: CryptoProvider) {
+-        self.private_key_provider = Some(provider);
++    fn register_tls_key_provider(&mut self, callbacks: TlsKeyProviderCallbacks) {
++        if callbacks.private_key_loader.is_some() {
++            self.private_key_loader = callbacks.private_key_loader;
++            self.sign_certificate_disposer = callbacks.sign_certificate_disposer;
++            self.cert_chain_loader = callbacks.cert_chain_loader;
++        }
++
++        if callbacks.public_key_loader.is_some() {
++            self.public_key_loader = callbacks.public_key_loader;
++        }
+     }
+ 
+     fn cipher_suite_provider(&self, suite_id: u16, use_low_memory: bool) -> Option<CryptoProvider> {
+@@ -2413,7 +4024,12 @@ fn ptls_minicrypto_load_locked(state: &mut TlsApiState, unload: i32) {
+         state.register_key_exchange_algorithm(GROUP_SECP256R1, CryptoProvider::Minicrypto);
+         state.register_key_exchange_algorithm(GROUP_X25519, CryptoProvider::Minicrypto);
+         state.register_crypto_random_provider(CryptoProvider::Minicrypto);
+-        state.register_tls_key_provider(CryptoProvider::Minicrypto);
++        state.register_tls_key_provider(TlsKeyProviderCallbacks::new(
++            Some(CryptoProvider::Minicrypto),
++            None,
++            None,
++            None,
++        ));
+     }
+ }
+ 
+@@ -2427,7 +4043,12 @@ fn ptls_openssl_load_locked(state: &mut TlsApiState, unload: i32) {
+             state.register_key_exchange_algorithm(key_exchange.group_id, CryptoProvider::OpenSsl);
+         }
+         state.register_crypto_random_provider(CryptoProvider::OpenSsl);
+-        state.register_tls_key_provider(CryptoProvider::OpenSsl);
++        state.register_tls_key_provider(TlsKeyProviderCallbacks::new(
++            Some(CryptoProvider::OpenSsl),
++            Some(CryptoProvider::OpenSsl),
++            Some(CryptoProvider::OpenSsl),
++            Some(CryptoProvider::OpenSsl),
++        ));
+     }
+ }
+ 
+@@ -2448,7 +4069,12 @@ fn mbedtls_load_locked(state: &mut TlsApiState, unload: i32) {
+         state.register_key_exchange_algorithm(GROUP_SECP256R1, CryptoProvider::MbedTls);
+         state.register_key_exchange_algorithm(GROUP_X25519, CryptoProvider::MbedTls);
+         state.register_crypto_random_provider(CryptoProvider::MbedTls);
+-        state.register_tls_key_provider(CryptoProvider::MbedTls);
++        state.register_tls_key_provider(TlsKeyProviderCallbacks::new(
++            Some(CryptoProvider::MbedTls),
++            Some(CryptoProvider::MbedTls),
++            Some(CryptoProvider::MbedTls),
++            None,
++        ));
+     }
+ }
+ 
+@@ -2470,7 +4096,7 @@ fn tls_api_init_providers_locked(state: &mut TlsApiState, unload: i32) {
+     }
+ 
+     #[cfg(feature = "sys-mbedtls")]
+-    {
++    if (state.init_flags & crate::TLS_API_INIT_FLAGS_NO_MBEDTLS) == 0 {
+         mbedtls_load_locked(state, unload);
+     }
+ }
+@@ -2599,7 +4225,7 @@ pub fn picoquic_get_aes128gcm_v(use_low_memory: bool) -> Option<AeadSuiteId> {
+ /// C: `picoquic_set_private_key_from_file_fn == picoquic_minicrypto_set_key_fn`.
+ pub fn is_minicrypto_key_loader() -> bool {
+     let state = tls_api_state();
+-    state.private_key_provider == Some(CryptoProvider::Minicrypto)
++    state.private_key_loader == Some(CryptoProvider::Minicrypto)
+ }
+ 
+ /// Initialize the minicrypto provider.  In the current C implementation
+@@ -2607,19 +4233,20 @@ pub fn is_minicrypto_key_loader() -> bool {
+ /// translation matches.  C: `picoquic_init_minicrypto`.
+ pub fn init_minicrypto() {}
+ 
+-/// Load a PEM private key from `keypem` for the minicrypto backend.
+-/// The C implementation delegates to `ptls_minicrypto_load_private_key`;
+-/// in Rust the file is read and validated as a PEM private-key block.
+-/// Returns `Err(NoSuchFile)` when the path is unreadable and
+-/// `Err(InvalidFile)` when no private-key PEM header is found.
++/// Load a PEM private key from `keypem` for the minicrypto backend and
++/// install it into the translated master TLS context.
++///
++/// The C implementation delegates to `ptls_minicrypto_load_private_key(ctx,
++/// keypem)`, which parses the PEM key and sets `ctx->sign_certificate`.  Rust's
++/// `ConfiguredTlsMaterial` is the safe replacement for that `ptls_context_t`, so
++/// the decoded DER key material is stored on `ctx`.
+ /// C: `set_minicrypto_private_key_from_key_file`.
+-pub fn set_minicrypto_private_key_from_key_file(keypem: &str) -> Result<(), Error> {
+-    let contents = std::fs::read_to_string(keypem).map_err(|_| Error::NoSuchFile)?;
+-    if contents.contains("-----BEGIN ") && contents.contains("PRIVATE KEY-----") {
+-        Ok(())
+-    } else {
+-        Err(Error::InvalidFile)
+-    }
++fn set_minicrypto_private_key_from_key_file(
++    keypem: &str,
++    ctx: &mut ConfiguredTlsMaterial,
++) -> Result<(), Error> {
++    ctx.private_key = Some(load_private_key_material(keypem)?);
++    Ok(())
+ }
+ 
+ /// Tear down any state set up by `picoquic_init_minicrypto`.  In the
+@@ -2778,4 +4405,310 @@ impl Connection {
+ }
+ 
+ #[cfg(test)]
+-mod test {}
++mod test {
++    use super::*;
++
++    fn configured_material_for_test() -> ConfiguredTlsMaterial {
++        ConfiguredTlsMaterial {
++            certificate_chain: Vec::new(),
++            private_key: None,
++            trusted_roots: Vec::new(),
++            cipher_suite_id: AES_128_GCM_SHA256,
++            default_alpn: None,
++            has_on_client_hello: true,
++            has_verify_callback: false,
++            has_save_ticket_callback: false,
++            has_encrypt_ticket_callback: true,
++            ticket_lifetime: TLS_TICKET_LIFETIME_SECONDS,
++            require_dhe_on_psk: true,
++            max_early_data_size: TLS_MAX_EARLY_DATA_SIZE,
++            omit_end_of_early_data: true,
++            client_zero_share: false,
++            require_client_authentication: false,
++            use_exporter: false,
++        }
++    }
++
++    #[test]
++    fn aead_encrypt_generic_requires_full_output_buffer() {
++        let secret = [0x42; SHA256_SIZE];
++        let aead_ctx =
++            setup_test_aead_context(true, &secret, LABEL_QUIC_V1_KEY_BASE).expect("valid key");
++        let input = b"plaintext";
++        let auth_data = b"aad";
++
++        let mut output = [0; 9 + QUIC_AEAD_TAG_LEN];
++        let written =
++            aead_encrypt_generic(&mut output, input, 7, auth_data, aead_ctx.as_ref()).unwrap();
++        assert_eq!(written, input.len() + QUIC_AEAD_TAG_LEN);
++
++        let mut short_output = [0xa5; 8 + QUIC_AEAD_TAG_LEN];
++        let before = short_output;
++        assert_eq!(
++            aead_encrypt_generic(&mut short_output, input, 7, auth_data, aead_ctx.as_ref()),
++            Err(Error::BufferTooSmall)
++        );
++        assert_eq!(short_output, before);
++    }
++
++    #[test]
++    fn setup_initial_secrets_uses_selected_digest_size() {
++        let mut master = [0u8; SHA512_SIZE];
++        for (i, byte) in master.iter_mut().enumerate() {
++            *byte = (i as u8).wrapping_mul(3).wrapping_add(7);
++        }
++
++        let mut client = [0xa5u8; SHA512_SIZE];
++        let mut server = [0x5au8; SHA512_SIZE];
++        setup_initial_secrets(
++            InitialSecretMaterial::new(HkdfHashAlgorithm::Sha384, &master),
++            &mut client,
++            &mut server,
++        )
++        .expect("sha384 initial secrets");
++
++        let mut expected_client = [0u8; SHA384_SIZE];
++        let mut expected_server = [0u8; SHA384_SIZE];
++        hkdf_expand_label_sha384(
++            LABEL_INITIAL_CLIENT,
++            TLS13_LABEL_PREFIX,
++            &master[..SHA384_SIZE],
++            &mut expected_client,
++        )
++        .expect("expected client secret");
++        hkdf_expand_label_sha384(
++            LABEL_INITIAL_SERVER,
++            TLS13_LABEL_PREFIX,
++            &master[..SHA384_SIZE],
++            &mut expected_server,
++        )
++        .expect("expected server secret");
++
++        assert_eq!(&client[..SHA384_SIZE], &expected_client);
++        assert_eq!(&server[..SHA384_SIZE], &expected_server);
++        assert_eq!(&client[SHA384_SIZE..], &[0xa5u8; SHA512_SIZE - SHA384_SIZE]);
++        assert_eq!(&server[SHA384_SIZE..], &[0x5au8; SHA512_SIZE - SHA384_SIZE]);
++
++        let short_master = [0u8; SHA256_SIZE];
++        let mut short_client = [0u8; SHA384_SIZE];
++        let mut short_server = [0u8; SHA384_SIZE];
++        assert_eq!(
++            setup_initial_secrets(
++                InitialSecretMaterial::new(HkdfHashAlgorithm::Sha384, &short_master),
++                &mut short_client,
++                &mut short_server,
++            ),
++            Err(Error::BufferTooSmall)
++        );
++    }
++
++    #[test]
++    fn cipher_suite_digest_size_tracks_tls_hash() {
++        assert_eq!(
++            app_secret_len_for_cipher_suite_id(AES_128_GCM_SHA256),
++            Some(SHA256_SIZE)
++        );
++        assert_eq!(
++            app_secret_len_for_cipher_suite_id(AES_256_GCM_SHA384),
++            Some(SHA384_SIZE)
++        );
++        assert_eq!(
++            app_secret_len_for_cipher_suite_id(CHACHA20_POLY1305_SHA256),
++            Some(SHA256_SIZE)
++        );
++    }
++
++    #[test]
++    fn connection_app_secret_size_uses_session_cipher_hash() {
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .expect("quic context");
++        let mut material = configured_material_for_test();
++        material.cipher_suite_id = AES_256_GCM_SHA384;
++        quic.tls_client_config = Some(Box::new(ConfiguredTlsClientConfig { material }));
++
++        let cnx = quic
++            .create_connection(
++                ConnectionId::default(),
++                ConnectionId::default(),
++                None,
++                Instant::from_ticks(0),
++                0,
++                None,
++                None,
++                true,
++            )
++            .expect("client connection");
++
++        assert_eq!(cnx.app_secret_size(), SHA384_SIZE);
++    }
++
++    fn client_connection_for_cipher_suite(cipher_suite_id: u16) -> Connection {
++        let mut quic = Quic::new(
++            1,
++            None,
++            None,
++            None,
++            None,
++            None,
++            None,
++            [0u8; RESET_SECRET_SIZE],
++            Instant::from_ticks(0),
++            None,
++            None,
++        )
++        .expect("quic context");
++        let mut material = configured_material_for_test();
++        material.cipher_suite_id = cipher_suite_id;
++        quic.tls_client_config = Some(Box::new(ConfiguredTlsClientConfig { material }));
++
++        quic.create_connection(
++            ConnectionId::default(),
++            ConnectionId::default(),
++            None,
++            Instant::from_ticks(0),
++            0,
++            None,
++            None,
++            true,
++        )
++        .expect("client connection")
++    }
++
++    #[test]
++    fn compute_new_rotated_keys_uses_negotiated_chacha_suite() {
++        let mut cnx = client_connection_for_cipher_suite(CHACHA20_POLY1305_SHA256);
++        let params = connection_version(&cnx).parameters();
++        let initial_enc = [0x31u8; SHA256_SIZE];
++        let initial_dec = [0x42u8; SHA256_SIZE];
++        cnx.app_secret_enc[..SHA256_SIZE].copy_from_slice(&initial_enc);
++        cnx.app_secret_dec[..SHA256_SIZE].copy_from_slice(&initial_dec);
++
++        let mut rotated_enc = initial_enc;
++        let mut hash = HkdfHashAlgorithm::Sha256.new_digest();
++        rotate_app_secret(
++            &mut *hash,
++            &mut rotated_enc,
++            params.tls_traffic_update_label,
++        )
++        .expect("expected rotation");
++
++        cnx.compute_new_rotated_keys().expect("rotated keys");
++
++        let actual = cnx
++            .crypto_context_new
++            .aead_encrypt
++            .as_ref()
++            .expect("installed encrypt key");
++        let expected =
++            ChaCha20Poly1305PacketKey::from_secret(&rotated_enc, params.tls_prefix_label)
++                .expect("expected chacha key");
++        let mut actual_payload = b"rotation payload".to_vec();
++        let mut expected_payload = b"rotation payload".to_vec();
++        actual.encrypt(0x1234, b"header", &mut actual_payload);
++        crate::tls::PacketKey::encrypt(&expected, 0x1234, b"header", &mut expected_payload);
++        assert_eq!(actual_payload, expected_payload);
++    }
++
++    #[test]
++    fn minicrypto_private_key_loader_installs_key_material() {
++        const SERVER_KEY: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../certs/key.pem");
++        const SERVER_CERT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../certs/cert.pem");
++
++        let mut material = configured_material_for_test();
++        material
++            .certificate_chain
++            .push(vec![0x30, 0x03, 0x02, 0x01, 0]);
++        assert!(!material.has_server_identity());
++
++        set_minicrypto_private_key_from_key_file(SERVER_KEY, &mut material)
++            .expect("minicrypto private key");
++        assert!(material.has_server_identity());
++        let key = material.private_key.as_ref().expect("installed key");
++        assert!(matches!(key.kind, PrivateKeyKind::Pkcs8));
++        assert_eq!(key.der.first(), Some(&0x30));
++
++        let mut material = configured_material_for_test();
++        assert_eq!(
++            set_minicrypto_private_key_from_key_file(SERVER_CERT, &mut material),
++            Err(Error::InvalidFile)
++        );
++        assert!(material.private_key.is_none());
++    }
++
++    #[test]
++    fn tls_key_provider_registration_matches_c_conditionals() {
++        let mut state = TlsApiState::new();
++
++        state.register_tls_key_provider(TlsKeyProviderCallbacks::new(
++            Some(CryptoProvider::Minicrypto),
++            None,
++            None,
++            Some(CryptoProvider::Minicrypto),
++        ));
++        assert_eq!(state.private_key_loader, Some(CryptoProvider::Minicrypto));
++        assert_eq!(state.sign_certificate_disposer, None);
++        assert_eq!(state.cert_chain_loader, None);
++        assert_eq!(state.public_key_loader, Some(CryptoProvider::Minicrypto));
++
++        state.register_tls_key_provider(TlsKeyProviderCallbacks::new(
++            None,
++            Some(CryptoProvider::Minicrypto),
++            Some(CryptoProvider::Minicrypto),
++            None,
++        ));
++        assert_eq!(state.private_key_loader, Some(CryptoProvider::Minicrypto));
++        assert_eq!(state.sign_certificate_disposer, None);
++        assert_eq!(state.cert_chain_loader, None);
++        assert_eq!(state.public_key_loader, Some(CryptoProvider::Minicrypto));
++
++        state.register_tls_key_provider(TlsKeyProviderCallbacks::new(
++            Some(CryptoProvider::Minicrypto),
++            Some(CryptoProvider::Minicrypto),
++            Some(CryptoProvider::Minicrypto),
++            None,
++        ));
++        assert_eq!(
++            state.sign_certificate_disposer,
++            Some(CryptoProvider::Minicrypto)
++        );
++        assert_eq!(state.cert_chain_loader, Some(CryptoProvider::Minicrypto));
++        assert_eq!(state.public_key_loader, Some(CryptoProvider::Minicrypto));
++    }
++
++    #[cfg(feature = "sys-mbedtls")]
++    #[test]
++    fn tls_api_init_providers_honors_no_mbedtls_flag() {
++        let other_providers_disabled = crate::TLS_API_INIT_FLAGS_NO_MINICRYPTO
++            | crate::TLS_API_INIT_FLAGS_NO_OPENSSL
++            | crate::TLS_API_INIT_FLAGS_NO_FUSION;
++        let mut state = TlsApiState::new();
++
++        state.init_flags = other_providers_disabled;
++        tls_api_init_providers_locked(&mut state, 0);
++        assert_eq!(
++            state.cipher_suite_provider(AES_128_GCM_SHA256, true),
++            Some(CryptoProvider::MbedTls)
++        );
++        assert_eq!(state.crypto_random_provider, Some(CryptoProvider::MbedTls));
++        assert_eq!(state.private_key_loader, Some(CryptoProvider::MbedTls));
++
++        state.zero();
++        state.init_flags = other_providers_disabled | crate::TLS_API_INIT_FLAGS_NO_MBEDTLS;
++        tls_api_init_providers_locked(&mut state, 0);
++        assert_eq!(state.cipher_suite_provider(AES_128_GCM_SHA256, true), None);
++        assert_eq!(state.crypto_random_provider, None);
++        assert_eq!(state.private_key_loader, None);
++    }
++}
+diff --git a/rs/fq/src/utils.rs b/rs/fq/src/utils.rs
+index 80a0161d..4892508d 100644
+--- a/rs/fq/src/utils.rs
++++ b/rs/fq/src/utils.rs
+@@ -368,6 +368,36 @@ pub fn compare_connection_id(id1: &ConnectionId, id2: &ConnectionId) -> Ordering
+ // ---------------------------------------------------------------------------
+ // Address helpers.
+ 
++/// Owned bytes for an IPv4 or IPv6 address.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum IpAddrBytes {
++    V4([u8; 4]),
++    V6([u8; 16]),
++}
++
++impl IpAddrBytes {
++    /// Number of address bytes in this value.
++    pub const fn len(&self) -> u8 {
++        match self {
++            Self::V4(_) => 4,
++            Self::V6(_) => 16,
++        }
++    }
++
++    /// Address byte values as a slice.
++    pub fn as_slice(&self) -> &[u8] {
++        match self {
++            Self::V4(bytes) => bytes.as_slice(),
++            Self::V6(bytes) => bytes.as_slice(),
++        }
++    }
++
++    /// IPv4 and IPv6 address byte values are never empty.
++    pub const fn is_empty(&self) -> bool {
++        false
++    }
++}
++
+ /// Pack an IP-and-port into a stable, byte-form key suitable for
+ /// hashing.  C: `size_t hash_addr_bytes(const struct
+ /// sockaddr* addr, uint8_t* bytes)`.  Returns the populated prefix
+@@ -380,7 +410,7 @@ pub fn hash_addr_bytes(addr: &SocketAddr, bytes: &mut [u8]) -> usize {
+             let ip = a.ip().octets();
+             bytes[l..l + 4].copy_from_slice(&ip);
+             l += 4;
+-            let port = addr.port().to_ne_bytes();
++            let port = addr.port().to_be_bytes();
+             bytes[l..l + 2].copy_from_slice(&port);
+             l += 2;
+         }
+@@ -388,7 +418,7 @@ pub fn hash_addr_bytes(addr: &SocketAddr, bytes: &mut [u8]) -> usize {
+             let ip = a.ip().octets();
+             bytes[l..l + 16].copy_from_slice(&ip);
+             l += 16;
+-            let port = addr.port().to_ne_bytes();
++            let port = addr.port().to_be_bytes();
+             bytes[l..l + 2].copy_from_slice(&port);
+             l += 2;
+         }
+@@ -536,14 +566,13 @@ pub fn store_addr(addr: Option<&SocketAddr>) -> Option<SocketAddr> {
+ /// Return the IP-bytes (4 or 16) inside a sockaddr.  C:
+ /// `void get_ip_addr(struct sockaddr* addr, uint8_t**
+ /// ip_addr, uint8_t* ip_addr_len)` — both output parameters fold
+-/// into the returned slice.  `None` matches the C path where
++/// into the returned bytes.  `None` matches the C path where
+ /// `*ip_addr = NULL; *ip_addr_len = 0;` for unsupported families.
+-pub fn get_ip_addr(_addr: &SocketAddr) -> Option<&[u8]> {
+-    // `SocketAddr` exposes IP octets only by value (`IpAddr::octets()`),
+-    // not by reference; safe Rust cannot produce the required borrow.
+-    // Callers should use `addr.ip()` with `Ipv4Addr::octets()` /
+-    // `Ipv6Addr::octets()` directly.
+-    None
++pub fn get_ip_addr(addr: &SocketAddr) -> Option<IpAddrBytes> {
++    Some(match addr {
++        SocketAddr::V4(addr) => IpAddrBytes::V4(addr.ip().octets()),
++        SocketAddr::V6(addr) => IpAddrBytes::V6(addr.ip().octets()),
++    })
+ }
+ 
+ /// Parse `ip_address_text` (IPv4 or IPv6 textual form) and combine
+@@ -934,10 +963,13 @@ pub fn frames_cid_encode<'a>(bytes: &'a mut [u8], cid: &ConnectionId) -> Option<
+     frames_length_data_encode(bytes, cid.as_bytes())
+ }
+ 
+-/// Encode a NUL-terminated C string `s` as length-prefixed data
+-/// (the NUL is *not* written).  C: `frames_charz_encode`.
+-pub fn frames_charz_encode<'a>(bytes: &'a mut [u8], s: &str) -> Option<&'a mut [u8]> {
+-    frames_length_data_encode(bytes, s.as_bytes())
++/// Encode an optional NUL-terminated C string `s` as length-prefixed data.
++/// `None` writes length 0; the NUL is *not* written. C: `frames_charz_encode`.
++pub fn frames_charz_encode<'a>(bytes: &'a mut [u8], s: Option<&str>) -> Option<&'a mut [u8]> {
++    match s {
++        None => frames_varlen_encode(bytes, 0),
++        Some(s) => frames_length_data_encode(bytes, s.as_bytes()),
++    }
+ }
+ 
+ // ---------------------------------------------------------------------------
+@@ -1069,4 +1101,52 @@ pub fn uint8_to_str<'a>(text: &'a mut [u8], data: &[u8]) -> &'a [u8] {
+ // constants likewise moved over.
+ 
+ #[cfg(test)]
+-mod test {}
++mod test {
++    use super::{IpAddrBytes, frames_charz_encode, get_ip_addr};
++    use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
++
++    #[test]
++    fn frames_charz_encode_none_writes_zero_length() {
++        let mut bytes = [0xaa; 4];
++        let remaining = {
++            let rest = frames_charz_encode(&mut bytes, None).expect("zero length fits");
++            rest.len()
++        };
++
++        assert_eq!(remaining, 3);
++        assert_eq!(bytes, [0, 0xaa, 0xaa, 0xaa]);
++    }
++
++    #[test]
++    fn frames_charz_encode_some_writes_length_data() {
++        let mut bytes = [0; 4];
++        let remaining = {
++            let rest = frames_charz_encode(&mut bytes, Some("abc")).expect("string fits");
++            rest.len()
++        };
++
++        assert_eq!(remaining, 0);
++        assert_eq!(bytes, [3, b'a', b'b', b'c']);
++    }
++
++    #[test]
++    fn get_ip_addr_returns_ipv4_octets() {
++        let addr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 7), 4433));
++        let ip = get_ip_addr(&addr).expect("SocketAddr::V4 has IP bytes");
++
++        assert_eq!(ip, IpAddrBytes::V4([192, 0, 2, 7]));
++        assert_eq!(ip.len(), 4);
++        assert_eq!(ip.as_slice(), &[192, 0, 2, 7]);
++    }
++
++    #[test]
++    fn get_ip_addr_returns_ipv6_octets() {
++        let octets = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
++        let addr = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::from(octets), 4433, 0, 0));
++        let ip = get_ip_addr(&addr).expect("SocketAddr::V6 has IP bytes");
++
++        assert_eq!(ip, IpAddrBytes::V6(octets));
++        assert_eq!(ip.len(), 16);
++        assert_eq!(ip.as_slice(), octets.as_slice());
++    }
++}

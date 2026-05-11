@@ -97,7 +97,13 @@ impl PacingBbrCongestionControl {
 }
 
 impl CongestionControl for PacingBbrCongestionControl {
-    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant) {
+    fn alg_init(
+        &self,
+        _connection: &mut Connection,
+        path_x: &mut Path,
+        option_string: Option<&str>,
+        current_time: Instant,
+    ) {
         let state = Self::init_state(path_x, option_string, current_time);
         path_x.congestion_alg_state = Some(Box::new(state));
     }
@@ -171,7 +177,13 @@ static PACING_BBR_ALGORITHM: CongestionAlgorithm = CongestionAlgorithm {
 struct PacingCubicCongestionControl;
 
 impl CongestionControl for PacingCubicCongestionControl {
-    fn alg_init(&self, path_x: &mut Path, option_string: Option<&str>, current_time: Instant) {
+    fn alg_init(
+        &self,
+        _connection: &mut Connection,
+        path_x: &mut Path,
+        option_string: Option<&str>,
+        current_time: Instant,
+    ) {
         crate::cubic::CubicState::init(path_x, option_string, current_time.ticks());
     }
 

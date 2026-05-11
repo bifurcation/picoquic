@@ -1,0 +1,17 @@
+{
+  "results": {
+    "picoquic/packet.c:picoquic_incoming_segment": {
+      "analysis": "The final merged Rust item is mapped to incoming_segment, but its behavior is not an acceptable translation of the C body: the cnx==NULL unexpected-packet path queues version negotiation instead of calling the stateless-reset process_unexpected_cnxid equivalent, retry/server-busy queue results overwrite ret where C preserves the original status, and Initial processing omits the C short-initial did_receive_short_initial/log side effect.",
+      "baseline_outcome": "blocked",
+      "baseline_source": "/private/tmp/picoquic-4e-r2-09",
+      "c_id": "picoquic/packet.c:picoquic_incoming_segment",
+      "fix_summary": "Use the translated process_unexpected_cnxid path for unexpected non-null DCIDs, preserve C ret handling around RetryNeeded/ServerBusy queue side effects, and restore the short Initial packet state/log update before dispatching Initial handling.",
+      "outcome": "needs_fix",
+      "regression_risk": "none",
+      "verification": [
+        "read-only context inspected"
+      ]
+    }
+  },
+  "schema_version": 1
+}
