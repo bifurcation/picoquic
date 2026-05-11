@@ -2017,13 +2017,19 @@ fn encode_local_transport_params_with_options(
 
     let mut transport_params = vec![0u8; ext_data_size];
     let mut consumed = 0usize;
-    if cnx.prepare_transport_extensions(
+    let ret = cnx.prepare_transport_extensions(
         local_transport_extension_mode(cnx.client_mode),
         &mut transport_params,
         ext_data_size,
         &mut consumed,
-    ) != 0
-    {
+    );
+    if std::env::var("FQ_DEBUG_LOOP").is_ok() {
+        eprintln!(
+            "DBG encode_local_transport_params: client_mode={} ret={} consumed={} ext_data_size={}",
+            cnx.client_mode, ret, consumed, ext_data_size
+        );
+    }
+    if ret != 0 {
         return Err(Error::Generic);
     }
     transport_params.truncate(consumed);

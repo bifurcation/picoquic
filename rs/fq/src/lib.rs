@@ -577,7 +577,20 @@ impl Quic {
     /// simulated, depending on whether a simulated-time pointer was
     /// supplied at creation).  C: `get_quic_time`.
     pub fn time(&self) -> u64 {
-        current_time()
+        match self.current_time_snapshot {
+            Some(t) => t.ticks(),
+            None => current_time(),
+        }
+    }
+
+    /// Update the context's snapshot of "now".  Mirrors the C
+    /// `*quic->p_simulated_time = …` pattern the test harness performs
+    /// implicitly by writing through the pointer it gave to
+    /// `picoquic_create`.  Internal API callers that already take a
+    /// `current_time` parameter invoke this so [`Self::time`] stays in
+    /// step with the simulator.
+    pub fn set_current_time(&mut self, current_time: Instant) {
+        self.current_time_snapshot = Some(current_time);
     }
 }
 
@@ -1734,6 +1747,7 @@ impl Quic {
             stateless_reset_next_time: current_time,
             stateless_reset_min_interval:
                 crate::internal::MICROSEC_STATELESS_RESET_INTERVAL_DEFAULT,
+            current_time_snapshot: Some(current_time),
             cwin_max: u64::MAX,
             check_token: false,
             force_check_token: false,
@@ -2374,6 +2388,7 @@ impl Quic {
         alpn: Option<&str>,
         client_mode: bool,
     ) -> Option<&mut Connection> {
+        self.set_current_time(start_time);
         let token = self
             .create_cnx_internal(
                 initial_cnx_id,
@@ -4303,7 +4318,10 @@ impl Connection {
     /// that owns this connection.
     /// C: `picoquic_get_quic_time(cnx->quic)`.
     pub fn quic_time(&self) -> Instant {
-        Instant::from_ticks(current_time())
+        match self.quic_ref().and_then(|q| q.current_time_snapshot) {
+            Some(t) => t,
+            None => Instant::from_ticks(current_time()),
+        }
     }
 }
 
@@ -4435,6 +4453,7 @@ impl Quic {
         received_ecn: u8,
         current_time: Instant,
     ) -> Result<(), Error> {
+        self.set_current_time(current_time);
         self.incoming_packet_ex(
             bytes,
             addr_from,
@@ -4460,6 +4479,7 @@ impl Quic {
         received_ecn: u8,
         current_time: Instant,
     ) -> Result<Option<&mut Connection>, Error> {
+        self.set_current_time(current_time);
         let packet_length = bytes.len();
         let mut consumed_index = 0usize;
         let mut previous_dest_id = ConnectionId::default();
@@ -4598,6 +4618,7 @@ impl Quic {
         current_time: Instant,
         send_buffer: &mut [u8],
     ) -> Result<PreparedPacket<'_>, Error> {
+        self.set_current_time(current_time);
         let default_addr = unspecified_socket_addr();
 
         if let Some(sp) = self.dequeue_stateless_packet() {
@@ -4840,6 +4861,9 @@ impl Connection {
         current_time: Instant,
         send_buffer: &mut [u8],
     ) -> Result<PreparedCnxPacket, Error> {
+        if let Some(quic) = Connection::quic_mut(self) {
+            Quic::set_current_time(quic, current_time);
+        }
         let mut next_wake_time = Instant::from_ticks(0);
         let mut ret = self.handle_send_timers(current_time, &mut next_wake_time);
         let mut send_length = 0usize;
@@ -7321,6 +7345,21 @@ impl Quic {
         current_time: Instant,
         decrypted_data: &mut crate::internal::StreamDataNode,
     ) -> ParsedSegment {
+        let dbg = std::env::var("FQ_DEBUG_LOOP").is_ok();
+        if dbg {
+            eprintln!(
+                "DBG screen_initial: pkt_len={} enf_mtu={} cid_len={} enf_cid={} ec_only={} busy={} cur_cnx={}/{} resv={}",
+                packet_length,
+                crate::internal::ENFORCED_INITIAL_MTU,
+                ph.dest_connection_id.len(),
+                crate::internal::ENFORCED_INITIAL_CID_LENGTH,
+                self.enforce_client_only,
+                self.server_busy,
+                self.current_number_connections,
+                self.tentative_max_number_connections,
+                ph.has_reserved_bit_set,
+            );
+        }
         if packet_length < crate::internal::ENFORCED_INITIAL_MTU {
             return ParsedSegment {
                 ret: InternalError::InitialTooShort as i32,
@@ -7375,6 +7414,12 @@ impl Quic {
             false,
             0,
         );
+        if dbg {
+            eprintln!(
+                "DBG screen_initial: decrypt_ret={} payload_len={}",
+                decrypt_ret, decrypted_data.length
+            );
+        }
         if decrypt_ret != 0 {
             return ParsedSegment {
                 ret: decrypt_ret,
@@ -7443,8 +7488,19 @@ impl Quic {
             None,
             None,
         ) {
-            Ok(token) => token,
+            Ok(token) => {
+                if dbg {
+                    eprintln!(
+                        "DBG screen_initial: create_cnx_internal OK n_cnx={}",
+                        self.connections.iter().count()
+                    );
+                }
+                token
+            }
             Err(error) => {
+                if dbg {
+                    eprintln!("DBG screen_initial: create_cnx_internal FAILED {:?}", error);
+                }
                 return ParsedSegment {
                     ret: Self::parse_error_status(error),
                     connection: None,

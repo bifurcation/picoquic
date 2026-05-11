@@ -1152,6 +1152,19 @@ pub fn tls_api_connection_loop(
             nb_inactive += 1;
         }
     }
+    if std::env::var("FQ_DEBUG_LOOP").is_ok() {
+        eprintln!(
+            "DBG loop end: trials={} inactive={} time={} client={:?}/{:?} server={:?}/{:?} server_cnxs={}",
+            nb_trials,
+            nb_inactive,
+            simulated_time.ticks(),
+            test_ctx.qclient.first_cnx_mut().map(|c| format!("{:?}", c.connection_state)),
+            test_ctx.qclient.first_cnx_mut().map(|c| c.next_wake_time.ticks()),
+            test_ctx.qserver.first_cnx_mut().map(|c| format!("{:?}", c.connection_state)),
+            test_ctx.qserver.first_cnx_mut().map(|c| c.next_wake_time.ticks()),
+            test_ctx.qserver.connections.iter().count(),
+        );
+    }
     Ok(())
 }
 
@@ -1751,7 +1764,7 @@ fn tls_api_one_sim_round_inner(
                     let addr_from = pkt.addr_from.unwrap_or(test_ctx.client_addr);
                     let addr_to = pkt.addr_to.unwrap_or(test_ctx.server_addr);
                     let ecn = pkt.ecn_mark;
-                    let _ = test_ctx.qserver.incoming_packet(
+                    let r = test_ctx.qserver.incoming_packet(
                         &mut pkt.bytes[..pkt.length],
                         &addr_from,
                         &addr_to,
@@ -1759,6 +1772,14 @@ fn tls_api_one_sim_round_inner(
                         ecn,
                         t,
                     );
+                    if std::env::var("FQ_DEBUG_LOOP").is_ok() {
+                        eprintln!(
+                            "DBG ServerArr: len={} ret={:?} server_cnxs={}",
+                            pkt.length,
+                            r,
+                            test_ctx.qserver.connections.iter().count()
+                        );
+                    }
                     tls_api_process_received_streams(test_ctx);
                     *was_active = true;
                 }
@@ -3589,11 +3610,11 @@ pub fn test_datagram_check_ready(
 /// When `enable_time_stamp` is true, sets `enable_time_stamp = 3`.
 /// C: `multipath_init_params` in `picoquictest/multipath_test.c`.
 pub fn multipath_init_params(enable_time_stamp: bool) -> TransportParameters {
-    TransportParameters {
-        initial_max_path_id: 2,
-        enable_time_stamp: if enable_time_stamp { 3 } else { 0 },
-        ..TransportParameters::default()
-    }
+    let mut tp = TransportParameters::default();
+    crate::internal::init_transport_parameters(&mut tp);
+    tp.initial_max_path_id = 2;
+    tp.enable_time_stamp = if enable_time_stamp { 3 } else { 0 };
+    tp
 }
 
 /// Spin the simulator until the client has migrated to a new path.

@@ -2228,6 +2228,13 @@ pub struct Quic {
     pub max_number_connections: u32,
     pub stateless_reset_next_time: Instant,
     pub stateless_reset_min_interval: Duration,
+    /// Latest "current time" observed by this Quic context.  In C this is
+    /// `quic->p_simulated_time` (a pointer the simulator updates).  Here
+    /// we mirror the same value by snapshotting it on every API call that
+    /// already takes a `current_time: Instant` parameter, so
+    /// [`Quic::time`] returns the simulated clock rather than wall-clock
+    /// time during tests.
+    pub current_time_snapshot: Option<Instant>,
     pub cwin_max: u64,
 
     pub check_token: bool,
@@ -4127,6 +4134,11 @@ impl Quic {
             own_token: None,
             quic_ptr: std::ptr::null_mut(),
         };
+        // Set quic_ptr before TLS-context creation so the transport-parameter
+        // encoder can reach back into the QUIC context for things like the
+        // stateless-reset secret.  C: `cnx->quic` is assigned in
+        // `picoquic_create_cnx` before `picoquic_tlscontext_create`.
+        cnx.quic_ptr = self as *mut Quic;
         cnx.create_tls_context(self)?;
 
         // Insert into the connection arena.
@@ -26030,7 +26042,7 @@ impl Connection {
         }
     }
 
-    fn quic_mut(&mut self) -> Option<&mut Quic> {
+    pub(crate) fn quic_mut(&mut self) -> Option<&mut Quic> {
         if self.quic_ptr.is_null() {
             None
         } else {

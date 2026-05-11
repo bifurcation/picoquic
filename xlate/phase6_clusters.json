@@ -1,0 +1,234 @@
+{
+  "clusters": [
+    {
+      "size": 29,
+      "location": "src/tests/multipath.rs:1039:5",
+      "message": "server connection not accepted during multipath handshake",
+      "tests": [
+        "tests::multipath::multipath_ab1",
+        "tests::multipath::multipath_abandon",
+        "tests::multipath::multipath_back0",
+        "tests::multipath::multipath_back1",
+        "tests::multipath::multipath_backup",
+        "tests::multipath::multipath_basic",
+        "tests::multipath::multipath_break1",
+        "tests::multipath::multipath_break_both",
+        "tests::multipath::multipath_callback",
+        "tests::multipath::multipath_datagram",
+        "tests::multipath::multipath_dg_af",
+        "tests::multipath::multipath_discovery",
+        "tests::multipath::multipath_drop_first",
+        "tests::multipath::multipath_drop_second",
+        "tests::multipath::multipath_fail",
+        "tests::multipath::multipath_just_one",
+        "tests::multipath::multipath_keep_alive",
+        "tests::multipath::multipath_nat",
+        "tests::multipath::multipath_nat_challenge",
+        "tests::multipath::multipath_perf",
+        "tests::multipath::multipath_quality",
+        "tests::multipath::multipath_renew",
+        "tests::multipath::multipath_rotation",
+        "tests::multipath::multipath_sat_plus",
+        "tests::multipath::multipath_socket0_error",
+        "tests::multipath::multipath_socket_error",
+        "tests::multipath::multipath_standup",
+        "tests::multipath::multipath_stream_af",
+        "tests::multipath::multipath_tunnel"
+      ]
+    },
+    {
+      "size": 17,
+      "location": "src/tests/satellite.rs:161:6",
+      "message": "scenario completed: Generic",
+      "tests": [
+        "tests::satellite::satellite_basic",
+        "tests::satellite::satellite_bbr1",
+        "tests::satellite::satellite_cubic",
+        "tests::satellite::satellite_cubic_loss",
+        "tests::satellite::satellite_cubic_seeded",
+        "tests::satellite::satellite_dcubic_seeded",
+        "tests::satellite::satellite_jitter",
+        "tests::satellite::satellite_loss",
+        "tests::satellite::satellite_loss_fc",
+        "tests::satellite::satellite_medium",
+        "tests::satellite::satellite_prague_seeded",
+        "tests::satellite::satellite_preemptive",
+        "tests::satellite::satellite_preemptive_fc",
+        "tests::satellite::satellite_seeded",
+        "tests::satellite::satellite_seeded_bbr1",
+        "tests::satellite::satellite_small",
+        "tests::satellite::satellite_small_up"
+      ]
+    },
+    {
+      "size": 11,
+      "location": "src/tests/datagram.rs:494:63",
+      "message": "datagram_test_one: Generic",
+      "tests": [
+        "tests::datagram::datagram",
+        "tests::datagram::datagram_loss",
+        "tests::datagram::datagram_rt",
+        "tests::datagram::datagram_rt_skip",
+        "tests::datagram::datagram_rtnew_skip",
+        "tests::datagram::datagram_size",
+        "tests::datagram::datagram_small",
+        "tests::datagram::datagram_small_new",
+        "tests::datagram::datagram_small_packet",
+        "tests::datagram::datagram_too_long_test",
+        "tests::datagram::datagram_wifi"
+      ]
+    },
+    {
+      "size": 10,
+      "location": "src/tests/congestion.rs:501:10",
+      "message": "scenario body: Generic",
+      "tests": [
+        "tests::congestion::bdp_basic",
+        "tests::congestion::bdp_bbr1",
+        "tests::congestion::bdp_cubic",
+        "tests::congestion::bdp_delay",
+        "tests::congestion::bdp_ip",
+        "tests::congestion::bdp_reno",
+        "tests::congestion::bdp_rtt",
+        "tests::congestion::bdp_short",
+        "tests::congestion::bdp_short_hi",
+        "tests::congestion::bdp_short_lo"
+      ]
+    },
+    {
+      "size": 9,
+      "location": "src/tests/congestion.rs:213:6",
+      "message": "scenario body: Generic",
+      "tests": [
+        "tests::congestion::bbr",
+        "tests::congestion::bbr1",
+        "tests::congestion::bbr_jitter",
+        "tests::congestion::c4",
+        "tests::congestion::c4_jitter",
+        "tests::congestion::cubic",
+        "tests::congestion::cubic_jitter",
+        "tests::congestion::fastcc",
+        "tests::congestion::fastcc_jitter"
+      ]
+    },
+    {
+      "size": 8,
+      "location": "src/tests/sockloop.rs:824:36",
+      "message": "sockloop_test_one: Generic",
+      "tests": [
+        "tests::sockloop::sockloop_basic",
+        "tests::sockloop::sockloop_eio",
+        "tests::sockloop::sockloop_errsock",
+        "tests::sockloop::sockloop_ipv4",
+        "tests::sockloop::sockloop_migration",
+        "tests::sockloop::sockloop_nat",
+        "tests::sockloop::sockloop_thread",
+        "tests::sockloop::sockloop_thread_name"
+      ]
+    },
+    {
+      "size": 7,
+      "location": "src/tests/congestion.rs:345:6",
+      "message": "scenario body: Generic",
+      "tests": [
+        "tests::congestion::bbr_asym100",
+        "tests::congestion::bbr_asym100_nodelay",
+        "tests::congestion::bbr_asym400",
+        "tests::congestion::bbr_gbps",
+        "tests::congestion::bbr_one_second",
+        "tests::congestion::bbr_performance",
+        "tests::congestion::bbr_slow_long"
+      ]
+    },
+    {
+      "size": 5,
+      "location": "src/tests/cpu_limited.rs:145:6",
+      "message": "scenario body: Generic",
+      "tests": [
+        "tests::cpu_limited::limited_batch",
+        "tests::cpu_limited::limited_bbr",
+        "tests::cpu_limited::limited_cubic",
+        "tests::cpu_limited::limited_reno",
+        "tests::cpu_limited::limited_safe"
+      ]
+    },
+    {
+      "size": 5,
+      "location": "src/tests/util.rs:912:14",
+      "message": "server connection not yet accepted",
+      "tests": [
+        "tests::tls_api::nat_rebinding",
+        "tests::tls_api::nat_rebinding_latency",
+        "tests::tls_api::nat_rebinding_loss",
+        "tests::tls_api::nat_rebinding_zero",
+        "tests::tls_api::stateless_reset_handshake"
+      ]
+    },
+    {
+      "size": 4,
+      "location": "src/tests/app_limited.rs:48:56",
+      "message": "newreno cc algo",
+      "tests": [
+        "tests::app_limited::app_limited_bbr",
+        "tests::app_limited::app_limited_cubic",
+        "tests::app_limited::app_limited_reno",
+        "tests::app_limited::app_limited_rpr"
+      ]
+    },
+    {
+      "size": 4,
+      "location": "src/tests/delay_tolerant.rs:128:6",
+      "message": "DTN scenario: Generic",
+      "tests": [
+        "tests::delay_tolerant::dtn_basic",
+        "tests::delay_tolerant::dtn_data",
+        "tests::delay_tolerant::dtn_silence",
+        "tests::delay_tolerant::dtn_twenty"
+      ]
+    },
+    {
+      "size": 4,
+      "location": "src/tests/ech.rs:82:34",
+      "message": "ech_e2e_test_one: Generic",
+      "tests": [
+        "tests::ech::ech_e2e",
+        "tests::ech::ech_e2e_0rtt",
+        "tests::ech::ech_grease",
+        "tests::ech::ech_no_ech"
+      ]
+    },
+    {
+      "size": 4,
+      "location": "src/tests/high_latency.rs:248:70",
+      "message": "client ready: Generic",
+      "tests": [
+        "tests::high_latency::high_latency_basic",
+        "tests::high_latency::high_latency_bbr",
+        "tests::high_latency::high_latency_cubic",
+        "tests::high_latency::high_latency_probertt"
+      ]
+    },
+    {
+      "size": 4,
+      "location": "src/tests/multipath.rs:1464:10",
+      "message": "body connect: Generic",
+      "tests": [
+        "tests::multipath::monopath_basic",
+        "tests::multipath::monopath_hole",
+        "tests::multipath::monopath_keep_alive",
+        "tests::multipath::monopath_rotation"
+      ]
+    },
+    {
+      "size": 4,
+      "location": "src/tests/util.rs:7088:5",
+      "message": "client was not ready after mTLS client-auth loop",
+      "tests": [
+        "tests::tls_api::client_auth",
+        "tests::tls_api::client_auth_25519",
+        "tests::tls_api::request_client_authentication",
+        "tests::tls_api::set_verify_certificate_callback_test"
+      ]
+    }
+  ]
+}
