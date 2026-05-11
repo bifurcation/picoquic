@@ -344,6 +344,7 @@ impl Quic {
     /// `should_delete` cleanup side effects.
     ///
     /// C: `picoquic_perflog`.
+    #[allow(dead_code)]
     pub(crate) fn perflog(
         &mut self,
         connection: Option<ConnectionToken>,

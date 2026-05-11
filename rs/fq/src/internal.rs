@@ -4293,7 +4293,7 @@ impl Quic {
         if let Some(cnx) = self.connections.get_mut(token)
             && let Some(mut memlog) = cnx.memlog_call_back.take()
         {
-            memlog.close(cnx, Instant::from_ticks(0));
+            memlog.callback(cnx, None, 1, Instant::from_ticks(0));
             cnx.memlog_call_back = Some(memlog);
         }
         self.emit_connection_perflog(token, false);
@@ -4358,8 +4358,6 @@ impl Quic {
                     .and_then(|l_cid| l_cid.connection_by_id_membership)
             })
             .collect();
-
-        let _ = self.perflog(Some(token), false);
 
         for membership in local_cid_memberships {
             self.connection_by_id.remove(membership);
@@ -29275,6 +29273,12 @@ mod test {
     #[test]
     fn initialize_tls_stream_leaves_crypto_bytes_unsent_until_format() {
         let (mut connection, _) = rtt_test_connection_and_path();
+        // C `picoquic_initialize_tls_stream` requires ALPN (mandatory check
+        // at tls_api.c:2272-2276); `rtt_test_connection_and_path` builds a
+        // connection without one because the RTT tests it normally feeds
+        // never reach TLS init. Provide one here so the TLS path matches
+        // the C precondition.
+        connection.alpn = Some(String::from("hq-interop"));
         connection
             .initialize_tls_stream(Instant::from_ticks(0))
             .expect("initialize tls stream");
@@ -29692,8 +29696,16 @@ mod test {
     #[test]
     fn get_token_skips_expired_tokens() {
         let mut quic = test_quic();
+        // `time_valid_until = 0` is unconditionally expired: the check in
+        // `picoquic_get_token` is `time_valid_until > current_time`
+        // (strict), and `current_time` is always non-negative. The previous
+        // value `Instant::from_ticks(1)` relied on `tls_time()` returning a
+        // large wall-clock-derived value (as C's `picoquic_get_tls_time`
+        // does via picotls), but Rust's `tls_time()` is elapsed microseconds
+        // since the process-local epoch and can return 0 when this test
+        // runs first in its process.
         quic.stored_tokens = vec![
-            test_stored_token(0xaa, Instant::from_ticks(1)),
+            test_stored_token(0xaa, Instant::from_ticks(0)),
             test_stored_token(0xbb, Instant::from_ticks(u64::MAX)),
         ];
 
@@ -30514,6 +30526,11 @@ mod test {
         assert_eq!(is_pure_ack, 0);
         assert!(cnx.is_datagram_ready);
         assert!(path.is_datagram_ready);
+
+        // The guard-panicking callback must not survive teardown, which
+        // invokes callback_fn with CallbackEvent::Close (mirroring
+        // picoquic_connection_disconnect in C).
+        cnx.callback_fn = None;
     }
 
     #[test]
@@ -30560,6 +30577,10 @@ mod test {
         assert_eq!(is_pure_ack, 0);
         assert!(!cnx.is_datagram_ready);
         assert!(!path.is_datagram_ready);
+
+        // See sibling test: callback_fn must be cleared before teardown,
+        // since connection_disconnect fires CallbackEvent::Close.
+        cnx.callback_fn = None;
     }
 
     #[test]
