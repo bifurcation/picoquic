@@ -1,1 +1,17 @@
 /target
+
+# Transient artifacts produced by the cargo-test suite when run from
+# the crate root.  Tracked golden/seed fixtures (e.g. log_test.txt,
+# session_resume_test.bin) are committed under their own explicit
+# names and are not matched by the patterns below.
+*.client.log
+ech_config.txt
+error_reason_log.txt
+pacing_rate.csv
+quality_update.csv
+random_padding_log.txt
+random_padding_tickets.bin
+retry_tests_tokens.bin
+stress_ticket_*.bin
+test_keylog_client.txt
+test_keylog_server.txt
