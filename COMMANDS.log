@@ -3151,3 +3151,4 @@
 2026-05-11T11:31:53Z python3 scripts/phase6.py --limit 5 --max-turns 120  # first 5-failure batch
 cargo test --lib internal::test::format_ready_datagram_frame  # phase6 debug: verify fix clears guard callback before Quic drop fires Close
 2026-05-11T07:49:39-04:00 cargo test --lib initialize_tls_stream_leaves_crypto_bytes_unsent_until_format # phase6 debug, verify ALPN fixture fix
+2026-05-11T11:50:54Z python3 scripts/phase6.py --limit 20 --max-turns 120  # 20-failure batch

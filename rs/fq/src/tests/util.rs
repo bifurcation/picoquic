@@ -2352,7 +2352,10 @@ fn tls_api_init_ctx_ex_named_with_flags(
         ticket_file,
         None,
     )
-    .ok_or(crate::Error::Generic)?;
+    .ok_or_else(|| {
+        eprintln!("DBG: qclient Quic::new failed, ticket_file={:?}", ticket_file);
+        crate::Error::Generic
+    })?;
     if cid_zero {
         qclient
             .set_default_connection_id_length(0)
@@ -2376,7 +2379,10 @@ fn tls_api_init_ctx_ex_named_with_flags(
         None,
         ticket_encryption_key,
     )
-    .ok_or(crate::Error::Generic)?;
+    .ok_or_else(|| {
+        eprintln!("DBG: qserver Quic::new failed, cert={} key={}", server_cert, server_key);
+        crate::Error::Generic
+    })?;
     qclient.set_random_initial(0);
     qserver.set_random_initial(0);
 
@@ -2395,7 +2401,10 @@ fn tls_api_init_ctx_ex_named_with_flags(
                 alpn,
                 true,
             )
-            .ok_or(crate::Error::Generic)?;
+            .ok_or_else(|| {
+                eprintln!("DBG: qclient create_connection failed, version={:#x}", version);
+                crate::Error::Generic
+            })?;
         if start_client {
             cnx.start_client()?;
         }

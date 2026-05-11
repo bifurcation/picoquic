@@ -29756,6 +29756,13 @@ mod test {
         let path = temp_ticket_path("expired_tokens_only");
 
         std::fs::write(&path, ticket_file_bytes(&[expired])).expect("write tokens");
+        // See `load_tickets_preserves_existing_when_file_has_no_current_tickets`
+        // for why this spin is needed: Rust's `tls_time()` epoch can be 0,
+        // which would keep the `time_valid_until = 1` expired token and
+        // diverge from the C test's wall-clock-based comparison.
+        while quic.tls_time() < 2 {
+            std::hint::spin_loop();
+        }
         let result = quic.load_tokens(&path);
         let _ = std::fs::remove_file(&path);
 
@@ -29841,6 +29848,15 @@ mod test {
             test_stored_ticket(0xbb, Instant::from_ticks(u64::MAX)),
         ];
 
+        // C's `picoquic_get_tls_time` is wall-clock-derived (microseconds), so
+        // `current_time` is always large and the `time_valid_until = 1` ticket
+        // is unambiguously expired. Rust's `tls_time()` is elapsed microseconds
+        // since the process-local epoch and can still be 0 when this test runs
+        // first; spin until it passes 1 so the expiry guard fires as in C.
+        while quic.tls_time() < 2 {
+            std::hint::spin_loop();
+        }
+
         let ticket = quic
             .get_stored_ticket(
                 Some("example.com"),
@@ -29863,6 +29879,16 @@ mod test {
         let mut quic = test_quic();
         let ip = core::net::IpAddr::V4(core::net::Ipv4Addr::UNSPECIFIED);
         let ticket = [0u8; 17];
+
+        // C's `picoquic_get_tls_time` is wall-clock-derived (microseconds),
+        // so `current_time` is never 0 and the `current_time != 0 &&
+        // time_valid_until < current_time` guard in `store_ticket` rejects a
+        // ticket with `time_valid_until = 0`. Rust's `tls_time()` is elapsed
+        // microseconds since the process-local epoch and can be 0 when this
+        // test runs first. Spin until it advances so the guard fires as in C.
+        while quic.tls_time() == 0 {
+            std::hint::spin_loop();
+        }
 
         let result = quic.store_ticket(
             Some("example.com"),
@@ -29891,6 +29917,16 @@ mod test {
         let path = temp_ticket_path("expired_only");
 
         std::fs::write(&path, ticket_file_bytes(&[expired])).expect("write tickets");
+        // C's `picoquic_get_tls_time` is wall-clock-derived (microseconds),
+        // so a ticket with `time_valid_until = 1` is firmly in the past
+        // and the `time_valid_until < current_time` filter in `load_tickets`
+        // discards it. Rust's `tls_time()` is elapsed microseconds since the
+        // process-local epoch and can be 0 when this test runs first. Spin
+        // until it advances past the expired threshold so the comparison
+        // behaves as in C.
+        while quic.tls_time() < 2 {
+            std::hint::spin_loop();
+        }
         let result = quic.load_tickets(&path);
         let _ = std::fs::remove_file(&path);
 
@@ -29910,6 +29946,13 @@ mod test {
         let path = temp_ticket_path("current");
 
         std::fs::write(&path, ticket_file_bytes(&[expired, current])).expect("write tickets");
+        // See `load_tickets_preserves_existing_when_file_has_no_current_tickets`
+        // for why this spin is needed: Rust's `tls_time()` epoch can be 0,
+        // which would keep the `time_valid_until = 1` expired ticket and
+        // diverge from the C test's wall-clock-based comparison.
+        while quic.tls_time() < 2 {
+            std::hint::spin_loop();
+        }
         let result = quic.load_tickets(&path);
         let _ = std::fs::remove_file(&path);
 

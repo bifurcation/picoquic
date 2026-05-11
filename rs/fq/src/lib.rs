@@ -507,20 +507,27 @@ pub enum CallbackEvent {
 // ---------------------------------------------------------------------------
 // Time management.
 
-/// Monotonic microseconds from a stable process-local epoch.
+/// Wall-clock microseconds, monotonically advanced from process start.
 ///
-/// C: `picoquic_current_time` uses `CLOCK_MONOTONIC` on the selected
-/// Unix target.  Rust's `std::time::Instant` exposes monotonic elapsed
-/// time without exposing the OS clock epoch, so the first call becomes
-/// this process's fixed epoch.
+/// C: `picoquic_current_time` returns wall time on Windows and
+/// `CLOCK_MONOTONIC` (boot-relative, always positive) on Unix.  Rust's
+/// `std::time::Instant` is monotonic but does not expose the OS epoch, so
+/// we anchor a `SystemTime` reading at first call and add the monotonic
+/// elapsed since that reading.  This preserves monotonicity within a
+/// process while ensuring the returned value is always > 0, matching C.
 pub fn current_time() -> u64 {
-    static CURRENT_TIME_BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    static CURRENT_TIME_BASE: std::sync::OnceLock<(std::time::Instant, u64)> =
+        std::sync::OnceLock::new();
 
-    let elapsed = CURRENT_TIME_BASE
-        .get_or_init(std::time::Instant::now)
-        .elapsed()
-        .as_micros();
-    u64::try_from(elapsed).unwrap_or(u64::MAX)
+    let (instant_base, micros_base) = CURRENT_TIME_BASE.get_or_init(|| {
+        let micros = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_micros()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        (std::time::Instant::now(), micros)
+    });
+    let elapsed = u64::try_from(instant_base.elapsed().as_micros()).unwrap_or(u64::MAX);
+    micros_base.saturating_add(elapsed)
 }
 
 /// Result of [`picoquic_select`].
@@ -1803,15 +1810,16 @@ impl Quic {
         });
         quic.wake_list_init();
 
-        if quic
-            .init_master_tls_context(
-                cert_file_name,
-                key_file_name,
-                _cert_root_file_name,
-                ticket_encryption_key,
-            )
-            .is_err()
-        {
+        if let Err(e) = quic.init_master_tls_context(
+            cert_file_name,
+            key_file_name,
+            _cert_root_file_name,
+            ticket_encryption_key,
+        ) {
+            eprintln!(
+                "DBG: init_master_tls_context failed: {:?} cert={:?} key={:?} root={:?}",
+                e, cert_file_name, key_file_name, _cert_root_file_name,
+            );
             return None;
         }
 
