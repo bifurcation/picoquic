@@ -199,7 +199,7 @@ impl InternalError {
             0x446 => Some("padding_packet"),
             e if e > 0x100 && e < 0x200 => Some("crypto error alert"),
             e if e > 0x400 && e < 0x500 => Some("unknown picoquic error"),
-            _ => None,
+            _ => Some("unknown"),
         }
     }
 }
