@@ -1950,6 +1950,13 @@ impl Quic {
         self.free_master_tls_context();
         self.is_cert_store_not_empty = false;
 
+        // C: picoquic_master_tlscontext installs the default key-exchange
+        // and cipher-suite lists on the per-context ptls_context_t.  The
+        // Rust port hoists those selections onto the Quic struct, so we
+        // populate the defaults here.
+        self.set_key_exchange(0)?;
+        self.set_cipher_suite(0)?;
+
         let material =
             build_master_tls_material(self, cert_file_name, key_file_name, cert_root_file_name)?;
         install_ticket_aead_contexts(self, ticket_key)?;

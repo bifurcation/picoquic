@@ -1,0 +1,12 @@
+# Test runner configuration used by Phase 6 debugging.
+#
+# `slow-timeout` plus `terminate-after = 1` causes nextest to SIGKILL any
+# test that runs longer than the period.  Phase 6 work tolerates faster
+# feedback over patient long-running tests; a hung test stops the
+# debugging cycle entirely.  Tests that legitimately need longer than
+# 120 seconds should be moved to a slower profile rather than raising
+# the default.
+
+[profile.default]
+slow-timeout = { period = "120s", terminate-after = 1 }
+fail-fast = false

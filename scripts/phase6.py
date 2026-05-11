@@ -47,6 +47,22 @@ REPORT = XLATE / "phase6_report.html"
 RUNS_DIR = XLATE / "phase6_runs"
 PROMPTS_DIR = XLATE / "prompts" / "phase6"
 
+# The test suite needs a real TLS provider (PEM cert loading, certificate
+# verification, etc.).  The minicrypto provider that ships under the
+# default feature set has no cert-chain loader, so every test that opens
+# a real certificate fails at Quic::new.  Phase 4/5 historically ran the
+# gate with `--features sys-openssl`; do the same here.
+CARGO_FEATURES = ["--features", "sys-openssl"]
+
+# Per-test timeout: tests exceeding this are SIGKILL'd by nextest (see
+# rs/fq/.config/nextest.toml).  Phase 6 needs fast feedback; legitimately
+# slow tests should be marked rather than running unbounded.
+PER_TEST_TIMEOUT_SECONDS = 120
+
+# Overall safety net for the whole nextest invocation.  Should never fire
+# in practice — per-test killing is the primary mechanism.
+SUITE_TIMEOUT_SECONDS = 1800
+
 OUTCOMES = {"fixed", "ok", "blocked"}
 ALLOWED_TOOLS = (
     "Read Edit Write Glob Grep "
@@ -100,17 +116,38 @@ def run_cargo_test() -> dict:
     env = os.environ.copy()
     env["CARGO_INCREMENTAL"] = "0"
     env.setdefault("CARGO_TARGET_DIR", "/private/tmp/fq-target")
-    cmd = ["cargo", "test"]
-    res = subprocess.run(
-        cmd,
-        cwd=RS_CRATE,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    output = res.stdout + "\n" + res.stderr
+    # nextest enforces the per-test timeout via .config/nextest.toml
+    # (slow-timeout, terminate-after).  We still pass an overall
+    # subprocess.run timeout as a belt-and-suspenders measure.
+    # Per-test slow-timeout + terminate-after live in
+    # rs/fq/.config/nextest.toml; nextest 0.9 does not accept those as
+    # CLI flags.  PER_TEST_TIMEOUT_SECONDS is kept here for visibility.
+    _ = PER_TEST_TIMEOUT_SECONDS
+    cmd = [
+        "cargo",
+        "nextest",
+        "run",
+        *CARGO_FEATURES,
+        "--no-fail-fast",
+        "--final-status-level=fail",
+    ]
+    try:
+        res = subprocess.run(
+            cmd,
+            cwd=RS_CRATE,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=SUITE_TIMEOUT_SECONDS,
+        )
+        output = res.stdout + "\n" + res.stderr
+        returncode = res.returncode
+    except subprocess.TimeoutExpired as exc:
+        output = (exc.stdout or "") + "\n" + (exc.stderr or "")
+        output += f"\n\nphase6: nextest exceeded {SUITE_TIMEOUT_SECONDS}s and was killed.\n"
+        returncode = 124
     log_path.write_text(output)
-    return parse_cargo_test_output(output, res.returncode, log_path)
+    return parse_nextest_output(output, returncode, log_path)
 
 
 SUMMARY_RE = re.compile(
@@ -120,42 +157,73 @@ SUMMARY_RE = re.compile(
     r"(?P<filtered>\d+) filtered out",
 )
 
+# Nextest summary line, e.g.:
+#   Summary [   29.5s] 740 tests run: 336 passed, 404 failed, 1 skipped
+NEXTEST_SUMMARY_RE = re.compile(
+    r"Summary \[\s*[\d.]+s\] (?P<total>\d+) tests run:"
+    r"\s*(?P<passed>\d+) passed"
+    r"(?:, (?P<flaky>\d+) flaky)?"
+    r"(?:, (?P<failed>\d+) failed)?"
+    r"(?:, (?P<timed_out>\d+) timed out)?"
+    r"(?:, (?P<leaky>\d+) leaky)?"
+    r"(?:, (?P<skipped>\d+) skipped)?",
+)
 
-def parse_cargo_test_output(output: str, returncode: int, log_path: Path) -> dict:
-    summaries = list(SUMMARY_RE.finditer(output))
+# Nextest per-test outcome line, e.g.:
+#         FAIL [   0.025s] (3/3) fq tests::tls_api::af_undef
+#         PASS [   0.001s] fq tests::tls_api::af_undef
+#         TMOUT [ 120.000s] fq tests::tls_api::integrity_limit
+# The crate-name token (`fq`) is the package name; everything after it
+# is the test path used by `cargo test`.
+NEXTEST_OUTCOME_RE = re.compile(
+    r"^\s*(?P<outcome>PASS|FAIL|TMOUT|TIMEOUT|LEAK|SLOW|SKIP)"
+    r"(?:\s*\[[^\]]*\])?"
+    r"\s*(?:\(\d+/\d+\))?"
+    r"\s*\S+\s+"
+    r"(?P<name>\S+)\s*$",
+    re.MULTILINE,
+)
+
+NEXTEST_FAILURE_OUTCOMES = {"FAIL", "TMOUT", "TIMEOUT", "LEAK"}
+
+
+def parse_nextest_output(output: str, returncode: int, log_path: Path) -> dict:
+    summaries = list(NEXTEST_SUMMARY_RE.finditer(output))
     if summaries:
         last = summaries[-1]
+
+        def _int(name: str) -> int:
+            val = last.group(name)
+            return int(val) if val else 0
+
         summary = {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "command": "cargo test",
+            "command": "cargo nextest run",
             "returncode": returncode,
-            "passed": int(last.group("passed")),
-            "failed": int(last.group("failed")),
-            "ignored": int(last.group("ignored")),
-            "measured": int(last.group("measured")),
-            "filtered_out": int(last.group("filtered")),
+            "passed": _int("passed"),
+            "failed": _int("failed") + _int("timed_out") + _int("leaky"),
+            "timed_out": _int("timed_out"),
+            "flaky": _int("flaky"),
+            "skipped": _int("skipped"),
             "log": log_path.relative_to(REPO_ROOT).as_posix(),
         }
     else:
         summary = {
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "command": "cargo test",
+            "command": "cargo nextest run",
             "returncode": returncode,
             "passed": 0,
             "failed": 1 if returncode != 0 else 0,
-            "ignored": 0,
-            "measured": 0,
-            "filtered_out": 0,
+            "timed_out": 0,
+            "flaky": 0,
+            "skipped": 0,
             "log": log_path.relative_to(REPO_ROOT).as_posix(),
         }
 
-    names = set(re.findall(r"^test (?P<name>\S+) \.\.\. FAILED$", output, re.MULTILINE))
-    failures_block = re.search(r"\nfailures:\n(?P<body>(?:\s+\S+\n)+)", output)
-    if failures_block:
-        for line in failures_block.group("body").splitlines():
-            name = line.strip()
-            if name:
-                names.add(name)
+    names: set[str] = set()
+    for match in NEXTEST_OUTCOME_RE.finditer(output):
+        if match.group("outcome") in NEXTEST_FAILURE_OUTCOMES:
+            names.add(match.group("name"))
 
     failure_map: dict[str, dict] = {}
     if not names and returncode != 0:
@@ -402,15 +470,15 @@ def run_targeted_tests(batch: list[dict], *, skip_gate: bool) -> int:
     for failure in batch:
         name = failure["name"]
         if name == "cargo_test_build_or_harness_failure":
-            cmd = ["cargo", "test", "--no-run"]
+            cmd = ["cargo", "test", *CARGO_FEATURES, "--no-run"]
         else:
-            cmd = ["cargo", "test", name, "--", "--exact"]
+            cmd = ["cargo", "test", *CARGO_FEATURES, name, "--", "--exact"]
         res = subprocess.run(cmd, cwd=RS_CRATE, env=env)
         if res.returncode != 0:
             return res.returncode
     for cmd in (
         ["cargo", "fmt"],
-        ["cargo", "test", "--no-run"],
+        ["cargo", "test", *CARGO_FEATURES, "--no-run"],
         ["cargo", "clippy", "--tests", "--all-features", "--", "-D", "warnings"],
     ):
         res = subprocess.run(cmd, cwd=RS_CRATE, env=env)

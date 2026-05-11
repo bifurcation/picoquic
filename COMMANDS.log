@@ -3142,3 +3142,7 @@
   ps -axo pid,ppid,stat,etime,command | rg "81795|phase4e.py|phase5b.py|codex exec|cargo"
   python3 scripts/phase4e.py --status
   python3 scripts/phase5b.py --status
+2026-05-11T02:19:27Z python3 scripts/phase6.py --refresh-failures --status  # Phase 6 baseline
+2026-05-11T02:28:18Z cargo test --features sys-openssl  # Phase 6 re-baseline
+2026-05-11T11:01:56Z python3 scripts/phase6.py --refresh-failures --status  # rebaseline with sys-openssl
+2026-05-11T11:13:23Z python3 scripts/phase6.py --refresh-failures --status  # baseline via nextest
