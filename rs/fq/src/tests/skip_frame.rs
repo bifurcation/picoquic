@@ -2310,7 +2310,7 @@ fn text_file_sum(path: &str) -> crate::Result<u64> {
     let bytes = std::fs::read(path).map_err(|_| crate::Error::Generic)?;
     Ok(bytes
         .iter()
-        .fold(0x1_0000_0000_00u64, |sum, byte| sum + u64::from(*byte)))
+        .fold(0x0100_0000_0000_u64, |sum, byte| sum + u64::from(*byte)))
 }
 
 fn write_textlog_frame_file(

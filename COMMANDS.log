@@ -3146,3 +3146,4 @@
 2026-05-11T02:28:18Z cargo test --features sys-openssl  # Phase 6 re-baseline
 2026-05-11T11:01:56Z python3 scripts/phase6.py --refresh-failures --status  # rebaseline with sys-openssl
 2026-05-11T11:13:23Z python3 scripts/phase6.py --refresh-failures --status  # baseline via nextest
+2026-05-11T11:17:42Z python3 scripts/phase6.py --limit 1 --max-turns 80  # first dispatch

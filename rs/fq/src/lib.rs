@@ -2829,7 +2829,7 @@ impl Connection {
         self.max_stream_data_remote = self.remote_parameters.initial_max_data;
         self.max_stream_data_local = self.local_parameters.initial_max_stream_data_bidi_local;
 
-        let _ = self.reinsert_self_by_wake_time(current_time);
+        self.reinsert_self_by_wake_time(current_time);
         tls_init_result
     }
 
@@ -3900,16 +3900,14 @@ impl Connection {
 
         if next <= now {
             0
+        } else if delay_max <= 0 {
+            delay_max
         } else {
-            if delay_max <= 0 {
+            let delta = next - now;
+            if delta >= delay_max as u64 {
                 delay_max
             } else {
-                let delta = next - now;
-                if delta >= delay_max as u64 {
-                    delay_max
-                } else {
-                    delta as i64
-                }
+                delta as i64
             }
         }
     }

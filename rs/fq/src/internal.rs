@@ -1878,6 +1878,7 @@ impl Quic {
         Ok(token)
     }
 
+    #[allow(dead_code)]
     fn get_token_for_sni_any_ip(
         &mut self,
         sni: Option<&str>,
@@ -18069,6 +18070,7 @@ fn queue_misc_frame(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn encode_varint_vec(out: &mut Vec<u8>, value: u64) -> bool {
     let mut tmp = [0u8; 8];
     let n = varint_encode(&mut tmp, value);
@@ -18080,6 +18082,7 @@ fn encode_varint_vec(out: &mut Vec<u8>, value: u64) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn encode_tp_param(out: &mut Vec<u8>, id: u64, value: &[u8]) -> bool {
     encode_varint_vec(out, id) && encode_varint_vec(out, value.len() as u64) && {
         out.extend_from_slice(value);
@@ -18087,11 +18090,13 @@ fn encode_tp_param(out: &mut Vec<u8>, id: u64, value: &[u8]) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn encode_tp_varint_param(out: &mut Vec<u8>, id: u64, value: u64) -> bool {
     let mut encoded = Vec::new();
     encode_varint_vec(&mut encoded, value) && encode_tp_param(out, id, &encoded)
 }
 
+#[allow(dead_code)]
 fn decode_single_varint(bytes: &[u8]) -> Option<u64> {
     let mut value = 0;
     let rest = frames_varint_decode(bytes, &mut value)?;
@@ -30034,6 +30039,9 @@ mod test {
     }
 
     fn create_datagram_test_connection(quic: &mut Quic, current_time: Instant) -> &mut Connection {
+        // Use client_mode=true so the helper does not require a server
+        // TLS certificate (Quic::new in these tests has no cert/key).
+        // The datagram-buffer logic under test is mode-agnostic.
         let cid = ConnectionId::with_size(0).expect("zero-length CID");
         quic.create_connection(
             cid,
@@ -30043,7 +30051,7 @@ mod test {
             0,
             Some("test-sni"),
             Some("test-alpn"),
-            false,
+            true,
         )
         .expect("test connection should be created")
     }

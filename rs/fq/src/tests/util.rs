@@ -1029,6 +1029,7 @@ impl TestTlsApiCtx {
     }
 }
 
+#[allow(dead_code)]
 fn tls_api_set_link_loss_mask(test_ctx: &mut TestTlsApiCtx, loss_mask: u64) {
     test_ctx.c_to_s_link.loss_mask = Some(loss_mask);
     test_ctx.s_to_c_link.loss_mask = Some(loss_mask);
@@ -1040,6 +1041,7 @@ fn tls_api_set_link_loss_mask(test_ctx: &mut TestTlsApiCtx, loss_mask: u64) {
     }
 }
 
+#[allow(dead_code)]
 fn tls_api_sync_link_loss_mask(test_ctx: &TestTlsApiCtx, loss_mask: &mut u64) {
     let before = *loss_mask;
     if let Some(mask) = test_ctx.c_to_s_link.loss_mask
@@ -1069,6 +1071,7 @@ fn tls_api_sync_link_loss_mask(test_ctx: &TestTlsApiCtx, loss_mask: &mut u64) {
     }
 }
 
+#[allow(dead_code)]
 fn tls_api_one_sim_round_with_loss_mask(
     test_ctx: &mut TestTlsApiCtx,
     simulated_time: &mut Instant,
@@ -1264,6 +1267,7 @@ pub fn tls_api_data_sending_loop(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn submit_simulated_send_buffer(
     link: &mut TestSimLink,
     addr_from: SocketAddr,
@@ -2439,6 +2443,7 @@ fn tls_api_init_ctx_ex_named_with_flags(
     }))
 }
 
+#[allow(dead_code)]
 fn tls_api_init_ctx_delayed(
     simulated_time: &mut Instant,
     proposed_version: u32,
@@ -5958,10 +5963,11 @@ fn ready_to_send_stream0_prepare(
         return 0;
     }
 
-    if state.option == 2 && state.sent == state.target {
-        if crate::provide_stream_data_buffer(context, 0, true, false).is_some() {
-            return 0;
-        }
+    if state.option == 2
+        && state.sent == state.target
+        && crate::provide_stream_data_buffer(context, 0, true, false).is_some()
+    {
+        return 0;
     }
 
     -1
@@ -7527,6 +7533,7 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
         let mut frame_number = 0u64;
         while bytes_queued < requested {
             let remaining = requested - bytes_queued;
+            #[allow(clippy::manual_clamp)]
             let message_size = remaining
                 .min(WARPTEST_DATA_FRAME_SIZE)
                 .max(WARPTEST_HEADER_SIZE);
@@ -7749,7 +7756,7 @@ pub fn warptest_one(_warptest_id: u32, _spec: &WarptestSpec) -> crate::Result<()
                     *is_active = true;
                 }
                 if *frames_sent_video < frames_to_send_video && *next_video_time <= now {
-                    let message_size = if (*frames_sent_video % 100) == 0 {
+                    let message_size = if (*frames_sent_video).is_multiple_of(100) {
                         0x8000
                     } else {
                         0x800
