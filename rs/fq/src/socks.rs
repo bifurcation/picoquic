@@ -466,6 +466,10 @@ fn socket_addr_to_sockaddr_storage(addr: &SocketAddr) -> (libc::sockaddr_storage
 fn cmsg_has_data(cmsg: *const libc::cmsghdr, data_len: usize) -> bool {
     // SAFETY: `cmsg` comes from CMSG_FIRSTHDR / CMSG_NXTHDR for the live
     // msghdr. Reading the header length is valid for those pointers.
+    // `cmsg_len`'s native type varies by platform (`usize` on Linux,
+    // `socklen_t` on macOS), so the cast is needed on some targets and
+    // a no-op on others.
+    #[allow(clippy::unnecessary_cast)]
     let cmsg_len = unsafe { (*cmsg).cmsg_len as usize };
     // SAFETY: `data_len` is the payload length being checked; CMSG_LEN only
     // computes the platform header-plus-payload size.
@@ -500,7 +504,12 @@ unsafe fn parse_ipv4_cmsg(cmsg: *const libc::cmsghdr, info: &mut RecvAncillaryIn
                 ipv4_addr_from_in_addr(pktinfo.ipi_addr),
                 0,
             )));
-            info.dest_if = Some(pktinfo.ipi_ifindex as i32);
+            // `ipi_ifindex`'s native type varies by libc release/platform
+            // (`u32` on some, `i32` on others); the cast is needed where
+            // they disagree and a no-op where they don't.
+            #[allow(clippy::unnecessary_cast)]
+            let if_index = pktinfo.ipi_ifindex as i32;
+            info.dest_if = Some(if_index);
         }
         return true;
     }

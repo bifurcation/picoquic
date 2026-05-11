@@ -577,7 +577,24 @@ impl Quic {
     /// simulated, depending on whether a simulated-time pointer was
     /// supplied at creation).  C: `get_quic_time`.
     pub fn time(&self) -> u64 {
-        current_time()
+        match self.simulated_time.get() {
+            Some(t) => t,
+            None => current_time(),
+        }
+    }
+
+    /// Install a simulated-time override.  Subsequent calls to
+    /// [`Quic::time`] will return this value (in microseconds) instead
+    /// of the wall clock.  Tests use this to drive virtual time;
+    /// production code should never call it.  Mirrors C's
+    /// `picoquic_set_quic_time_fn` / `*p_simulated_time` mechanism.
+    pub fn set_simulated_time(&self, t: u64) {
+        self.simulated_time.set(Some(t));
+    }
+
+    /// Drop the simulated-time override and revert to the wall clock.
+    pub fn clear_simulated_time(&self) {
+        self.simulated_time.set(None);
     }
 }
 
@@ -1702,6 +1719,7 @@ impl Quic {
             alpn_select_fn: None,
             reset_seed,
             retry_seed,
+            simulated_time: core::cell::Cell::new(None),
             rng: Box::new(rng),
             hash_seed,
             ticket_file_name: ticket_file_name.map(std::path::PathBuf::from),

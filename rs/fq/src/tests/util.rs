@@ -895,6 +895,17 @@ pub struct TestTlsApiCtx {
 }
 
 impl TestTlsApiCtx {
+    /// Push the simulator's virtual clock down to both Quic
+    /// contexts.  Library calls that internally consult "now" via
+    /// `Quic::time()` (`start_client`, `reinsert_self_by_wake_time`,
+    /// path-quality probes, …) will then see the simulator's value
+    /// instead of the wall clock.  Mirrors C's `p_simulated_time`
+    /// pointer: tests own the clock, the library reads it.
+    pub fn install_simulated_time(&self, t: Instant) {
+        self.qclient.set_simulated_time(t.ticks());
+        self.qserver.set_simulated_time(t.ticks());
+    }
+
     /// Mutable reference to the client connection.
     /// C: `test_ctx->cnx_client`.
     pub fn cnx_client(&mut self) -> &mut Connection {
@@ -1846,10 +1857,12 @@ fn tls_api_one_sim_round_inner(
     let timeout = time_out.ticks();
     if timeout > 0 && next_time > timeout {
         *simulated_time = time_out;
+        test_ctx.install_simulated_time(*simulated_time);
         return Ok(());
     } else if next_time > simulated_time.ticks() {
         *simulated_time = Instant::from_ticks(next_time);
     }
+    test_ctx.install_simulated_time(*simulated_time);
 
     // Execute departure.
     match next_action {
@@ -2353,7 +2366,10 @@ fn tls_api_init_ctx_ex_named_with_flags(
         None,
     )
     .ok_or_else(|| {
-        eprintln!("DBG: qclient Quic::new failed, ticket_file={:?}", ticket_file);
+        eprintln!(
+            "DBG: qclient Quic::new failed, ticket_file={:?}",
+            ticket_file
+        );
         crate::Error::Generic
     })?;
     if cid_zero {
@@ -2380,11 +2396,16 @@ fn tls_api_init_ctx_ex_named_with_flags(
         ticket_encryption_key,
     )
     .ok_or_else(|| {
-        eprintln!("DBG: qserver Quic::new failed, cert={} key={}", server_cert, server_key);
+        eprintln!(
+            "DBG: qserver Quic::new failed, cert={} key={}",
+            server_cert, server_key
+        );
         crate::Error::Generic
     })?;
     qclient.set_random_initial(0);
     qserver.set_random_initial(0);
+    qclient.set_simulated_time(simulated_time.ticks());
+    qserver.set_simulated_time(simulated_time.ticks());
 
     {
         let icid = initial_cid
@@ -2402,7 +2423,10 @@ fn tls_api_init_ctx_ex_named_with_flags(
                 true,
             )
             .ok_or_else(|| {
-                eprintln!("DBG: qclient create_connection failed, version={:#x}", version);
+                eprintln!(
+                    "DBG: qclient create_connection failed, version={:#x}",
+                    version
+                );
                 crate::Error::Generic
             })?;
         if start_client {

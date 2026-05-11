@@ -2176,9 +2176,16 @@ pub struct Quic {
     pub alpn_select_fn: Option<Box<dyn AlpnSelect>>,
     pub reset_seed: [u8; RESET_SECRET_SIZE],
     pub retry_seed: [u8; RETRY_SECRET_SIZE],
-    // C `*mut u64 p_simulated_time` is gone -- the test simulator
-    // owns its own clock and feeds the value through per-call
-    // `current_time: Instant` parameters.
+    // Optional simulated-time override.  When `Some`, `Quic::time()`
+    // returns this value (in microseconds) instead of the wall clock.
+    // Mirrors C's `*mut u64 p_simulated_time`: tests that drive a
+    // virtual clock install a value here and update it as the
+    // simulator advances, so library calls that internally look up
+    // "now" (e.g. `start_client`, `reinsert_self_by_wake_time`) see
+    // the simulated time rather than the OS clock.
+    //
+    // Wrapped in `Cell` for `&self` access through `Quic::time()`.
+    pub simulated_time: core::cell::Cell<Option<u64>>,
     /// Application-supplied cryptographically secure RNG.  Replaces
     /// the C `register_crypto_random_provider` global registry plus
     /// `Connection::crypto_random` / `crypto_uniform_random` /
